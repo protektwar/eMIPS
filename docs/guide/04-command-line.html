@@ -79,6 +79,14 @@ output — the test suite re-runs them.</p>
 <td><code>gui [FILE]</code></td>
 <td>open the window</td>
 </tr>
+<tr>
+<td><code>cc FILE.c</code></td>
+<td>build a C program into an ELF executable</td>
+</tr>
+<tr>
+<td><code>gdb FILE</code></td>
+<td>let GDB debug the program (GDB's remote protocol)</td>
+</tr>
 </tbody>
 </table>
 <p><code>python3 -m emips COMMAND --help</code> lists every option of a command.</p>
@@ -109,32 +117,32 @@ output — the test suite re-runs them.</p>
 </tr>
 <tr>
 <td><code>--strict</code></td>
-<td>asm, run, pipe, debug</td>
+<td>asm, run, pipe, debug, gdb</td>
 <td>strict mode: no pseudo-instructions</td>
 </tr>
 <tr>
 <td><code>--noreorder</code></td>
-<td>asm, run, pipe, debug</td>
+<td>asm, run, pipe, debug, gdb</td>
 <td>start in <code>.set noreorder</code> (no automatic delay-slot <code>nop</code>)</td>
 </tr>
 <tr>
 <td><code>--boot kernel|user|reset</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the start state (default kernel, like MARS); on the Malta <code>reset</code> runs the boot monitor from the reset vector first (unless the program has code at <code>0xbfc00000</code>), and <code>user</code> needs <code>--mmu tlb</code> (<a href="05-understanding.html#the-boot-monitor-yamon">Phase 5, The boot monitor</a>)</td>
 </tr>
 <tr>
 <td><code>--exceptions cp0|stop</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>take exceptions like the hardware (default) or stop</td>
 </tr>
 <tr>
 <td><code>--no-syscalls</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td><code>syscall</code> raises the exception instead of the services</td>
 </tr>
 <tr>
 <td><code>--keys TEXT</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>type TEXT on the memory-mapped keyboard</td>
 </tr>
 <tr>
@@ -144,77 +152,77 @@ output — the test suite re-runs them.</p>
 </tr>
 <tr>
 <td><code>--no-forwarding</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the pipeline without forwarding paths</td>
 </tr>
 <tr>
 <td><code>--caches</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the L1 caches of a MIPS 24K: 32 KB instruction and data cache, 4-way, 32-byte lines</td>
 </tr>
 <tr>
 <td><code>--icache</code> / <code>--dcache SIZE[:WAYS[:LINE]]</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>one cache of that shape (<code>16K</code>, <code>8K:2:32</code>; <code>none</code> = off)</td>
 </tr>
 <tr>
 <td><code>--cache-parity</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the caches have parity (ErrCtl.PE, the Cache Error exception)</td>
 </tr>
 <tr>
 <td><code>--cache-init random|hardware</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>cache contents after reset: random (default) or invalid</td>
 </tr>
 <tr>
 <td><code>--l2</code> / <code>--l3 SIZE[:WAYS[:LINE]]</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>an L2 (<code>256K</code>: 8-way, 32-byte lines; <code>512K:4:64</code>) and, below it, an L3 (<code>2M</code>)</td>
 </tr>
 <tr>
 <td><code>--cache-ecc</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the L2 / L3 have ECC (ErrCtl.L2P, imprecise Cache Error)</td>
 </tr>
 <tr>
 <td><code>--write-buffer</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the 24K write buffer: merges write-through stores, gathers uncached accelerated ones, <code>sync</code> empties it</td>
 </tr>
 <tr>
 <td><code>--mem-timing KEY=N,...</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>pipeline memory cycles: <code>L2</code> (12), <code>L3</code> (25), <code>MEM</code> (50), <code>BEAT</code> (1), <code>BYPASS</code> (4), <code>WRITE</code> (10) with caches; <code>UTLB</code> (3) a micro-TLB miss with the TLB; <code>C2C</code> (14) a miss served by another core's cache, <code>UPG</code> (8) an upgrade, <code>INTV</code> (4) until a waiting coherent store is visible, with <code>--cores</code></td>
 </tr>
 <tr>
 <td><code>--nonblocking</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>pipeline: loads miss in the background (hit under miss)</td>
 </tr>
 <tr>
 <td><code>--model 5-stage|24k</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>the pipeline model: the textbook 5-stage pipeline (default) or the MIPS 24K's 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)</td>
 </tr>
 <tr>
 <td><code>--cores N</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>a multi-core system of N cores (2–4): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's); with <code>--board malta</code> a multi-core Malta (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
 </tr>
 <tr>
 <td><code>--iocu</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>with <code>--board malta --cores N</code>: an I/O Coherence Unit — the PCI DMA is coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
 </tr>
 <tr>
 <td><code>--shadow-sets N</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>GPR shadow sets, 1–16 (default 4, a 24K's most; Release 2+): what SRSCtl.HSS says, the sets an exception / vectored interrupt switches to (<a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5, 5.10</a>)</td>
 </tr>
 <tr>
 <td><code>--no-header</code></td>
-<td>run, pipe, debug</td>
+<td>run, pipe, debug, gdb</td>
 <td>ignore the program's <code># eMIPS:</code> line (without it, that line supplies the flags you do not give: <a href="features.html#a-programs-own-settings">What's in eMIPS</a>); a combination of flags that does not go together is refused with the reason</td>
 </tr>
 <tr>
@@ -985,6 +993,175 @@ memory map (<a href="02-writing-programs.html#218-programs-in-c">Phase 2, 2.18</
 <code>.c</code> file too (built for the session's release and byte order) and every
 command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
 disassembly with each C line above its instructions.</p>
+<h2 id="412-gdb--debugging-with-gdb">4.12 gdb — debugging with GDB</h2>
+<pre><code class="language-text">python3 -m emips gdb FILE [--port N] [--host ADDRESS] [--pipeline] [the run options]
+</code></pre>
+<p>Loads the program (assembly, C, ELF or Intel HEX) and waits for
+<a href="https://www.sourceware.org/gdb/">GDB</a>, the GNU debugger, on a TCP port
+(1234; <code>--port 0</code> takes any free one).  eMIPS then plays the
+part a JTAG probe or QEMU's <code>-s</code> plays for a real MIPS: GDB's
+<em>remote serial protocol</em>.  GDB reads and writes the registers and
+memory, sets breakpoints, steps, continues and stops the program with
+Ctrl-C.  The program's output goes to GDB, and its exit ends the
+session.  You need a GDB that knows MIPS: <code>gdb-multiarch</code> (Debian /
+Ubuntu package <code>gdb-multiarch</code>) or a <code>mips-linux-gnu-gdb</code>.</p>
+<pre><code class="language-text">$ python3 -m emips gdb docs/guide/labs/lab3_sum.asm
+eMIPS: waiting for GDB on 127.0.0.1:1234 — in another terminal:
+  gdb-multiarch -ex 'target remote :1234'
+(the symbols: /tmp/emips-gdb-qxb62les/lab3_sum.elf)
+</code></pre>
+<p>For an assembly program eMIPS writes an ELF file with its labels as
+symbols and a line table (address → line of the <code>.asm</code>).  GDB asks
+for that file itself, so <code>target remote</code> is enough:</p>
+<pre><code class="language-text">$ gdb-multiarch -q -ex 'target remote :1234'
+Reading symbols from /tmp/emips-gdb-qxb62les/lab3_sum.elf...
+main () at lab3_sum.asm:6
+6       main:   la    $t0, nums
+(gdb) break 13
+Breakpoint 1 at 0x400020: file lab3_sum.asm, line 13.
+(gdb) continue
+Breakpoint 1, loop () at lab3_sum.asm:13
+13              bnez  $t1, loop
+(gdb) info registers t1 t2
+t1: 0x7
+t2: 0x1
+(gdb) x/8dw &amp;nums
+0x10010000:     1       2       3       4
+0x10010010:     5       6       7       8
+(gdb) delete
+(gdb) continue
+36[Inferior 1 (Remote target) exited normally]
+</code></pre>
+<p>A C program brings the compiler's DWARF, so GDB knows the functions,
+their arguments and the local variables: a conditional breakpoint, the
+call stack with the arguments, <code>finish</code> with the value returned.
+Start GDB in the folder <code>cc</code> ran in (here: the repository) so it
+finds the sources:</p>
+<pre><code class="language-text">$ python3 -m emips gdb docs/guide/labs/c_recursion.elf      # (one terminal)
+$ gdb-multiarch -q -ex 'target remote :1234'                # (another)
+(gdb) break fact if n == 3
+Breakpoint 1 at 0x400414: file ././docs/guide/labs/c_recursion.c, line 7.
+(gdb) continue
+Breakpoint 1, fact (n=3) at ././docs/guide/labs/c_recursion.c:7
+7           if (n &lt;= 1)
+(gdb) bt
+#0  fact (n=3) at ././docs/guide/labs/c_recursion.c:7
+#1  0x00400450 in fact (n=4) at ././docs/guide/labs/c_recursion.c:9
+#2  0x00400450 in fact (n=5) at ././docs/guide/labs/c_recursion.c:9
+#3  0x00400450 in fact (n=6) at ././docs/guide/labs/c_recursion.c:9
+#4  0x0040049c in main () at ././docs/guide/labs/c_recursion.c:14
+(gdb) finish
+Run till exit from #0  fact (n=3) at ././docs/guide/labs/c_recursion.c:7
+0x00400450 in fact (n=4) at ././docs/guide/labs/c_recursion.c:9
+9           return n * fact(n - 1);
+Value returned is $1 = 6
+</code></pre>
+<p>What GDB sees:</p>
+<ul>
+<li><strong>The registers</strong> of GDB's MIPS target description: the 32
+general registers, <code>status</code>, <code>lo</code>, <code>hi</code>, <code>badvaddr</code>,
+<code>cause</code>, <code>pc</code>, the FPU's <code>f0</code>–<code>f31</code>, <code>fcsr</code> and
+<code>fir</code>.  The FPRs are 64 bits wide when Status.FR = 1, as in Release 6.
+Writing <code>$pc</code> moves the program, like the debugger's <code>set pc</code>.
+The architecture follows the release (<code>mips:isa32</code>,
+<code>mips:isa32r2</code>, <code>mips:isa32r6</code>), and so does the byte order
+(<code>--little</code>).</li>
+<li><strong>Memory</strong> through virtual addresses, as the program sees it: the
+caches' dirty data, the TLB's mapping.  An address that nothing maps
+(or, on the Malta, a bus error) is an error in GDB, never an exception
+in the program.</li>
+<li><strong>Breakpoints</strong> are kept by eMIPS (no <code>break</code> instruction is
+written into the code), so a breakpoint in a branch delay slot works.
+<strong>Stepping</strong>: GDB steps MIPS code itself, with a temporary
+breakpoint on each address the instruction can go to.  A
+<code>stepi</code> on a branch therefore runs its delay slot too, as on a
+real MIPS board.</li>
+<li><strong>Exceptions</strong> taken through CP0 run the handler as usual.
+With <code>--exceptions stop</code> the program stops on the faulting
+instruction, and GDB gets the signal a MIPS Linux kernel would send:
+SIGSEGV (address errors, TLB faults, no code at the PC), SIGBUS (bus
+errors), SIGILL (a reserved instruction, coprocessor unusable), SIGFPE
+(integer overflow, an enabled FPU exception), SIGTRAP (<code>break</code>,
+the trap instructions, and running past the program's last
+instruction).  Ctrl-C stops the program with SIGINT.</li>
+<li><strong>Leaving</strong>: <code>detach</code> or quitting GDB ends <code>emips gdb</code>;
+<code>kill</code> too.  A program that reads the console gets its input
+from the terminal <code>emips gdb</code> runs in.</li>
+</ul>
+<h3 id="watchpoints-in-gdb">Watchpoints in GDB</h3>
+<p><code>watch</code>, <code>rwatch</code> and <code>awatch</code> stop the program when it
+writes, reads or touches an address: GDB's <em>hardware watchpoints</em>,
+kept by eMIPS like the breakpoints.  Every load and store checks them,
+the program's own (the kernel's too) but not GDB's reads, a view or the
+disk's DMA.  As a MIPS watch exception does, the stop comes <em>before</em>
+the access.  GDB then executes that one instruction and shows the old and
+the new value; a store of the value already there does not stop.  The
+symbols of an assembly program have no type, so give the size with a
+cast — <code>watch *(int *)&amp;count</code>, or an address:</p>
+<pre><code class="language-text">(gdb) watch *(int *)0x10010008
+Hardware watchpoint 1: *(int *)0x10010008
+(gdb) continue
+[Switching to Thread 3]
+
+Thread 3 hit Hardware watchpoint 1: *(int *)0x10010008
+
+Old value = 0
+New value = 1575
+sum () at cores_sum.asm:21
+21              li    $t5, 1
+</code></pre>
+<h3 id="threads-are-cores">Threads are cores</h3>
+<p>With <code>--cores N</code> each core is a GDB thread: <code>info threads</code>
+lists them with their state, <code>thread 3</code> shows core 2's registers
+and frame, and a stop names the core that stopped — the watchpoint above
+caught core 2 storing its part of <code>cores_sum.asm</code>.  The cores run
+together, as they do in eMIPS (GDB's all-stop mode): a continue or a step
+moves every running core, and a stop stops them all.</p>
+<pre><code class="language-text">$ python3 -m emips gdb docs/guide/labs/cores_sum.asm      # (its settings: --cores 4)
+$ gdb-multiarch -q -ex 'target remote :1234'
+(gdb) info threads
+  Id   Target Id                  Frame
+* 1    Thread 1 (core 0, running) main () at cores_sum.asm:9
+  2    Thread 2 (core 1, running) main () at cores_sum.asm:9
+  3    Thread 3 (core 2, running) main () at cores_sum.asm:9
+  4    Thread 4 (core 3, running) main () at cores_sum.asm:9
+</code></pre>
+<h3 id="monitor-the-emips-debuggers-commands">monitor: the eMIPS debugger's commands</h3>
+<p><code>monitor CMD</code> runs a command of eMIPS's own debugger
+(<a href="#48-debugger-commands">4.8</a>) on GDB's current thread
+and prints what it says: what GDB cannot show — <code>monitor cache
+stats</code>, <code>monitor tlb</code>, <code>monitor cps</code>, <code>monitor chart</code>
+(the pipeline), <code>monitor translate $sp</code>, <code>monitor board</code> ...
+Commands that run the program, set breakpoints or restart it are GDB's
+job and are refused; <code>monitor help</code> lists the others.</p>
+<pre><code class="language-text">(gdb) monitor translate $sp
+0x7fffeffc kuseg -&gt; physical 0xbfffeffc  (fixed mapping: PA = VA + 0x40000000 (Config.KU); attribute 5 = cacheable coherent, write-back (CPS))
+</code></pre>
+<h3 id="gdb-in-pipeline-mode">GDB in pipeline mode</h3>
+<p><code>--pipeline</code> (and <code>--model 24k</code>) runs the program on a
+pipeline while GDB debugs it: the cycles, the caches' timing and
+<code>Count</code> are the pipeline's.  GDB still sees the program one
+instruction at a time.  A stop is always at a precise point: every older
+instruction has executed, the one at <code>$pc</code> has not.  In the
+5-stage pipeline a branch is decided in ID while the instruction before
+it executes in EX, so no clock edge lies between the two.  A breakpoint
+on a branch therefore keeps it from executing in ID: it reaches EX
+unexecuted, the program stops there, and when it goes on the branch is
+fetched again.  That costs a few cycles at each stop, as a debug
+exception does; <code>monitor chart</code> shows it.  A watchpoint holds its
+load or store for one cycle.  Writing <code>$pc</code> flushes the pipeline.</p>
+<h3 id="gdb-and-the-window">GDB and the window</h3>
+<p><strong>Run → GDB Server</strong> does the same for the program in the editor
+(port 1234; the key <code>gdb_port</code> of the settings file changes it).
+While GDB is connected it runs the program, and the window's run
+controls wait.  The views follow: GDB's breakpoints are marked in the
+editor's margin, each stop shows the registers, the datapath and the
+pipeline, and a program's input comes from the Console pane.  When GDB
+leaves, the window has the program again; a GDB that connects after the
+program has ended starts it again.</p>
+<p>Labs 38–40 (<a href="05-understanding.html#lab-38--a-bug-that-gdb-finds">Phase 5</a>)
+use GDB: a C bug found with a watchpoint, a race between two cores
+watched access by access, and what a watchpoint cannot see (DMA).</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a> · next: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
 </main>

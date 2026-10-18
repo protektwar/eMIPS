@@ -154,6 +154,20 @@ def _run_to_stop(d: Debugger, max_steps: int, trace: bool) -> StepResult:
     return total
 
 
+def _cmd_gdb(args) -> None:
+    """Wait for GDB, let it drive the program (emips.gdbstub)."""
+    from .gdbstub import exec_file_for, serve
+    s = _session(args)
+    elf = exec_file_for(s, args.file)
+
+    def ready(port: int) -> None:
+        print(f"eMIPS: waiting for GDB on {args.host}:{port} — in another terminal:\n"
+              f"  gdb-multiarch -ex 'target remote :{port}'\n"
+              f"(the symbols: {elf})", flush=True)
+    code = serve(s, args.port, host=args.host, on_ready=ready, exec_file=elf)
+    print("eMIPS: GDB left" if code is None else f"eMIPS: the program exited ({code})")
+
+
 def _cmd_run(args) -> None:
     s = _session(args)
     d = Debugger(s, stdout=sys.stdout, program_input=sys.stdin)
@@ -373,7 +387,8 @@ def _mem_timing(text: str) -> dict[str, int]:
         out[key] = int(n)
     return out
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line: one sub-command per tool."""
     ap = argparse.ArgumentParser(prog="python3 -m emips", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, fn, helptext in (
@@ -381,7 +396,8 @@ def main(argv: list[str] | None = None) -> None:
             ("dis", _cmd_dis, "disassemble an Intel HEX file"),
             ("run", _cmd_run, "run a program, print the registers"),
             ("pipe", _cmd_pipe, "run on the 5-stage pipeline: chart, CPI, stalls"),
-            ("debug", _cmd_debug, "interactive debugger (help at its prompt)")):
+            ("debug", _cmd_debug, "interactive debugger (help at its prompt)"),
+            ("gdb", _cmd_gdb, "serve GDB's remote protocol: target remote :PORT")):
         p = sub.add_parser(name, help=helptext)
         if name == "debug":
             p.add_argument("file", nargs="?")
@@ -405,7 +421,12 @@ def main(argv: list[str] | None = None) -> None:
             p.add_argument("--board", metavar="SPEC", type=_board, default=None,
                            help="assemble for this board's memory layout (malta: "
                                 "the segments in kseg0 SDRAM)")
-        if name in ("run", "pipe", "debug"):
+        if name == "gdb":
+            p.add_argument("--port", type=int, default=1234,
+                           help="the TCP port GDB connects to (default 1234; 0: any free)")
+            p.add_argument("--host", default="127.0.0.1",
+                           help="the address to listen on (default 127.0.0.1: this machine)")
+        if name in ("run", "pipe", "debug", "gdb"):
             p.add_argument("--keys", default="", help="type this on the MMIO keyboard (\\n = Enter)")
             p.add_argument("--no-header", action="store_true",
                            help="ignore the program's '# eMIPS: ...' settings line")
@@ -477,9 +498,10 @@ def main(argv: list[str] | None = None) -> None:
                            default=None, metavar="N",
                            help="GPR shadow sets, 1-16 (SRSCtl.HSS + 1; default 4, "
                                 "as a 24K built with 4)")
-        if name in ("run", "debug"):
+        if name in ("run", "debug", "gdb"):
             p.add_argument("--pipeline", action="store_true",
-                           help="pipeline mode (--model): a step is a clock cycle")
+                           help="pipeline mode (--model): a step is a clock cycle"
+                           + (" (GDB still steps instructions)" if name == "gdb" else ""))
         if name in ("run", "pipe"):
             p.add_argument("--break", dest="breaks", action="append", metavar="LOC",
                            help="breakpoint: 0x address, line number or label")
@@ -532,6 +554,11 @@ def main(argv: list[str] | None = None) -> None:
     g = sub.add_parser("gui", help="graphical debugger / datapath view")
     g.add_argument("file", nargs="?")
     g.set_defaults(fn=_cmd_gui)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = build_parser()
     args = ap.parse_args(argv)
     if getattr(args, "l3", None) and not getattr(args, "l2", None):
         ap.error("--l3 needs an L2 cache (--l2)")

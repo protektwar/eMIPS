@@ -166,7 +166,9 @@ class Program:
         if boot:
             from .tlb import boot_cca, firmware_refill, user_window
             cca = boot_cca(machine)                    # 3; a CPS core: 5, coherent
-            machine._cp0_set(C.STATUS, C.ST_CU1)
+            # (Release 6: Status.FR is 1 and read-only — 64-bit FPRs only)
+            fr = machine.status & C.ST_FR if machine.release == "R6" else 0
+            machine._cp0_set(C.STATUS, C.ST_CU1 | fr)
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
             ku_k23 = (2 << 28) | (cca << 25) if fixed else 0
             machine._cp0_set(C.CONFIG, config | ku_k23 | cca)

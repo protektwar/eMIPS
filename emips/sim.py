@@ -72,6 +72,7 @@ from .exceptions import (
     TrapException,
     UnimplementedError,
     UnmappedAddress,
+    WatchpointHit,
 )
 from .cache import CACHED_CCA, CACHED_CCA_CPS, CCA_24K, CCA_UCA, COHERENT_CCA, CacheError, Caches
 from .isa import ISA, Decode, ISADecodeError
@@ -810,6 +811,33 @@ DEVIATIONS: dict[str, str] = {
                                 "4 KB pages — what the fixed mapping does; the "
                                 "views and the loader use the same mapping for "
                                 "a page not yet in the TLB.",
+    "GDB stub": "emips gdb / Run > GDB Server (emips.gdbstub) is a debug agent, "
+                "not part of the core: it reads and writes registers and memory "
+                "through the debugger's side-effect-free views (no exception, no "
+                "cache or TLB counting; an unmapped address or a bus error is an E "
+                "reply) and keeps breakpoints itself (Z0 and Z1 alike, no BREAK "
+                "written, so one in a delay slot works). Watchpoints (Z2-Z4) are "
+                "checked before every load / store of the program "
+                "(Machine.agent_watch, before the EJTAG / watch-register checks; "
+                "never for views, fetches, CACHE / PREF or DMA) and stop before the "
+                "access, as a precise Watch exception; the instruction runs again "
+                "(a delay slot keeps its branch). GDB steps MIPS in software (a "
+                "temporary breakpoint after the delay slot). Threads = cores in "
+                "all-stop mode: every running core steps together (the Session's "
+                "lockstep) unless GDB resumes only some threads (vCont;c:1, "
+                "stepping over a breakpoint: the other cores stay stopped); a "
+                "watch stop lets the other cores finish their step and costs the "
+                "stopped core that step. Pipeline mode: stops are "
+                "precise (the instruction about to execute; all older executed); "
+                "the 5-stage pipeline holds a branch with a breakpoint in ID (it "
+                "reaches EX unexecuted and is fetched again when the run goes on: "
+                "a few cycles per stop) and a watched access holds EX for a cycle "
+                "(the 24K: AG); writing the PC flushes the pipeline. The exception "
+                "signals follow MIPS Linux's (AdE / TLB SIGSEGV, IBE / DBE SIGBUS, "
+                "RI / CpU SIGILL, Ov / FPE SIGFPE). An assembly program gets a "
+                "written ELF (emips.elfwrite: labels as NOTYPE symbols, a DWARF 2 "
+                "line table, no frame information: GDB's backtrace in assembly is "
+                "its own heuristic).",
 }
 
 # ---------------------------------------------------------------------------
@@ -1206,6 +1234,10 @@ class Machine:
         #: (Debug.DDBLImpr / DDBSImpr bits)
         self._ihw: bool = False
         self._dhw: bool = False
+        #: a debug agent's watchpoints (the GDB stub; objects with addr,
+        #: length, load, store), checked before every load / store — not
+        #: hardware: the program cannot see them
+        self.agent_watch: list = []
         self._vc: tuple | None = None
         self.ddb_impr: int = 0
         #: a WAIT was ended to take the exception being taken (wake)
@@ -2185,12 +2217,25 @@ class Machine:
         LL/SC (``atomic``) must stay aligned.  First the data breakpoints
         and watch registers, which come before an address error."""
         addr &= M32
+        if self.agent_watch:
+            self._agent_watch(addr, size, store, span)
         if self._dhw and not self._dm:
             self._data_checks(addr, size, store, span)
         misaligned = addr % size and (self.release != "R6" or atomic)
         if misaligned or not self.address_ok(addr):
             raise _Arch(C.ADES if store else C.ADEL, badvaddr=addr)
         return addr
+
+    def _agent_watch(self, addr: int, size: int, store: bool,
+                     span: tuple[int, int] | None) -> None:
+        """A debugger watchpoint on any byte of this access: stop before
+        it (:class:`WatchpointHit`; ``step`` makes the instruction run
+        again)."""
+        start, n = span if span is not None else (addr, size)
+        for w in self.agent_watch:
+            if (w.store if store else w.load) and start < w.addr + w.length \
+                    and w.addr < start + n:
+                raise WatchpointHit(max(start, w.addr), w, store)
 
     def r6_slot_check(self, dec: Decode, in_slot: bool, forbidden: bool) -> None:
         """Release 6: a branch or jump in a delay slot, or in the forbidden
@@ -2284,6 +2329,10 @@ class Machine:
                 self._trace_cycle(False)
             self._take_exception(exc, pc, word, dec, in_slot)
             return dec
+        except WatchpointHit:                   # a debugger stop: this instruction again
+            self.slot_armed, self.slot_target, self._forbidden = in_slot, outer_target, forbidden
+            self.last_events = None
+            raise
         except (SimException, ISADecodeError) as exc:
             self.exception_log.append({
                 "name": getattr(exc, "name", None),

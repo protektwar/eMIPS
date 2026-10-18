@@ -164,6 +164,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.guide: GuideView | None = None     # Help > User Guide, made when first asked
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
+        #: Run > GDB Server (emips.gdbstub.GdbServer), polled by gdb_timer
+        self.gdb = None
+        self.gdb_timer = QtCore.QTimer(self)
+        self.gdb_timer.setInterval(20)
+        self.gdb_timer.timeout.connect(self._gdb_tick)
+        self._gdb_ticks = 0
         self.resize(1500, 950)
         self._build_widgets()
         self._build_docks()
@@ -425,6 +431,9 @@ class MainWindow(QtWidgets.QMainWindow):
         A("dint", tr("&Debug Interrupt (DINT)"), self.debug_interrupt, None,
           tr("Request an EJTAG debug interrupt: the core enters Debug Mode at the debug "
              "vector before its next instruction"))
+        A("gdb_server", tr("&GDB Server"), self.toggle_gdb_server, None,
+          tr("Let GDB debug the program here: in a terminal, gdb-multiarch -ex 'target "
+             "remote :1234'. The views follow what GDB does"), checkable=True)
         self.mode_group = QtGui.QActionGroup(self)
         for i, (key, text) in enumerate((("mode_instruction", tr("&Instruction")),
                                          ("mode_pipeline", tr("5-stage &pipeline")),
@@ -529,6 +538,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       a["run_to_cursor"], a["reset"]])
         m.addSeparator()
         m.addAction(a["dint"])
+        m.addAction(a["gdb_server"])
         m.addSeparator()
         mode = m.addMenu(tr("&Mode"))
         mode.addActions(self.mode_group.actions())
@@ -720,6 +730,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.state_label = QtWidgets.QLabel()
         self.config_label = QtWidgets.QLabel()
+        self.gdb_label = QtWidgets.QLabel()
+        self.gdb_label.hide()
+        self.status.addPermanentWidget(self.gdb_label)
         self.status.addPermanentWidget(self.state_label)
         self.status.addPermanentWidget(self.config_label)
 
@@ -810,6 +823,7 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         self.pause()
+        self._stop_gdb()
         self._put("geometry", self.saveGeometry())
         self._put("window_state", self.saveState(1))
         self.settings.sync()
@@ -1579,6 +1593,93 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def next_line(self) -> None:
         self._line_step(lambda s: s.step_line(over=True))
+
+    # ============================================================ GDB
+
+    #: the run controls GDB owns while it is connected
+    GDB_LOCKED = ("assemble", "run", "pause", "step", "step_back", "step_line",
+                  "next_line", "finish", "run_to_cursor", "reset")
+
+    def toggle_gdb_server(self) -> None:
+        """Run > GDB Server: wait for GDB on the port (Settings key
+        ``gdb_port``, 1234); while it is connected GDB runs the program
+        and the views follow (emips.gdbstub.GdbServer)."""
+        on = self.actions["gdb_server"].isChecked()
+        if on == (self.gdb is not None):
+            return
+        if not on:
+            self._stop_gdb()
+            self._log(tr("GDB server stopped"))
+            return
+        if not self._ensure_assembled() or self.session.program is None:
+            self.actions["gdb_server"].setChecked(False)
+            return
+        from ..gdbstub import GdbServer, exec_file_for
+        self.pause()
+        s = self.session
+        port = int(self._get("gdb_port", "1234"))
+        path = str(self.path) if self.path is not None else None
+        try:
+            self.gdb = GdbServer(s, port, exec_file=lambda: exec_file_for(s, path))
+        except OSError as exc:
+            self.actions["gdb_server"].setChecked(False)
+            self._fail(tr("GDB server: cannot listen on port {port} ({error})").format(
+                port=port, error=exc.strerror or exc))
+            return
+        self.gdb_timer.start()
+        self._log(tr("GDB server on port {port}: in a terminal, gdb-multiarch -ex "
+                     "'target remote :{port}'").format(port=self.gdb.port))
+        self._show_gdb_state()
+
+    def _stop_gdb(self) -> None:
+        if self.gdb is not None:
+            self.gdb.close()
+            self.gdb = None
+        self.gdb_timer.stop()
+        self._lock_for_gdb(False)
+        self.gdb_label.hide()
+        if self.actions["gdb_server"].isChecked():
+            self.actions["gdb_server"].setChecked(False)
+
+    def _lock_for_gdb(self, on: bool) -> None:
+        for k in self.GDB_LOCKED:
+            self.actions[k].setEnabled(not on)
+
+    def _gdb_tick(self) -> None:
+        g = self.gdb
+        if g is None:
+            return
+        what = g.poll()
+        if what == "connected":
+            self._lock_for_gdb(True)
+            self._log(tr("GDB connected: it runs the program now"))
+        elif what == "running":
+            self._gdb_ticks += 1
+            if self.session.needs_input() and not getattr(self.console, "asking", False):
+                self.console.ask_input(True)
+                self.docks["console"].raise_()
+            if self._gdb_ticks % 10 == 0:
+                self.refresh(light=True)
+        elif what == "stopped":
+            self.refresh()
+        elif what == "left":
+            self._lock_for_gdb(False)
+            self._log(tr("GDB left") if g.exited is None else
+                      tr("the program exited ({code}); GDB left").format(code=g.exited))
+            g.exited = None
+            self.refresh()
+        if what:
+            self._show_gdb_state()
+
+    def _show_gdb_state(self) -> None:
+        g = self.gdb
+        if g is None:
+            self.gdb_label.hide()
+            return
+        text = {"waiting": tr("GDB: waiting on :{port}"), "running": tr("GDB: running"),
+                "stopped": tr("GDB: connected")}[g.state].format(port=g.port)
+        self.gdb_label.setText(text)
+        self.gdb_label.show()
 
     def debug_interrupt(self) -> None:
         """Run > Debug Interrupt: the DINT input of the selected core."""

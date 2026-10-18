@@ -209,3 +209,20 @@ class CP0RegisterError(SimException):
         super().__init__(message, name=name, word=word, addr=addr)
         self.reg = reg
         self.sel = sel
+
+
+class WatchpointHit(SimException):
+    """A debugger watchpoint (the GDB stub's ``Z2`` / ``Z3`` / ``Z4``,
+    :attr:`emips.sim.Machine.agent_watch`) matched a load or store before
+    the access: the instruction has had no effect and runs again on the
+    next step, as after a precise Watch exception (Vol. III 6.2.25).
+    ``addr``: the first watched byte the access touches; ``watch``: the
+    watchpoint; ``store``: the kind of access."""
+
+    code = 4  # sim-local: a debugger stop, not an error
+
+    def __init__(self, addr: int, watch, store: bool) -> None:
+        super().__init__(f"watchpoint at 0x{addr:08x} ({'store' if store else 'load'})",
+                         addr=addr)
+        self.watch = watch
+        self.store = store

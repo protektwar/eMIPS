@@ -3465,6 +3465,110 @@ ones) — and restores them before the <code>eret</code>, so the program continu
 if nothing happened; <code>$s0</code>–<code>$s7</code> are callee-saved, the monitor keeps
 them, and the kernel does not touch them.</p>
 </details>
+<h3 id="lab-38--a-bug-that-gdb-finds">Lab 38 — A bug that GDB finds</h3>
+<p>Labs 38–40 need GDB for MIPS (<code>gdb-multiarch</code>,
+<a href="04-command-line.html#412-gdb--debugging-with-gdb">Phase 4, 4.12</a>): run
+<code>python3 -m emips gdb PROGRAM</code> in one terminal and, from the eMIPS
+folder, <code>gdb-multiarch -ex 'target remote :1234'</code> in another.</p>
+<p><a href="labs/c_gdb.c"><code>labs/c_gdb.c</code></a> (prebuilt: <code>c_gdb.elf</code>) sets
+three scores and prints them, but instead of <code>9 7 5 = 21</code> it prints
+<code>9 1744830471 5 = 1744830485</code>, and no line assigns the second score
+after <code>main</code> sets it.  In GDB: <code>break main</code>, <code>continue</code>, then
+<code>watch players[1].score</code> and <code>continue</code> twice.  Who changes the
+score, and how?  Why 1744830471?</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-text">Hardware watchpoint 2: players[1].score
+
+Old value = 7
+New value = 1744830471
+set_name (p=0x1001000c &lt;players+12&gt;, name=0x400758 "elizabeth") at ././docs/guide/labs/c_gdb.c:18
+18              i++;
+(gdb) print i
+$1 = 8
+(gdb) print/x players[1].score
+$2 = 0x68000007
+</code></pre>
+<p>The first stop is <code>main</code> setting it to 7; the second is
+<code>set_name</code>, which copies <code>"elizabeth"</code> (9 characters and the
+terminating zero) into <code>name[8]</code>.  <code>name[8]</code> and <code>name[9]</code> do not
+exist: they are the first two bytes of <code>score</code>, which follows
+<code>name</code> in the struct (<code>ptype struct player</code>).  On a big-endian MIPS
+the first byte is the most significant one: <code>'h'</code> (0x68) makes 7 into
+0x68000007 = 1744830471.  The zero written into byte 9 changes nothing (it
+was 0 already), so the watchpoint does not stop again.  GDB stops after
+the guilty store, on the next line, with <code>i</code> = 8.  On a little-endian
+MIPS (<code>cc --little</code>) the same bug prints 104: there the first byte is
+the least significant one, 0x07 becomes 0x68.  The fix: copy at most
+<code>sizeof p-&gt;name - 1</code> characters.</p>
+</details>
+<h3 id="lab-39--a-race-watched">Lab 39 — A race, watched</h3>
+<p><a href="labs/race.asm"><code>labs/race.asm</code></a> (<code>--cores 2</code>,
+<a href="#memory-ordering">5.9</a>) prints 50, not 100.  Under GDB set
+<code>watch *(int *)&amp;count</code> (the assembler's labels have no type: the
+cast gives the size) and <code>continue</code> a few times: which thread changes
+<code>count</code>?  Then <code>delete</code>, <code>awatch *(int *)&amp;count</code> instead, and
+follow four stops (<code>x/i $pc</code>, <code>print $t1</code>).  What happens to the
+increments, and why does <code>watch</code> never stop in thread 2?</p>
+<details>
+<summary>Answer</summary>
+<p>The first four stops of an <code>awatch</code> set at the start:</p>
+<pre><code class="language-text">Thread 1 hit Hardware access (read/write) watchpoint 1: *(int *)&amp;count
+Value = 0                                       (thread 1's lw)
+Thread 2 hit Hardware access (read/write) watchpoint 1: *(int *)&amp;count
+Value = 0                                       (thread 2's lw)
+Thread 1 hit Hardware access (read/write) watchpoint 1: *(int *)&amp;count
+Old value = 0
+New value = 1                                   (thread 1's sw)
+Thread 2 hit Hardware access (read/write) watchpoint 1: *(int *)&amp;count
+Value = 1                                       (thread 2's sw)
+</code></pre>
+<p>Both cores read the same value (0) before either writes, and both write
+0 + 1: one increment is lost.  eMIPS steps the cores together, one
+instruction each, so this happens in every iteration: 2 × 50 increments
+end at 50.  On a real system the timing (caches, the bus) varies, and so
+does the result, between 50 and 100.  <code>watch</code> is a <em>change</em>
+watchpoint: GDB stops before the store, lets it happen and compares.
+Thread 2 stores the value thread 1 has just stored, nothing changes, and
+GDB goes on without a word.  Only <code>awatch</code> (or <code>rwatch</code>) shows the
+accesses themselves.  While GDB steps one thread over its watchpoint the
+other core stays stopped, so the stops alternate between the threads.
+The cure is an atomic read-modify-write:
+<a href="labs/spinlock.asm"><code>labs/spinlock.asm</code></a> (<code>ll</code> / <code>sc</code>).</p>
+</details>
+<h3 id="lab-40--what-a-watchpoint-cannot-see">Lab 40 — What a watchpoint cannot see</h3>
+<p><a href="labs/malta_driver.asm"><code>labs/malta_driver.asm</code></a> (Lab 36: the Malta,
+the sector by DMA) under GDB: <code>watch *(int *)&amp;buf</code>, <code>break
+disk_isr</code>, <code>continue</code>.  At the breakpoint <code>x/4xw &amp;buf</code>: the sector
+is there already.  Why did the watchpoint not stop?  Who called
+<code>disk_isr</code> (<code>bt</code>, then <code>monitor bt</code>)?  Then <code>delete</code>,
+<code>rwatch *(int *)&amp;buf</code>, <code>continue</code>: who reads the sector first, and
+where does that load get it from (<code>monitor cache D 0x80200020</code>)?</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-text">Breakpoint 2, disk_isr () at malta_driver.asm:83
+(gdb) bt
+#0  disk_isr () at malta_driver.asm:83
+#1  0x9fc00f44 in ?? ()
+(gdb) x/4xw &amp;buf
+0x80200020:     0x52656164      0x20627920      0x444d412c      0x20616e6e
+(gdb) monitor bt
+#0  0x80100130 in disk_isr   line 83: li    $t9, 0xb8000000
+#1  0x9fc00f3c in monitor: mon_exception
+</code></pre>
+<p>The disk wrote the buffer by DMA: the bus master put the bytes into
+the SDRAM through the GT-64120, and no CPU instruction stored anything.
+A watchpoint, like the MIPS watch registers, compares the addresses of
+the CPU's own loads and stores, so it has nothing to see.  That is the
+same reason the driver flushes the cache.  GDB knows no symbols in the
+boot monitor's flash (<code>?? ()</code>); eMIPS's call stack does:
+<code>mon_exception</code>, the monitor's exception handler, called the ISR that
+the program registered for IRQ 14.  The first read is the monitor's
+<code>print</code> (<code>monitor bt</code>: <code>monitor: mon_puts</code>, called from <code>main</code>
+line 76).  The flush had emptied the cache, so that load missed and read
+the line from memory, now with the sector in it: the D-cache line
+<code>0x00200020</code> holds <code>52 65 61 64</code> ... "Read".</p>
+</details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>
 </main>

@@ -43,6 +43,13 @@ memory access is computed in EX and its waiting done in MEM.  An
 imprecise L2 / L3 Cache Error recorded by an access is taken when the
 next instruction reaches EX, like an interrupt.
 
+A debugger stops at precise points (all older instructions executed, this
+one not): :attr:`Pipeline.debug_stop` names the addresses it stops at, and
+a branch there is not executed in ID (where the instruction before it
+executes in the same cycle) but held to EX, then fetched again; a
+debugger watchpoint holds its load / store in EX for a cycle
+(:attr:`Pipeline.watch_hit`).  Without a debugger nothing changes.
+
 Every :meth:`Pipeline.cycle` returns a :class:`CycleTrace` (stage contents,
 control signals of the instruction in ID, stalls, forwarding paths,
 branch decisions, flushes, exceptions) — what the CLI / GUI show.
@@ -51,11 +58,11 @@ branch decisions, flushes, exceptions) — what the CLI / GUI show.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from . import cp0 as C
 from .disasm import disassemble
-from .exceptions import FetchError
+from .exceptions import FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .sim import NULLIFY, Machine, _Arch
 from .syntax import kind_of, operand_spec
@@ -259,6 +266,9 @@ class Slot:
     #: MIPS Trace: what it completes with at WB; its fetch missed the I-cache
     pdt: Any = None
     imiss: bool = False
+    #: a branch the debugger stops at: not executed in ID, so it reaches
+    #: EX with everything older done (refetched when the run goes on)
+    held: bool = False
 
 
 @dataclass
@@ -523,6 +533,11 @@ class Pipeline:
                 flush_to = self._exception(ex, req, ev)
             elif ex.fetch_error is not None:
                 raise ex.fetch_error
+            elif ex.held:                                # the debugger stopped here: go on
+                self._pass = ex.pc
+                flush_to = ex.pc
+                ev.append(f"{ex.text}: held for the debugger, fetched again "
+                          "(it executes in ID)")
             else:
                 try:
                     if m._ihw and not ex.executed:       # hardware breakpoint / watch
@@ -563,14 +578,21 @@ class Pipeline:
                     if ex.info.mdu_cycles:
                         # readable by an instruction entering EX L cycles on
                         self.mdu_busy = ex.info.mdu_cycles - 1
+                except WatchpointHit as w:      # the debugger: before the access
+                    self.watch_hit = w
+                    ev.append(f"EX: {ex.text} stopped by a debugger watchpoint "
+                              "(it executes in the next cycle)")
                 except _Arch as a:
                     if self.timing is not None:
                         self.timing.take()               # the access did not happen
                     if self.utlb is not None:
                         self.utlb.take()
                     flush_to = self._exception(ex, a, ev)
-        ex_holds = ex is not None and flush_to is None and ex.busy > 0
-        if ex_holds:
+        watched = self.watch_hit is not None and ex is not None and not ex.executed
+        ex_holds = ex is not None and flush_to is None and (ex.busy > 0 or watched)
+        if watched:
+            pass
+        elif ex_holds:
             ex.busy -= 1
             ev.append(f"EX busy: {ex.text} ({ex.busy + 1} more cycle"
                       f"{'s' if ex.busy else ''})")
@@ -582,7 +604,9 @@ class Pipeline:
             m.wake()
             ev.append("WAIT: interrupt pending, wake up")
         if flush_to is None and ids is not None:
-            if ex_holds:
+            if watched:
+                stall = ("watch", f"{ex.text} stopped by a debugger watchpoint")
+            elif ex_holds:
                 stall = ("ex-busy", f"EX busy ({ex.text})")
             elif m.waiting:
                 stall = ("wait", "WAIT: sleeping until an interrupt")
@@ -592,6 +616,9 @@ class Pipeline:
             # imprecise data break): the branch must not execute here — it is
             # taken on the branch in EX
             if stall is None and ids.info and ids.info.control and not ids.executed \
+                    and not m.debug_due and self._hold(ids, ev):
+                pass
+            elif stall is None and ids.info and ids.info.control and not ids.executed \
                     and not m.debug_due:
                 srcs = self._note_forwarding(ids, ids.info.reads_id, "ID", ev)
                 m.last_view = None
@@ -681,6 +708,23 @@ class Pipeline:
         self.history.append(trace)
         return trace
 
+    def _hold(self, ids: Slot, ev: list[str]) -> bool:
+        """A branch in ID the debugger stops at: it must not execute here,
+        where the instruction in EX executes in the same cycle; it goes
+        on to EX unexecuted, the precise point to stop at (as a debug
+        exception due on a branch is taken in EX)."""
+        if self.debug_stop is None:
+            return False
+        if ids.pc == self._pass:
+            self._pass = None
+            return False
+        if not self.debug_stop(ids.pc):
+            return False
+        ids.held = True
+        ev.append(f"{ids.text}: a debugger breakpoint: not resolved in ID, "
+                  "it stops in EX")
+        return True
+
     def _count_stalls(self, old_ex: Slot | None, stall, ex_holds: bool,
                       fetch_why: str | None) -> None:
         """This cycle's stall events for the performance counters (24K
@@ -765,6 +809,14 @@ class Pipeline:
     STAGES = STAGES
     FETCH_STAGE, MEM_STAGE = "IF", "MEM"
     name = "5-stage"
+    #: a debugger watchpoint stopped the instruction entering EX this
+    #: cycle (it holds in EX, unexecuted); the Session raises it after
+    watch_hit: WatchpointHit | None = None
+    #: ``debug_stop(pc)``: does the debugger stop at this instruction (its
+    #: breakpoints, run to cursor)?  A branch it stops at is held in ID
+    debug_stop: Callable[[int], bool] | None = None
+    #: the held branch being refetched: it executes in ID this time
+    _pass: int | None = None
 
     def empty(self) -> bool:
         return all(v is None for v in self.stage.values())

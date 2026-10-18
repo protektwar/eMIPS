@@ -107,6 +107,7 @@ python3 -m emips run prog.asm            # run it (system calls + console), show
 python3 -m emips asm prog.asm            # the listing: address, word, disassembly, source
 python3 -m emips pipe prog.asm --events  # the 5-stage pipeline chart, stalls, forwarding
 python3 -m emips debug prog.asm          # the debugger (type help)
+python3 -m emips gdb prog.asm            # let GDB debug it: gdb-multiarch -ex 'target remote :1234'
 python3 -m emips --help                  # everything else
 ```
 
@@ -139,7 +140,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 31 labs
+computer architecture behind every number on the screen (with 40 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

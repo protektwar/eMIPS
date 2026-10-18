@@ -62,7 +62,7 @@ from typing import Any
 
 from . import cp0 as C
 from .disasm import disassemble
-from .exceptions import FetchError
+from .exceptions import FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .pipeline import (_HAZARD_EVENTS, _MEM_EVENTS, CycleTrace, Info, StageView,
                        _pop_run, _rname, analyze)
@@ -345,6 +345,9 @@ class Pipeline24K:
     STAGES = STAGES
     FETCH_STAGE, MEM_STAGE = "IF", "MS"
     name = "24K"
+    #: a debugger watchpoint stopped the instruction leaving AG this cycle
+    #: (it stays in AG, unexecuted); the Session raises it after
+    watch_hit: WatchpointHit | None = None
 
     def __init__(self, machine: Machine, *, trace: bool = True,
                  memory: dict[str, int] | None = None, nonblocking: bool = False,
@@ -796,6 +799,9 @@ class Pipeline24K:
                 st["EX"], st["AG"] = ag, None
                 entered = ag
                 self._execute(ag, t, trace, ev)      # EX: in program order
+                if self.watch_hit is not None:       # the debugger: it stays in AG
+                    st["EX"], st["AG"], entered = None, ag, None
+                    stall = ("watch", f"{ag.text} stopped by a debugger watchpoint")
 
         # RF -> AG: the address base / index
         rf = st["RF"]
@@ -952,6 +958,10 @@ class Pipeline24K:
             m.fetch_missed = s.imiss
             res = m.execute(s.pc, s.word, s.dec, in_slot=s.in_slot)
             s.pdt, m.pdt_packet = m.pdt_packet, None
+        except WatchpointHit as w:              # before the access: nothing happened
+            self.watch_hit = w
+            m._redirect = None
+            return
         except _Arch as a:
             if self.timing is not None:
                 self.timing.take()                       # the access did not happen

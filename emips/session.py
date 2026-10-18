@@ -30,7 +30,7 @@ from .console import MmioConsole, SyscallServices
 from .cps import CPS
 from .cache import Caches
 from .disasm import disassemble
-from .exceptions import BusError, SimException
+from .exceptions import BusError, SimException, WatchpointHit
 from .hexload import DecodeFile, HexLoadError
 from .isa import ISA, ISADecodeError
 from .memory import PMemory
@@ -71,6 +71,24 @@ class InputNeeded(Exception):
     """The program waits for a line of input (a read_* syscall)."""
 
 
+@dataclass(frozen=True)
+class Watchpoint:
+    """A debugger watchpoint (the GDB stub's Z2 / Z3 / Z4): ``length``
+    bytes from ``addr``; ``kind`` "write", "read" or "access"."""
+
+    addr: int
+    length: int
+    kind: str
+
+    @property
+    def store(self) -> bool:
+        return self.kind != "read"
+
+    @property
+    def load(self) -> bool:
+        return self.kind != "write"
+
+
 @dataclass
 class StepResult:
     """What one step / run did, for the status bar and the views."""
@@ -78,6 +96,8 @@ class StepResult:
     steps: int = 0
     stopped: str = ""                   # "", "breakpoint", "exit", "halt", "input", ...
     error: str | None = None
+    #: the exception behind ``error`` (the GDB stub's signal)
+    fault: BaseException | None = None
     trace: CycleTrace | None = None
     #: the exceptions taken by this step (Machine.exception_log entries)
     exceptions: list = field(default_factory=list)
@@ -126,6 +146,12 @@ class Session:
     program: Program | None = None
     errors: list[str] = field(default_factory=list)
     breakpoints: set[int] = field(default_factory=set)
+    #: debugger watchpoints (:class:`Watchpoint`); every core's
+    #: ``Machine.agent_watch`` is this list: change it in place
+    watchpoints: list = field(default_factory=list)
+    #: the cores a debugger lets run (GDB's ``vCont;c:1``: only that
+    #: thread, the others stay stopped); None = every running core
+    only: set | None = None
     #: performance counters set from the debugger / GUI (not by the
     #: program): counter -> (event, modes, ie); applied again at every
     #: reset, so Reset and Step Back keep them
@@ -428,6 +454,7 @@ class Session:
         self.errors, self.views = [], {}
         self.output, self.steps, self.last_view, self.run_to = "", 0, None, None
         self.breakpoints = set()
+        self.watchpoints.clear()
 
     def reset(self) -> None:
         """Fresh machine (and pipeline), program loaded, inputs kept;
@@ -543,6 +570,7 @@ class Session:
                     shadow_sets=o.shadow_sets)
         m.tracing = True
         m.ccres = o.count_rate
+        m.agent_watch = self.watchpoints
         board = getattr(self, "board", None)
         if board is None:                       # the MARS MMIO console (not on a Malta)
             if cpu == 0:
@@ -567,8 +595,11 @@ class Session:
             return None
         o = self.options
         cls = Pipeline24K if o.model == "24k" else Pipeline
-        return cls(m, forwarding=self.forwarding, latency=o.latency,
-                   memory=o.mem_timing, nonblocking=o.nonblocking)
+        p = cls(m, forwarding=self.forwarding, latency=o.latency,
+                memory=o.mem_timing, nonblocking=o.nonblocking)
+        cpu = m.cpu_num
+        p.debug_stop = lambda pc: self._stops_at(pc, cpu)
+        return p
 
     def _apply_counters(self, m: Machine) -> None:
         for i, (event, modes, ie) in sorted(self.counters.items()):
@@ -713,6 +744,8 @@ class Session:
             if k == self.steps and i < len(self.machines):
                 self._poke(self.machines[i], kind, key, value)
         cores = self.running()
+        if self.only is not None:
+            cores = [c for c in cores if c in self.only]
         logged = [(m.exception_log, len(m.exception_log)) for m in self.machines]
         for i in cores:
             m = self.machines[i]
@@ -721,9 +754,13 @@ class Session:
         cpu = None
         if self.cps is not None:
             self.cps.clock = self.steps         # one cycle (instruction) per step
+        watched = None
         try:
             for cpu in cores:
-                self._step_core(cpu)
+                try:
+                    self._step_core(cpu)
+                except WatchpointHit as exc:    # before the access: it runs next step
+                    watched = watched or (cpu, exc)
         except InputNeeded:
             res.stopped = "input"
             return res
@@ -731,6 +768,7 @@ class Session:
             if cpu != self.cpu:
                 self.select(cpu)                # show the core that stopped
             where = f"core {cpu}: " if self.cps is not None else ""
+            res.fault = exc
             res.error = f"{where}{type(exc).__name__}: {exc}" + self._no_handler_hint(exc) \
                 + self._past_end_hint(exc) + self._moved_code_hint(exc)
             res.stopped = "halt"
@@ -753,6 +791,9 @@ class Session:
                     res.exceptions.append(dict(e, cpu=i) if self.cps is not None else e)
         if self.halted:
             res.stopped = "exit"
+        elif watched is not None:
+            self.select(watched[0])
+            res.stopped, res.fault = "watch", watched[1]
         return res
 
     def _step_core(self, cpu: int) -> None:
@@ -769,6 +810,9 @@ class Session:
             return
         trace = p.cycle()
         self.traces[cpu] = trace
+        if p.watch_hit is not None:             # held before the access (a debugger stop)
+            w, p.watch_hit = p.watch_hit, None
+            raise w
         for st in ("EX", "ID"):
             view = getattr(trace, f"{st.lower()}_view")
             if view is not None:
@@ -992,7 +1036,7 @@ class Session:
             total.trace = r.trace or total.trace
             total.exceptions += r.exceptions
             if r.stopped or r.error:
-                total.stopped, total.error = r.stopped, r.error
+                total.stopped, total.error, total.fault = r.stopped, r.error, r.fault
                 return total
             pc = self._stop_pc()
             if pc is None:
@@ -1031,7 +1075,7 @@ class Session:
             if r.stopped == "cursor" and len(self.calls[self.cpu]) >= depth:
                 continue                        # the same return address, deeper
             total.stopped = "" if r.stopped == "cursor" else r.stopped
-            total.error = r.error
+            total.error, total.fault = r.error, r.fault
             break
         self.run_to = saved if total.stopped else None
         return total
@@ -1142,7 +1186,7 @@ class Session:
             total.steps += r.steps
             total.trace = r.trace or total.trace
             if r.stopped or r.error:
-                total.stopped, total.error = r.stopped, r.error
+                total.stopped, total.error, total.fault = r.stopped, r.error, r.fault
                 return total
             if self.at_breakpoint():
                 pc = self._stop_pc()
@@ -1174,16 +1218,41 @@ class Session:
         if self.machine is None:
             return False
         for i in [self.cpu] + [c for c in self.running() if c != self.cpu]:
+            if self.only is not None and i not in self.only:
+                continue                        # held by the debugger: not moving
             pc = self._stop_pc(i)
-            if pc is None:
-                continue
-            a = self.program_address(pc, i)
-            if (pc in self.breakpoints or pc == self.run_to
-                    or a is not None and a != pc and (a in self.breakpoints or a == self.run_to)):
+            if pc is not None and self._stops_at(pc, i):
                 if i != self.cpu:
                     self.select(i)
                 return True
         return False
+
+    def set_pc(self, pc: int, cpu: int | None = None) -> None:
+        """A debugger's jump: the core goes on at ``pc`` (no branch
+        pending).  Pipeline mode: what has not executed yet is dropped
+        and fetching starts at ``pc`` (a flush; the counts go on)."""
+        cpu = self.cpu if cpu is None else cpu
+        m = self.machines[cpu]
+        m.pc = pc & 0xFFFFFFFF
+        m.slot_armed, m.slot_target, m._forbidden = False, None, False
+        old = self.pipelines[cpu]
+        if old is not None:
+            new = self._make_pipeline(m)
+            for name in ("cycles", "retired", "stalls", "history"):
+                if hasattr(old, name):
+                    setattr(new, name, getattr(old, name))
+            self.pipelines[cpu] = new
+            self.traces[cpu] = None
+            if cpu == self.cpu:
+                self.select(cpu)
+
+    def _stops_at(self, pc: int, cpu: int) -> bool:
+        """A breakpoint or the run-to target at ``pc`` (or at the program
+        address it aliases: kseg0 / kseg1, the fixed mapping) on ``cpu``."""
+        if pc in self.breakpoints or pc == self.run_to:
+            return True
+        a = self.program_address(pc, cpu)
+        return a is not None and a != pc and (a in self.breakpoints or a == self.run_to)
 
     def line_address(self, line: int) -> int | None:
         """First instruction address of source line ``line``, or of the
