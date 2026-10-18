@@ -29,6 +29,7 @@ diagrams = ["Pillow>=10"]
 gui = ["PyQt6>=6.4"]
 
 [project.scripts]
+emips = "emips.__main__:main"
 emips-gui = "emips.gui.main:main"
 
 [tool.setuptools.packages.find]

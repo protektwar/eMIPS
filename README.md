@@ -44,26 +44,63 @@ choice open, it says which one it made.
 
 ## Running it
 
-You need **Python 3.10 or newer**; the simulator itself needs no other
-package.
+You need **Python 3.10 or newer** (on Windows type `py` where this says
+`python3`).  The simulator needs nothing else; the window needs **PyQt6**
+(or PySide6 — either works).
 
 ```bash
 git clone https://github.com/protektwar/eMIPS.git
 cd eMIPS
 ```
 
-**The window** needs PyQt6 (or PySide6 — either works):
+### Straight from the folder — nothing to install
 
 ```bash
-pip install PyQt6
-python3 -m emips gui                          # an empty editor
-python3 -m emips gui docs/guide/labs/trace_me.asm
+python3 -m emips run docs/guide/labs/trace_me.asm    # the terminal works right away
 ```
 
-Then **File → Examples**, **Step** (F10), **Run** (F5) — and **Help →
-User Guide** (F1).
+For the window, install Qt for Python from your system's packages:
 
-**The terminal:**
+| System | Command |
+|---|---|
+| Debian / Ubuntu / Mint | `sudo apt install python3-pyqt6` |
+| Fedora | `sudo dnf install python3-pyqt6` |
+| Arch / Manjaro | `sudo pacman -S python-pyqt6` |
+
+```bash
+python3 -m emips gui
+```
+
+Run the `python3 -m emips ...` commands from inside the `eMIPS` folder.
+
+### In a virtual environment — any system, with pip
+
+Most Linux distributions refuse `pip install` into the system's Python
+(*error: externally-managed-environment*); a virtual environment is the
+place for pip — and the way on macOS and Windows:
+
+```bash
+python3 -m venv .venv                 # Debian / Ubuntu: sudo apt install python3-venv first
+source .venv/bin/activate             # Windows: .venv\Scripts\activate
+pip install ".[gui]"                  # eMIPS + PyQt6
+emips-gui                             # the window; "emips run prog.asm" in the terminal
+```
+
+Activate it again (`source .venv/bin/activate`) in every new terminal.
+Already have PyQt6 from your system?  `python3 -m venv
+--system-site-packages .venv` lets the environment use it.
+
+### As an application — pipx
+
+```bash
+pipx install ".[gui]"                 # Debian / Ubuntu: sudo apt install pipx
+emips-gui
+```
+
+### First steps
+
+In the window: **File → Examples**, **Step** (F10), **Run** (F5) — and
+**Help → User Guide** (F1).  In the terminal:
 
 ```bash
 python3 -m emips run prog.asm            # run it (system calls + console), show the registers
@@ -73,13 +110,11 @@ python3 -m emips debug prog.asm          # the debugger (type help)
 python3 -m emips --help                  # everything else
 ```
 
-Options shared by the commands include `--release R1..R6`, `--little`,
-`--model 5-stage|24k`, `--caches`, `--mmu tlb`, `--cores N`.
+(Installed with pip or pipx, `emips` is the same command: `emips run
+prog.asm`.)  Options shared by the commands include `--release R1..R6`,
+`--little`, `--model 5-stage|24k`, `--caches`, `--mmu tlb`, `--cores N`.
 
-**Installing** instead of running from the folder: `pip install .`
-(`pip install .[gui]` adds PyQt6; then `emips-gui` starts the window).
-
-**From Python:**
+### From Python
 
 ```python
 from emips import Machine, assemble

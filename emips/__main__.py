@@ -303,7 +303,9 @@ def _cmd_gui(args) -> None:
     try:
         from .gui.main import main as gui_main
     except ImportError as exc:
-        sys.exit(f"the GUI needs PyQt6 (or PySide6): pip install emips[gui]  ({exc})")
+        sys.exit("the GUI needs PyQt6 (or PySide6): install your system's package "
+                 "(Debian / Ubuntu: sudo apt install python3-pyqt6) or, in a virtual "
+                 f"environment, pip install PyQt6  ({exc})")
     sys.exit(gui_main([args.file] if args.file else []))
 
 

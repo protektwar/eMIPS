@@ -984,6 +984,14 @@ inner branch's target.  The full list is <code>emips.sim.DEVIATIONS</code>:</p>
 <pre><code class="language-text">python3 -c &quot;from emips.sim import DEVIATIONS; print(*DEVIATIONS.items(), sep='\n')&quot;
 </code></pre>
 <h2 id="69-frequently-asked-questions">6.9 Frequently asked questions</h2>
+<p><strong><code>pip install</code> says <em>error: externally-managed-environment</em>.</strong>  Your
+Linux protects its own Python from pip.  Install PyQt6 from the system's
+packages (<code>sudo apt install python3-pyqt6</code>) and run eMIPS straight from
+its folder, or use a virtual environment or pipx — <a href="01-getting-started.html#13-installing">Phase 1,
+1.3</a>.</p>
+<p><strong><code>python3 -m emips gui</code> says the GUI needs PyQt6.</strong>  Qt for Python is
+missing (or installed in another environment than the one running
+eMIPS): see <a href="01-getting-started.html#13-installing">Phase 1, 1.3</a>.</p>
 <p><strong>My program works in MARS but not in eMIPS.</strong>  See <a href="02-writing-programs.html#215-differences-from-mars-and-spim">Phase 2,
 2.15</a>: most
 often an immediate operand where eMIPS (like the real assembler) wants a

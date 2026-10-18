@@ -66,30 +66,53 @@ your program works in eMIPS it works on MIPS.</p>
 </ul>
 <p>Nothing else: the simulator itself needs no other packages.</p>
 <h2 id="13-installing">1.3 Installing</h2>
-<h3 id="option-a--use-it-straight-from-the-repository">Option A — use it straight from the repository</h3>
-<p>The simplest way: no installation step at all.</p>
+<p>First get the files (or download the ZIP from the GitHub page and unpack it):</p>
 <pre><code class="language-bash">git clone https://github.com/protektwar/eMIPS.git
 cd eMIPS
-python3 -m emips --help
 </code></pre>
-<p>For the window, add the Qt library once — through your system's package
-manager or pip:</p>
-<pre><code class="language-bash">sudo apt install python3-pyqt6        # Debian / Ubuntu
-# or
-pip install PyQt6
-</code></pre>
+<p>Then choose one of three ways.  (On Windows type <code>py</code> where this guide
+says <code>python3</code>.)</p>
+<h3 id="option-a--use-it-straight-from-the-repository">Option A — use it straight from the repository</h3>
+<p>The simplest way: no installation step at all.  The terminal commands work
+right away; for the window, add Qt for Python once from your system's
+packages:</p>
+<table>
+<thead>
+<tr><th>System</th><th>Command</th></tr>
+</thead>
+<tbody>
+<tr><td>Debian / Ubuntu / Mint</td><td><code>sudo apt install python3-pyqt6</code></td></tr>
+<tr><td>Fedora</td><td><code>sudo dnf install python3-pyqt6</code></td></tr>
+<tr><td>Arch / Manjaro</td><td><code>sudo pacman -S python-pyqt6</code></td></tr>
+</tbody>
+</table>
 <p>Run every <code>python3 -m emips ...</code> command from inside the <code>eMIPS</code> folder.</p>
-<h3 id="option-b--install-it-as-a-python-package">Option B — install it as a Python package</h3>
-<p>From inside the <code>eMIPS</code> folder:</p>
-<pre><code class="language-bash">pip install &quot;.[gui]&quot;        # eMIPS + PyQt6
+<h3 id="option-b--install-it-as-a-python-package">Option B — install it in a virtual environment</h3>
+<p>Why not just <code>pip install</code>?  Most Linux distributions do not let pip
+change the system's Python: it stops with <em>error:
+externally-managed-environment</em>, so that pip and the system's packages
+never fight over the same files.  A <strong>virtual environment</strong> is a private
+Python folder where pip may install anything — and the usual way on macOS
+and Windows too:</p>
+<pre><code class="language-bash">python3 -m venv .venv                 # Debian / Ubuntu: sudo apt install python3-venv first
+source .venv/bin/activate             # Windows: .venv\Scripts\activate
+pip install &quot;.[gui]&quot;                  # eMIPS + PyQt6
 </code></pre>
-<p>This also gives you an <code>emips-gui</code> command, and <code>python3 -m emips</code> then
-works from any folder.  Developers who change the code use
-<code>pip install -e ".[gui,test]"</code> (an <em>editable</em> install that follows the
-files, plus the test tools).</p>
-<p>Other optional parts: <code>[test]</code> (pytest, to run the test suite),
-<code>[oracle]</code> (Unicorn — only for cross-checking the simulator),
-<code>[diagrams]</code> (Pillow — only for the diagram scripts in <code>ready/</code>).</p>
+<p>This gives you the commands <code>emips-gui</code> (the window) and <code>emips</code> (the
+same as <code>python3 -m emips</code>), from any folder — while the environment is
+active: activate it again (<code>source .venv/bin/activate</code>) in every new
+terminal.  If your system already has PyQt6, <code>python3 -m venv
+--system-site-packages .venv</code> lets the environment use it.  If you change
+eMIPS's code, <code>pip install -e &quot;.[gui]&quot;</code> (an <em>editable</em> install) follows
+your edits.</p>
+<h3 id="option-c--install-it-as-an-application">Option C — install it as an application (pipx)</h3>
+<p><a href="https://pipx.pypa.io/">pipx</a> makes the environment for you and puts the
+commands on your path:</p>
+<pre><code class="language-bash">pipx install &quot;.[gui]&quot;                 # Debian / Ubuntu: sudo apt install pipx
+emips-gui
+</code></pre>
+<p>The optional part <code>[diagrams]</code> (Pillow) is needed only by the diagram scripts
+in <code>ready/</code>.</p>
 <h3 id="check-that-it-works">Check that it works</h3>
 <pre><code class="language-bash">python3 -m emips --help
 </code></pre>
