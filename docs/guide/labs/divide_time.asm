@@ -26,3 +26,4 @@ loop:   lw    $s1, 0($s0)
         b     loop
 done:   li    $v0, 10
         syscall
+# eMIPS: --model 24k --pipeline    (the settings this program runs with)

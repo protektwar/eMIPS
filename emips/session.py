@@ -18,6 +18,7 @@ source lines (highlighting, breakpoints).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from .console import MmioConsole, SyscallServices
 from .cps import CPS
 from .cache import Caches
 from .disasm import disassemble
-from .exceptions import SimException
+from .exceptions import BusError, SimException
 from .hexload import DecodeFile, HexLoadError
 from .isa import ISA, ISADecodeError
 from .memory import PMemory
@@ -148,6 +149,19 @@ class Session:
         self._dints: list[tuple[int, int]] = []
         #: debug registers the debugger set: (step, core, "drseg" | "cp0",
         #: offset | (reg, sel), value) — replayed by a step back
+        #: a C program (load_c): the file built (in the build folder) and
+        #: its text — the editor's lines are its lines
+        self.c_file: str | None = None
+        self.c_text: str | None = None
+        self.c_build = ""
+        self._c_dir: Path | None = None
+        #: the disk images (source -> (bytes, sectors)): read once per
+        #: program load, every run starts from them (deterministic replay)
+        self._media: dict[str, tuple[bytes, int]] = {}
+        #: why a disk of the ``disks`` option is not there (a missing file ...)
+        self.disk_notes: list[str] = []
+        #: what reset adjusted to make the settings go together (emips.compat)
+        self.adjusted: list[str] = []
         self._pokes: list[tuple] = []
         #: EJTAG: each core's TAP (fresh at every reset: power-up), the
         #: probe on them (configuration: kept across resets) and whether
@@ -182,6 +196,8 @@ class Session:
         #: the last cycle's trace of every core (pipeline mode)
         self.traces: list = []
         self._code: set[int] | None = None
+        #: the Malta's boot monitor (emips.monitor; set by reset)
+        self.monitor = None
 
     # -- program --------------------------------------------------------------
 
@@ -189,8 +205,10 @@ class Session:
         """Assemble ``text``; on success reset to the new program."""
         self.source = text
         self.errors = []
+        self.c_file = self.c_text = None
         try:
             self.program = assemble(text, endian=self.endian, release=self.release,
+                                    bases=self.options.segment_bases(),
                                     pseudo=self.options.pseudo,
                                     reorder=self.options.reorder)
         except AsmError as exc:
@@ -199,7 +217,13 @@ class Session:
             return False
         self.kind = "asm"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
-        self.reset()
+        self._media = {}                    # disk images are read again
+        try:
+            self.reset()
+        except BusError as exc:                 # the image is not where the board has memory
+            self.errors = [str(exc)]
+            self._drop_program()
+            return False
         return True
 
     def load_hex(self, text: str) -> bool:
@@ -210,6 +234,7 @@ class Session:
         start-address record (05) or the lowest address."""
         self.source = text
         self.errors = []
+        self.c_file = self.c_text = None
         loader = DecodeFile(PMemory())
         try:
             loader.load_text(text)
@@ -258,30 +283,77 @@ class Session:
         self.program = prog
         self.kind = "hex"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
+        self._media = {}                    # disk images are read again
         self.reset()
         return True
 
-    def load_elf(self, data: bytes, path: str = "") -> bool:
+    def load_c(self, text: str, name: str = "program.c", *, optimize: str = "-O1") -> bool:
+        """Build the C program ``text`` (emips.cc: crt0, libemips, the
+        session's release and byte order) and load it.  It is compiled as
+        ``name`` in the session's build folder (what the editor shows is
+        what is built: its lines are the DWARF lines); :attr:`c_file` is
+        that file.  A build error goes to :attr:`errors` (the compiler's
+        message, with ``file:line:``)."""
+        import tempfile
+        from .cc import BuildError, build
+        from .compat import program_problem
+        self.errors = []
+        problem = program_problem(self.options, "c")
+        if problem:
+            self.errors = [problem]
+            self._drop_program()
+            return False
+        if self._c_dir is None:
+            self._c_dir = Path(tempfile.mkdtemp(prefix="emips-c-"))
+        src = self._c_dir / (Path(name).name or "program.c")
+        src.write_text(text, encoding="utf-8")
+        out = src.with_suffix(".elf")
+        try:
+            self.c_build = build([src], out, release=self.release, endian=self.endian,
+                                 optimize=optimize)
+        except BuildError as exc:
+            text_ = str(exc).replace(str(src), src.name)
+            lines = text_.splitlines()
+            first = next((i for i, ln in enumerate(lines)
+                          if re.match(rf"{re.escape(src.name)}:\d+:", ln)), 0)
+            self.errors = ["\n".join(lines[first:]) or text_]
+            self._drop_program()
+            return False
+        release = self.release
+        if not self.load_elf(out.read_bytes(), str(src), release=release):
+            return False
+        self.c_file, self.c_text = str(src), text
+        return True
+
+    def load_elf(self, data: bytes, path: str = "", *, release: str | None = None) -> bool:
         """Load an ELF32 executable (emips.elf): its segments, entry and
         symbols; the release and byte order it was built for (EF_MIPS_ARCH,
-        EI_DATA) become the session's.  :attr:`listing` is a read-only
-        disassembly with each source line (DWARF line table; the text when
-        the file can be read) above its instructions."""
+        EI_DATA) become the session's (``release``: the one it was built
+        for, when it says more than its EF_MIPS_ARCH).  :attr:`listing` is
+        a read-only disassembly with each source line (DWARF line table;
+        the text when the file can be read) above its instructions."""
+        from .compat import program_problem
         from .elf import ElfError, parse_elf
         self.source = path
         self.elf_data = data
         self.errors = []
+        self.c_file = self.c_text = None
+        problem = program_problem(self.options, "elf")
+        if problem:
+            self.errors = [problem]
+            self._drop_program()
+            return False
         try:
             img = parse_elf(data, path or "<elf>")
         except ElfError as exc:
             self.errors = [f"ELF: {exc}"]
             self._drop_program()
             return False
-        self.release, self.endian = img.release, img.endian
+        self.release, self.endian = release or img.release, img.endian
         symbols = {}
         for sym in sorted(img.symbols, key=lambda x: x.kind != "func"):
             symbols.setdefault(sym.name, sym.value)
-        prog = Program(endian=img.endian, release=img.release, image=img.image,
+        prog = Program(endian=img.endian, release=self.release, image=img.image,
                        symbols=symbols, entry=img.entry, c_lines=img.source_lines(),
                        c_stmts=img.statement_starts(),
                        functions=sorted((sym.value, sym.value + max(sym.size, 4), sym.name)
@@ -325,6 +397,7 @@ class Session:
         self.program = prog
         self.kind = "elf"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
+        self._media = {}                    # disk images are read again
         self.reset()
         return True
 
@@ -363,6 +436,8 @@ class Session:
         physical memory; the kernel / user boot starts every core at the
         entry (the firmware's job), the reset boot only core 0 (the others
         are powered down until the program starts them with the CPC)."""
+        from .compat import adjust
+        self.options, self.adjusted = adjust(self.options, self.release)
         o = self.options
         self.output = ""
         self.console = MmioConsole(on_output=self._emit, tx_delay=o.tx_delay,
@@ -373,6 +448,14 @@ class Session:
         if self.syscalls and o.syscalls:
             self.services = SyscallServices(read_line=self._read_line, write=self._emit)
         mem = PMemory()
+        #: the board (emips.malta), None: flat (every physical address RAM)
+        self.board = o.make_board(big_endian=self.endian == "big")
+        if self.board is not None:              # the serial console: tty0
+            self.board.console.on_tx = self._emit
+            self.board.console.feed(self._keys.encode("latin-1", "replace"))
+        self.disk_notes = []
+        if self.board is not None:
+            self._attach_disks()
         self.taps = []
         if self.probe is not None:
             self.probe.power_up()
@@ -384,20 +467,50 @@ class Session:
             l2, l3 = o.shared_levels()
             self.cps = CPS(n, lambda cps, i: self._make_core(cps, i, mem), self._core_started,
                            l2=l2, l3=l3, ecc=o.cache_ecc,
-                           hardware_init=o.cache_init == "hardware")
+                           hardware_init=o.cache_init == "hardware", iocu=o.iocu)
             self.machines = self.cps.cores
             self.console.sink = self.cps.gic.set_input     # TX, RX: GIC sources 0, 1
+            if self.board is not None:          # a multi-core Malta
+                self.board.join_cps(self.cps)
         boot = o.boot != "reset"
+        #: the Malta's boot monitor (emips.monitor), in its flash
+        self.monitor = None
+        if self.board is not None:
+            from . import monitor as MON
+            m0 = self.machines[0]
+            self.monitor = MON.load(self.board, m0)
+            if boot and self.program is not None:   # its vectors (a handler of the
+                for va, byte in MON.stub_words(self.monitor):   # program wins)
+                    m0.write_byte(va, byte)
         if self.program is not None:
             for i in range(n) if boot else (0,):
                 m = self.machines[i]
                 self.program.load(m, boot=boot)
                 if o.boot == "user":            # KSU = user (Status.UM)
                     m._cp0_set(C.STATUS, m.status | (2 << C.ST_KSU_SHIFT))
+                    if self.board is not None:  # its stack in kuseg (the TLB maps it)
+                        from .malta import USER_SP
+                        m.write_reg(29, USER_SP - i * CORE_STACK)
                 if boot and i:                  # its own stack
-                    m.write_reg(29, BOOT_SP - i * CORE_STACK)
+                    top = self.board.stack_top() if self.board is not None else BOOT_SP
+                    m.write_reg(29, top - i * CORE_STACK)
             if boot and self.cps is not None:
                 self.cps.boot()
+                if self.board is not None:
+                    self.board.cps_firmware()
+            if self.board is not None:          # YAMON's load / go (emips.monitor)
+                from . import monitor as MON
+                m0 = self.machines[0]
+                MON.describe_application(self.board, m0, self.program,
+                                         sp=m0.read_reg(29) if boot else None)
+                if boot:
+                    for i in range(n):
+                        for reg, value in MON.start_state(self.board, m0,
+                                                          self.monitor).items():
+                            self.machines[i].write_reg(reg, value)
+                elif not any(MON.RESET <= a < MON.RESET + 0x10
+                             for a in self.program.image):
+                    m0.pc = MON.RESET           # power-on: the monitor in the flash
         self.pipelines = [self._make_pipeline(m) for m in self.machines]
         self._code = None
         self.steps = 0
@@ -430,10 +543,14 @@ class Session:
                     shadow_sets=o.shadow_sets)
         m.tracing = True
         m.ccres = o.count_rate
-        if cpu == 0:
-            self.console.attach(m)
+        board = getattr(self, "board", None)
+        if board is None:                       # the MARS MMIO console (not on a Malta)
+            if cpu == 0:
+                self.console.attach(m)
+            else:
+                self.console.share(m)
         else:
-            self.console.share(m)
+            board.attach(m, pins=cpu == 0)
         m.syscall_handler = self.services
         while len(self.taps) <= cpu:            # the core's TAP (power-up)
             t = TAPM.TAP()
@@ -529,7 +646,11 @@ class Session:
     def type_keys(self, text: str) -> None:
         """Keystrokes for the memory-mapped keyboard."""
         self._keys += text
-        if self.console is not None:
+        if self.board is not None:
+            self.board.sync()
+            self.board.console.feed(text.encode("latin-1", "replace"))
+            self.board.touched()
+        elif self.console is not None:
             self.console.feed(text)
 
     def needs_input(self) -> bool:
@@ -713,12 +834,18 @@ class Session:
 
     def code_addresses(self) -> set[int]:
         """Addresses of the program's instructions (.text and .ktext) and
-        of the boot firmware's (the TLB refill handler)."""
+        of the boot firmware's (the TLB refill handler, the Malta's
+        monitor)."""
         if self.program is None:
             return set()
         if self._code is None:
             fw = self.machine.firmware if self.machine is not None else None
             self._code = set(self.program.source_map) | (set(fw.source_map) if fw else set())
+            if getattr(self, "monitor", None) is not None:
+                self._code |= set(self.monitor.source_map)
+                for vec in (0x80000180, 0x80000200):      # its vector stubs in RAM
+                    if vec not in self.program.source_map:
+                        self._code |= {vec + 4 * i for i in range(4)}
         return self._code
 
     def program_address(self, pc: int | None, cpu: int | None = None) -> int | None:
@@ -921,12 +1048,18 @@ class Session:
                 return name
         if self.program.functions:
             return None
+        mon = getattr(self, "monitor", None)
+        symbols = self.program.symbols
+        if mon is not None and a in mon.source_map:   # the boot monitor's code
+            symbols = mon.symbols
         best = None
         code = self.code_addresses()
-        for name, value in self.program.symbols.items():
-            if value in code and value <= a and (best is None or value > best[1]):
+        for name, value in symbols.items():
+            if value in code and value <= a and not name.startswith(".L") \
+                    and (best is None or value >= best[1]):   # (the last of equal labels)
                 best = (name, value)
-        return best[0] if best else None
+        name = best[0] if best else None
+        return f"monitor: {name}" if name and symbols is not self.program.symbols else name
 
     def backtrace(self, cpu: int | None = None) -> list[dict[str, Any]]:
         """The call stack, innermost first: for each frame the function, the
@@ -1054,9 +1187,13 @@ class Session:
 
     def line_address(self, line: int) -> int | None:
         """First instruction address of source line ``line``, or of the
-        next line that has code (run to cursor)."""
+        next line that has code (run to cursor); a C program: the first
+        statement of that C line (or the next line with code)."""
         if self.program is None:
             return None
+        if self.c_file is not None:
+            addrs = self.line_addresses(self.c_file, line)
+            return min(addrs) if addrs else None
         best = None
         for a, src in self.program.source_map.items():
             if src.line >= line and (best is None or (src.line, a) < best):
@@ -1172,6 +1309,9 @@ class Session:
         elif kind == "trigger-in":              # the probe's trigger to TR_TRIGIN
             tap.tcb.probe_trigger()
             m.trace_settings_changed()
+        elif kind == "board-nmi":               # the Malta's ON/NMI button
+            if m.board is not None:
+                m.board.nmi_button()
         return 0
 
     # -- the probe (emips.tap) ------------------------------------------------------
@@ -1436,6 +1576,104 @@ class Session:
             out.append((line + "  ".join(extra)).rstrip())
         return out
 
+    def _attach_disks(self) -> None:
+        """The ``disks`` option's IDE disks on the board, each from its
+        image as it was when the program was loaded."""
+        from .ata import Media
+        from .malta import load_media, parse_disks
+        for slot, source in parse_disks(self.options.disks):
+            try:
+                cached = self._media.get(source)
+                if cached is None:
+                    m = load_media(source)
+                    self._media[source] = (m.base, m.sectors)
+                else:
+                    m = Media(*cached)
+            except (OSError, ValueError) as exc:
+                self.disk_notes.append(f"{slot}: {exc}")
+                continue
+            label = source if source.lower().startswith("blank:") else Path(source).name
+            self.board.attach_disk(slot, m, name=f"{slot} ({label})")
+
+    def disk_sources(self) -> dict[str, str]:
+        """slot -> what the ``disks`` option puts there."""
+        from .malta import parse_disks
+        try:
+            return dict(parse_disks(self.options.disks))
+        except ValueError:
+            return {}
+
+    def save_disk(self, slot: str, path: str | None = None) -> str:
+        """Write a disk as the run has left it to ``path`` (default: its
+        image file); the next program load starts from the saved image."""
+        disk = self.board.disks.get(slot) if self.board is not None else None
+        if disk is None:
+            raise ValueError(f"no disk in {slot}")
+        source = self.disk_sources().get(slot, "")
+        target = path or (None if source.lower().startswith("blank:") else source)
+        if not target:
+            raise ValueError(f"{slot} is a blank disk: give a file to save it to")
+        Path(target).expanduser().write_bytes(disk.media.image())
+        return (f"{slot}: {disk.sectors} sectors ({len(disk.media.written)} written by the "
+                f"program) saved to {target}")
+
+    def disk_lines(self, *, states: bool = True) -> list[str]:
+        """The IDE disks (the debugger's ``disk``): why one is missing,
+        each one's state (``states``) and its last commands."""
+        if self.board is None:
+            return ["no disks: the flat board has none (set board malta, --disk)"]
+        out = list(self.disk_notes)
+        if not self.board.disks and not out:
+            out.append("no IDE disks (--disk FILE | blank:SIZE, set disks ...)")
+        for i, bm in enumerate(self.board.piix4.bm):
+            if states and (bm.log or bm.status & 1):
+                out.append(bm.describe())
+                out += [f"   {text}" for text in bm.log[-6:]]
+        for slot, disk in self.board.disks.items():
+            out.append(disk.describe() if states else f"{disk.name}:")
+            for at, text in disk.log[-8:]:
+                out.append(f"   cycle {at}: {text}")
+        return out
+
+    def disk_sector(self, slot: str, lba: int, count: int = 1) -> list[str]:
+        """A hex dump of sectors (side-effect free: the media, not the
+        device's registers)."""
+        disk = self.board.disks.get(slot) if self.board is not None else None
+        if disk is None:
+            raise ValueError(f"no disk in {slot}")
+        if not 0 <= lba < disk.sectors:
+            raise ValueError(f"{slot} has sectors 0-{disk.sectors - 1}")
+        data = disk.media.read(lba, min(count, disk.sectors - lba))
+        out = []
+        for off in range(0, len(data), 16):
+            row = data[off:off + 16]
+            text = "".join(chr(c) if 32 <= c < 127 else "." for c in row)
+            out.append(f"{lba + off // 512:6}:{off % 512:03x}  {row.hex(' ')}  {text}")
+        return out
+
+    def board_nmi(self) -> None:
+        """Press the Malta's ON/NMI button (MD00048 3.3: NMISTATUS.ONNMI,
+        the CPU's NMI input); recorded for step back."""
+        if self.machine is None or self.board is None:
+            return
+        self._pokes.append((self.steps, 0, "board-nmi", None, 0))
+        self._poke(self.machines[0], "board-nmi", None, 0)
+
+    def board_lines(self) -> list[str]:
+        """The board (the debugger's ``board``)."""
+        if self.board is None:
+            return ["flat: every physical address is RAM (the MARS layout); "
+                    "set board malta for the MIPS Malta"]
+        out = self.board.lines()
+        if self.monitor is not None:
+            from . import monitor as MON
+            regs = MON.registrations(self.machine)
+            out.append("boot monitor in the flash (YAMON functions at 0x1fc00500)"
+                       + (": " + "; ".join(regs) if regs else ": nothing registered"))
+        if self.board.fpga.reset_requests:
+            out.insert(1, "SOFTRES: the board was reset by software (0x42 written)")
+        return out
+
     def breakpoint_state(self) -> dict[str, Any]:
         """The hardware breakpoints (drseg) and the watch registers of the
         selected core: the enabled ones and the status bits."""
@@ -1690,9 +1928,25 @@ class Session:
         return out
 
     def current_line(self) -> int | None:
-        """Source line of :meth:`current_pc` (1-based) if known."""
-        src = self.source_line(self.current_pc())
+        """The editor's line of :meth:`current_pc` (1-based) if known: the
+        assembly source line, or for a C program the C line."""
+        return self.editor_line(self.current_pc())
+
+    def editor_line(self, pc: int | None) -> int | None:
+        """The line the editor shows for ``pc``: the source line, or for a
+        C program (:attr:`c_file`) its C line."""
+        if self.c_file is not None:
+            a = self.program_address(pc)
+            hit = self.program.c_lines.get(a) if a is not None else None
+            return hit[1] if hit is not None and hit[0] == self.c_file else None
+        src = self.source_line(pc)
         return src.line if src else None
+
+    def editor_breakpoint_lines(self) -> set[int]:
+        """The editor lines with a breakpoint."""
+        if self.program is None:
+            return set()
+        return {line for a in self.breakpoints if (line := self.editor_line(a)) is not None}
 
     def stage_pcs(self) -> dict[str, int]:
         """Pipeline mode: the address in each stage during the last cycle
@@ -1712,9 +1966,9 @@ class Session:
             return {}
         out = {}
         for st, pc in self.stage_pcs().items():
-            src = self.source_line(pc)
-            if src is not None:
-                out[st] = src.line
+            line = self.editor_line(pc)
+            if line is not None:
+                out[st] = line
         return out
 
     def memory_words(self, start: int, count: int, *, physical: bool = False
@@ -1724,7 +1978,7 @@ class Session:
         holds the line, without touching the caches; ``None`` where no TLB
         entry maps the word), or ``physical`` ones (the RAM itself,
         bypassing the caches; devices are not read)."""
-        from .exceptions import UnmappedAddress
+        from .exceptions import BusError, UnmappedAddress
         m = self.machine
         start &= ~0xF
         if physical:
@@ -1735,7 +1989,7 @@ class Session:
             def word(va: int) -> int | None:
                 try:
                     return m.peek_word(va)
-                except UnmappedAddress:
+                except (UnmappedAddress, BusError):
                     return None
         return [(start + 16 * r, [word(start + 16 * r + 4 * i) for i in range(4)])
                 for r in range(count)]
@@ -1744,6 +1998,9 @@ class Session:
         """``(address, word, text, source line)`` of the program's code."""
         if self.program is None:
             return []
+        if self.c_file is not None:                 # a C program: its C lines
+            return [(a, w, t, self.editor_line(a))
+                    for a, w, t, _ in self.program.listing(abi=self.abi)]
         return [(a, w, t, self.program.source_map[a].line)
                 for a, w, t, _ in self.program.listing(abi=self.abi)]
 

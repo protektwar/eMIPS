@@ -14,3 +14,4 @@ loop:   addiu $t0, $t0, 10
         syscall                 # prints 250
         li    $v0, 10
         syscall
+# eMIPS: --release R6    (the settings this program runs with)

@@ -73,6 +73,17 @@ def _note(text: str) -> QtWidgets.QLabel:
     return lab
 
 
+def _scrolled(page: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+    """A tab page that keeps its natural size and scrolls when the window
+    is smaller (word-wrapped notes, long forms)."""
+    area = QtWidgets.QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setWidget(page)
+    return area
+
+
 class SettingsDialog(QtWidgets.QDialog):
     """Edits release, byte order, forwarding and :class:`Options`."""
 
@@ -91,7 +102,7 @@ class SettingsDialog(QtWidgets.QDialog):
                             (self._timing_tab(), tr("Memory timing")),
                             (self._io_tab(), tr("Exceptions && I/O")),
                             (self._run_tab(), tr("Run"))):
-            self.tabs.addTab(page, title)
+            self.tabs.addTab(_scrolled(page), title)
         B = QtWidgets.QDialogButtonBox.StandardButton
         self.buttons = QtWidgets.QDialogButtonBox(
             B.Ok | B.Cancel | B.Apply | B.RestoreDefaults)
@@ -101,8 +112,23 @@ class SettingsDialog(QtWidgets.QDialog):
         self.buttons.button(B.RestoreDefaults).clicked.connect(self.restore_defaults)
         lay = QtWidgets.QVBoxLayout(self)
         lay.addWidget(self.tabs)
+        #: what the last change adjusted to keep the settings together (emips.compat)
+        self.compat_note = QtWidgets.QLabel()
+        self.compat_note.setWordWrap(True)
+        lay.addWidget(self.compat_note)
         lay.addWidget(self.buttons)
+        self._constraining = True
         self.set_values(release, endian, forwarding, options)
+        self._constraining = False
+        for box in (self.release, self.board, self.mmu, self.model, self.icache, self.dcache,
+                    self.l2, self.l3):
+            box.currentIndexChanged.connect(self._constrain)
+        for box in (self.icache, self.dcache, self.l2, self.l3):
+            box.editTextChanged.connect(self._constrain)
+        for spin in (self.cores, self.shadow_sets):
+            spin.valueChanged.connect(self._constrain)
+        self.boot.buttonToggled.connect(self._constrain)
+        self._constrain(note=False)
         # tall enough for the Processor tab: word-wrapped notes make a form
         # under-report its height, which would squeeze what is below them
         screen = self.screen().availableGeometry() if self.screen() else None
@@ -151,9 +177,61 @@ class SettingsDialog(QtWidgets.QDialog):
                                  "(kuseg + 1 GB): the TLBs through the boot firmware's "
                                  "refill handler, BAT through its six base-and-bounds "
                                  "entries.")))
+        self.board = QtWidgets.QComboBox()
+        self.board.addItem(tr("Flat memory (every address is RAM, the MARS layout)"), "flat")
+        self.board.addItem(tr("MIPS Malta (CoreLV card, GT-64120)"), "malta")
+        form.addRow(tr("Board"), self.board)
+        self.ram = QtWidgets.QSpinBox()
+        self.ram.setRange(1, 256)
+        self.ram.setSuffix(" MB")
+        self.ram.setValue(128)
+        form.addRow(tr("Malta SDRAM"), self.ram)
+        self.switches = QtWidgets.QSpinBox()
+        self.switches.setRange(0, 255)
+        self.switches.setDisplayIntegerBase(16)
+        self.switches.setPrefix("0x")
+        form.addRow(tr("Malta switches S2"), self.switches)
+        self.mhz = QtWidgets.QSpinBox()
+        self.mhz.setRange(1, 1000)
+        self.mhz.setSuffix(" MHz")
+        self.mhz.setValue(10)
+        self.mhz.setToolTip(tr("The core's clock: the serial ports, the timer and the "
+                               "real-time clock count in real time"))
+        form.addRow(tr("Malta core clock"), self.mhz)
+        #: the IDE disks (emips.ata): an image file or blank:SIZE per slot
+        self.disks: dict[str, QtWidgets.QLineEdit] = {}
+        for slot, label in (("pri0", N_("IDE primary master")),
+                            ("pri1", N_("IDE primary slave")),
+                            ("sec0", N_("IDE secondary master")),
+                            ("sec1", N_("IDE secondary slave"))):
+            edit = QtWidgets.QLineEdit()
+            edit.setPlaceholderText(tr("none — an image file or blank:SIZE (blank:8M)"))
+            browse = QtWidgets.QToolButton()
+            browse.setText("…")
+            browse.setToolTip(tr("Choose a disk image file"))
+            browse.clicked.connect(lambda _c=False, e=edit: self._browse_disk(e))
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(edit, 1)
+            row.addWidget(browse)
+            holder = QtWidgets.QWidget()
+            holder.setLayout(row)
+            row.setContentsMargins(0, 0, 0, 0)
+            form.addRow(tr(label), holder)
+            self.disks[slot] = edit
+        form.addRow("", _note(tr("The disks are ATA drives on the PIIX4's IDE cables "
+                                 "(ports 1F0h / 170h, IRQ 14 / 15). Every run starts from "
+                                 "the image; the Board pane saves what a program wrote.")))
+        self.board.currentIndexChanged.connect(self._board_changed)
+        form.addRow("", _note(tr("The Malta: the GT-64120's memory map (SDRAM, the monitor "
+                                 "flash, the board registers; anything else is a bus "
+                                 "error), programs in kseg0 (.text at 0x80100000). The "
+                                 "Board pane shows its LEDs and display.")))
         self.cores = QtWidgets.QSpinBox()
         self.cores.setRange(1, MAX_CORES)
         form.addRow(tr("Cores"), self.cores)
+        self.iocu = QtWidgets.QCheckBox(tr("I/O Coherence Unit (IOCU): the Malta's DMA is "
+                                           "coherent with the data caches"))
+        form.addRow("", self.iocu)
         form.addRow("", _note(tr("More than one core: a Coherent Processing System (the "
                                  "Coherence Manager's GCRs and the Cluster Power "
                                  "Controller) on one memory. Kernel / user boot starts "
@@ -204,6 +282,18 @@ class SettingsDialog(QtWidgets.QDialog):
         self.auto_assemble = QtWidgets.QCheckBox(tr("Assemble automatically when the "
                                                     "source changed (Run / Step)"))
         lay.addWidget(self.auto_assemble)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel(tr("C programs: optimisation")))
+        self.c_optimize = QtWidgets.QComboBox()
+        for level, text in (("0", tr("-O0: none — every C line has its own code (default)")),
+                            ("1", tr("-O1: moderate")), ("2", tr("-O2: more")),
+                            ("3", tr("-O3: aggressive")), ("s", tr("-Os: small code"))):
+            self.c_optimize.addItem(text, level)
+        row.addWidget(self.c_optimize, 1)
+        lay.addLayout(row)
+        lay.addWidget(_note(tr("Build (Ctrl+B) compiles a C program with clang or a MIPS "
+                               "GCC for the selected release; -O0 keeps the code close "
+                               "to the C, higher levels show what an optimiser does.")))
         lay.addStretch()
         return w
 
@@ -384,8 +474,22 @@ class SettingsDialog(QtWidgets.QDialog):
         self.forwarding.setChecked(forwarding)
         self.model.setCurrentIndex(max(0, self.model.findData(o.model)))
         self.cores.setValue(o.cores)
+        self.iocu.setChecked(o.iocu)
         self.shadow_sets.setValue(o.shadow_sets)
         self.count_rate.setCurrentIndex(0 if o.count_rate == 1 else 1)
+        parts = o.board.split(":")
+        self.board.setCurrentIndex(max(0, self.board.findData(parts[0])))
+        self.ram.setValue(int(parts[1], 0) if len(parts) > 1 and parts[1] else 128)
+        self.switches.setValue(int(parts[2], 0) if len(parts) > 2 and parts[2] else 0)
+        self.mhz.setValue(int(parts[3], 0) if len(parts) > 3 and parts[3] else 10)
+        from ..malta import parse_disks
+        try:
+            disks = dict(parse_disks(o.disks))
+        except ValueError:
+            disks = {}
+        for slot, edit in self.disks.items():
+            edit.setText(disks.get(slot, ""))
+        self._board_changed()
         spec = "tlb:32" if o.mmu == "tlb" else o.mmu
         if self.mmu.findData(spec) < 0:
             self.mmu.addItem(spec, spec)                 # e.g. from --mmu
@@ -393,6 +497,7 @@ class SettingsDialog(QtWidgets.QDialog):
         for key, spin in self.latency.items():
             spin.setValue(o.latency.get(key, LATENCY[key]))
         self.pseudo.setChecked(o.pseudo)
+        self.c_optimize.setCurrentIndex(max(0, self.c_optimize.findData(o.c_optimize)))
         self.reorder.setChecked(o.reorder)
         self.auto_assemble.setChecked(o.auto_assemble)
         for b in self.boot.buttons():
@@ -434,9 +539,97 @@ class SettingsDialog(QtWidgets.QDialog):
             mem_timing={k: s.value() for k, s in self.mem_timing.items()},
             nonblocking=self.nonblocking.isChecked(), mmu=self.mmu.currentData(),
             model=self.model.currentData(), cores=self.cores.value(),
-            shadow_sets=self.shadow_sets.value())
+            iocu=self.iocu.isChecked(),
+            shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
+            disks=self._disks_spec(), c_optimize=self.c_optimize.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
+
+    def _board_spec(self) -> str:
+        if self.board.currentData() == "flat":
+            return "flat"
+        return f"malta:{self.ram.value()}:0x{self.switches.value():02x}:{self.mhz.value()}"
+
+    def _disks_spec(self) -> str:
+        if self.board.currentData() != "malta":
+            return ""
+        return ",".join(f"{slot}={e.text().strip()}" for slot, e in self.disks.items()
+                        if e.text().strip())
+
+    def _browse_disk(self, edit: QtWidgets.QLineEdit) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, tr("Disk image"), edit.text(), tr("Disk images (*.img *.bin *.raw);;"
+                                                   "All files (*)"))
+        if path:
+            edit.setText(path)
+
+    def _board_changed(self, _index: int = 0) -> None:
+        malta = self.board.currentData() == "malta"
+        self.ram.setEnabled(malta)
+        self.switches.setEnabled(malta)
+        self.mhz.setEnabled(malta)
+        for e in self.disks.values():
+            e.parentWidget().setEnabled(malta)
+
+    def _constrain(self, *_args, note: bool = True) -> None:
+        """Keep the settings together (emips.compat): adjust what depends
+        on the release / board, disable the values that do not go with the
+        rest (the reason as a tooltip), grey out what does not apply."""
+        from ..compat import adjust, forbidden
+        if self._constraining:
+            return
+        self._constraining = True
+        try:
+            release, _e, _f, o = self.values()
+            fixed, notes = adjust(o, release)
+            if notes:
+                self.shadow_sets.setValue(fixed.shadow_sets)
+                self.cores.setValue(fixed.cores)
+                i = self.mmu.findData(fixed.mmu)
+                if i < 0:
+                    self.mmu.addItem(fixed.mmu, fixed.mmu)
+                    i = self.mmu.findData(fixed.mmu)
+                self.mmu.setCurrentIndex(i)
+                for b in self.boot.buttons():
+                    b.setChecked(b.property("key") == fixed.boot)
+                self._set_cache(self.l3, fixed.l3)
+            if note:
+                self.compat_note.setText(
+                    tr("Adjusted to go with the rest: {notes}").format(notes="; ".join(notes))
+                    if notes else "")
+            model = self.mmu.model()
+            for i in range(self.mmu.count()):
+                why = forbidden("mmu", self.mmu.itemData(i), fixed, release)
+                model.item(i).setEnabled(why is None)
+                self.mmu.setItemData(i, why or "", QtCore.Qt.ItemDataRole.ToolTipRole)
+            for spin, field, top in ((self.cores, "cores", MAX_CORES),
+                                     (self.shadow_sets, "shadow_sets", 16)):
+                why = forbidden(field, 2, fixed, release)
+                spin.setMaximum(1 if why else top)
+                spin.setToolTip(why or "")
+            self.iocu.setChecked(fixed.iocu)
+            why = forbidden("iocu", True, fixed, release)
+            self.iocu.setEnabled(why is None)
+            self.iocu.setToolTip(why or "")
+            for b in self.boot.buttons():
+                why = forbidden("boot", b.property("key"), fixed, release)
+                b.setEnabled(why is None)
+                b.setToolTip(why or "")
+            five = self.model.currentData() == "5-stage"
+            self.forwarding.setEnabled(five)
+            for spin in self.latency.values():
+                spin.setEnabled(five)
+            l1 = fixed.icache != "none" or fixed.dcache != "none"
+            any_cache = l1 or fixed.l2 != "none" or fixed.write_buffer
+            tlb = fixed.mmu.split("+")[0].split(":")[0] in ("tlb", "ftlb")
+            self.cache_parity.setEnabled(l1)
+            self.cache_ecc.setEnabled(fixed.l2 != "none")
+            self.l3.setEnabled(fixed.l2 != "none")
+            self.nonblocking.setEnabled(any_cache)
+            for spin in self.mem_timing.values():   # the caches' and the micro-TLBs' waits
+                spin.setEnabled(any_cache or tlb)
+        finally:
+            self._constraining = False
 
     def restore_defaults(self) -> None:
         self.set_values("R5", "big", True, Options())

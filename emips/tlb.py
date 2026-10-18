@@ -427,9 +427,43 @@ def _arch(code: int, va: int, *, refill: bool = False, why: str = ""):
 #: missing page pair as the fixed mapping MMU would — kuseg at VA + 1 GB,
 #: cacheable; kseg2 / kseg3 at PA = VA, uncached (the MMIO devices) — in
 #: global 4 KB pages, with a random entry (TLBWR).
-def firmware_refill(cca: int = 3) -> str:
+def firmware_refill(cca: int = 3, window: tuple[int, int] | None = None) -> str:
     """The boot firmware's refill handler mapping kuseg with attribute
-    ``cca`` (3; a core of a CPS: 5, cacheable coherent)."""
+    ``cca`` (3; a core of a CPS: 5, cacheable coherent).  ``window`` =
+    (base, size) of a board's memory for kuseg (the Malta: the top
+    power-of-two part of its SDRAM): PA = base + (VA mod size)."""
+    if window is not None:
+        base, size = window
+        mask = (size - 1) & ~0x1FFF
+        lo = 0x07 | cca << 3                        # C, D, V, G
+        return f"""\
+        .set noreorder
+        .ktext 0x80000000
+__tlb_refill:
+        mfc0  $k1, $10           # EntryHi: VPN2 of the miss | ASID
+        lui   $k0, 0x{mask >> 16:04x}        # the window: VA mod 0x{size:x}
+        bltz  $k1, __tlb_k23     # VA >= 0x80000000: kseg2 / kseg3, PA = VA
+        ori   $k0, $k0, 0x{mask & 0xFFFF:04x}   # (delay slot)
+        and   $k0, $k0, $k1      # the page pair's offset in the window
+        lui   $k1, 0x{base >> 16:04x}        # + its base 0x{base:08x}
+        addu  $k0, $k0, $k1
+        srl   $k0, $k0, 12
+        sll   $k0, $k0, 6        # EntryLo PFN of the even page
+        b     __tlb_set
+        ori   $k0, $k0, 0x{lo:02x}     # (delay slot) C = {cca}, D, V, G
+__tlb_k23:
+        srl   $k0, $k1, 13
+        sll   $k0, $k0, 7
+        ori   $k0, $k0, 0x17     # C = 2 uncached, D, V, G
+__tlb_set:
+        mtc0  $k0, $2            # EntryLo0: the even page
+        addiu $k0, $k0, 0x40     # the odd page: PFN + 1
+        mtc0  $k0, $3            # EntryLo1
+        mtc0  $zero, $5          # PageMask: 4 KB pages
+        sll   $zero, $zero, 3    # ehb (Release 1: a nop)
+        tlbwr                    # a random entry (Wired .. N-1)
+        eret
+"""
     return FIRMWARE_REFILL.replace(
         "xori  $k0, $k0, 0x08     # C = 3: cacheable, write-back",
         f"xori  $k0, $k0, 0x{(2 ^ cca) << 3:02x}     # C = {cca}: cacheable, write-back"
@@ -459,6 +493,13 @@ __tlb_set:
 """
 
 
+def user_window(m) -> tuple[int, int] | None:
+    """Where the boot firmware maps kuseg on ``m``'s board (None: the flat
+    board, VA + 1 GB)."""
+    board = getattr(m, "board", None)
+    return board.user_window() if board is not None else None
+
+
 def boot_cca(m) -> int:
     """The attribute the boot firmware gives cacheable memory: 3, or 5
     (cacheable coherent) on a core of a CPS (Boot-MIPS: CCA 5 for coherent
@@ -466,8 +507,15 @@ def boot_cca(m) -> int:
     return 5 if getattr(m, "system", None) is not None else 3
 
 
-def firmware_map(va: int, cca: int = 3) -> tuple[int, int, str]:
-    """What :data:`FIRMWARE_REFILL` maps ``va`` to: ``(pa, cca, how)``."""
+def firmware_map(va: int, cca: int = 3, window: tuple[int, int] | None = None
+                 ) -> tuple[int, int, str]:
+    """What :data:`FIRMWARE_REFILL` maps ``va`` to: ``(pa, cca, how)``
+    (``window``: see :func:`firmware_refill`)."""
+    if va < 0x80000000 and window is not None:
+        base, size = window
+        return (base + (va & (size - 1)), cca,
+                f"boot firmware refill handler: PA = 0x{base:08x} + (VA mod 0x{size:x}), "
+                "cacheable" + (" coherent" if cca in (4, 5) else ""))
     if va < 0x80000000:
         return ((va + 0x40000000) & M32, cca,
                 "boot firmware refill handler: PA = VA + 0x40000000, cacheable"
@@ -1389,7 +1437,8 @@ class TLBMMU:
         if self.ftlb:                        # the OS turns the FTLB on (Linux:
             self.cp0_write(m, CONFIG6, CFG6_FTLBEN)   # Config6.FTLBEn on a P5600)
         cca = boot_cca(m)
-        self.fallback = (lambda va: firmware_map(va, cca)) if handler else None
+        window = user_window(m)
+        self.fallback = (lambda va: firmware_map(va, cca, window)) if handler else None
 
     def take(self) -> tuple[int, list[str]]:
         """The micro-TLB miss cycles since the last call (the pipeline)."""

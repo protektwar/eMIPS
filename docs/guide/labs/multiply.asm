@@ -8,3 +8,4 @@ main:   li    $t0, 6
         mflo  $t4               # needs LO: waits for the multiply unit
         li    $v0, 10
         syscall
+# eMIPS: --pipeline    (the settings this program runs with)

@@ -12,10 +12,10 @@ DIR = Path(__file__).parent
 
 @dataclass(frozen=True)
 class Example:
+    """An example; the settings it needs are its own ``# eMIPS:`` line
+    (emips.profile)."""
     file: str
     title: str
-    release: str | None = None          # switch to this release first
-    mmu: str | None = None              # switch to this MMU first (Options.mmu)
     keys: str = ""                      # MMIO keyboard input (tests)
     input: tuple[str, ...] = ()         # console lines (tests)
     output: str = ""                    # what the program prints
@@ -26,6 +26,12 @@ class Example:
 
     def source(self) -> str:
         return self.path.read_text(encoding="utf-8")
+
+    @property
+    def profile(self):
+        """What its ``# eMIPS:`` line asks for (the defaults without one)."""
+        from ...profile import Profile, read
+        return read(self.source(), DIR) or Profile(args=[])
 
 
 EXAMPLES = [
@@ -46,10 +52,10 @@ EXAMPLES = [
             output="10 in 14 steps"),
     Example("float_circle.asm", "Floating point: area of a circle",
             output="area = 19.634954"),
-    Example("r6_compact_branches.asm", "Release 6: compact branches (R6)", release="R6",
+    Example("r6_compact_branches.asm", "Release 6: compact branches (R6)",
             output="250"),
-    Example("tlb_refill.asm", "TLB: a refill handler reading a page table", mmu="tlb",
+    Example("tlb_refill.asm", "TLB: a refill handler reading a page table",
             output="42 99"),
     Example("copy_on_write.asm", "TLB: copy-on-write with the TLB Modified exception",
-            mmu="tlb", output="1 1 2 "),
+            output="1 1 2 "),
 ]

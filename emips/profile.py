@@ -1,0 +1,157 @@
+"""A program's own settings: the ``eMIPS:`` header line (Qt-free).
+
+A program — an example, a lab, any ``.asm`` or ``.c`` — may say how it
+is meant to run, in a comment line anywhere in it (the guide's labs have
+it last, so their line numbers stay), with the command line's own flags::
+
+    # eMIPS: --board malta
+    # eMIPS: --cores 2 --caches --pipeline --model 24k
+    // eMIPS: --release R6                       (C; /* eMIPS: ... */ too)
+
+:func:`read` turns it into a :class:`Profile`: the release, byte order,
+mode and the processor / memory settings it names, every other one of
+those at its default.  The GUI applies it when the program is opened
+(File > Open, Examples, Labs), the command line uses it for flags not
+given there.  Preferences that are not about the machine (assembler
+strictness, run limits, latencies, theme) are never touched.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shlex
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any
+
+from .compat import RELEASE_ORDER as RELEASES
+from .options import BOOT_MODES, Options
+
+#: the header (the first lines of a file)
+HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\*/)?\s*$")
+#: the options a profile owns (the machine): unnamed ones go to their defaults
+PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
+                  "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
+                  "shadow_sets", "boot")
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="eMIPS:", add_help=False, exit_on_error=False)
+    p.add_argument("--release", choices=RELEASES)
+    p.add_argument("--little", action="store_true")
+    p.add_argument("--board")
+    p.add_argument("--disk", action="append")
+    p.add_argument("--model", choices=("5-stage", "24k"))
+    p.add_argument("--caches", action="store_true")
+    p.add_argument("--icache")
+    p.add_argument("--dcache")
+    p.add_argument("--cache-parity", action="store_true")
+    p.add_argument("--cache-init", choices=("random", "hardware"))
+    p.add_argument("--l2")
+    p.add_argument("--l3")
+    p.add_argument("--cache-ecc", action="store_true")
+    p.add_argument("--write-buffer", action="store_true")
+    p.add_argument("--nonblocking", action="store_true")
+    p.add_argument("--mmu")
+    p.add_argument("--cores", type=int)
+    p.add_argument("--iocu", action="store_true")
+    p.add_argument("--shadow-sets", type=int)
+    p.add_argument("--boot", choices=BOOT_MODES)
+    p.add_argument("--pipeline", action="store_true")
+    p.add_argument("--no-forwarding", action="store_true")
+    return p
+
+
+@dataclass
+class Profile:
+    """What a program's header asks for."""
+    args: list[str]
+    release: str = "R5"
+    endian: str = "big"
+    mode: str = "instruction"
+    forwarding: bool = True
+    #: the profile's options (only the PROFILE_FIELDS it sets)
+    options: dict[str, Any] = field(default_factory=dict)
+    #: the flags as given (argparse names: what the command line merges)
+    given: dict[str, Any] = field(default_factory=dict)
+
+    def options_for(self, base: Options) -> Options:
+        """``base`` with the machine settings this profile makes: its own,
+        every other profile field at its default."""
+        d = Options()
+        changes = {f: self.options.get(f, getattr(d, f)) for f in PROFILE_FIELDS}
+        return replace(base, **changes).validated()
+
+    def describe(self) -> str:
+        return " ".join(self.args) if self.args else "the defaults"
+
+    def differs(self, options: Options, release: str, endian: str, mode: str,
+                forwarding: bool) -> bool:
+        o = self.options_for(options)
+        return ((self.release, self.endian, self.mode, self.forwarding)
+                != (release, endian, mode, forwarding)
+                or any(getattr(o, f) != getattr(options, f) for f in PROFILE_FIELDS))
+
+
+def header_args(text: str) -> list[str] | None:
+    """The flags of the ``eMIPS:`` header, or None."""
+    for line in text.splitlines():
+        m = HEADER.match(line)
+        if m:
+            return shlex.split(m.group(1))
+    return None
+
+
+def _resolve_disk(spec: str, base: Path | None) -> str:
+    """A ``--disk`` value with its image file relative to the program's
+    folder (``base``)."""
+    slot, sep, source = spec.partition("=")
+    if not sep or slot.strip().lower() not in ("pri0", "pri1", "sec0", "sec1"):
+        slot, sep, source = "", "", spec
+    source = source.strip()
+    if base is not None and not source.lower().startswith("blank:"):
+        p = Path(source).expanduser()
+        if not p.is_absolute():
+            source = str((base / p).resolve())
+    return f"{slot.strip()}{sep}{source}"
+
+
+def read(text: str, base: str | Path | None = None) -> Profile | None:
+    """The program's profile (None: no header); ``base``: the program's
+    folder (disk image paths are relative to it).  A malformed header is
+    a :class:`ValueError` naming what is wrong."""
+    args = header_args(text)
+    if args is None:
+        return None
+    try:
+        ns, rest = _parser().parse_known_args(args)
+    except (argparse.ArgumentError, SystemExit) as exc:
+        raise ValueError(f"eMIPS header: {exc}") from None
+    if rest:
+        raise ValueError(f"eMIPS header: unknown {' '.join(rest)}")
+    o: dict[str, Any] = {}
+    for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
+                 "shadow_sets", "boot", "cache_init"):
+        v = getattr(ns, name)
+        if v is not None:
+            o[name] = v.lower() if isinstance(v, str) and name != "boot" else v
+    if ns.disk:
+        o["disks"] = ",".join(_resolve_disk(d, Path(base) if base is not None else None)
+                              for d in ns.disk)
+        ns.disk = o["disks"].split(",")
+    if ns.caches:
+        o.setdefault("icache", "32K")
+        o.setdefault("dcache", "32K")
+    for name in ("cache_parity", "cache_ecc", "write_buffer", "nonblocking", "iocu"):
+        if getattr(ns, name):
+            o[name] = True
+    check = replace(Options(), **o).validated()      # a bad value: say so
+    for name, v in o.items():
+        if getattr(check, name) != v:
+            raise ValueError(f"eMIPS header: bad {name.replace('_', '-')} {v!r}")
+    return Profile(args=args, release=ns.release or "R5",
+                   endian="little" if ns.little else "big",
+                   mode="pipeline" if ns.pipeline else "instruction",
+                   forwarding=not ns.no_forwarding, options=o,
+                   given={k: v for k, v in vars(ns).items() if v not in (None, False)})

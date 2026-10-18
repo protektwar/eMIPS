@@ -40,3 +40,4 @@ wait:   lw    $t5, done($t4)
         syscall
 rest:   wait                         # nothing to do: wait (for an interrupt)
         b     rest
+# eMIPS: --cores 4    (the settings this program runs with)

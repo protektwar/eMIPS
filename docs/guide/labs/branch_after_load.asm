@@ -4,3 +4,4 @@ main:   lw    $t0, 0($sp)
         beq   $t0, $zero, done
 done:   li    $v0, 10
         syscall
+# eMIPS: --pipeline    (the settings this program runs with)

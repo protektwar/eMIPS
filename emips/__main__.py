@@ -22,7 +22,9 @@ SIZE[:WAYS[:LINE]]``, ``--cache-parity``, ``--cache-init random|hardware``,
 ``--mem-timing KEY=N,...`` and ``--nonblocking`` (memory timing of the
 pipeline with caches), ``--mmu fixed|bat|tlb[:N]|ftlb[...][+sc][+pw]``,
 ``--model 5-stage|24k`` (the pipeline model: textbook or the MIPS 24K),
-``--cores N`` (a multi-core system of N cores, emips.cps).
+``--cores N`` (a multi-core system of N cores, emips.cps), ``--board
+flat|malta[:RAM_MB[:SWITCHES]]`` (the MIPS Malta board, emips.malta),
+``--disk [SLOT=]IMAGE`` (an IDE disk on the Malta, emips.ata).
 
 ``asm`` prints the listing (address, word, disassembly, source line) and
 optionally writes Intel HEX; ``dis`` disassembles the words of a HEX file.
@@ -54,7 +56,7 @@ from .hexload import DecodeFile
 from .memory import PMemory
 from .cache import Geometry
 from .timing import MEMORY_TIMING
-from .options import BOOT_MODES, CACHE_INIT_MODES
+from .options import BOOT_MODES, CACHE_INIT_MODES, Options
 from .session import Session, StepResult
 from .sim import Machine
 from .trace import format_view
@@ -65,9 +67,11 @@ RELEASES = ["R1", "R2", "R3", "R5", "R6"]
 def _assemble(path: str, endian: str, release: str | None = None, args=None):
     pseudo = not getattr(args, "strict", False)
     reorder = not getattr(args, "noreorder", False)
+    board = getattr(args, "board", None) or "flat"
     try:
         return assemble(Path(path).read_text(), endian=endian, release=release,
-                        pseudo=pseudo, reorder=reorder)
+                        pseudo=pseudo, reorder=reorder,
+                        bases=Options(board=board).segment_bases())
     except AsmError as exc:
         sys.exit(f"{path}: {exc}")
 
@@ -164,7 +168,10 @@ def _cmd_run(args) -> None:
             _setup_perf(s, args.perf)
     except CliError as exc:
         sys.exit(f"error: {exc}")
-    r = _run_to_stop(d, args.steps, args.trace)
+    steps = args.steps
+    if steps is None:
+        steps = 1_000_000 if s.board is not None else 100_000
+    r = _run_to_stop(d, steps, args.trace)
     s.on_output = None
     if s.output and not s.output.endswith("\n"):
         print()
@@ -334,6 +341,26 @@ def _mmu(text: str) -> str:
     return text.lower()
 
 
+def _disk(text: str) -> str:
+    """argparse type of --disk (emips.malta.parse_disks)."""
+    from .malta import parse_disks
+    try:
+        parse_disks(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return text
+
+
+def _board(text: str) -> str:
+    """argparse type of --board (emips.malta.make_board)."""
+    from .malta import make_board
+    try:
+        make_board(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return text.lower()
+
+
 def _mem_timing(text: str) -> dict[str, int]:
     """argparse type of --mem-timing: KEY=N[,KEY=N] (emips.timing)."""
     out = {}
@@ -375,8 +402,13 @@ def main(argv: list[str] | None = None) -> None:
                            help="start in .set noreorder (fill delay slots yourself)")
         if name == "asm":
             p.add_argument("--hex", help="write Intel HEX here")
+            p.add_argument("--board", metavar="SPEC", type=_board, default=None,
+                           help="assemble for this board's memory layout (malta: "
+                                "the segments in kseg0 SDRAM)")
         if name in ("run", "pipe", "debug"):
             p.add_argument("--keys", default="", help="type this on the MMIO keyboard (\\n = Enter)")
+            p.add_argument("--no-header", action="store_true",
+                           help="ignore the program's '# eMIPS: ...' settings line")
             p.add_argument("--no-syscalls", action="store_true",
                            help="SYSCALL raises the exception (no OS emulation)")
             p.add_argument("--boot", choices=BOOT_MODES, default="kernel",
@@ -417,6 +449,18 @@ def main(argv: list[str] | None = None) -> None:
                                 "FTLB, default 64 + 128x4); a TLB takes +sc "
                                 "(segmentation control, EVA) and +pw (page table "
                                 "walker), e.g. ftlb+sc+pw")
+            p.add_argument("--board", metavar="SPEC", type=_board, default=None,
+                           help="the board: flat (default: every physical address is "
+                                "RAM, the MARS layout) or malta[:RAM_MB[:SWITCHES]] "
+                                "(the MIPS Malta: the GT-64120's memory map, bus "
+                                "errors, the board registers; programs in kseg0)")
+            p.add_argument("--disk", metavar="[SLOT=]IMAGE", action="append", type=_disk,
+                           default=None,
+                           help="an IDE disk on the Malta (with --board malta): SLOT "
+                                "pri0 (default, then pri1 sec0 sec1), IMAGE a file or "
+                                "blank:SIZE (e.g. blank:1M); repeatable; every run "
+                                "starts from the image (the debugger's disk save keeps "
+                                "what it wrote)")
             p.add_argument("--model", choices=("5-stage", "24k"), default=None,
                            help="pipeline model: 5-stage (the textbook pipeline, "
                                 "default) or 24k (the MIPS 24K's 8 stages, branch "
@@ -425,6 +469,10 @@ def main(argv: list[str] | None = None) -> None:
                            help="cores (a CPS: shared memory, the CM's GCRs, the "
                                 "CPC); kernel / user boot starts them all at the "
                                 "entry, reset boot core 0 only")
+            p.add_argument("--iocu", action="store_true",
+                           help="with --board malta --cores N: an I/O Coherence Unit "
+                                "(GCR_CONFIG.NUMIOCU = 1) — the PCI DMA is coherent "
+                                "with the data caches")
             p.add_argument("--shadow-sets", type=int, choices=range(1, 17),
                            default=None, metavar="N",
                            help="GPR shadow sets, 1-16 (SRSCtl.HSS + 1; default 4, "
@@ -450,8 +498,10 @@ def main(argv: list[str] | None = None) -> None:
                                 "(user + kernel mode) and print them, e.g. "
                                 "instructions,dcache_miss")
         if name == "run":
-            p.add_argument("--steps", type=int, default=100_000,
-                           help="stop after this many steps (default 100000)")
+            p.add_argument("--steps", type=int, default=None,
+                           help="stop after this many steps (default 100000; on the "
+                                "Malta 1000000: its 38400-baud serial output takes "
+                                "thousands of instructions a character)")
             p.add_argument("--trace", action="store_true",
                            help="print what happens inside every instruction")
         if name == "pipe":

@@ -18,6 +18,7 @@
 <li><a href="04-command-line.html">4 The command line</a></li>
 <li><a href="05-understanding.html" aria-current="page">5 Understanding</a></li>
 <li><a href="06-reference.html">6 Reference</a></li>
+<li><a href="features.html">What's in eMIPS</a></li>
 </ul>
 </nav>
 </header>
@@ -1096,6 +1097,320 @@ TLB
 exception Mod at 0x00400018, BadVAddr 0x00700000: TLB entry 7: the page is not writable (D = 0) -&gt; 0x80000180
 ...
 </code></pre>
+<h3 id="a-real-board-the-mips-malta">A real board: the MIPS Malta</h3>
+<p>So far every physical address was memory — a convenient fiction.  A real
+computer is a <strong>board</strong>: the processor's addresses go to a <strong>system
+controller</strong>, which decodes them and sends each access to the memory or a
+device; where nothing is decoded, the access gets a <strong>bus error</strong>.
+<code>--board malta</code> (Configure → Settings → Processor → Board) puts eMIPS on
+the <strong>MIPS Malta</strong>, the development board MIPS sold for its cores,
+with a CoreLV card whose system controller is a Galileo <strong>GT-64120</strong>
+(the board QEMU and Linux know as "malta").</p>
+<p>The GT-64120 decodes in two stages: a <strong>resource group</strong> (SDRAM banks,
+the device bus, two PCI windows, its own registers), each a pair of
+Low / High registers, then a <strong>device sub-decoder</strong> inside it.  At reset
+it decodes only 32 MB of SDRAM and keeps its registers at <code>0x14000000</code>;
+the boot monitor (YAMON) moves them to <code>0x1be00000</code> and opens the whole
+SDRAM, the PCI windows and the flash — eMIPS's boot firmware does the
+same.  Programs then live in kseg0 SDRAM like a YAMON application
+(<code>.text</code> at <code>0x80100000</code>, <code>.data</code> at <code>0x80200000</code>, the stack at the
+top of the SDRAM; table in <a href="06-reference.html#66-memory-map">Phase 6, 6.6</a>).</p>
+<p>A read the GT-64120 does not decode ends in a bus error:</p>
+<ul>
+<li>an <strong>instruction fetch</strong> — <strong>IBE</strong> (ExcCode 6), <em>precise</em>: EPC is the
+  instruction that could not be fetched;</li>
+<li>a <strong>load</strong> — <strong>DBE</strong> (ExcCode 7), <em>imprecise</em> on the 24K: the error
+  comes back from the bus after the load has left the pipeline, so EPC is
+  the <em>next</em> instruction, and the load's register may hold garbage
+  (MD00343 5.8.13);</li>
+<li>a <strong>store</strong> — no exception at all (a store does not wait for an
+  answer); the GT-64120 records the address and can interrupt (its
+  InterruptN reaches the CPU's INT3, <code>Cause.IP5</code>, once its CPU Interrupt
+  Mask allows it).</li>
+</ul>
+<p>The board registers make it visible: an LED bar, an 8-character ASCII
+display, the switches, a software reset.  <code>board</code> in the debugger (and the
+GUI's <strong>Board</strong> pane) shows them and what the GT-64120 decodes:</p>
+<pre><code class="language-console">$ python3 -m emips debug --board malta docs/guide/labs/malta_board.asm
+(emips) c
+bus error: ExcCode 7, EPC 0x80100050
+the program exited
+   0x80100058  syscall
+   (ended)
+(emips) board
+Malta (CoreLV, GT-64120), 10 MHz core, 128 MB SDRAM, big-endian, switches S2 = 0x00
+LEDs [.......#]  ASCII display [eMIPS   ]
+GT-64120 interrupt cause 0x00000009, CPU mask 0x00000000 -&gt; INT3 off; bus error address 0x08000000, decode error 0xffffffff
+   internal registers 0x1be00000 (ISD 0x0df)
+   0x00000000-0x07ffffff  scs10    scs0
+   0x10000000-0x17ffffff  pci0m0   pci0m0
+   0x18000000-0x181fffff  pci0io   pci0io
+   0x18200000-0x1bdfffff  pci0m1   pci0m1
+   0x1e000000-0x1fffffff  cs3boot  boot
+...
+</code></pre>
+<p>Two of the Malta's quirks are worth meeting on purpose.  The GT-64120's
+registers are <strong>little-endian</strong>: a big-endian program reads its
+registers byte-swapped (<code>0xbbe00068</code>, the register base ISD, reads
+<code>0xdf000000</code>) — the CoreLV manual calls it a bug of the chip, every OS
+swaps.  And in the boot flash, <code>0xbfc00010</code> is <strong>not</strong> flash: it reads
+the board's REVISION register (<code>0x00000420</code>: a CoreLV card on a Malta),
+so reset code (<code>--boot reset</code>, code at <code>0xbfc00000</code>) must branch over it.
+See <a href="#lab-30--a-real-board">Lab 30</a>.</p>
+<h3 id="the-south-bridge-interrupts-clocks-and-serial-ports">The south bridge: interrupts, clocks and serial ports</h3>
+<p>Behind the GT-64120's PCI windows sits the rest of a PC: an Intel
+<strong>PIIX4</strong> south bridge with its ISA bus.  An ISA <strong>port</strong> P (a byte
+address in the I/O space) is at <code>0xb8000000 + P</code> once the firmware has
+opened the PCI I/O window; a port nothing answers reads <code>0xff</code>.  The
+PCI <strong>configuration</strong> space is reached through two GT-64120 registers,
+<code>0xcf8</code> (which bus / device / function / register — the PIIX4 is device
+10) and <code>0xcfc</code> (the data).  On the ISA bus:</p>
+<table>
+<thead>
+<tr><th>Ports</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0x20</code>–<code>0x21</code>, <code>0xa0</code>–<code>0xa1</code></td><td>the two <strong>8259</strong> interrupt controllers (master, slave on the master's IRQ 2); <code>0x4d0</code> / <code>0x4d1</code> edge / level per IRQ</td></tr>
+<tr><td><code>0x40</code>–<code>0x43</code></td><td>the <strong>8254</strong> timer: counter 0 = IRQ 0, 1.193182 MHz</td></tr>
+<tr><td><code>0x61</code></td><td>NMI status and control (counter 2's output, the refresh toggle)</td></tr>
+<tr><td><code>0x70</code> / <code>0x71</code></td><td>the <strong>real-time clock</strong> (an MC146818): index, then data; registers 0–9 the time and date, A–D control, the rest CMOS RAM; IRQ 8</td></tr>
+<tr><td><code>0x3f8</code>–<code>0x3ff</code>, <code>0x2f8</code>–<code>0x2ff</code></td><td>the <strong>16550 UARTs</strong> tty0 (the console, IRQ 4) and tty1 (IRQ 3), in the SMSC Super I/O chip (configured at <code>0x3f0</code> / <code>0x3f1</code>)</td></tr>
+</tbody>
+</table>
+<p>A third 16550, <strong>tty2</strong>, sits on the board itself at <code>0xbf000900</code> (its
+registers 8 bytes apart) and interrupts the CPU directly on INT2.  The
+eMIPS boot firmware does what YAMON does: it switches the Super I/O's
+serial ports on (after a reset they are off) and sets them to 38400
+baud, 8 data bits, no parity, 1 stop bit.  Time is real: the core runs
+at 10 MHz by default (<code>malta:RAM:SWITCHES:MHZ</code> changes it), so a
+character at 38400 baud takes 2604 cycles — a driver must wait for the
+UART:</p>
+<pre><code class="language-console">$ python3 -m emips run --board malta docs/guide/labs/malta_serial.asm
+Hello from tty0!
+...
+</code></pre>
+<p>On the Malta the <strong>console</strong> is tty0: what the program sends there is what
+eMIPS prints (and what the GUI's Console shows), keys you type arrive in
+its receiver at the line rate.  The system calls still work too.</p>
+<p><strong>Interrupts</strong> come through the 8259s.  A device raises its IRQ; the
+controller (programmed with its four Initialization Command Words, then
+a mask) passes the highest-priority unmasked one to the CPU's <strong>INT0</strong>
+(<code>Cause.IP2</code>).  The CPU has no interrupt-acknowledge cycle of its own, so
+the handler <em>reads</em> one: the GT-64120's register <code>0xc34</code> runs a PCI
+interrupt acknowledge cycle and returns the <strong>vector</strong> (the base given in
+ICW2 + the IRQ — what Linux does on the Malta).  When the handler is done
+it sends an <strong>EOI</strong> (end of interrupt) to the slave and the master.  A
+UART interrupts only when its <code>MCR.OUT2</code> is set (the PC convention the
+Super I/O keeps) and its IER asks for it.  See <a href="#lab-31--interrupts-on-a-pc-chip-set">Lab 31</a>.</p>
+<h3 id="an-ide-disk">An IDE disk</h3>
+<p>The PIIX4 also has two <strong>IDE</strong> channels, the cables a PC's disks hang
+on: the <strong>primary</strong> (ports <code>0x1f0</code>–<code>0x1f7</code> and <code>0x3f6</code>, IRQ 14)
+and the <strong>secondary</strong> (<code>0x170</code>–<code>0x177</code>, <code>0x376</code>, IRQ 15; on the Malta it
+is also the CompactFlash socket's), each with a device 0 and a device 1.
+<code>--disk IMAGE</code> (repeatable; Settings → Processor → IDE …) puts an
+<strong>ATA</strong> disk there — the image is any file, its bytes the disk's sectors
+(512 bytes each; <code>blank:8M</code> is an empty disk).  The disk is the
+controller: it has a small register file, and the program drives it by
+writing registers and reading them back — the ATA standard (ATA/ATAPI-4,
+the PIIX4's generation) says exactly how.</p>
+<table>
+<thead>
+<tr><th>Port</th><th>Read</th><th>Write</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0x1f0</code></td><td colspan="2">Data — <strong>16 bits</strong>: the sector moves one halfword at a time (a 32-bit access is two)</td></tr>
+<tr><td><code>0x1f1</code></td><td>Error (why ERR is set: ABRT command aborted, IDNF no such sector, …)</td><td>Features (a parameter)</td></tr>
+<tr><td><code>0x1f2</code></td><td colspan="2">Sector Count (0 = 256)</td></tr>
+<tr><td><code>0x1f3</code>–<code>0x1f5</code></td><td colspan="2">the sector address: LBA 7:0, 15:8, 23:16 (or sector, cylinder low / high)</td></tr>
+<tr><td><code>0x1f6</code></td><td colspan="2">Device/Head: bit 6 LBA, bit 4 which device, bits 3:0 LBA 27:24 (or the head)</td></tr>
+<tr><td><code>0x1f7</code></td><td>Status: BSY (busy), DRDY, DRQ (data wanted / ready), ERR; reading it acknowledges the interrupt</td><td>Command: the disk starts</td></tr>
+<tr><td><code>0x3f6</code></td><td>Alternate Status (the same, no acknowledge)</td><td>Device Control: SRST (reset), nIEN (no interrupt)</td></tr>
+</tbody>
+</table>
+<p>A command follows the same steps every time: wait until BSY is 0, write
+the parameters and the address, write the command code — BSY comes on
+while the disk works.  For a read (READ SECTOR(S), <code>0x20</code>; IDENTIFY DEVICE,
+<code>0xec</code>) the disk sets <strong>DRQ</strong> and interrupts when a sector is in its
+buffer; the program reads 256 halfwords; then the next sector.  A write
+(WRITE SECTOR(S), <code>0x30</code>) is the other way round: DRQ, 256 halfwords out,
+BSY while the disk writes them.  Time is real: the first sector comes
+after about 100 µs (1000 cycles at 10 MHz).  <code>disk</code> in the debugger (and
+the Board pane) shows each disk, its registers and the commands it got;
+<code>disk show pri0 LBA</code> dumps a sector:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/malta_disk.asm
+(emips) c
+model: eMIPS ATA disk 512 B
+sectors: 1
+Sector 0 of an IDE disk on the MIPS Malta.
+This file is the disk image: edit it, run the lab again.
+the program exited
+   0x801000dc  syscall
+   (ended)
+(emips) disk
+pri0 (malta_disk.txt): 1 sector (512 B), CHS 1/1/1, active, status 0x50 (ready), error 0x00, 1 sector read, 0 written
+   cycle 20: IDENTIFY DEVICE (ECh)
+   cycle 1842: READ SECTOR(S) (20h)
+</code></pre>
+<p>PCI is <strong>little-endian</strong>: a halfword the disk sends has its first byte in
+bits 7:0, at the lower address.  Store each halfword back as it was read
+and the bytes keep their order in memory, whichever the CPU's byte order
+— a sector reads as text.  Numbers the disk sends are little-endian (on
+a big-endian Malta <code>wsbh</code> / <code>rotr</code> swap them), and ATA's strings
+(IDENTIFY's model, serial number) put their <em>first</em> character in bits
+15:8 — see <a href="#lab-32--an-ide-disk">Lab 32</a>.  What a program writes stays in
+its run: every run (Reset, Step Back) starts from the image again, and
+<code>disk save pri0 [FILE]</code> (the Board pane's <strong>Save Disk…</strong>) writes the disk
+as the program left it.</p>
+<h3 id="dma-the-disk-writes-memory-itself">DMA: the disk writes memory itself</h3>
+<p>Copying 256 halfwords per sector through the Data register keeps the
+CPU busy for the whole transfer.  The PIIX4 can do it alone: its <strong>bus
+master</strong> (ports <code>0x1000</code>–<code>0x1007</code> for the primary channel, <code>0x1008</code>–
+<code>0x100f</code> the secondary, where the firmware puts them) takes the disk's data
+and writes it to memory as a PCI master — <strong>DMA</strong>, direct memory access.
+The program describes the memory with a table of <strong>Physical Region
+Descriptors</strong> (PRD): 8 bytes each, the region's physical address, its
+size in bytes (0 = 64 KB) and, in the last one, EOT (bit 31 of the
+second word).  Then:</p>
+<ol>
+<li>the table's physical address into the PRD table pointer (<code>0x1004</code>,
+  32 bits), the direction into the command register (<code>0x1000</code>: bit 3 = 1
+  writes memory, for a read from the disk), clear the status (<code>0x1002</code>:
+  write 1s to Error and Interrupt);</li>
+<li>the command to the disk: READ DMA (<code>0xc8</code>) or WRITE DMA (<code>0xca</code>),
+  with the sector address and count as for PIO;</li>
+<li>start: bit 0 of <code>0x1000</code>.  The bus master reads the first PRD, moves
+  the data whenever the disk asks (at the disk's DMA speed: 16.7 MB/s in
+  multiword DMA 2, twice that in Ultra DMA 2), the next PRD …;</li>
+<li>when the disk interrupts, the status register's Interrupt bit (2) is
+  set and Active (0) clear (all the table used): stop (write 0 to
+  <code>0x1000</code>), read the disk's Status.</li>
+</ol>
+<p>The PRDs are read by the PIIX4 — little-endian, like everything on
+PCI: a big-endian program stores their words byte-swapped.  The memory
+is reached through the GT-64120 as a PCI <em>target</em>: its Base Address
+Register 0 decides which PCI addresses are SDRAM (the firmware opens the
+whole SDRAM at PCI address 0, so a PCI address is the physical address);
+an address no BAR decodes ends the transfer with a <em>master abort</em> (the
+status's Error bit).</p>
+<p>The catch: the bus master writes the <strong>SDRAM</strong>, not the CPU's caches.
+On the Malta nothing tells the data cache, so a buffer the CPU has in its
+cache still shows the old bytes after a DMA read — and a dirty line the
+CPU has not written back yet is not what a DMA write sends.  The driver
+keeps them consistent itself (Linux on the Malta: "software DMA cache
+coherency"): it writes back and invalidates the buffer's lines
+(<code>cache 0x15</code>, Hit Writeback Invalidate) before the transfer, or reads the
+buffer through kseg1.  A multi-core Malta (<code>--cores 2</code>) is no different —
+its Coherence Manager keeps the cores' caches coherent with each other,
+not with the PCI bus — unless it has an <strong>I/O Coherence Unit</strong>
+(<code>--iocu</code>, GCR_CONFIG.NUMIOCU = 1): then the DMA's reads and writes enter the
+CM as coherent requests, like a core's — a DMA write invalidates every
+cached copy of its lines, a DMA read takes a Modified line from the cache
+that has it — and the driver has nothing to flush ("hardware DMA cache
+coherency").  The IOCU snoops the cores whose GCR_Cx_COHERENCE has bit 4
+(IOCU 0) set.  On the multi-core Malta the 8259s interrupt through the
+GIC (its shared interrupt 3, routed to core 0's pin 0: still Cause.IP2).
+<a href="#lab-33--dma-and-the-cache">Lab 33</a>:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/malta_dma.asm
+cached:   ................................................................
+uncached: This sector came by DMA.
+invalidated, cached: This sector came by DMA.
+...
+</code></pre>
+<h3 id="the-boot-monitor-yamon">The boot monitor: YAMON</h3>
+<p>A real Malta does not start your program: it starts the <strong>boot
+monitor</strong> in its flash, YAMON, at the reset vector <code>0xbfc00000</code>.
+YAMON sets the board up — the GT-64120's map, the PCI devices, the
+serial ports, the caches, the TLB — then loads a program (from the host,
+the network or the disk) and starts it.  eMIPS's Malta has such a
+monitor too, in real MIPS code (<code>emips/firmware/monitor.asm</code>): with
+<code>--boot reset</code> the core runs it from the reset vector, and it says so on
+tty0 before your program starts:</p>
+<pre><code class="language-console">$ python3 -m emips run --boot reset docs/guide/labs/yamon_isr.asm
+
+eMIPS monitor (YAMON application interface): Malta, 128 MB SDRAM, 10 MHz
+ticks 5, breaks 1
+...
+</code></pre>
+<p>(The default kernel boot skips the run: eMIPS sets the board up in
+Python exactly as the monitor would — the tests check that they agree,
+register for register — and starts the program at once.  A program
+with its own code at <code>0xbfc00000</code> is its own boot code: then no monitor
+runs, as in <a href="#lab-30--a-real-board">Lab 30</a>.)</p>
+<p>The program starts in YAMON's <strong>application context</strong>: <code>$a0</code> =
+the number of arguments (1: <code>go</code>), <code>$a1</code> = their array, <code>$a2</code> = the
+environment (name / value pairs: <code>memsize</code>, <code>modetty0</code> …), <code>$a3</code> =
+the size of the SDRAM, <code>$sp</code> 4 words below its top, <code>$ra</code> = back to the
+monitor (a program may simply return), interrupts off.  And the monitor
+offers <strong>functions</strong>: a table of pointers at physical <code>0x1fc00500</code> (called
+through kseg0, <code>0x9fc00500</code>), with the o32 calling convention:</p>
+<table>
+<thead>
+<tr><th>Offset</th><th>Function</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0x04</code></td><td>print_count(port, s, count)</td><td>count characters to tty0</td></tr>
+<tr><td><code>0x20</code></td><td>exit(rc)</td><td>the program ends</td></tr>
+<tr><td><code>0x2c</code></td><td>flush_cache(type)</td><td>0: invalidate the I-cache; 1: write back and invalidate the D-cache</td></tr>
+<tr><td><code>0x34</code></td><td>print(port, s)</td><td>a zero-terminated string to tty0</td></tr>
+<tr><td><code>0x38</code> / <code>0x3c</code></td><td>register / deregister_cpu_isr(cpu_int, isr, data, &amp;ref)</td><td>call isr(data) for a CPU interrupt 0–7 (and enable it in Status.IM)</td></tr>
+<tr><td><code>0x40</code> / <code>0x44</code></td><td>register / deregister_ic_isr(line, isr, data, &amp;ref)</td><td>call isr(data) for an IRQ 0–15 of the 8259s: the monitor initialises them, unmasks the line, acknowledges (the GT-64120's IACK) and sends the EOIs</td></tr>
+<tr><td><code>0x48</code> / <code>0x4c</code></td><td>register / deregister_esr(exception, esr, &amp;ref, &amp;retfunc)</td><td>call esr() for an exception (an ExcCode); it may change EPC and return</td></tr>
+<tr><td><code>0x50</code></td><td>getchar(port, &amp;ch)</td><td>1 and a character from tty0, or 0 if none has come</td></tr>
+<tr><td><code>0x54</code></td><td>syscon_read(id, &amp;value, size)</td><td>board facts: 34 the CPU clock, 35 the bus clock, 36 the PCI clock (kHz)</td></tr>
+</tbody>
+</table>
+<p>The monitor's exception handler (at <code>0x80000180</code> and <code>0x80000200</code>,
+unless the program brings its own) saves the registers, finds what
+happened and calls what the program registered; an interrupt nobody
+registered is masked (with a message), an exception without an ESR ends
+the program with one.  The debugger's <code>board</code> lists what is registered,
+and <code>bt</code> shows the monitor between the interrupted code and the ISR:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/yamon_isr.asm
+(emips) break tick
+breakpoint at 0x801000fc  lui $t0, 0xb800                  line 67: tick:   li    $t0, 0xb8000000       # the ISR (called by the monitor's handler)
+(emips) c
+breakpoint
+   0x9fc00f40  nop
+=&gt; 0x801000fc  lui $t0, 0xb800                  line 67: tick:   li    $t0, 0xb8000000       # the ISR (called by the monitor's handler)
+(emips) bt
+#0  0x801000fc in tick   line 67: tick:   li    $t0, 0xb8000000       # the ISR (called by the monitor's handler)
+#1  0x9fc00f3c in monitor: mon_exception
+</code></pre>
+<p>See <a href="#lab-34--a-yamon-application">Lab 34</a>.</p>
+<h3 id="drivers-on-the-malta">Drivers on the Malta</h3>
+<p>With the monitor dispatching interrupts, a <strong>driver</strong> is two halves:
+the part the program calls (start a transfer, take a character) and the
+<strong>interrupt service routine</strong> the device's interrupt calls (move the
+data, acknowledge the device).  They share data — a ring buffer, a "done"
+flag — and each piece of that data has one writer: the ISR moves the
+ring's head, the program its tail.  Two to try:</p>
+<ul>
+<li><a href="labs/malta_echo.asm"><code>labs/malta_echo.asm</code></a> (<a href="#lab-35--a-serial-driver">Lab 35</a>): tty0's
+  receiver interrupts on IRQ 4 (with <code>MCR.OUT2</code>, the PC's gate) when a key
+  arrives; the ISR empties the receiver into a ring, the program sends
+  the keys back in upper case:
+<pre><code class="language-console">$ python3 -m emips run --keys "hi there." docs/guide/labs/malta_echo.asm
+HI THERE.
+...
+</code></pre></li>
+<li><a href="labs/malta_driver.asm"><code>labs/malta_driver.asm</code></a> (<a href="#lab-36--a-disk-driver">Lab 36</a>): the
+  disk's interrupt (IRQ 14) announces the end of a DMA read; the ISR
+  stops the bus master, acknowledges the disk (reading its Status) and
+  sets a flag; before the transfer the driver writes back and invalidates
+  the data cache with the monitor's <code>flush_cache</code>.</li>
+</ul>
+<h3 id="user-mode-on-the-malta">User mode on the Malta</h3>
+<p>The fixed mapping puts kuseg at <code>VA + 1 GB</code> — beyond the Malta's SDRAM —
+so user mode on the Malta needs a <strong>TLB</strong> (<code>--boot user --mmu tlb</code>; with
+the fixed mapping the user boot is refused).  The boot firmware's TLB
+refill handler then maps kuseg into the top part of the SDRAM: the
+largest power of two up to half of it (64 MB of 128), <code>PA = base + (VA
+mod size)</code>, so the kernel keeps the bottom (the vectors, its data, code
+at 1 MB).  A user program is assembled at the MARS user addresses
+(<code>.text</code> <code>0x00400000</code>, <code>.data</code> <code>0x10010000</code>, <code>$sp</code> <code>0x7fffeffc</code>); the
+kernel — your exception handler in <code>.ktext</code> — serves it.  It cannot
+reach the devices (kseg1) or CP0: it asks the kernel with <code>syscall</code>.
+<a href="#lab-37--a-user-program-and-its-kernel">Lab 37</a>.</p>
 <h2 id="59-more-than-one-core">5.9 More than one core</h2>
 <p>A multi-core MIPS — the 1004K, interAptiv, P5600 — is a <strong>Coherent
 Processing System</strong> (CPS): up to four cores (eMIPS: <code>--cores 2..4</code>,
@@ -2954,6 +3269,201 @@ much).  The TCB holds 8 KB: at 12 bits an instruction that is about
 5000 instructions of history — some microseconds of a real 24K — which
 is why trace is compressed this hard, and why you choose what to trace
 (and when: triggers).</p>
+</details>
+<h3 id="lab-30--a-real-board">Lab 30 — A real board</h3>
+<p>Run <a href="labs/malta_board.asm"><code>labs/malta_board.asm</code></a> on the Malta (<code>--board
+malta</code>, or Settings → Processor → Board).  What do the LEDs show at the
+end, and why that pattern?  The handler prints the exception: which one,
+and why is EPC not the address of the <code>lw</code>?  Then add <code>sw $zero, 0($t5)</code>
+before the <code>lw</code>: what changes, and what does <code>board</code> report?</p>
+<details>
+<summary>Answer</summary>
+<p>The LEDs show <code>.......#</code>: LEDBAR is one bit per LED, and the loop
+wrote 4, 3, 2, 1 — the last value, 1, lights the right-most LED (bit 0).
+The exception is DBE (ExcCode 7): <code>0xa8000000</code> is physical
+<code>0x08000000</code>, the first byte after 128 MB of SDRAM, and nothing decodes
+it.  EPC is <code>0x80100050</code>, the <code>addiu</code> after the load (<code>0x8010004c</code>): on the
+24K a data bus error is <em>imprecise</em> — the bus answers with the error
+after the load has completed in the pipeline, so the handler cannot know
+which load failed (only the GT-64120's Bus Error Address register,
+<code>0x08000000</code>, says where).  The store before it raises no exception
+— a store never waits for the bus — but the GT-64120 records it as well
+(Cause bit 3, CPUOut): <code>board</code> shows the bus error address and the cause
+<code>0x00000009</code> (CPUOut + the summary bit) either way.</p>
+</details>
+<h3 id="lab-31--interrupts-on-a-pc-chip-set">Lab 31 — Interrupts on a PC chip set</h3>
+<p><a href="labs/malta_irq.asm"><code>labs/malta_irq.asm</code></a> (<code>--board malta</code>) takes ten
+interrupts from the RTC's periodic timer through the two 8259s.  It
+prints <code>10 0x00000028</code>: why <code>0x28</code>?  Why does the handler shift the
+acknowledge register's value right by 24?  What happens if you remove the
+EOI to the slave — and if you remove the read of RTC register C?</p>
+<details>
+<summary>Answer</summary>
+<p><code>0x28</code> is the vector of IRQ 8: the slave controller's ICW2 base (<code>0x28</code>)
+plus its input 0 (IRQ 8 − 8).  The GT-64120's registers are little-endian,
+so on a big-endian Malta the vector byte, the register's least
+significant byte, arrives as the most significant byte of the word read:
+<code>srl 24</code> brings it down.  Without the EOI to the slave its in-service
+bit for IRQ 8 stays set: IRQ 8 is blocked forever and the program waits
+for ticks that never come (the master's EOI alone does not help: the
+slave never asks again).  Without reading register C the RTC's IRQF
+stays set — the RTC's interrupt line never falls, so the edge-triggered
+IRQ 8 sees no new rising edge and the second tick never comes either.
+Both are classic driver bugs: an interrupt is acknowledged at <em>every</em>
+level it went through.</p>
+</details>
+<h3 id="lab-32--an-ide-disk">Lab 32 — An IDE disk</h3>
+<p><a href="labs/malta_disk.asm"><code>labs/malta_disk.asm</code></a> (<code>--board malta --disk
+malta_disk.txt</code>: its <code># eMIPS:</code> line) asks the disk who it is, then reads
+sector 0.  Why does the program print the model's characters in the order
+<code>1($t1)</code>, <code>0($t1)</code>?  Why <code>wsbh</code> and <code>rotr</code> for the number of
+sectors, but nothing for the sector's text?  Edit <code>malta_disk.txt</code> to be
+longer than 512 bytes: what does the program print now, and what do
+IDENTIFY's sectors and CHS say?  Finally, make it read LBA 5: what does
+it print?</p>
+<details>
+<summary>Answer</summary>
+<p>ATA defines a string's first character in bits 15:8 of its word
+(IDENTIFY DEVICE, 8.12.8).  The program stores each halfword as it read
+it, so a word's bits 7:0 — the byte at the lower address on the
+little-endian PCI bus — land at <code>0($t1)</code> and bits 15:8 at <code>1($t1)</code>: the
+first character of each pair is the byte at the higher address.  (Linux
+swaps every pair of an IDENTIFY string for the same reason.)  The sector
+count, words 60–61, is a 32-bit value in the disk's (little-endian)
+order: a big-endian <code>lw</code> sees its four bytes reversed, and <code>wsbh</code> +
+<code>rotr 16</code> reverse them.  The sector's text is bytes, in order — no
+number, nothing to swap.  A longer file is a bigger disk (a whole number
+of sectors, the last one padded with zeros): the program prints the
+first 512 bytes and whatever follows in memory up to a zero (the
+<code>.space 513</code> ends in one), IDENTIFY reports 2 (or more) sectors and a CHS
+of 1 cylinder, 1 head, 2 sectors per track.  LBA 5 does not exist: the
+disk ends the command with ERR, Error = <code>0x10</code> (IDNF, "ID not found"),
+and the program prints <code>0x00000010</code>.</p>
+</details>
+<h3 id="lab-33--dma-and-the-cache">Lab 33 — DMA and the cache</h3>
+<p><a href="labs/malta_dma.asm"><code>labs/malta_dma.asm</code></a> (<code>--board malta --caches --disk
+malta_dma.txt</code>) fills a buffer with dots, has the bus master read
+sector 0 into it, then prints the buffer three times.  Why do the first
+two differ, and which is right?  Why is the PRD table written through
+kseg1, and why <code>0x00020080</code> for "512 bytes, EOT"?  The invalidation
+uses Hit <em>Invalidate</em> (<code>0x11</code>), not Hit Writeback Invalidate
+(<code>0x15</code>): what would <code>0x15</code> print at the end, and why does a real
+driver use it anyway — but <em>before</em> starting the transfer?  Run it
+without <code>--caches</code> (<code>--no-header --board malta --disk
+docs/guide/labs/malta_dma.txt</code>): what changes?  And with two cores, with and
+without an IOCU (<code>--no-header --board malta --caches --cores 2 [--iocu]
+--disk docs/guide/labs/malta_dma.txt</code>)?</p>
+<details>
+<summary>Answer</summary>
+<p>The first print reads the buffer through kseg0: its lines are in the
+data cache (the fill loop allocated them, write-back, dirty), and the
+DMA changed only the SDRAM below — the CPU still sees its dots.  The
+second reads kseg1, uncached: the SDRAM itself, the sector.  The sector
+is right; the cache is <em>stale</em>.  The PRD table must be in memory when
+the PIIX4 reads it: written through kseg0 it could sit in the cache
+(the same problem the other way round).  The PIIX4 reads the PRD as two
+little-endian words, so the bytes in memory must be <code>00 02 00 80</code>
+(0x80000200: count 0x200, bit 31 EOT); a big-endian <code>sw</code> of
+<code>0x00020080</code> puts exactly those bytes there.  Hit Writeback
+Invalidate at the end would first write the dirty dots back over the
+sector in memory — the third print would show dots, and so would kseg1:
+the DMA data is lost.  Done <em>before</em> the transfer it pushes the CPU's
+data out while it is still wanted and leaves no line to go stale (or to
+be written back later over the DMA data): the correct order for a DMA
+read.  Without caches all three lines show the sector — no cache, no
+coherence problem (and no cache to speed up the CPU either).  Two cores
+without an IOCU print what one core does: the CM keeps the cores
+coherent with each other, the DMA is not one of them.  With the IOCU the
+first line already shows the sector: the DMA's write went through the
+CM and invalidated the dotted lines, so the load missed and read the new
+data; the Hit Invalidate finds nothing left to drop.</p>
+</details>
+<h3 id="lab-34--a-yamon-application">Lab 34 — A YAMON application</h3>
+<p><a href="labs/yamon_isr.asm"><code>labs/yamon_isr.asm</code></a> (<code>--board malta</code>) uses only the
+boot monitor: an ISR for the RTC's periodic interrupt (IRQ 8), an ESR for
+a <code>break</code>, <code>print</code>.  Why does the ISR not send an EOI, when the program
+of <a href="#lab-31--interrupts-on-a-pc-chip-set">Lab 31</a> had to?  What would happen if the ESR did not add 4 to
+EPC?  Run it with <code>--boot reset</code>: what is printed first, and which
+instructions ran before <code>main</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>The monitor's handler does what Lab 31's handler did: it reads the
+vector from the GT-64120's acknowledge register (the IRQ: the monitor
+programs the 8259s with vector bases 0 and 8), calls the ISR registered
+for that IRQ and sends the EOIs to the slave and the master afterwards —
+the ISR only deals with its device (RTC register C).  Without the
+<code>addiu</code> on EPC the <code>eret</code> returns to the <code>break</code> itself: the exception
+comes again and again, the ESR counts forever.  With <code>--boot reset</code> the
+core starts at <code>0xbfc00000</code>, in the monitor: it moves the GT-64120's
+registers, programs the SDRAM and PCI windows, the PIIX4, the Super I/O
+and the UARTs, waits for the disks, initialises the caches and the TLB,
+writes its exception vectors, prints its banner — the first line — and
+starts <code>main</code> with an <code>eret</code>.  Step through it in the debugger
+(<code>--boot reset</code>): it is ordinary MIPS code.</p>
+</details>
+<h3 id="lab-35--a-serial-driver">Lab 35 — A serial driver</h3>
+<p><a href="labs/malta_echo.asm"><code>labs/malta_echo.asm</code></a> echoes the keys typed on tty0 in upper case
+(<code>--keys "hi there."</code>).  Why does the ISR loop until LSR.DR is 0 rather
+than take one character?  What goes wrong if the program writes
+<code>head</code> too?  And without <code>MCR.OUT2</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>The 16550's FIFO can hold several characters by the time the
+interrupt is serviced (the receiver interrupts at its trigger level or
+after a timeout, and keys keep coming): each read of RBR takes one, and
+the interrupt goes away only when the FIFO is empty — one character per
+interrupt would leave the rest waiting for the next key.  The ring works
+because each index has one writer: the ISR moves <code>head</code> (after writing
+the character), the program <code>tail</code>; if both wrote <code>head</code>, an interrupt
+between the program's load and store of it would lose a character (a
+race).  Without OUT2 the Super I/O does not drive IRQ 4 (the PC
+convention): no interrupt ever comes and the program waits forever.</p>
+</details>
+<h3 id="lab-36--a-disk-driver">Lab 36 — A disk driver</h3>
+<p><a href="labs/malta_driver.asm"><code>labs/malta_driver.asm</code></a> (<code>--board malta --caches --disk
+malta_driver.txt</code>) reads sector 0 by DMA and learns about the end from
+IRQ 14.  Why does the ISR read the disk's Status register, and why
+does it write the bus master's status back to itself?  Fill the buffer
+with dots before the transfer (as Lab 33 does) and remove the
+<code>flush_cache</code> call: what does the program print — and with the call put
+back?</p>
+<details>
+<summary>Answer</summary>
+<p>Reading Status is the ATA acknowledge: it clears the disk's pending
+interrupt, INTRQ falls, and the next command's rising edge is a new
+interrupt; without it the line stays high and the edge-triggered 8259
+sees no further interrupts.  The bus master's Interrupt and Error bits
+are write-one-to-clear: writing back what was read clears exactly the
+bits that were set (the next transfer starts clean).  With the dots in
+the cache and no flush the program prints dots: the DMA wrote the
+SDRAM, the cache still has the CPU's lines (Lab 33).  With
+<code>flush_cache(1)</code> before the transfer the dirty lines go to memory and
+leave the cache; the DMA then overwrites memory, and the CPU's read
+misses and fetches the sector.  As in Linux's DMA API: the driver hands
+the buffer to the device clean and uncached, and reads it only after the
+device has finished.</p>
+</details>
+<h3 id="lab-37--a-user-program-and-its-kernel">Lab 37 — A user program and its kernel</h3>
+<p><a href="labs/malta_user.asm"><code>labs/malta_user.asm</code></a> (<code>--board malta --boot user --mmu
+tlb</code>) prints 55 through the kernel and is then killed.  Why does the
+user program need the kernel to print, and why ExcCode 11?  Where in
+physical memory is <code>main</code>?  Why does the kernel save <code>$sp</code> and the
+others, but not <code>$s0</code> / <code>$s1</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>In user mode only kuseg is reachable: the UART (kseg1) and the boot
+monitor's code (kseg0) are kernel addresses, an access there is an
+address error; the kernel runs its <code>print</code> for it.  <code>mfc0</code> needs
+coprocessor 0, which user mode may not use (Status.CU0 = 0): a
+Coprocessor Unusable exception, ExcCode 11, which the kernel answers by
+ending the program.  <code>main</code> is at <code>0x00400000</code>; the firmware's refill
+handler maps kuseg to <code>0x04000000 + (VA mod 64 MB)</code> on a 128 MB Malta:
+physical <code>0x04400000</code> (<code>translate 0x00400000</code> in the debugger says so).
+The kernel saves what it overwrites — its stack pointer, the registers
+its print routine and the monitor's <code>print</code> use (o32: the caller-saved
+ones) — and restores them before the <code>eret</code>, so the program continues as
+if nothing happened; <code>$s0</code>–<code>$s7</code> are callee-saved, the monitor keeps
+them, and the kernel does not touch them.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

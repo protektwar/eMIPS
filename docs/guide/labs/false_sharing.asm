@@ -36,3 +36,4 @@ core1:  li    $t4, 1
         sw    $t4, done
 park:   wait
         b     park
+# eMIPS: --cores 2 --caches --pipeline --model 24k    (the settings this program runs with)

@@ -15,3 +15,4 @@ main:   la    $t0, a
         syscall
         li    $v0, 10
         syscall
+# eMIPS: --mmu tlb    (the settings this program runs with)

@@ -20,3 +20,4 @@ main:   li    $t0, 0x12345000
         syscall
         li    $v0, 10
         syscall
+# eMIPS: --model 24k --pipeline    (the settings this program runs with)

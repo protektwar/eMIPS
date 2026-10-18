@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emips"
-version = "2.0.0"
+version = "2.1.0"
 description = "A MIPS32 teaching emulator: assembler, disassembler, every release R1-R6, CP0, FPU, caches, TLBs, the 5-stage and 24K pipelines, multi-core, EJTAG"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,6 @@ Homepage = "https://github.com/protektwar/eMIPS"
 Guide = "https://github.com/protektwar/eMIPS/blob/main/docs/guide/index.html"
 
 [project.optional-dependencies]
-diagrams = ["Pillow>=10"]
 # graphical front end (emips/gui; PySide6 also works)
 gui = ["PyQt6>=6.4"]
 
@@ -37,4 +36,4 @@ include = ["emips*"]
 
 [tool.setuptools.package-data]
 "emips" = ["data/*.json", "data/*.dat", "gui/examples/*.asm", "gui/translations/*.ts",
-            "c/*.S", "c/*.c", "c/*.h", "c/*.ld"]
+            "c/*.S", "c/*.c", "c/*.h", "c/*.ld", "firmware/*.asm"]

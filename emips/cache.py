@@ -1143,7 +1143,11 @@ class Memory:
                     m.phys_write_byte(a, byte)
 
     def peek(self, pa: int) -> int | None:
-        raw = self.c.m.mem.get_memory().get(format(pa & M32, "x"))
+        m = self.c.m
+        board = m.board
+        if board is not None and board.bus.covers(pa & M32):
+            return board.bus.peek(m, pa & M32, 1)        # None: nothing there
+        raw = m.mem.get_memory().get(format(pa & M32, "x"))
         return None if raw is None else int(raw, 16)
 
 

@@ -27,3 +27,4 @@ main:   li    $t0, BLOCK
         syscall                      # 10
         li    $v0, 10
         syscall
+# eMIPS: --model 24k --caches --pipeline    (the settings this program runs with)

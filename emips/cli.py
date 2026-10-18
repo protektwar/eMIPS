@@ -305,7 +305,9 @@ class Debugger(cmd.Cmd):
             r = s.run(max_steps=chunk)
             total.steps += r.steps
             total.stopped, total.error = r.stopped, r.error
-            self._flush_output(newline=r.stopped != "input")
+            # between chunks the output goes on as it is (slow serial text);
+            # a stop ends its line so the debugger's message starts a new one
+            self._flush_output(newline=bool(r.stopped or r.error) and r.stopped != "input")
             if r.stopped == "input" and self._input_needed():
                 continue
             if r.stopped or r.error:
@@ -661,6 +663,39 @@ class Debugger(cmd.Cmd):
         else:
             raise CliError("probe [on [trap] [boot] | off | load FILE | break | "
                            "fastdata WORD... | profile [on|off] | mem ADDR] (help probe)")
+
+    def do_board(self, arg: str) -> None:
+        """board   the board (--board / set board): flat, or the MIPS Malta —
+        its SDRAM, LEDs and ASCII display, the GT-64120's interrupt cause and
+        error registers, and its address decode (what answers where)."""
+        self._need_program()
+        if arg.strip():
+            raise CliError("board (no arguments; set board flat|malta[:RAM_MB[:SWITCHES]])")
+        for line in self.s.board_lines():
+            self.say(line)
+
+    def do_disk(self, arg: str) -> None:
+        """disk [save SLOT [FILE] | show SLOT LBA [N]]   the Malta's IDE disks
+        (--disk / set disks): each one's state, registers and last commands;
+          disk save SLOT [FILE]   write the disk as the program left it (default:
+                                  its image file; the next load starts from it)
+          disk show SLOT LBA [N]  hex dump of N sectors (default 1) from LBA"""
+        self._need_program()
+        parts = arg.split()
+        try:
+            if not parts:
+                for line in self.s.disk_lines():
+                    self.say(line)
+            elif parts[0] == "save" and len(parts) in (2, 3):
+                self.say(self.s.save_disk(parts[1], parts[2] if len(parts) == 3 else None))
+            elif parts[0] == "show" and len(parts) in (3, 4):
+                for line in self.s.disk_sector(parts[1], int(parts[2], 0),
+                                               int(parts[3], 0) if len(parts) == 4 else 1):
+                    self.say(line)
+            else:
+                raise CliError("disk [save SLOT [FILE] | show SLOT LBA [N]] (help disk)")
+        except (ValueError, OSError) as exc:
+            raise CliError(str(exc)) from None
 
     def do_trace(self, arg: str) -> None:
         """trace [on [OPTIONS] | off | show [N] | words [N] | formats [N] |
@@ -1464,7 +1499,8 @@ class Debugger(cmd.Cmd):
         exceptions cp0|stop | syscalls on|off | names abi|numeric |
         icache|dcache|l2|l3 SIZE[:WAYS[:LINE]]|none | write-buffer on|off |
         mmu fixed|bat|tlb[:N]|ftlb[:N[:SxW]][+sc][+pw] | model 5-stage|24k |
-        cores 1..4 | shadow-sets 1..16
+        cores 1..4 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
+        disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off
         (changes reassemble or restart the program)"""
         parts = arg.split()
         if len(parts) != 2:
@@ -1505,6 +1541,10 @@ class Debugger(cmd.Cmd):
             o.write_buffer = on
         elif key == "model" and value.lower() in ("5-stage", "24k"):
             o.model = value.lower()
+        elif key == "iocu":
+            if on and (o.cores < 2 or o.board.split(":")[0] != "malta"):
+                raise CliError("an IOCU needs a multi-core Malta: set board malta, set cores 2")
+            o.iocu = on
         elif key == "cores" and value in ("1", "2", "3", "4"):
             o.cores = int(value)
         elif key == "shadow-sets" and value.isdigit() and 1 <= int(value) <= 16:
@@ -1516,6 +1556,24 @@ class Debugger(cmd.Cmd):
             except ValueError as exc:
                 raise CliError(str(exc)) from None
             o.mmu = value.lower()
+        elif key == "board":
+            from .malta import make_board
+            try:
+                make_board(value)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            o.board = value.lower()
+        elif key == "disks":
+            from .malta import parse_disks
+            value = "" if value.lower() == "none" else value
+            try:
+                parse_disks(value)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            if value and o.board.split(":")[0] != "malta":
+                raise CliError("the IDE disks are on the Malta: set board malta first")
+            o.disks = value
+            s._media = {}
         else:
             raise CliError(f"unknown option or value: set {arg}")
         self._reload()
@@ -1525,6 +1583,8 @@ class Debugger(cmd.Cmd):
         if not s.source:                       # nothing loaded yet
             return
         ok = (s.load_hex(s.source) if s.kind == "hex" else
+              s.load_c(s.c_text, Path(s.c_file).name, optimize=f"-O{s.options.c_optimize}")
+              if s.c_file is not None else
               s.load_elf(s.elf_data, s.source) if s.kind == "elf" else s.load_source(s.source))
         self._printed = 0
         if not ok:
@@ -1590,6 +1650,7 @@ looking      regs [$r ...]   cp0   fpu   mem [-p] LOC [WORDS] (x)   translate LO
              probe [on|off|load|break|fastdata|profile] (EJTAG probe)   tap ir|dr|reset
              core [buffer|predict|units] (the 24K model)   cpu [N] (the cores)   cm [LOC]   gic   cps
              where   view (inside the last instruction)   chart (pipeline)   print VALUE (p)
+             board (the Malta)   disk [save|show] (its IDE disks)   trace [on|show|...]
 tools        decode WORD   encode INSTRUCTION   ref TEXT
 console      input TEXT (a line for read_*)   keys TEXT (MMIO keyboard)
 setup        mode instruction|pipeline   set OPTION VALUE (help set)   load FILE
@@ -1616,16 +1677,10 @@ def load_file(s: Session, path: str, say) -> bool:
         return False
     text = raw.decode("utf-8", errors="replace")
     if path.lower().endswith(".c"):                    # C: built first (emips.cc)
-        from .cc import BuildError, build
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix="emips-") as tmp:
-            out = Path(tmp) / (Path(path).stem + ".elf")
-            try:
-                build([path], out, release=s.release, endian=s.endian)
-            except BuildError as exc:
-                say(f"error: {path}: {exc}")
-                return False
-            raw = out.read_bytes()
+        ok = s.load_c(text, Path(path).name, optimize=f"-O{s.options.c_optimize}")
+        if not ok:
+            say(f"error: {path}: {s.errors[0]}")
+        return ok
     if raw[:4] == b"\x7fELF":                          # an ELF executable (emips.elf)
         ok = s.load_elf(raw, path)
     else:
@@ -1656,15 +1711,59 @@ def options_from_args(args) -> Options:
                    mem_timing=dict(MEMORY_TIMING, **(getattr(args, "mem_timing", None) or {})),
                    nonblocking=getattr(args, "nonblocking", False),
                    mmu=getattr(args, "mmu", None) or "fixed",
+                   board=getattr(args, "board", None) or "flat",
+                   disks=",".join(getattr(args, "disk", None) or []),
                    model=getattr(args, "model", None) or "5-stage",
                    cores=getattr(args, "cores", None) or 1,
+                   iocu=getattr(args, "iocu", False),
                    shadow_sets=getattr(args, "shadow_sets", None) or 4)
 
 
+def apply_header(args) -> str | None:
+    """The program's ``eMIPS:`` header (emips.profile) supplies the flags
+    the command line did not give; returns what it applied (None: no
+    header)."""
+    from .profile import read
+    path = getattr(args, "file", None)
+    if not path or getattr(args, "no_header", False):
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        prof = read(text, Path(path).resolve().parent)
+    except OSError:
+        return None
+    except ValueError as exc:
+        sys.exit(f"{path}: {exc}")
+    if prof is None:
+        return None
+    defaults = {"endian": "big", "boot": "kernel"}
+    for key, value in prof.given.items():
+        if key == "little":
+            if getattr(args, "endian", "big") == "big":
+                args.endian = "little"
+            continue
+        if not hasattr(args, key):
+            continue                            # e.g. --pipeline for pipe
+        cur = getattr(args, key)
+        if cur in (None, False) or cur == defaults.get(key):
+            setattr(args, key, value)
+    return prof.describe()
+
+
 def session_from_args(args) -> Session:
+    from .compat import adjust, explain, problems
+    apply_header(args)
+    options = options_from_args(args)
+    given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
+                            ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"))
+             if getattr(args, a, None) not in (None, "kernel")}
+    options, _notes = adjust(options, args.release or "R5", keep=given)
+    bad = problems(options, args.release or "R5")
+    if bad:                                     # given together on purpose: refuse
+        sys.exit("these settings do not go together: " + explain(bad))
     s = Session(release=args.release or "R5", endian=args.endian,
                 mode="pipeline" if getattr(args, "pipeline", False) else "instruction",
                 forwarding=not getattr(args, "no_forwarding", False),
                 abi=not getattr(args, "numeric", False),
-                options=options_from_args(args))
+                options=options)
     return s

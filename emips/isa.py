@@ -3,7 +3,7 @@
 This is the emulator's decode, as distinct from the legacy table lookup
 :meth:`emips.instruction.InstructionSet.find`.  The table is the Ruby dump
 plus the cited M2 corrections (``emips/data/corrections.json``), checked
-against GNU binutils by ``tools/audit_isa_binutils.py``.  The model
+against GNU binutils (every word decoded both ways).  The model
 (see ``audit`` in ``isaref.json``):
 
 * the 32-char ``encode`` template is the **sole** decode key, frozen to a

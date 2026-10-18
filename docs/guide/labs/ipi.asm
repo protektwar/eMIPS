@@ -65,3 +65,4 @@ sleep:  wait
         sw    $k1, 0($k0)
         sync                         # visible before the eret
         eret
+# eMIPS: --cores 4    (the settings this program runs with)

@@ -704,6 +704,7 @@ class DisassemblyView(QtWidgets.QTableWidget):
         self.horizontalHeader().setStretchLastSection(True)
         self._rows: list[int] = []
         self._cache: list = []
+        self._shown: int | None = None
 
     def refresh(self, s: Session) -> None:
         rows = s.disassembly()
@@ -711,14 +712,28 @@ class DisassemblyView(QtWidgets.QTableWidget):
             self._cache = rows
             self.setRowCount(len(rows))
             self._rows = [a for a, *_ in rows]
+            c_lines = s.c_text.splitlines() if s.c_text is not None else None
+            last = None
             for r, (a, w, text, line) in enumerate(rows):
                 _set(self, r, 0, f"0x{a:08x}")
                 _set(self, r, 1, f"{w:08x}")
                 _set(self, r, 2, text)
-                _set(self, r, 3, str(line))
+                if line is None:
+                    _set(self, r, 3, "")
+                elif c_lines is not None:       # a C program: the C line's text, once
+                    code = c_lines[line - 1].strip() if 0 < line <= len(c_lines) else ""
+                    _set(self, r, 3, f"{line}: {code}" if line != last else f"{line}")
+                else:
+                    _set(self, r, 3, str(line))
+                last = line
             self.resizeColumnsToContents()
+            self._shown = None
         stage_of = {pc: st for st, pc in s.stage_pcs().items()}
         cur = s.current_pc()
+        if cur != self._shown and cur in self._rows:   # keep the next instruction in view
+            self._shown = cur
+            self.scrollToItem(self.item(self._rows.index(cur), 0),
+                              QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible)
         for r, a in enumerate(self._rows):
             bg = None
             if a in stage_of:

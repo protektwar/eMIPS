@@ -16,3 +16,4 @@ loop:   lw    $t2, 0($t0)
         bnez  $s1, pass
         li    $v0, 10
         syscall
+# eMIPS: --dcache 1K:1:16    (the settings this program runs with)

@@ -18,6 +18,7 @@
 <li><a href="04-command-line.html">4 The command line</a></li>
 <li><a href="05-understanding.html">5 Understanding</a></li>
 <li><a href="06-reference.html">6 Reference</a></li>
+<li><a href="features.html">What's in eMIPS</a></li>
 </ul>
 </nav>
 </header>
@@ -62,7 +63,7 @@ to know exactly what something does.</p>
 <tr>
 <td>2</td>
 <td><strong>Toolbar</strong></td>
-<td>Assemble, Reset, Step Back, Step, Run, Pause; the mode; forwarding; the core (with more than one); the run speed</td>
+<td>Assemble (Build for C), Reset, Step Back, Step, Step Line, Run, Pause; the mode (instruction, 5-stage pipeline, 24K pipeline); forwarding; the core (with more than one); the run speed — and the <strong>Machine</strong> toolbar: release, board, MMU, cores, caches (<a href="#the-machine-toolbar">below</a>)</td>
 </tr>
 <tr>
 <td>3</td>
@@ -86,7 +87,7 @@ to know exactly what something does.</p>
 </tr>
 <tr>
 <td>7</td>
-<td><strong>Console, Memory, Caches, TLB, Counters, Trace, System, Messages</strong></td>
+<td><strong>Console, Memory, Caches, TLB, Counters, Trace, Board, System, Messages</strong></td>
 <td>tabs of the bottom area</td>
 </tr>
 <tr>
@@ -96,6 +97,19 @@ to know exactly what something does.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="the-machine-toolbar">The Machine toolbar</h3>
+<p>The second toolbar chooses the machine in one click: the <strong>MIPS32
+release</strong> (R1–R6), the <strong>board</strong> (flat memory or the MIPS Malta), the
+<strong>MMU</strong> (fixed mapping, BAT, the 24K's TLB, VTLB + FTLB), the number of
+<strong>cores</strong> and the 24K's L1 <strong>caches</strong>; the mode box beside the run
+buttons chooses Instruction, the 5-stage pipeline or the <strong>24K
+pipeline</strong>.  More shapes (L2 / L3, other cache sizes, segmentation
+control, the walker) are in Configure → Settings.  Only what goes
+together is offered: choosing Release 1 makes a single core with no
+shadow register sets (the message says so), the Malta is greyed out for a
+C program (its tooltip says why) — see <a href="features.html#settings-that-go-together">What's in eMIPS</a>.  A
+feature you switch on brings up its pane: the caches the Caches tab, a
+TLB the TLB tab, cores the System tab, the Malta the Board tab.</p>
 <h3 id="moving-the-panes">Moving the panes</h3>
 <p>Everything except the editor is a <strong>pane</strong> with a title bar:</p>
 <ul>
@@ -385,7 +399,7 @@ the instruction in it.</p>
 <td>13</td>
 <td><strong>ALU</strong></td>
 <td>EX</td>
-<td>the operation is written above it (<code>a + b</code>, <code>a \| b</code> ...), the result at its right</td>
+<td>the operation is written above it (<code>a + b</code>, <code>a | b</code> ...), the result at its right</td>
 </tr>
 <tr>
 <td>14</td>
@@ -550,7 +564,16 @@ cacheability attribute),
 the <strong>branch</strong> decision, and its <strong>effects</strong> (memory read / written,
 registers changed).  An exception is shown in red.  See the picture in
 <a href="01-getting-started.html#15-a-first-program-in-the-window">Phase 1</a>.</p>
-<h3 id="the-source-pane-c-programs">The Source pane (C programs)</h3>
+<h3 id="the-source-pane-c-programs">C programs and the Source pane</h3>
+<p>A C program is edited in the editor like an assembly program (File →
+New C Program, or open a <code>.c</code>): <strong>Build</strong> (Ctrl+B) compiles it with
+clang or a MIPS GCC for the selected release (Settings → Assembler sets the
+optimisation, <code>-O0</code> by default), a compile error marks its line.  The
+editor's highlights and breakpoints are C lines — a breakpoint on a line
+the compiler copied in several places (inlined) stops at each — and the
+<strong>Disassembly</strong> pane shows the machine code with each C line's text above
+it: the C program as assembly.  Step (F10) runs one instruction, Step Line
+(F11) one C line.</p>
 <p>An ELF executable built from C (<a href="02-writing-programs.html#218-programs-in-c">Phase 2,
 2.18</a>) opens as a read-only
 listing — the disassembly, with each C line above its instructions —
@@ -715,7 +738,26 @@ rather than lose trace.  Below: the state of the TCB and the program
 flow regenerated from the trace words (the last 200 instructions; only
 while the pane is shown).  The settings are TAP scans, kept across Reset
 and Step Back (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>).</p>
+<h3 id="board">Board</h3>
+<p>The <strong>Board</strong> pane (a tab of the bottom area) shows the board the program
+runs on.</p>
+<p><img alt="The Board pane on the Malta: LEDs, the ASCII display, the switches, the GT-64120" src="img/03-board.png"></p>
+<p>  On the flat board (the default) it only says that every
+physical address is RAM.  On the <strong>MIPS Malta</strong> (Settings → Processor →
+<strong>Board</strong>, with the size of its <strong>SDRAM</strong>, its <strong>switches S2</strong> and its
+<strong>core clock</strong>) it draws
+the eight LEDs (LEDBAR), the eight-character ASCII display, the switches
+and an <strong>ON/NMI</strong> button (a Non Maskable Interrupt, as on the real board);
+below, the GT-64120 system controller: its interrupt cause, the last bus
+error and decode error addresses, and what it decodes where (<a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5, A
+real board</a>).  The disks of Settings → Processor → <strong>IDE primary / secondary
+master / slave</strong> (an image file, or <code>blank:SIZE</code>) are listed with their
+state and their last commands; <strong>Save Disk…</strong> writes the chosen one as the
+program left it — every run starts from its image (<a href="05-understanding.html#an-ide-disk">Phase 5, An IDE
+disk</a>).</p>
 <h3 id="more-than-one-core-the-system-pane">More than one core: the System pane</h3>
+<p>On the Malta, Settings → Processor → <strong>I/O Coherence Unit</strong> (with Cores
+above 1) makes its DMA coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>).</p>
 <p>With Settings → Processor → <strong>Cores</strong> above 1, the toolbar's <strong>core
 selector</strong> (with each core's power state) chooses the core every pane
 shows — registers, datapath, pipeline chart, caches, TLB, counters,
@@ -1052,12 +1094,12 @@ translations with Qt Linguist or a text editor.</p>
 <tr>
 <td>New</td>
 <td>Ctrl+N</td>
-<td>an empty editor (asks to save changes)</td>
+<td>an empty editor (asks to save changes); <strong>New C Program</strong> (Ctrl+Shift+N): a small C program to start from</td>
 </tr>
 <tr>
 <td>Open…</td>
 <td>Ctrl+O</td>
-<td>an assembly source (<code>.asm</code>, <code>.s</code>) or an Intel HEX file (<code>.hex</code>)</td>
+<td>an assembly source (<code>.asm</code>, <code>.s</code>), a C program (<code>.c</code>), an Intel HEX file (<code>.hex</code>) or an ELF executable; a program's <code># eMIPS:</code> line sets the machine up (<a href="features.html#a-programs-own-settings">What's in eMIPS</a>)</td>
 </tr>
 <tr>
 <td>Open Intel HEX…</td>
@@ -1072,7 +1114,7 @@ translations with Qt Linguist or a text editor.</p>
 <tr>
 <td>Examples</td>
 <td></td>
-<td>the nine example programs (an R6 example switches the release to R6)</td>
+<td>the example programs, each with the settings it needs; <strong>Labs</strong>: every lab of the guide and the other programs it uses, opened with the settings they are made for</td>
 </tr>
 <tr>
 <td>Save / Save As…</td>
@@ -1098,15 +1140,16 @@ Breakpoints.  Undo, Copy and Paste act on the field that has the
 keyboard focus (the editor, a console field ...).</p>
 <p><strong>Run</strong> — Assemble, Run, Pause, Step, Step Back, Run to Cursor, Reset;
 Debug Interrupt (DINT: EJTAG Debug Mode, <a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>);
-Mode (Instruction / 5-stage pipeline); Forwarding.</p>
+Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline); Forwarding.</p>
 <p><strong>View</strong> — show or hide each pane (Datapath, Pipeline, Disassembly,
 Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
-System, Messages); Register Names (ABI <code>$t0</code> / numbers
+Board, System, Messages); Register Names (ABI <code>$t0</code> / numbers
 <code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
 <p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
 <p><strong>Configure</strong> — Settings…; MIPS32 Release; Byte Order; Theme; Language.</p>
 <p><strong>Help</strong> — User Guide (F1: this guide in a window of its own — see
-<a href="#the-user-guide">The user guide</a>), Quick Start, Keyboard Shortcuts (the complete list, as
+<a href="#the-user-guide">The user guide</a>), What's in eMIPS (every feature and where it
+is), Quick Start, Keyboard Shortcuts (the complete list, as
 your system shows them), System Calls, Registers, About eMIPS, About Qt.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="02-writing-programs.html">Phase 2 — Writing programs</a> · next: <a href="04-command-line.html">Phase 4 — The command line</a></nav>

@@ -1,6 +1,6 @@
 /* Lab: a C program on eMIPS (python3 -m emips cc c_primes.c).
- * Counts the primes below 100 with a sieve; c_primes.elf is the
- * prebuilt executable (tools/build_elf_fixtures.py). */
+ * Counts the primes below 100 with a sieve; c_primes.elf is the same
+ * program already built, for a computer without a C compiler. */
 #include "emips.h"
 
 #define N 100

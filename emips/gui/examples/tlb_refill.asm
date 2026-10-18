@@ -54,3 +54,4 @@ user:   lw    $a0, value            # a TLB miss: the handler maps the data
         syscall
         li    $v0, 10
         syscall
+# eMIPS: --mmu tlb    (the settings this program runs with)

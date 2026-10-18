@@ -27,3 +27,4 @@ main:   li    $t0, 0x80100000           # the directory (kseg0)
         syscall
         li    $v0, 10
         syscall
+# eMIPS: --mmu tlb+pw    (the settings this program runs with)

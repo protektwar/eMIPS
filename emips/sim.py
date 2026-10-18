@@ -62,6 +62,7 @@ from . import pdtrace as PDT
 from . import fpu as F
 from . import perf
 from .exceptions import (
+    BusError,
     CP0RegisterError,
     FetchError,
     IllegalInstructionError,
@@ -203,6 +204,126 @@ DEVIATIONS: dict[str, str] = {
                             "R6 misaligned access spanning two words uses the "
                             "lanes of Table 5.5 and compares the value it "
                             "moved (UNPREDICTABLE).",
+    "Malta board": "the MIPS Malta with a CoreLV card (emips.malta, "
+                   "emips.gt64120; MD00048, MD00007, the GT-64120 datasheet rev. "
+                   "0.2): the real Core24K card's MSC01 controller was never "
+                   "documented publicly, so the 24K sits on the CoreLV's "
+                   "GT-64120, as in QEMU. Bus errors follow the datasheet (4.5) "
+                   "and the 24K (5.8.13): a read nothing decodes is a bus error "
+                   "(IBE precise, DBE imprecise: the load's register gets 0), a "
+                   "write only the GT-64120 interrupt (QEMU raises DBE on "
+                   "stores); a write-allocate refill that fails is a DBE, the "
+                   "store lost. The GT-64120's CPU-side remap registers, timers, "
+                   "DMA engines and PCI_1 are stored but not used (the PCI target "
+                   "BARs, bank sizes, remaps and enables are); its internal "
+                   "space answers 4 KB; SDRAM decoded beyond the installed size "
+                   "reads 0; the registers are always little-endian (the CoreLV "
+                   "strapping; CPU Configuration bit 12 and PCI_0 Command bit 0 "
+                   "choose only the PCI byte lanes). The boot "
+                   "firmware programs the decoders as YAMON's map says (MD00008 "
+                   "Table 3.1); BootCS covers 0x1E000000-0x1FFFFFFF so the "
+                   "monitor flash answers (the CoreLV manual's 0xF0 would leave "
+                   "it out; YAMON's own values are unpublished). The CBUS "
+                   "answers 0 where no Malta device sits; the monitor flash is "
+                   "read-only (no CFI commands); SOFTRES ends the program (Run "
+                   "→ Reset starts it again); the MARS MMIO console is not on "
+                   "the board (the system calls stay). PCI memory has no device "
+                   "(master abort: all ones). The south bridge (emips.piix4, "
+                   "superio, uart16550): the core runs at the board's clock "
+                   "(default 10 MHz, so serial characters and timer ticks come "
+                   "within thousands of instructions; malta:RAM:SW:MHZ changes "
+                   "it); the RTC powers up at 2026-01-01 00:00:00 running in BCD "
+                   "24-hour mode (deterministic replay), its writes take effect at "
+                   "once, DSE is ignored; the 8259s are masked until their ICW "
+                   "sequence (their reset state is undefined); the PIIX4's USB "
+                   "and power-management functions have their PCI headers only, "
+                   "the Super I/O's floppy, parallel and keyboard "
+                   "devices their configuration registers only; ISA ports nothing "
+                   "answers read 0xFF; the serial terminal asserts CTS / DSR / DCD "
+                   "and never sends a parity / framing error or a break, RTS / CTS "
+                   "flow control is not enforced; 1.5 stop bits count as 1. The "
+                   "firmware sets the serial ports as YAMON does (38400 8N1, "
+                   "FIFOs on, OUT2 off) and routes PIRQA-D to IRQ 10, 10, 11, 11.",
+    "DMA": "the PIIX4's bus master IDE (emips.busmaster) through the "
+           "GT-64120's PCI target (MaltaBoard.dma_access): below every cache "
+           "level and the write buffer — not coherent, as on the Malta (Linux "
+           "uses software coherency there). eMIPS choices: a transfer moves up "
+           "to a sector per step (the PIIX4's 64-byte line buffer and PCI "
+           "bursts are not modelled; the destination is checked before data "
+           "leaves the disk), at the rate of the disk's DMA mode (multiword "
+           "480 / 150 / 120 ns per word, Ultra DMA 16.7 / 25 / 33.3 MB/s; Ultra "
+           "DMA only with the drive's UDMACTL bit, else multiword 2), the "
+           "power-on mode multiword DMA 2; the alignment rules of PRDs and "
+           "regions (dword, no 64 KB / 4 KB crossing) are not checked (bit 0 "
+           "of an address and a count is ignored); a direction that does not "
+           "match the disk's command moves nothing; a target retry is never "
+           "given up (the PIIX4 retries forever). The firmware puts the bus "
+           "master block at I/O 1000h and opens the GT-64120's BAR0 over the "
+           "whole SDRAM at PCI 0 (Memory / Master Enable; SCS[3:2] and the CS "
+           "BARs disabled), so a PCI address is the physical address. A "
+           "multi-core Malta (cores > 1) puts the CPS — the CM, CPC and GIC at "
+           "Linux's Malta addresses, decoded before the GT-64120 — on the "
+           "CoreLV's GT-64120, as QEMU does (the real multi-core Malta cards, "
+           "CoreFPGA with the ROC-it controller, were never documented "
+           "publicly); the 8259s' INTR is GIC shared interrupt 3 (Linux "
+           "malta.dts, QEMU), routed by the firmware to core 0's pin 0; the "
+           "board's other lines go to core 0 directly, ORed with the GIC's pins "
+           "(not seen in EIC mode). The IOCU option (GCR_CONFIG.NUMIOCU = 1) "
+           "puts an I/O Coherence Unit behind the GT-64120's PCI target — a "
+           "pairing no real card had (the IOCU came with ROC-it): DMA to the "
+           "SDRAM becomes coherent (reads as CohReadDiscard: a Modified copy "
+           "supplies its line, nothing changes state; writes invalidate every "
+           "copy, a Modified one written back first), snooping the cores whose "
+           "COH_DOMAIN_EN has bit 4; the cores' write buffers are emptied "
+           "before each IOCU request; DMA with reversed byte lanes does not use "
+           "it; CPU accesses to PCI still go to the GT-64120 (no address region "
+           "targets the IOCU's MMIO port).",
+    "Boot monitor": "the Malta's eMIPS monitor (emips/firmware/monitor.asm, "
+                    "emips.monitor) gives YAMON's application interface (MD00008 "
+                    "ch. 5: the context of Table 5.1, the function table at "
+                    "0x1fc00500 with yamon_api.h's offsets) — it is not YAMON: no "
+                    "shell, no load / go commands (eMIPS's loader plays them and "
+                    "writes the application descriptor at 0x8000c000), no "
+                    "environment in flash, no SPD SDRAM detection (the image is "
+                    "built for the board). Its functions use the caller's stack "
+                    "(YAMON switches to its own); print / print_count / getchar "
+                    "use tty0 whatever the port, no CR is added; syscon_read "
+                    "knows ids 34-36 only (the other ids of YAMON's syscon_api.h "
+                    "are unpublished: -1); register_esr's retfunc ends the "
+                    "application; an interrupt or exception nobody registered is "
+                    "masked / ends the application with a message (YAMON: its "
+                    "register dump); exit waits for tty0 to send its FIFO and "
+                    "ends the run with the eMIPS exit service (YAMON: its "
+                    "prompt). The vectors go to RAM only where the application "
+                    "has no code (0x80000180 / 0x80000200, the TLB refill at "
+                    "0x80000000); $gp is set as for eMIPS programs (YAMON: not). "
+                    "The kernel boot sets the same state in Python (the tests "
+                    "compare them); --boot reset runs the code.",
+    "IDE disks": "ATA/ATAPI-4 devices (T13 1153D rev. 18) on the PIIX4's IDE "
+                 "channels (emips.ata). eMIPS choices where ATA-4 leaves it to "
+                 "the device: the busy times (ata.TIMING_US: microseconds, not "
+                 "a real disk's milliseconds and seconds — command 5, first "
+                 "sector 100, further sectors 10, a written block 100, reset "
+                 "400, power-on 2000, spin-up from Standby 1000); the address "
+                 "registers end at the last sector transferred and Sector Count "
+                 "counts the sectors left (ATA-4: not applicable); a command "
+                 "written while DRQ is set abandons the transfer (7.4.3: "
+                 "indeterminate); both devices latch the DEV bit even while BSY "
+                 "(the selection never differs between them); while BSY the "
+                 "registers read as stored; a Data read without DRQ reads "
+                 "FFFFh; an undriven cable reads 7Fh (DD7 pulled down, the "
+                 "other lines high); Status reads 50h (DRDY, DSC) when ready. "
+                 "No write cache (SET FEATURES 02h / 82h and 05h / 85h abort; "
+                 "FLUSH CACHE succeeds at once); the default CHS translation "
+                 "is 16 heads x 63 sectors (fewer for a small disk); multiple "
+                 "mode is off after power-on; no SMART, security, host "
+                 "protected area, removable media or queued commands. The "
+                 "PIIX4's IDE timing registers are kept, not used (the disk's "
+                 "times are the times). Every run starts from the disk image "
+                 "(what a program writes stays in the run until saved: Reset "
+                 "and Step Back replay the same disk). The firmware enables "
+                 "the IDE function's I/O space and bus master, decodes both "
+                 "channels with compatible timing and waits for the disks.",
     "MIPS Trace": "PDtrace 4.x and a TCB as the 24K's options (MD00439 6.16, "
                   "MD00343 11.7-11.13; emips.pdtrace). eMIPS choices: the "
                   "PDtrace FIFO holds 8 records (unpublished); the TCB has 4 "
@@ -1049,8 +1170,10 @@ class Machine:
         self.on_irq_outputs: Callable[[], None] | None = None
         self._irq_out: tuple = (False, False, False, False)
         #: a data bus error waiting to be taken (imprecise: a CM error
-        #: response, emips.coherence)
+        #: response, emips.coherence; a read the board decodes as nothing)
         self.bus_error_pending: bool = False
+        #: the board (emips.malta) — None: every physical address is RAM
+        self.board = None
         #: an LL is loading (a coherent CCA 4 load then asks for Shared)
         self._linked: bool = False
         #: a Non Maskable Interrupt is waiting (an edge on the NMI input:
@@ -1598,7 +1721,17 @@ class Machine:
                 self.caches.coherent(self._cca(addr))
             byte = self.caches.view_data(addr & M32, pa, cached, coherent)
             return 0 if byte is None else byte
+        if self.board is not None and self.board.bus.covers(pa):
+            return self._board_peek(pa, 1)
         return self.phys_read_byte(pa)
+
+    def _board_peek(self, pa: int, size: int) -> int:
+        """A view of a board address (no side effects); nothing there: a
+        :class:`BusError`."""
+        value = self.board.bus.peek(self, pa, size)
+        if value is None:
+            raise BusError(pa, "view")
+        return value
 
     def read_byte(self, addr: int) -> int:
         """Data byte at virtual address *addr* as a load would see it now
@@ -1618,7 +1751,7 @@ class Machine:
         loader does: into memory and into every cached or buffered copy
         of it (no line is allocated, no dirty bit changes)."""
         pa = self.physical(addr)
-        self.phys_write_byte(pa, value)
+        self.phys_write_byte(pa if self.board is None else self.board.storage(pa), value)
         if self.caches is not None:
             self.caches.backdoor_write(pa, value)
 
@@ -1663,6 +1796,8 @@ class Machine:
                 data = c.read(addr & M32, pas, size, cca)
             except CacheError as err:
                 raise self._cache_arch(err) from None
+            except BusError:                    # the refill: a data bus error
+                return self._read_bus_error(addr, size)
             value = int.from_bytes(data, "big" if self.big_endian else "little")
             if self._mem_log is not None:
                 self._log("read", addr, size, value)
@@ -1671,7 +1806,10 @@ class Machine:
             c.read_request(pas[0], size, "load", no_cache=cca in self.cached_cca)
         for dev in self.devices:
             if dev.covers(pas[0]):
-                value = dev.load(self, pas[0], size)
+                try:
+                    value = dev.load(self, pas[0], size)
+                except BusError:
+                    return self._read_bus_error(addr, size)
                 if self._mem_log is not None:
                     self._log("read", addr, size, value)
                 return value
@@ -1684,6 +1822,16 @@ class Machine:
         if self._mem_log is not None:
             self._log("read", addr, size, value)
         return value
+
+    def _read_bus_error(self, addr: int, size: int) -> int:
+        """A read the board decodes as nothing: the Data Bus Error is
+        imprecise on the 24K (MD00343 5.8.13: taken before the next
+        instruction; the target register may be corrupted — eMIPS loads
+        0)."""
+        self.bus_error_pending = True
+        if self._mem_log is not None:
+            self._log("read", addr, size, 0)
+        return 0
 
     def store(self, addr: int, value: int, size: int, *, gather: bool = True,
               atomic: bool = False) -> None:
@@ -1730,6 +1878,9 @@ class Machine:
                 c.write(addr & M32, pas, value.to_bytes(size, order), cca, atomic)
             except CacheError as err:
                 raise self._cache_arch(err) from None
+            except BusError:                    # a write-allocate refill: DBE, the
+                self.bus_error_pending = True   # store data lost (24K ErrCtl.WABE)
+                return
             if old is not None:
                 self._log("write", addr, size, int.from_bytes(old, order), value)
             return
@@ -1769,6 +1920,9 @@ class Machine:
         pas = self._view_pas(addr, 4)
         cached = self._cached(addr)
         if not cached:
+            if self.board is not None and self.board.bus.covers(pas[0]):
+                if not any(d is not self.board.bus and d.covers(pas[0]) for d in self.devices):
+                    return self._board_peek(pas[0], 4)
             for dev in self.devices:
                 if dev.covers(pas[0]):
                     return dev.load(self, pas[0], 4)
@@ -1835,12 +1989,19 @@ class Machine:
                 data, known = c.fetch(addr, pas[0], cca)
             except CacheError as err:
                 raise self._cache_arch(err) from None
+            except BusError:                    # IBE: precise (MD00343 5.8.13)
+                raise _Arch(C.IBE, info={"why": "instruction fetch bus error"}) from None
             if known != 0xF:
                 i = next(k for k in range(4) if not known >> k & 1)
                 raise self._no_code(addr, i, pas[0] + i)
             return int.from_bytes(data, "big" if self.big_endian else "little")
         if c is not None:                       # write buffer before the read
             c.read_request(pas[0], 4, "fetch", no_cache=cca in self.cached_cca)
+        if self.board is not None and self.board.bus.covers(pas[0]):
+            try:
+                return self.board.bus.load(self, pas[0], 4)
+            except BusError:                    # IBE: precise (MD00343 5.8.13)
+                raise _Arch(C.IBE, info={"why": "instruction fetch bus error"}) from None
         mem = self.mem.get_memory()
         raw = [mem.get(format(pa, "x")) for pa in pas]
         for i, (pa, byte) in enumerate(zip(pas, raw)):
@@ -1887,6 +2048,8 @@ class Machine:
                     raise self._no_code(addr, i, p)
             return int.from_bytes(bytes(data), order)
         pas = self._view_pas(addr, 4)
+        if self.board is not None and self.board.bus.covers(pas[0]):
+            return self._board_peek(pas[0], 4)
         mem = self.mem.get_memory()
         raw = [mem.get(format(pa, "x")) for pa in pas]
         for i, (pa, byte) in enumerate(zip(pas, raw)):

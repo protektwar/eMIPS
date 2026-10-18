@@ -41,3 +41,4 @@ core1:  sync
         sw    $t2, done
 park:   wait
         b     park
+# eMIPS: --cores 2    (the settings this program runs with)

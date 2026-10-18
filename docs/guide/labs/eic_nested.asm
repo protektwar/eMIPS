@@ -123,3 +123,4 @@ note:   lw    $t0, order             # order = order << 4 | vector
         or    $t0, $t0, $t1
         sw    $t0, order
         eret
+# eMIPS: --cores 2    (the settings this program runs with)

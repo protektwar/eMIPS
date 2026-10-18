@@ -19,3 +19,4 @@ loop:   lw    $t3, 0($t0)          # a[i]
         bnez  $t2, loop
         li    $v0, 10
         syscall
+# eMIPS: --dcache 1K:1:16    (the settings this program runs with)

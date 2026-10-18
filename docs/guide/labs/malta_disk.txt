@@ -1,0 +1,2 @@
+Sector 0 of an IDE disk on the MIPS Malta.
+This file is the disk image: edit it, run the lab again.

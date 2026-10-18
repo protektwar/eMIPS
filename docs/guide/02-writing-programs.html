@@ -18,6 +18,7 @@
 <li><a href="04-command-line.html">4 The command line</a></li>
 <li><a href="05-understanding.html">5 Understanding</a></li>
 <li><a href="06-reference.html">6 Reference</a></li>
+<li><a href="features.html">What's in eMIPS</a></li>
 </ul>
 </nav>
 </header>
@@ -1166,8 +1167,10 @@ int main(void)
     return 0;
 }
 </code></pre>
-<p>Build it and run it (<code>run</code> also takes the <code>.c</code> itself and builds it
-first):</p>
+<p>In the window: File → Open the <code>.c</code> (or File → New C Program), Build
+(Ctrl+B), then step it line by line — the Disassembly pane shows the code the
+compiler made (<a href="03-the-gui.html#the-source-pane-c-programs">Phase 3</a>).  In the terminal, build it and run it
+(<code>run</code> also takes the <code>.c</code> itself and builds it first, at <code>-O0</code>):</p>
 <pre><code class="language-text">$ python3 -m emips cc docs/guide/labs/c_primes.c -O 0
 wrote docs/guide/labs/c_primes.elf: run it with  python3 -m emips run docs/guide/labs/c_primes.elf
 </code></pre>

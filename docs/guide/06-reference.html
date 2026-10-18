@@ -18,6 +18,7 @@
 <li><a href="04-command-line.html">4 The command line</a></li>
 <li><a href="05-understanding.html">5 Understanding</a></li>
 <li><a href="06-reference.html" aria-current="page">6 Reference</a></li>
+<li><a href="features.html">What's in eMIPS</a></li>
 </ul>
 </nav>
 </header>
@@ -717,6 +718,16 @@ entries.  Without caches all of them do nothing.</p>
 <td>address error on a store</td>
 </tr>
 <tr>
+<td style="text-align: right;">6</td>
+<td>IBE</td>
+<td>bus error on an instruction fetch: nothing answers the physical address (the Malta board; precise)</td>
+</tr>
+<tr>
+<td style="text-align: right;">7</td>
+<td>DBE</td>
+<td>bus error on a load (the Malta board): imprecise on the 24K — EPC is the instruction <em>after</em> the load</td>
+</tr>
+<tr>
 <td style="text-align: right;">8</td>
 <td>Sys</td>
 <td><code>syscall</code> not handled by the services</td>
@@ -856,6 +867,47 @@ pointing there; one met by an instruction fetch is taken at that fetch.</p>
 (Status.ERL = 0); in the reset state kuseg addresses are their own
 physical address.  Segments, who may access them and how they are
 translated: <a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>.</p>
+<p>On the <strong>Malta board</strong> (<code>--board malta</code>; <a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5, A real board</a>)
+the default segments are in kseg0 and the physical space is the board's:</p>
+<table>
+<thead>
+<tr>
+<th>Address</th>
+<th>Physical</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><code>0x80000180</code></td><td><code>0x00000180</code></td><td><code>.ktext</code> — the exception handler</td></tr>
+<tr><td><code>0x80010000</code></td><td><code>0x00010000</code></td><td><code>.kdata</code></td></tr>
+<tr><td><code>0x80100000</code></td><td><code>0x00100000</code></td><td><code>.text</code></td></tr>
+<tr><td><code>0x80200000</code></td><td><code>0x00200000</code></td><td><code>.data</code> (<code>$gp</code> = <code>0x80208000</code>)</td></tr>
+<tr><td>top of SDRAM − 16</td><td></td><td><code>$sp</code> at the start (YAMON's convention); <code>$a0</code>–<code>$a3</code> argc, argv, the environment, the SDRAM size; <code>$ra</code> back to the monitor</td></tr>
+<tr><td><code>0x8000c000</code>–<code>0x8000ffff</code></td><td><code>0x0000c000</code></td><td>the boot monitor's RAM: the application descriptor, argv and the environment, its ISR / ESR tables, its exception stack</td></tr>
+<tr><td><code>0x00400000</code>, <code>0x10010000</code></td><td>the top of the SDRAM</td><td>user boot with a TLB (<code>--boot user --mmu tlb</code>): <code>.text</code>, <code>.data</code> in kuseg, PA = base + (VA mod size): the largest power of two up to half the SDRAM (64 MB at 64 MB of 128)</td></tr>
+<tr><td><code>0x9fc00500</code></td><td><code>0x1fc00500</code></td><td>the boot monitor's function table (YAMON's): print_count 0x04, exit 0x20, flush_cache 0x2c, print 0x34, register / deregister CPU ISR 0x38 / 0x3c, IC ISR 0x40 / 0x44, ESR 0x48 / 0x4c, getchar 0x50, syscon_read 0x54</td></tr>
+<tr><td><code>0xb0000000</code></td><td><code>0x10000000</code></td><td>PCI memory (128 MB) — and <code>0x18200000</code> (60 MB)</td></tr>
+<tr><td><code>0xb8000000</code></td><td><code>0x18000000</code></td><td>PCI I/O: ISA port P at <code>0xb8000000 + P</code></td></tr>
+<tr><td><code>0xbbe00000</code></td><td><code>0x1be00000</code></td><td>the GT-64120's registers (little-endian; at reset <code>0x14000000</code>)</td></tr>
+<tr><td><code>0xbe000000</code></td><td><code>0x1e000000</code></td><td>the monitor flash (4 MB)</td></tr>
+<tr><td><code>0xbf000000</code></td><td><code>0x1f000000</code></td><td>the board registers: SWITCH <code>+0x200</code>, STATUS <code>+0x208</code>, LEDBAR <code>+0x408</code>, ASCIIWORD <code>+0x410</code>, ASCIIPOS0-7 <code>+0x418</code>…<code>+0x450</code>, SOFTRES <code>+0x500</code></td></tr>
+<tr><td><code>0xbfc00000</code></td><td><code>0x1fc00000</code></td><td>the boot flash (the monitor flash again); <code>0xbfc00010</code> reads REVISION</td></tr>
+</tbody>
+</table>
+<p>Anything else on the Malta is a bus error: a load gets DBE, a fetch IBE,
+a store nothing (the GT-64120 records it).  Its ISA ports (at <code>0xb8000000 +
+port</code>): the 8259s <code>0x20</code>/<code>0x21</code>, <code>0xa0</code>/<code>0xa1</code> (ELCR <code>0x4d0</code>/<code>0x4d1</code>),
+the 8254 <code>0x40</code>–<code>0x43</code>, NMISC <code>0x61</code>, the RTC <code>0x70</code>/<code>0x71</code>
+(<code>0x72</code>/<code>0x73</code> the extended CMOS RAM), the Super I/O configuration
+<code>0x3f0</code>/<code>0x3f1</code>, tty0 <code>0x3f8</code> (IRQ 4), tty1 <code>0x2f8</code> (IRQ 3), the IDE
+channels <code>0x1f0</code>–<code>0x1f7</code> / <code>0x3f6</code> (primary, IRQ 14) and <code>0x170</code>–<code>0x177</code> /
+<code>0x376</code> (secondary, IRQ 15; the Data register 16 bits wide), the IDE bus
+master <code>0x1000</code>–<code>0x1007</code> / <code>0x1008</code>–<code>0x100f</code> (command, status, PRD table
+pointer); DMA reaches memory at PCI address = physical address; tty2 at
+<code>0xbf000900</code> (CPU INT2); the GT-64120's PCI configuration address / data
+<code>0xbbe00cf8</code> / <code>0xbbe00cfc</code> and interrupt acknowledge <code>0xbbe00c34</code>.  CPU
+interrupts: INT0 the 8259s (IP2), INT2 tty2 (IP4), INT3 the GT-64120
+(IP5).</p>
 <h2 id="67-when-the-simulation-stops">6.7 When the simulation stops</h2>
 <p>Besides normal ends (exit, a breakpoint, the cursor line, an input
 request, the step limit), the simulation stops with a message in the
@@ -946,8 +998,12 @@ Not included:</p>
   with <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (the page table
   walker) — <a href="05-understanding.html#the-other-mmus">The other MMUs</a>; XPA
   (more than 32 physical address bits) is not modelled;</li>
-<li><strong>bus errors</strong> — every physical address is RAM (never-written bytes
-  read 0);</li>
+<li><strong>bus errors on the flat board</strong> — there every physical address is RAM
+  (never-written bytes read 0); the Malta board (<code>--board malta</code>) has
+  its real map and bus errors, the PIIX4 (8259s, 8254, RTC) and the
+  serial ports; its IDE disk and DMA come next, its floppy, parallel
+  port, keyboard, USB and Ethernet are not modelled (the monitor flash is
+  read-only: its programming commands are not modelled either);</li>
 <li><strong>memory wait states without caches</strong> — then every access takes one
   cycle.  The caches (L1, L2, L3) and the write buffer are simulated when
   turned on (Settings → Caches, <code>--caches</code>, <code>--l2</code>, <code>--write-buffer</code>):

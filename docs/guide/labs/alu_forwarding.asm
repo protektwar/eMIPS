@@ -5,3 +5,4 @@ main:   addiu $t0, $zero, 5
         subu  $t2, $t1, $t0     # $t1 from EX/MEM, $t0 from MEM/WB
         li    $v0, 10
         syscall
+# eMIPS: --pipeline    (the settings this program runs with)

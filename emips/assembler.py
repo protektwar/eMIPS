@@ -130,7 +130,8 @@ class Program:
         """address -> label (first defined), for the disassembler."""
         out: dict[int, str] = {}
         for name, addr in self.symbols.items():
-            out.setdefault(addr, name)
+            if not name.startswith(".L"):          # numeric local labels: no names
+                out.setdefault(addr, name)
         return out
 
     def load(self, machine, *, boot: bool = True) -> None:
@@ -163,7 +164,7 @@ class Program:
             raise ValueError(f"program is {self.endian}-endian, machine is not")
         fixed = getattr(machine.mmu, "mt", 3) == 3
         if boot:
-            from .tlb import boot_cca, firmware_refill
+            from .tlb import boot_cca, firmware_refill, user_window
             cca = boot_cca(machine)                    # 3; a CPS core: 5, coherent
             machine._cp0_set(C.STATUS, C.ST_CU1)
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
@@ -176,20 +177,27 @@ class Program:
                 tlb = machine.mmu.mt in (1, 4)              # BAT: no refill handler
                 machine.mmu.boot(machine, handler=tlb and not own)
                 if tlb and not own:
-                    fw = assemble(firmware_refill(cca), endian=self.endian,
+                    fw = assemble(firmware_refill(cca, user_window(machine)),
+                                  endian=self.endian,
                                   release=machine.release)
                     for addr, byte in fw.image.items():
                         machine.write_byte(addr, byte)
                     machine.firmware = fw
-            machine.write_reg(29, BOOT_SP)
-            machine.write_reg(28, BOOT_GP)
+            board = getattr(machine, "board", None)
+            if board is not None:                      # the board's firmware (YAMON)
+                board.firmware(machine)
+                machine.write_reg(29, board.stack_top())
+                machine.write_reg(28, self.segments.get("data", (0x80200000,))[0] + 0x8000)
+            else:
+                machine.write_reg(29, BOOT_SP)
+                machine.write_reg(28, BOOT_GP)
         for addr, byte in self.image.items():
             try:
                 machine.write_byte(addr, byte)
             except UnmappedAddress:
                 if boot and machine.mmu.mt in (1, 4):   # the firmware's convention
-                    from .tlb import firmware_map
-                    pa = firmware_map(addr)[0]
+                    from .tlb import boot_cca, firmware_map, user_window
+                    pa = firmware_map(addr, boot_cca(machine), user_window(machine))[0]
                     machine.phys_write_byte(pa, byte)
                     if machine.caches is not None:
                         machine.caches.backdoor_write(pa, byte)
@@ -244,6 +252,56 @@ class Program:
 
 _LABEL = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*:")
 _NAME = re.compile(r"[A-Za-z_.$][\w.$]*$")
+#: a numeric local label (GNU as: "1:"), and a reference to one ("1f" the
+#: next definition, "1b" the latest)
+_LOCAL = re.compile(r"^\s*(\d+)\s*:")
+_LOCAL_REF = re.compile(r"(?<![\w.$'])(\d+)([fb])(?![\w.$])")
+
+
+def _local_labels(texts: list[str]) -> list[str]:
+    """Give GNU as's numeric local labels names: definition k of label N
+    is ``.LN.k``; ``Nb`` refers to the latest definition at or before the
+    line, ``Nf`` to the next one after it (outside quotes)."""
+    defs: dict[str, list[int]] = {}
+    heads: list[list[tuple[str, int]]] = []
+    for i, t in enumerate(texts):
+        found = []
+        rest = t
+        while True:
+            m = _LOCAL.match(rest) or _LABEL.match(rest)
+            if not m:
+                break
+            if m.re is _LOCAL:
+                found.append((m.group(1), m.end()))
+                defs.setdefault(m.group(1), []).append(i)
+            rest = rest[m.end():]
+        heads.append(found)
+    if not defs:
+        return texts
+    seen: dict[str, int] = {}
+    out = []
+    for i, t in enumerate(texts):
+        for num, _end in heads[i]:
+            k = seen.get(num, 0)
+            seen[num] = k + 1
+            t = re.sub(rf"^(\s*(?:[A-Za-z_.$][\w.$]*\s*:\s*|\.L\d+\.\d+\s*:\s*)*){num}\s*:",
+                       rf"\g<1>.L{num}.{k}:", t, count=1)
+
+        def ref(m: re.Match, i: int = i) -> str:
+            num, way = m.group(1), m.group(2)
+            lines = defs.get(num)
+            if lines is None:
+                return m.group(0)
+            if way == "b":
+                ks = [k for k, line in enumerate(lines) if line <= i]
+                return f".L{num}.{ks[-1]}" if ks else m.group(0)
+            ks = [k for k, line in enumerate(lines) if line > i]
+            return f".L{num}.{ks[0]}" if ks else m.group(0)
+
+        parts = re.split(r"(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])')", t)
+        t = "".join(p if j % 2 else _LOCAL_REF.sub(ref, p) for j, p in enumerate(parts))
+        out.append(t)
+    return out
 
 
 def _strip_comment(line: str) -> str:
@@ -488,8 +546,10 @@ class Assembler:
         #: yet: an auto-aligning directive moves them along (GNU as, MARS)
         self._pending: list[str] = []
         prev: _Stmt | None = None                 # previous instruction
-        for n, raw in enumerate(source.splitlines(), start=1):
-            text = _strip_comment(raw)
+        lines = source.splitlines()
+        texts = _local_labels([_strip_comment(raw) for raw in lines])
+        for n, raw in enumerate(lines, start=1):
+            text = texts[n - 1]
             while True:
                 m = _LABEL.match(text)
                 if not m:

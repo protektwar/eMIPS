@@ -212,8 +212,8 @@ class GCR(_Registers):
             if o == CX_ID:
                 return core
             return self.core[core].get(o, 0)
-        if o == GCR_CONFIG:
-            return (4 << 16) | ((self.cps.n - 1) & 0xFF)    # 4 regions, no IOCU
+        if o == GCR_CONFIG:                        # 4 regions, NUMIOCU 11:8, PCORES
+            return (4 << 16) | (int(self.cps.iocu) << 8) | ((self.cps.n - 1) & 0xFF)
         if o == GCR_BASE:
             return self.base | self.base_attr
         cm = self.cps.cm
@@ -353,11 +353,15 @@ class CPS:
 
     def __init__(self, n: int, factory: Callable[["CPS", int], Any],
                  on_start: Callable[[int, Any], None] | None = None, *,
-                 l2=None, l3=None, ecc: bool = False, hardware_init: bool = False) -> None:
+                 l2=None, l3=None, ecc: bool = False, hardware_init: bool = False,
+                 iocu: bool = False) -> None:
         from .coherence import CoherenceManager
         if not 1 <= n <= 4:
             raise ValueError(f"a CPS has 1 to 4 cores, not {n}")
         self.n = n
+        #: an I/O Coherence Unit (GCR_CONFIG.NUMIOCU = 1): the I/O masters
+        #: behind it (the Malta's PCI DMA) make coherent requests
+        self.iocu = iocu
         self.factory = factory
         self.on_start = on_start
         self.gcr = GCR(self)

@@ -100,6 +100,21 @@ class ProbeWaitError(FetchError):
     code = 3
 
 
+class BusError(FetchError):
+    """A physical address the board decodes as nothing (PLAN M15: the
+    Malta's GT-64120, :mod:`emips.malta`).  On a real read the core takes
+    a Bus Error exception (IBE on a fetch, DBE on a load: the Machine turns
+    this into one); a view or a loader that meets it has nothing to show."""
+
+    code = 4
+
+    def __init__(self, pa: int, kind: str = "read", message: str | None = None) -> None:
+        super().__init__(message or f"bus error: nothing at physical 0x{pa & 0xFFFFFFFF:08x}",
+                         addr=pa)
+        self.pa = pa
+        self.kind = kind
+
+
 class IllegalInstructionError(MipsException):
     """A Reserved Instruction (``exc_code`` 10) for a word the table
     decodes but the core does not implement (paired-single with

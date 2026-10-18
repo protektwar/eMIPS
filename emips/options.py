@@ -12,11 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 
 from .cache import Caches, Geometry
+from .malta import make_board
 from .mmu import make_mmu
 from .pipeline import LATENCY
 from .timing import MEMORY_TIMING
 
 BOOT_MODES = ("kernel", "user", "reset")
+#: the C compiler's optimisation levels (-O...)
+C_OPTIMIZE = ("0", "1", "2", "3", "s")
 EXCEPTION_MODES = ("cp0", "stop")
 #: Pipeline models (pipeline mode): the textbook 5-stage pipeline, the MIPS 24K's
 PIPELINE_MODELS = ("5-stage", "24k")
@@ -38,6 +41,9 @@ class Options:
     reorder: bool = True
     #: Run / Step assemble the source first when it changed
     auto_assemble: bool = True
+    #: C programs: the compiler's optimisation level (-O0 / -O1 / -O2 / -O3 / -Os);
+    #: -O0 by default: every C line keeps its own code (stepping by lines)
+    c_optimize: str = "0"
     # processor
     #: Count increments every N cycles (CCRes: 1 or 2)
     count_rate: int = 2
@@ -48,6 +54,9 @@ class Options:
     #: cores (1 to 4): more than one is a Coherent Processing System
     #: (emips.cps: the GCRs, the CPC, shared memory and devices)
     cores: int = 1
+    #: an I/O Coherence Unit in the CPS (GCR_CONFIG.NUMIOCU = 1): DMA on a
+    #: multi-core Malta is coherent with the data caches (emips.coherence)
+    iocu: bool = False
     #: GPR shadow sets (SRSCtl.HSS + 1; Release 2+): 1 = the normal GPRs
     #: only; the 24K builds 1, 2 or 4, the architecture allows up to 16
     shadow_sets: int = 4
@@ -77,6 +86,14 @@ class Options:
     nonblocking: bool = False
     #: cache contents after reset, see CACHE_INIT_MODES
     cache_init: str = "random"
+    #: the board: "flat" (every physical address is RAM, the MARS layout)
+    #: or "malta[:RAM_MB[:SWITCHES]]" (the MIPS Malta: the GT-64120's map,
+    #: bus errors, the board registers; emips.malta)
+    board: str = "flat"
+    #: the Malta's IDE disks: "[SLOT=]SOURCE,..." with SLOT pri0 / pri1 /
+    #: sec0 / sec1 and SOURCE an image file or blank:SIZE (emips.ata; every
+    #: run starts from the image, Session.save_disk keeps what it wrote)
+    disks: str = ""
     #: the MMU (Config.MT): "fixed" (the Fixed Mapping MMU) or "tlb[:N]"
     #: (a TLB of N dual entries, default 32, with the 24K micro-TLBs)
     mmu: str = "fixed"
@@ -136,6 +153,8 @@ class Options:
         d = Options()
         if self.boot not in BOOT_MODES:
             self.boot = d.boot
+        if self.c_optimize not in C_OPTIMIZE:
+            self.c_optimize = d.c_optimize
         if self.exceptions not in EXCEPTION_MODES:
             self.exceptions = d.exceptions
         if self.count_rate not in (1, 2):
@@ -159,6 +178,15 @@ class Options:
             make_mmu(self.mmu)
         except ValueError:
             self.mmu = d.mmu
+        try:
+            make_board(self.board)
+        except ValueError:
+            self.board = d.board
+        try:
+            from .malta import parse_disks
+            parse_disks(self.disks)
+        except ValueError:
+            self.disks = d.disks
         for name in ("tx_delay", "rx_delay", "step_limit"):
             if getattr(self, name) < 0:
                 setattr(self, name, getattr(d, name))
@@ -189,6 +217,18 @@ class Options:
         """A fresh MMU as these options describe it."""
         return make_mmu(self.mmu)
 
+    def make_board(self, *, big_endian: bool = True):
+        """A fresh board as these options describe it (None: flat)."""
+        return make_board(self.board, big_endian=big_endian)
+
+    def segment_bases(self) -> dict[str, int] | None:
+        """The assembler's default segments on this board (None: MARS)."""
+        from .malta import SEGMENT_BASES, USER_SEGMENT_BASES
+        if self.board.split(":")[0] != "malta":
+            return None
+        return dict(USER_SEGMENT_BASES if self.boot == "user" else SEGMENT_BASES)
+
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
-        return (self.pseudo, self.reorder) != (other.pseudo, other.reorder)
+        return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize) != \
+            (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize)

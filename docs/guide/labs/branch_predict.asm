@@ -14,3 +14,4 @@ even:   addiu $t0, $t0, -1
         nop
         li    $v0, 10
         syscall
+# eMIPS: --model 24k --pipeline    (the settings this program runs with)

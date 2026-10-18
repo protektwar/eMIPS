@@ -18,3 +18,4 @@ loop:   lw    $t2, 0($t0)           # one word of the pair
         bnez  $s1, pass
         li    $v0, 10
         syscall
+# eMIPS: --mmu tlb:16    (the settings this program runs with)

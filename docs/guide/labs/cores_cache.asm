@@ -55,3 +55,4 @@ wait:   cache 0x11, 0($t7)           # Hit Invalidate D: forget the copy
         syscall
 rest:   wait
         b     rest
+# eMIPS: --cores 4 --caches    (the settings this program runs with)

@@ -58,3 +58,4 @@ secondary:                           # core 1, from its reset
         la    $t1, flag
         sw    $t0, 0($t1)
 park:   b     park
+# eMIPS: --cores 2 --boot reset    (the settings this program runs with)

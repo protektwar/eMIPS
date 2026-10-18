@@ -4,3 +4,4 @@ main:   addiu $t0, $zero, 1
         bne   $t0, $zero, done  # $t0 is still in EX: 1 stall
 done:   li    $v0, 10
         syscall
+# eMIPS: --pipeline    (the settings this program runs with)

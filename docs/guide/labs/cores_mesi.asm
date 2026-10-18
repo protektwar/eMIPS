@@ -24,3 +24,4 @@ main:   mfc0  $s0, $15, 1
 core1:  li    $t0, 7
         sw    $t0, 0($t1)            # core 1, step 8
 park:   b     park
+# eMIPS: --cores 2 --caches    (the settings this program runs with)

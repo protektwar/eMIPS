@@ -116,3 +116,4 @@ print:  li    $v0, 1                # print $a0 and a space
         li    $v0, 11
         syscall
         jr    $ra
+# eMIPS: --mmu tlb    (the settings this program runs with)

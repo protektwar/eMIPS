@@ -122,6 +122,9 @@ class _VP:
     def __init__(self) -> None:
         self.mask = 0x7F                    # MD01025 Table 12.45: every bit resets to 1
         self.pend = 0
+        #: interrupt lines a board drives into the core directly, ORed with
+        #: the GIC's pins (the Malta's COREHI etc.; ignored in EIC mode)
+        self.extra = 0
         # Table 12.49: WD -> NMI; COMPARE, SWINTx -> pin 0; TIMER, PERFCTR (and
         # FDC) -> pin 5 (the map order: WD COMPARE TIMER FDC PERFCTR SWINT0 SWINT1)
         self.maps = [MAP_TO_NMI, MAP_TO_PIN, MAP_TO_PIN | 5, MAP_TO_PIN | 5,
@@ -286,6 +289,13 @@ class GIC(_Registers):
                 self.edges |= bit
         self.update()
 
+    def set_extra(self, core: int, line: int, level: bool) -> None:
+        """A board's direct interrupt line ``line`` (HW0..5) of ``core``."""
+        if core < len(self.vps):
+            vp = self.vps[core]
+            vp.extra = vp.extra | 1 << line if level else vp.extra & ~(1 << line)
+            self.update()
+
     def pending(self) -> int:
         """GIC_SH_PEND: level sources at their POL level, latched edges."""
         level = ~self.trig & ~(self.inputs ^ self.pol)
@@ -346,7 +356,7 @@ class GIC(_Registers):
                     pins, nmi = _route(mapping, pins, nmi)
                     if mapping & MAP_TO_PIN:
                         ripl = max(ripl, min((mapping & 0x3F) + 1, 63))
-            lines = ripl if vp.eic else pins
+            lines = ripl if vp.eic else pins | vp.extra
             if v < len(cores):
                 m = cores[v]
                 ss = vp.eic_ss[ripl] if vp.eic else 0

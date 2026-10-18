@@ -1,0 +1,1 @@
+Read by DMA, announced by IRQ 14.

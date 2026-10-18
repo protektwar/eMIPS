@@ -18,3 +18,4 @@ main:   la    $t0, a
         addu  $s1, $s0, $s0     # ... and this one waits for its result
 done:   li    $v0, 10
         syscall
+# eMIPS: --pipeline    (the settings this program runs with)

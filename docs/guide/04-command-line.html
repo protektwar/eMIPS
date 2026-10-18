@@ -18,6 +18,7 @@
 <li><a href="04-command-line.html" aria-current="page">4 The command line</a></li>
 <li><a href="05-understanding.html">5 Understanding</a></li>
 <li><a href="06-reference.html">6 Reference</a></li>
+<li><a href="features.html">What's in eMIPS</a></li>
 </ul>
 </nav>
 </header>
@@ -92,7 +93,7 @@ output — the test suite re-runs them.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>--release R1\|R2\|R3\|R5\|R6</code></td>
+<td><code>--release R1|R2|R3|R5|R6</code></td>
 <td>all</td>
 <td>the MIPS32 release (default R5)</td>
 </tr>
@@ -117,12 +118,12 @@ output — the test suite re-runs them.</p>
 <td>start in <code>.set noreorder</code> (no automatic delay-slot <code>nop</code>)</td>
 </tr>
 <tr>
-<td><code>--boot kernel\|user\|reset</code></td>
+<td><code>--boot kernel|user|reset</code></td>
 <td>run, pipe, debug</td>
-<td>the start state (default kernel, like MARS)</td>
+<td>the start state (default kernel, like MARS); on the Malta <code>reset</code> runs the boot monitor from the reset vector first (unless the program has code at <code>0xbfc00000</code>), and <code>user</code> needs <code>--mmu tlb</code> (<a href="05-understanding.html#the-boot-monitor-yamon">Phase 5, The boot monitor</a>)</td>
 </tr>
 <tr>
-<td><code>--exceptions cp0\|stop</code></td>
+<td><code>--exceptions cp0|stop</code></td>
 <td>run, pipe, debug</td>
 <td>take exceptions like the hardware (default) or stop</td>
 </tr>
@@ -162,7 +163,7 @@ output — the test suite re-runs them.</p>
 <td>the caches have parity (ErrCtl.PE, the Cache Error exception)</td>
 </tr>
 <tr>
-<td><code>--cache-init random\|hardware</code></td>
+<td><code>--cache-init random|hardware</code></td>
 <td>run, pipe, debug</td>
 <td>cache contents after reset: random (default) or invalid</td>
 </tr>
@@ -192,19 +193,39 @@ output — the test suite re-runs them.</p>
 <td>pipeline: loads miss in the background (hit under miss)</td>
 </tr>
 <tr>
-<td><code>--model 5-stage\|24k</code></td>
+<td><code>--model 5-stage|24k</code></td>
 <td>run, pipe, debug</td>
 <td>the pipeline model: the textbook 5-stage pipeline (default) or the MIPS 24K's 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)</td>
 </tr>
 <tr>
 <td><code>--cores N</code></td>
 <td>run, pipe, debug</td>
-<td>a multi-core system of N cores (2–4): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's)</td>
+<td>a multi-core system of N cores (2–4): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's); with <code>--board malta</code> a multi-core Malta (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
+</tr>
+<tr>
+<td><code>--iocu</code></td>
+<td>run, pipe, debug</td>
+<td>with <code>--board malta --cores N</code>: an I/O Coherence Unit — the PCI DMA is coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
 </tr>
 <tr>
 <td><code>--shadow-sets N</code></td>
 <td>run, pipe, debug</td>
 <td>GPR shadow sets, 1–16 (default 4, a 24K's most; Release 2+): what SRSCtl.HSS says, the sets an exception / vectored interrupt switches to (<a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5, 5.10</a>)</td>
+</tr>
+<tr>
+<td><code>--no-header</code></td>
+<td>run, pipe, debug</td>
+<td>ignore the program's <code># eMIPS:</code> line (without it, that line supplies the flags you do not give: <a href="features.html#a-programs-own-settings">What's in eMIPS</a>); a combination of flags that does not go together is refused with the reason</td>
+</tr>
+<tr>
+<td><code>--board SPEC</code></td>
+<td>asm, run, pipe, debug</td>
+<td>the board: <code>flat</code> (default: every physical address is RAM, the MARS layout) or <code>malta[:RAM_MB[:SWITCHES[:MHZ]]]</code> — the MIPS Malta (MHZ: the core's clock, default 10): the GT-64120's memory map, bus errors, the LEDs / display / switches, programs in kseg0 (<a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5, A real board</a>)</td>
+</tr>
+<tr>
+<td><code>--disk [SLOT=]IMAGE</code></td>
+<td>run, pipe, debug</td>
+<td>an IDE disk on the Malta (with <code>--board malta</code>; repeatable): SLOT <code>pri0</code> (the default, then <code>pri1</code>, <code>sec0</code>, <code>sec1</code>), IMAGE a file (its bytes are the sectors) or <code>blank:SIZE</code> (<code>blank:8M</code>); every run starts from the image (<a href="05-understanding.html#an-ide-disk">Phase 5, An IDE disk</a>)</td>
 </tr>
 <tr>
 <td><code>--mmu SPEC</code></td>
@@ -243,7 +264,7 @@ code from data).  Use the same <code>--release</code> and <code>--little</code> 
 made for.</p>
 <h2 id="45-run--run-a-program">4.5 run — run a program</h2>
 <p><code>run</code> runs until the program exits, runs past its last instruction,
-reaches a breakpoint, or <code>--steps</code> (default 100 000) are done.  Its
+reaches a breakpoint, or <code>--steps</code> (default 100 000; on the Malta 1 000 000, its serial output is slow) are done.  Its
 output appears as it is printed; when it reads input (<code>read_int</code> ...),
 type the input in the terminal (or pipe it in:
 <code>echo 7 | python3 -m emips run prog.asm</code>).  Then the registers:</p>
@@ -540,11 +561,19 @@ condition and increment) gets a breakpoint on each.</p>
 <td>EJTAG: Debug Mode or not and what entered it, the Debug register (single step SSt, LSNM, CountDM, IEXI), DEPC, DESAVE, the DCR, the debug vector, the hardware breakpoints and watch registers / request a debug interrupt (the DINT input) (<a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>)</td>
 </tr>
 <tr>
-<td><code>probe</code> / <code>probe on [trap] [boot]</code> / <code>probe off</code> / <code>probe load FILE</code> / <code>probe break</code> / <code>probe fastdata W...</code> / <code>probe mem ADDR [WORDS]</code> / <code>probe profile [on\|off]</code> / <code>probe rate N</code></td>
+<td><code>probe</code> / <code>probe on [trap] [boot]</code> / <code>probe off</code> / <code>probe load FILE</code> / <code>probe break</code> / <code>probe fastdata W...</code> / <code>probe mem ADDR [WORDS]</code> / <code>probe profile [on|off]</code> / <code>probe rate N</code></td>
 <td>the TAP's state, the ECR and the probe's last processor accesses / connect an EJTAG probe (ProbEn; trap: the debug handler from its memory at <code>0xff200200</code>; boot: EJTAGBOOT) / remove it / load a file's dmseg bytes into its memory / EjtagBrk / words for FASTDATA / its memory / collect PC samples, show where they fell / the sample rate (<a href="05-understanding.html#the-tap-and-a-probe">Phase 5</a>)</td>
 </tr>
 <tr>
-<td><code>trace</code> / <code>trace on [OPTIONS]</code> / <code>trace off</code> / <code>trace show [N]</code> / <code>trace words [N]</code> / <code>trace formats [N]</code> / <code>trace trigger N dm\|probe start\|end\|about\|info [tf6 INFO] [once] [out]</code> / <code>trace trigger N off</code> / <code>trace in</code></td>
+<td><code>board</code></td>
+<td>the board: on the Malta its SDRAM, LEDs, ASCII display and switches, the GT-64120's interrupt cause, bus error and decode error addresses, and what it decodes where (<a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>disk</code> / <code>disk show SLOT LBA [N]</code> / <code>disk save SLOT [FILE]</code></td>
+<td>the IDE disks: each one's state, registers and last commands / a hex dump of N sectors / write the disk as the program left it (default: its image file) (<a href="05-understanding.html#an-ide-disk">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>trace</code> / <code>trace on [OPTIONS]</code> / <code>trace off</code> / <code>trace show [N]</code> / <code>trace words [N]</code> / <code>trace formats [N]</code> / <code>trace trigger N dm|probe start|end|about|info [tf6 INFO] [once] [out]</code> / <code>trace trigger N off</code> / <code>trace in</code></td>
 <td>MIPS Trace through the TCB: the settings and the TCB / trace on (modes <code>u k s e d</code>, <code>asid N</code>, <code>la sa ld sd addresses data all</code>, <code>ca</code>, <code>from</code>, <code>tb</code>, <code>io</code>, <code>sync N</code>, <code>tlsif</code>, <code>keep</code>, <code>wait</code>) / off / the regenerated flow / the trace words / the trace formats / a trigger / the probe's trigger input (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>)</td>
 </tr>
 <tr>
@@ -552,7 +581,7 @@ condition and increment) gets a breakpoint on each.</p>
 <td>scan the TAP by hand: an instruction (IDCODE, IMPCODE, CONTROL ... or a number), a data register (prints what came out), Test-Logic-Reset</td>
 </tr>
 <tr>
-<td><code>ejtag ib N LOC [mask M] [asid A] [trigger]</code> / <code>ejtag db N LOC [load\|store] [mask M] [value V] [asid A] [trigger]</code> / <code>ejtag watch N LOC i\|r\|w\|rw [mask M] [asid A]</code> / <code>ejtag ib\|db\|watch N off</code> / <code>ejtag clear</code></td>
+<td><code>ejtag ib N LOC [mask M] [asid A] [trigger]</code> / <code>ejtag db N LOC [load|store] [mask M] [value V] [asid A] [trigger]</code> / <code>ejtag watch N LOC i|r|w|rw [mask M] [asid A]</code> / <code>ejtag ib|db|watch N off</code> / <code>ejtag clear</code></td>
 <td>set an EJTAG instruction (0–3) / data (0–1) breakpoint or a watch register pair (0, 1 fetches; 2, 3 loads / stores) as a probe would; turn one off; clear the match bits (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
 </tr>
 <tr>
@@ -580,7 +609,7 @@ condition and increment) gets a breakpoint on each.</p>
 <td>the cache accesses of the last step (fetch and data; IF and MEM in pipeline mode)</td>
 </tr>
 <tr>
-<td><code>cache I\|D\|L2\|L3</code></td>
+<td><code>cache I|D|L2|L3</code></td>
 <td>the sets of that cache holding lines</td>
 </tr>
 <tr>
@@ -684,7 +713,7 @@ condition and increment) gets a breakpoint on each.</p>
 <td>disassembly (default: around the current instruction)</td>
 </tr>
 <tr>
-<td><code>list [LINE\|LOC]</code> (<code>l</code>)</td>
+<td><code>list [LINE|LOC]</code> (<code>l</code>)</td>
 <td>source lines (<code>=&gt;</code> current, <code>*</code> breakpoint); a compiled program: its C file (<code>list 17</code>, <code>list file.c:17</code>, <code>list main</code>)</td>
 </tr>
 <tr>
@@ -811,7 +840,7 @@ the program exited
 </thead>
 <tbody>
 <tr>
-<td><code>mode instruction\|pipeline</code></td>
+<td><code>mode instruction|pipeline</code></td>
 <td>switch the mode (restarts the program)</td>
 </tr>
 <tr>
@@ -819,15 +848,15 @@ the program exited
 <td>the MIPS32 release</td>
 </tr>
 <tr>
-<td><code>set endian big\|little</code></td>
+<td><code>set endian big|little</code></td>
 <td>the byte order</td>
 </tr>
 <tr>
-<td><code>set forwarding on\|off</code></td>
+<td><code>set forwarding on|off</code></td>
 <td>the pipeline's forwarding paths</td>
 </tr>
 <tr>
-<td><code>set model 5-stage\|24k</code></td>
+<td><code>set model 5-stage|24k</code></td>
 <td>the pipeline model of <code>mode pipeline</code></td>
 </tr>
 <tr>
@@ -835,44 +864,56 @@ the program exited
 <td>the number of cores</td>
 </tr>
 <tr>
+<td><code>set iocu on|off</code></td>
+<td>the I/O Coherence Unit of a multi-core Malta (like <code>--iocu</code>)</td>
+</tr>
+<tr>
 <td><code>set shadow-sets 1..16</code></td>
 <td>GPR shadow sets (1 = the normal GPRs only)</td>
 </tr>
 <tr>
-<td><code>set strict on\|off</code></td>
+<td><code>set strict on|off</code></td>
 <td>strict mode (no pseudo-instructions)</td>
 </tr>
 <tr>
-<td><code>set reorder on\|off</code></td>
+<td><code>set reorder on|off</code></td>
 <td>automatic delay-slot <code>nop</code>s</td>
 </tr>
 <tr>
-<td><code>set boot kernel\|user\|reset</code></td>
+<td><code>set boot kernel|user|reset</code></td>
 <td>the start state</td>
 </tr>
 <tr>
-<td><code>set exceptions cp0\|stop</code></td>
+<td><code>set exceptions cp0|stop</code></td>
 <td>take exceptions, or stop the simulation</td>
 </tr>
 <tr>
-<td><code>set syscalls on\|off</code></td>
+<td><code>set syscalls on|off</code></td>
 <td>the system-call services</td>
 </tr>
 <tr>
-<td><code>set names abi\|numeric</code></td>
+<td><code>set names abi|numeric</code></td>
 <td><code>$t0</code> or <code>$8</code></td>
 </tr>
 <tr>
-<td><code>set icache\|dcache\|l2\|l3 SIZE[:WAYS[:LINE]]</code></td>
+<td><code>set icache|dcache|l2|l3 SIZE[:WAYS[:LINE]]</code></td>
 <td>a cache of that shape (<code>none</code> = without)</td>
 </tr>
 <tr>
-<td><code>set write-buffer on\|off</code></td>
+<td><code>set write-buffer on|off</code></td>
 <td>the write buffer</td>
 </tr>
 <tr>
 <td><code>set mmu SPEC</code></td>
 <td>the MMU, as <code>--mmu</code></td>
+</tr>
+<tr>
+<td><code>set board flat|malta[:RAM_MB[:SWITCHES[:MHZ]]]</code></td>
+<td>the board (like <code>--board</code>); the program is assembled again</td>
+</tr>
+<tr>
+<td><code>set disks [SLOT=]IMAGE[,...]|none</code></td>
+<td>the Malta's IDE disks (like <code>--disk</code>); the program restarts with them</td>
 </tr>
 <tr>
 <td><code>load FILE</code></td>

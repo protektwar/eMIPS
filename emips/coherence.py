@@ -113,6 +113,21 @@ class _Holder:
         return self.cache.lines[self.s][self.w]
 
 
+class _IOCURequester:
+    """The IOCU as a requester of the shared levels: its own (idle)
+    timing — DMA cycles are the bus master's, not a core's — and the
+    first core's bus for the devices (``Memory.c.m``)."""
+
+    def __init__(self, cm) -> None:
+        from .timing import Timing
+        self.m = None
+        self.timing = Timing(self)
+        self.errors: list = []
+
+    def record(self, err) -> None:
+        self.errors.append(err)
+
+
 class CoherenceManager:
     """The CM2 of a :class:`~emips.cps.CPS`: the request ordering point of
     every core (bound with :meth:`attach`), the shared L2 / L3 and the
@@ -155,6 +170,9 @@ class CoherenceManager:
         self.counts = {"requests": 0, "interventions": 0, "cache-to-cache": 0,
                        "invalidations": 0, "upgrades": 0, "writebacks": 0,
                        "globalized": 0}
+        #: the IOCU's requester on the shared levels, its last actions
+        self._iocu_req = None
+        self.iocu_log: list[str] = []
 
     @property
     def secondary(self) -> list[SecondaryCache]:
@@ -392,6 +410,89 @@ class CoherenceManager:
                 and m.lr_pa & ~c.line_mask == line:
             m.lr_valid = False                     # the LL's line is gone
 
+    # -- the I/O Coherence Unit (MD01025 11.3.13; the 1004K 11.1) ------------------
+
+    def _iocu_holders(self, pa: int) -> list[_Holder]:
+        """The copies an IOCU 0 request snoops: cores in coherent mode
+        whose COH_DOMAIN_EN has the IOCU 0 bit (4), powered."""
+        from .cps import SEQ_D0
+        out = []
+        for j in sorted(self.cores):
+            coh = self._coherence(j)
+            if self.cps.state[j] == SEQ_D0 or not (coh >> j & 1 and coh >> 4 & 1):
+                continue
+            caches = self.cores[j]
+            c = caches.d
+            if c is None:
+                continue
+            tag = c.tag_of(pa)
+            for s_ in c.alias_sets(pa):
+                w = c.find(s_, tag)
+                if w is not None and not c.lines[s_][w].lock:
+                    out.append(_Holder(j, caches, c, s_, w))
+        return out
+
+    def _iocu_claim(self) -> None:
+        if self._iocu_req is None:
+            self._iocu_req = _IOCURequester(self)
+        req = self._iocu_req
+        req.m = self.cps.cores[0]
+        for caches in self.cores.values():    # the CM orders the write buffers' older
+            if caches.wbb is not None:        # writes first
+                caches.wbb.sync()
+        self.claim(req)
+
+    def iocu_read(self, pa: int, n: int) -> bytes:
+        """A coherent read from an I/O master (CohReadDiscard: the IOCU
+        keeps no copy): an Exclusive / Modified copy in a core's data cache
+        supplies its line, nothing changes state; else the L2 / memory."""
+        self._iocu_claim()
+        out = bytearray()
+        line = self._line_size()
+        k = 0
+        while k < n:
+            a = pa + k
+            step = min(n - k, line - (a % line))
+            self.counts["requests"] += 1
+            holders = self._iocu_holders(a)
+            src = next((h for h in holders if not h.line.shared and h.line.dirty), None)
+            got = self._slice(src, a, step) if src is not None else None
+            if got is not None:
+                self.counts["cache-to-cache"] += 1
+                self.iocu_log.append(f"DMA read 0x{a:08x}: core {src.core}'s Modified line")
+                out += got[0]
+            else:
+                data, _known = self.first().bus_read_line(a, step)
+                out += data
+            k += step
+        del self.iocu_log[:-16]
+        return bytes(out)
+
+    def iocu_write(self, pa: int, data: bytes) -> None:
+        """A coherent write from an I/O master (write-invalidate): every
+        core's copy of the lines goes — a Modified one written back first,
+        so a partial write merges with it — then the bytes go to the L2 /
+        memory."""
+        self._iocu_claim()
+        line = self._line_size()
+        k = 0
+        while k < len(data):
+            a = pa + k
+            step = min(len(data) - k, line - (a % line))
+            self.counts["requests"] += 1
+            for h in self._iocu_holders(a):
+                if h.line.dirty:
+                    self._write_back(h)
+                self._invalidate(h)
+                self.iocu_log.append(f"DMA write 0x{a:08x}: core {h.core}'s copy -> I")
+            _write_below(self.first(), a, bytes(data[k:k + step]), (1 << step) - 1, False)
+            k += step
+        del self.iocu_log[:-16]
+
+    def _line_size(self) -> int:
+        sizes = [c.d.line for c in self.cores.values() if c.d is not None]
+        return min(sizes) if sizes else 32
+
     # -- views ----------------------------------------------------------------------
 
     def peek_owned(self, req, pa: int) -> int | None:
@@ -568,8 +669,13 @@ class CoherenceManager:
             coh = self._coherence(j)
             mode = "coherent" if coh >> j & 1 else "not coherent"
             frm = [str(i) for i in sorted(self.cores) if i != j and coh >> i & 1]
+            iocu = ", IOCU 0 requests" if self.cps.iocu and coh >> 4 & 1 else ""
             out.append(f"core {j}: GCR_COHERENCE 0x{coh:02x}, {mode}"
-                       + (f", interventions from core(s) {', '.join(frm)}" if frm else ""))
+                       + (f", interventions from core(s) {', '.join(frm)}" if frm else "")
+                       + iocu)
+        if self.cps.iocu:
+            out.append("IOCU 0: I/O masters' requests are coherent"
+                       + (f"; last: {'; '.join(self.iocu_log[-3:])}" if self.iocu_log else ""))
         c = self.counts
         out.append(", ".join(f"{k} {v}" for k, v in c.items()))
         if self.l2 is not None:
