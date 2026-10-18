@@ -1,0 +1,2962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 5 — Understanding what you see · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html">1 Getting started</a></li>
+<li><a href="02-writing-programs.html">2 Writing programs</a></li>
+<li><a href="03-the-gui.html">3 The GUI</a></li>
+<li><a href="04-command-line.html">4 The command line</a></li>
+<li><a href="05-understanding.html" aria-current="page">5 Understanding</a></li>
+<li><a href="06-reference.html">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-5--understanding-what-you-see">Phase 5 — Understanding what you see</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>
+<p>eMIPS shows a lot: bit fields, ALU operands, pipeline stages, stalls,
+forwarding, exceptions.  This phase explains the computer architecture
+behind it — enough to understand every number on the screen — and ends
+with lab exercises you can check with eMIPS itself.</p>
+<p>Every pipeline chart here is real output of the programs in
+<a href="labs/"><code>docs/guide/labs/</code></a>; run them yourself.</p>
+<ul>
+<li><a href="#51-how-an-instruction-is-encoded">5.1 How an instruction is encoded</a></li>
+<li><a href="#52-what-happens-to-one-instruction">5.2 What happens to one instruction</a></li>
+<li><a href="#53-the-5-stage-pipeline">5.3 The 5-stage pipeline</a></li>
+<li><a href="#54-hazards-forwarding-and-stalls">5.4 Hazards: forwarding and stalls</a></li>
+<li><a href="#55-branches-and-the-delay-slot">5.5 Branches and the delay slot</a></li>
+<li><a href="#56-reading-the-cpi">5.6 Reading the CPI</a></li>
+<li><a href="#57-integers-signed-and-unsigned">5.7 Integers: signed and unsigned</a></li>
+<li><a href="#58-memory-addresses-and-byte-order">5.8 Memory, addresses and byte order</a></li>
+<li><a href="#59-more-than-one-core">5.9 More than one core</a></li>
+<li><a href="#510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</a></li>
+<li><a href="#511-floating-point-ieee-754">5.11 Floating point (IEEE 754)</a></li>
+<li><a href="#512-labs">5.12 Labs</a></li>
+</ul>
+<hr>
+<h2 id="51-how-an-instruction-is-encoded">5.1 How an instruction is encoded</h2>
+<p>Every MIPS32 instruction is <strong>one 32-bit word</strong>.  The top 6 bits, the
+<strong>opcode</strong>, say which kind it is; the rest is split into fields in one
+of three main <strong>formats</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Fields (bit numbers)</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>R</strong> (register)</td>
+<td>op 31–26 · rs 25–21 · rt 20–16 · rd 15–11 · sa 10–6 · funct 5–0</td>
+<td>arithmetic / logic between registers, shifts, <code>jr</code></td>
+</tr>
+<tr>
+<td><strong>I</strong> (immediate)</td>
+<td>op 31–26 · rs 25–21 · rt 20–16 · immediate 15–0</td>
+<td>immediates, loads / stores, branches</td>
+</tr>
+<tr>
+<td><strong>J</strong> (jump)</td>
+<td>op 31–26 · target 25–0</td>
+<td><code>j</code>, <code>jal</code></td>
+</tr>
+</tbody>
+</table>
+<p>R-format instructions all have opcode 0 (<code>SPECIAL</code>) and are told apart by
+<strong>funct</strong>.  Floating-point and coprocessor instructions use variants of
+these (shown as FR, FI and COP in eMIPS).</p>
+<p><strong>Example</strong>: <code>addu $t2, $t2, $t3</code> is <code>0x014b5021</code>:</p>
+<pre><code class="language-text">000000 01010 01011 01010 00000 100001
+op     rs    rt    rd    sa    funct
+SPECIAL $t2  $t3   $t2   0     ADDU
+</code></pre>
+<p><strong>Branches</strong> store a 16-bit signed <strong>offset in instructions</strong>, relative
+to the instruction after the branch:</p>
+<pre><code>target = (address of the branch + 4) + offset × 4
+</code></pre>
+<p><code>bne $t1, $zero, loop</code> at <code>0x00400020</code> with <code>loop</code> = <code>0x00400010</code> has
+offset (0x00400010 − 0x00400024) / 4 = −5 = <code>0xfffb</code> → <code>0x1520fffb</code>.
+A branch reaches ±32 768 instructions (±128 KB).</p>
+<p><strong>Jumps</strong> store 26 bits of the word address; the top 4 bits come from
+PC + 4:</p>
+<pre><code>target = (PC + 4)[31..28] · target26 · 00
+</code></pre>
+<p>So <code>j</code> reaches anywhere in the same 256 MB region.</p>
+<p>Seeing it in eMIPS: the <strong>Instruction</strong> tab and <code>view</code> in the debugger
+split every executed word into its fields; <strong>Tools → Encoder / Decoder</strong>
+and <code>decode</code> / <code>encode</code> do it for any word or instruction.</p>
+<h2 id="52-what-happens-to-one-instruction">5.2 What happens to one instruction</h2>
+<p>However it is built, a processor does the same five things with each
+instruction:</p>
+<ol>
+<li><strong>Fetch</strong> the word at the PC; PC + 4 is the default next PC.</li>
+<li><strong>Decode</strong> it: which instruction, which registers; read them; extend
+   the immediate.</li>
+<li><strong>Execute</strong> in the ALU: compute the result, or the memory address
+   (base + offset), or compare for a branch.</li>
+<li><strong>Memory</strong>: a load reads, a store writes.</li>
+<li><strong>Write back</strong> the result into the destination register.</li>
+</ol>
+<p>In <strong>instruction mode</strong> eMIPS does all five for one instruction per step
+— the Datapath shows that one instruction in all five columns.  The
+<strong>control signals</strong> under the Control unit choose what each part does:</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RegDst</td>
+<td>the destination is <code>rd</code> (R-format), <code>rt</code> (I-format) or <code>$ra</code> (a link)</td>
+</tr>
+<tr>
+<td>ALUSrc</td>
+<td>the ALU's second operand is a register or the immediate</td>
+</tr>
+<tr>
+<td>MemRead / MemWrite</td>
+<td>the instruction reads / writes data memory</td>
+</tr>
+<tr>
+<td>MemtoReg</td>
+<td>the value written back is the loaded data (not the ALU result)</td>
+</tr>
+<tr>
+<td>RegWrite</td>
+<td>the instruction writes a register</td>
+</tr>
+<tr>
+<td>Branch / Jump</td>
+<td>it can change the PC</td>
+</tr>
+</tbody>
+</table>
+<h2 id="53-the-5-stage-pipeline">5.3 The 5-stage pipeline</h2>
+<p>Doing the five steps one instruction at a time leaves most of the
+hardware idle.  A <strong>pipeline</strong> overlaps them: while one instruction is
+in EX, the next is in ID and the one after in IF — like a laundry with
+washer, dryer and iron all busy at once.  In the best case one
+instruction <strong>finishes every cycle</strong>.</p>
+<p>Between the stages are the <strong>pipeline registers</strong> (IF/ID, ID/EX, EX/MEM,
+MEM/WB): at the end of every cycle each stage hands its results to the
+next through them.  In eMIPS's <strong>5-stage pipeline</strong> mode a step is one
+clock cycle.</p>
+<p>The pipeline is the textbook one (Patterson &amp; Hennessy) with the real
+MIPS32 choices:</p>
+<ul>
+<li><strong>branches and jumps are decided in ID</strong> (not in MEM), so only one
+  instruction — the delay slot — has been fetched after them;</li>
+<li><strong>forwarding</strong> paths EX/MEM → EX, MEM/WB → EX and EX/MEM → ID;</li>
+<li>the register file is written in the first half of a cycle and read in
+  the second, so an instruction in ID reads a value written back in the
+  same cycle;</li>
+<li>multiplication (<code>mul</code>) and floating-point arithmetic stay in EX for
+  several cycles; <code>mult</code> / <code>div</code> work in a separate unit in parallel.</li>
+</ul>
+<p>The results are always exactly those of instruction mode — the pipeline
+changes <em>when</em> things happen, never <em>what</em>.</p>
+<h2 id="54-hazards-forwarding-and-stalls">5.4 Hazards: forwarding and stalls</h2>
+<p>A <strong>hazard</strong> is a reason the next instruction cannot go ahead
+normally.  The main one: an instruction needs a result that an earlier
+instruction has not written back yet (a <strong>data hazard</strong>).</p>
+<p><strong>Forwarding</strong> (bypassing) solves most of them: the result is taken
+directly from the pipeline register where it already exists and fed to
+the ALU.  Consecutive ALU instructions then never wait:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/alu_forwarding.asm --events
+...
+00400000   addiu $t0, $zero, 5          IF ID EX ME WB
+00400004   addu $t1, $t0, $t0              IF ID EX ME WB
+00400008   subu $t2, $t1, $t0                 IF ID EX ME WB
+...
+    4  forward $t0: EX/MEM -&gt; EX (addiu $t0, $zero, 5 -&gt; addu $t1, $t0, $t0)
+    5  forward $t1: EX/MEM -&gt; EX (addu $t1, $t0, $t0 -&gt; subu $t2, $t1, $t0)
+    5  forward $t0: MEM/WB -&gt; EX (addiu $t0, $zero, 5 -&gt; subu $t2, $t1, $t0)
+...
+</code></pre>
+<p><strong>Load-use</strong>: a loaded value exists only after MEM, one cycle too late
+for an instruction right behind the load.  The hazard detection unit
+<strong>stalls</strong> it for one cycle (a <strong>bubble</strong> goes into EX; <code>--</code> in the
+chart), then the value is forwarded from MEM/WB:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/load_use.asm --events
+...
+00400000   lw $t0, 0($sp)               IF ID EX ME WB
+00400004   addu $t1, $t0, $t0              IF -- ID EX ME WB
+...
+stall cycles: load-use 1
+    3  load-use: $t0 from lw $t0, 0($sp)
+    5  forward $t0: MEM/WB -&gt; EX (lw $t0, 0($sp) -&gt; addu $t1, $t0, $t0)
+...
+</code></pre>
+<p><strong>Branches</strong> compare in ID, a stage earlier than the ALU: a branch on the
+result of the instruction just before it waits <strong>1</strong> cycle (then gets it
+from EX/MEM), and on a value just loaded <strong>2</strong> cycles:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/branch_after_load.asm
+...
+00400000   lw $t0, 0($sp)               IF ID EX ME WB
+00400004   beq $t0, $zero, 0x0040000c      IF -- -- ID EX ME WB
+...
+stall cycles: branch 2
+</code></pre>
+<p><strong>Multiply and divide</strong>: <code>mul</code> holds EX for its latency (4 cycles by
+default; <code>EX EX EX EX</code>), and the next instruction that needs its result
+waits.  <code>mult</code> / <code>div</code> go to the multiply/divide unit, which works in
+the background — independent instructions continue — until <code>mflo</code> /
+<code>mfhi</code> needs HI / LO:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/multiply.asm --width 16
+...
+00400004   mul $t1, $t0, $t0               IF ID EX EX EX EX ME WB
+00400008   addu $t2, $t1, $t1                 IF -- -- -- ID EX ME WB
+0040000c   mult $t0, $t0                         IF IF IF IF ID EX ME WB
+00400010   addiu $t3, $zero, 1                               IF ID EX ME WB
+00400014   mflo $t4                                             IF -- -- ID EX ME WB
+...
+stall cycles: ex-busy 3, mdu 2
+</code></pre>
+<p><strong>Without forwarding</strong> (toolbar check box, <code>--no-forwarding</code>) an
+instruction waits until the value is written back — two stall cycles per
+dependency on the previous instruction:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/alu_forwarding.asm --no-forwarding
+...
+13 cycles, 5 instructions retired, CPI 2.60
+stall cycles: no-forwarding 4
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Stall cycles (forwarding on)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALU result used by the next instruction</td>
+<td>0 (forwarded)</td>
+</tr>
+<tr>
+<td>loaded value used by the next instruction</td>
+<td>1</td>
+</tr>
+<tr>
+<td>branch on the result of the previous ALU instruction</td>
+<td>1</td>
+</tr>
+<tr>
+<td>branch on a value loaded by the previous instruction</td>
+<td>2</td>
+</tr>
+<tr>
+<td>store of a value just loaded</td>
+<td>1 (eMIPS needs store data in EX)</td>
+</tr>
+<tr>
+<td>result of <code>mul</code></td>
+<td>until <code>mul</code> leaves EX (latency − 1)</td>
+</tr>
+<tr>
+<td><code>mfhi</code> / <code>mflo</code> after <code>mult</code> / <code>div</code></td>
+<td>until the unit finishes</td>
+</tr>
+</tbody>
+</table>
+<p>The latencies can be changed in Settings → Processor.</p>
+<p><strong>Avoiding stalls</strong> is the compiler's (or your) job: put an independent
+instruction between a load and its use, compute a branch condition
+early — <a href="#lab-3--remove-the-stalls">Lab 3</a> does exactly that.</p>
+<h2 id="55-branches-and-the-delay-slot">5.5 Branches and the delay slot</h2>
+<p>When a branch is decided in ID, the next instruction is already being
+fetched.  MIPS (before Release 6) simply <strong>executes it</strong>: that is the
+<strong>delay slot</strong>.  Nothing is thrown away — the delay slot costs nothing
+if it holds useful work, and a <code>nop</code> if not (which is what the assembler
+puts there under <code>.set reorder</code>).</p>
+<p>In the charts, the instruction after a taken branch shows <code>IF IF</code>: it
+was fetched again because the branch stalled; the branch's target
+follows the delay slot.  Release 6 adds <strong>compact branches</strong> without a
+delay slot (<a href="02-writing-programs.html#214-mips32-releases-r1-to-r6">Phase 2, 2.14</a>).</p>
+<h2 id="56-reading-the-cpi">5.6 Reading the CPI</h2>
+<p><strong>CPI</strong> — cycles per instruction — is <code>cycles ÷ instructions retired</code>.
+An ideal pipeline approaches 1.  Two things raise it:</p>
+<ul>
+<li><strong>stalls</strong> (listed by cause after every <code>pipe</code> run, and as <code>--</code> in
+  the chart);</li>
+<li><strong>filling and draining</strong> the pipeline: the first instruction needs 5
+  cycles to finish, and after the program's last instruction the stages
+  empty.  In a short program this dominates — <code>load_use.asm</code> has a CPI
+  of 2.25 for one stall — so compare CPIs of loops that run many times.</li>
+</ul>
+<p>Rows <code>(no code here)</code> at the end of a chart are fetches past the
+program's last instruction; they never execute.</p>
+<h3 id="counting-it-yourself-the-performance-counters">Counting it yourself: the performance counters</h3>
+<p>A real MIPS cannot print a chart, but it can count.  The <strong>performance
+counters</strong> — CP0 register 25, two of them, as on a 24K — add one for
+every <em>event</em> of the kind you pick: cycles, completed instructions,
+loads, branches, cache and TLB misses, stall cycles of each cause ...
+Each counter has a control register and a count register:</p>
+<pre><code class="language-text">  PerfCtl0 / PerfCtl1  ($25, select 0 / 2)   Event (bits 11..5) | IE | U | S | K | EXL
+  PerfCnt0 / PerfCnt1  ($25, select 1 / 3)   the count (32 bits)
+</code></pre>
+<p>The mode bits say <em>when</em> to count: <strong>U</strong> user mode, <strong>S</strong> supervisor,
+<strong>K</strong> kernel mode (outside exception handlers), <strong>EXL</strong> inside them.  A
+counter whose bit 31 becomes 1 (it <em>overflows</em>) with <strong>IE</strong> set raises
+the performance counter interrupt — Cause.PCI, on the same line as the
+timer (IP7) — so an operating system can sample the PC every N events.
+The two counters have different lists (event 2 is "branch
+instructions" on counter 0, "branch mispredictions" on counter 1); <code>perf
+events</code> in the debugger lists them.  <code>docs/guide/labs/perf_count.asm</code>
+sets them up with <code>mtc0</code> and prints the instructions it ran and its load
+misses:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/perf_count.asm
+6159 0
+...
+$ python3 -m emips run docs/guide/labs/perf_count.asm --dcache 1K:1:16
+6159 256
+...
+</code></pre>
+<p>Without caches nothing misses.  With a 1 KB data cache the 2 KB array
+misses at every new line in both passes: 2 × 128 lines.  From the
+command line, <code>--perf EVENT,EVENT</code> sets the counters before the run
+(user and kernel mode) and prints them after; in the debugger, <code>perf N
+EVENT</code> sets one and <code>perf</code> shows both:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/load_use.asm --perf instructions,load_use_stall
+...
+stall cycles: load-use 1
+--- performance counters
+counter 0:          1  event 45  Load to use stall cycles; modes uk
+counter 1:          4  event 1   Instructions completed; modes uk
+</code></pre>
+<p>Instructions count when they <strong>complete</strong> — in the pipeline at WB — so
+a few instructions around the <code>mtc0</code> that starts or stops a counter are
+counted differently than in instruction mode, as on real hardware.  Some
+events belong to parts the 5-stage pipeline does not have (branch
+prediction, the 24K's instruction buffer): they count nothing until the
+24K pipeline model (M10).</p>
+<h3 id="a-real-pipeline-the-mips-24k">A real pipeline: the MIPS 24K</h3>
+<p>The 5-stage pipeline is the textbook model.  A real MIPS core — the
+<strong>24K</strong>, whose caches and TLB eMIPS already models — has 8 stages and a
+fetch unit that runs ahead of the rest.  <code>--model 24k</code> (Settings →
+Processor → Pipeline model, <code>set model 24k</code> in the debugger) uses it:</p>
+<pre><code class="language-text">  IF  IS  IT  RF  AG  EX  MS  ER  WB
+  fetch: 2 instructions a cycle into an 8-entry buffer (IT; skipped while empty)
+  RF: registers   AG: address adder   EX: ALU, branches   MS: data cache
+  ER: exceptions are taken here   WB: the result is written
+</code></pre>
+<ul>
+<li><strong>Branches are predicted.</strong>  The fetch unit cannot wait for a branch to
+  reach EX (five stages later), so it guesses: a 512-entry table of
+  two-bit counters (the <strong>BHT</strong>) for conditional branches, "taken" for
+  <code>b</code>, <code>bal</code>, <code>j</code>, <code>jal</code>, and a 4-entry <strong>return stack</strong> for <code>jr $ra</code>
+  (every <code>jal</code> pushes its return address).  A wrong guess is found in
+  EX: the instructions fetched after the delay slot are killed (<code>xx</code>
+  in the chart) and the right ones arrive four cycles late.  Other <code>jr</code>
+  are not guessed: the fetch waits for them.</li>
+<li><strong>The ALU is in EX, the address adder in AG</strong> (a <em>skewed</em> ALU): a
+  result goes to the next instruction's ALU at once, but to the next
+  load's or store's <em>address</em> one cycle later; load data reaches the
+  ALU one cycle late and an address two cycles late; <code>mfc0</code> results a
+  cycle later still, <code>mul</code> / <code>mflo</code> four.</li>
+<li><strong>Exceptions are taken in ER</strong>, two stages after EX: the younger
+  instructions behind it never ran.</li>
+</ul>
+<p><code>load_use.asm</code> on it (compare with the 5-stage chart in 5.4):</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/load_use.asm --model 24k
+
+           instruction                   1  2  3  4  5  6  7  8  9 10 11 12 13
+00400000   lw $t0, 0($sp)               IF IS RF AG EX MS ER WB
+00400004   addu $t1, $t0, $t0           IF IS IT RF AG AG EX MS ER WB
+00400008   addiu $v0, $zero, 10            IF IS IT RF RF AG EX MS ER WB
+0040000c   syscall                         IF IS IT IT IT RF AG EX MS ER WB
+00400010   (no code here)                     IF IS IT IT IT RF xx
+...
+</code></pre>
+<p>Two instructions are fetched per cycle (cycles 1 and 2), <code>addu</code> waits a
+cycle in AG for the loaded <code>$t0</code>, and the instruction fetched past the
+program is killed when <code>syscall</code> ends it.  <code>docs/guide/labs/branch_predict.asm</code>
+has a loop branch (taken 99 times) and a branch that alternates; the
+counters tell how well the BHT guesses:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/branch_predict.asm --model 24k --perf branch,mispredict
+...
+970 cycles, 705 instructions retired, CPI 1.38
+stall cycles: fetch 259
+--- performance counters
+counter 0:        200  event 2   Branch instructions; modes uk
+counter 1:         52  event 2   Branch mispredictions (the 24K pipeline model counts it); modes uk
+</code></pre>
+<p>Its units work on their own, as on the chip:</p>
+<ul>
+<li><strong>Loads do not block.</strong>  A load that misses the data cache lets the
+  next instructions go on; only one that needs the data waits (up to 9
+  misses can be on their way — the <em>load data queue</em>).  Config7.SL = 1
+  (bit 0 of CP0 16, select 7) makes misses block, as in the textbook.</li>
+<li><strong>A DTLB miss stops only the load / store unit</strong>: arithmetic after the
+  load goes on, the next load or store waits (Config7.NBLSU locks the two
+  pipelines together).</li>
+<li><strong>Multiply / divide</strong> runs beside the pipeline: <code>mult</code> → <code>mflo</code> costs
+  nothing, <code>mul</code> can start three times in a row but at most 3 every 5 cycles,
+  a divide takes 8 to 34 cycles depending on the size and sign of the
+  dividend, and only instructions that need HI / LO wait for it.</li>
+<li><strong>The FPU</strong> takes a new instruction every cycle, except after a double
+  multiply (2), a divide or square root (14 single, 29 double).</li>
+</ul>
+<p><code>docs/guide/labs/miss_overlap.asm</code> makes four loads from four different
+cache lines:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/miss_overlap.asm --model 24k --caches
+...
+137 cycles, 15 instructions retired, CPI 9.13
+stall cycles: alu-agen 1, fetch 103, miss-wait 12
+</code></pre>
+<p>The four misses overlap: the <code>addu</code> that needs the first value waits 12
+cycles, not four times 50 (with <code>BLOCK</code> = 1 the same program takes 292
+cycles).  The 24K models what Chapter 2 of its manual describes,
+instruction by instruction (the details and every choice eMIPS makes
+are in <code>sim.DEVIATIONS</code>, "24K pipeline").  The <strong>Datapath</strong> pane draws
+its stages, buffer, predictors and units
+(<a href="03-the-gui.html#the-mips-24k">Phase 3</a>); in the debugger <code>core</code> shows
+the same (<code>core predict</code>: the branch history table and the return stack,
+<code>core units</code>: the units and the CP0 writes still on their way).</p>
+<p><strong>CP0 hazards.</strong>  <code>mtc0</code> writes its register late in the pipeline, so
+an instruction that follows it closely still sees the <em>old</em> value — a
+<strong>hazard</strong>.  The 24K manual lists them (Table 2.7) with the number of
+instructions that must come between: 2 for most (an <code>mfc0</code> of the same
+register, <code>eret</code> after writing EPC, <code>ei</code> / <code>di</code> and interrupts after
+writing Status), 3 for a load or store after changing EntryHi's ASID or
+Status.ERL or after <code>tlbwr</code> / <code>tlbwi</code>, 4 for a floating-point instruction
+after enabling the FPU (Status.CU1).  Since Release 2 software does not
+count: <strong><code>ehb</code></strong> waits until the CP0 writes before it are done, and
+<code>eret</code>, <code>jr.hb</code>, <code>jalr.hb</code> clear the hazards for what follows them.
+<code>docs/guide/labs/cp0_hazard.asm</code> reads Context right after writing it,
+then again after an <code>ehb</code>:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/cp0_hazard.asm --model 24k --events
+0x00000000 0x6789a000
+...
+    8  CP0 hazard: mfc0 $a0, $4 still sees the old Context (mtc0 $t0, $4 executed 1 cycle before)
+   17  ehb: EHB waits until the CP0 writes before it are done
+   18  ehb: EHB waits until the CP0 writes before it are done
+...
+</code></pre>
+<p>In instruction mode and on the 5-stage model the first value is
+<code>0x12345000</code> too: they write CP0 at once.  Code that works there can
+fail on a real pipeline — every handler in this guide writes EPC, then
+<code>ehb</code>, then <code>eret</code>.</p>
+<h2 id="57-integers-signed-and-unsigned">5.7 Integers: signed and unsigned</h2>
+<p>A register holds 32 bits; whether they mean a signed (two's complement,
+−2 147 483 648 … 2 147 483 647) or an unsigned (0 … 4 294 967 295)
+number depends on the <strong>instruction</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Signed</th>
+<th>Unsigned</th>
+<th>Difference</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add</code>, <code>addi</code>, <code>sub</code></td>
+<td><code>addu</code>, <code>addiu</code>, <code>subu</code></td>
+<td>the signed ones raise an <strong>overflow</strong> exception; the bits of the result are the same</td>
+</tr>
+<tr>
+<td><code>slt</code>, <code>slti</code></td>
+<td><code>sltu</code>, <code>sltiu</code></td>
+<td>compare as signed / unsigned: <code>0xffffffff</code> is −1 or 4 294 967 295</td>
+</tr>
+<tr>
+<td><code>sra</code></td>
+<td><code>srl</code></td>
+<td>shift right copying the sign bit / inserting zeros</td>
+</tr>
+<tr>
+<td><code>lb</code>, <code>lh</code></td>
+<td><code>lbu</code>, <code>lhu</code></td>
+<td>sign-extend / zero-extend the loaded byte or halfword</td>
+</tr>
+<tr>
+<td><code>mult</code>, <code>div</code></td>
+<td><code>multu</code>, <code>divu</code></td>
+<td>signed / unsigned product and quotient</td>
+</tr>
+</tbody>
+</table>
+<p><code>addiu</code> is <em>not</em> "add an unsigned immediate": its immediate is
+sign-extended like <code>addi</code>'s; the <code>u</code> only means "no overflow trap".  The
+logical immediates (<code>andi</code>, <code>ori</code>, <code>xori</code>) zero-extend theirs.</p>
+<p>The Registers pane shows every register in hex and as a signed decimal;
+<code>print</code> in the debugger shows both readings.  See
+<a href="#lab-5--signed-or-unsigned">Lab 5</a>.</p>
+<h2 id="58-memory-addresses-and-byte-order">5.8 Memory, addresses and byte order</h2>
+<p>Memory is <strong>byte-addressed</strong>: each address names one byte; a word
+occupies four consecutive addresses and must start at a multiple of 4
+(before Release 6) — otherwise the access raises an <strong>address error</strong>.</p>
+<p><strong>Byte order</strong>: the four bytes of a word can be stored most significant
+first (<strong>big-endian</strong>, eMIPS's default — the word <code>0x11223344</code> is
+<code>11 22 33 44</code> from the lowest address up) or least significant first
+(<strong>little-endian</strong>: <code>44 33 22 11</code>).  Words read back the same either
+way; the difference shows when you read single bytes:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/lab7_endian.asm
+0x00000011
+...
+$ python3 -m emips run docs/guide/labs/lab7_endian.asm --little
+0x00000044
+...
+</code></pre>
+<p><strong>Segments</strong>: the 4 GB address space is divided by the top bits of the
+address:</p>
+<table>
+<thead>
+<tr>
+<th>Range</th>
+<th>Segment</th>
+<th>Access</th>
+<th>Physical address</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x00000000</code>–<code>0x7fffffff</code></td>
+<td>kuseg</td>
+<td>user and kernel — your program, data, stack</td>
+<td>mapped: + <code>0x40000000</code> (Status.ERL = 0)</td>
+</tr>
+<tr>
+<td><code>0x80000000</code>–<code>0x9fffffff</code></td>
+<td>kseg0</td>
+<td>kernel only (cacheable) — the exception handler</td>
+<td>− <code>0x80000000</code></td>
+</tr>
+<tr>
+<td><code>0xa0000000</code>–<code>0xbfffffff</code></td>
+<td>kseg1</td>
+<td>kernel only (uncached) — boot code, devices</td>
+<td>− <code>0xa0000000</code></td>
+</tr>
+<tr>
+<td><code>0xc0000000</code>–<code>0xdfffffff</code></td>
+<td>kseg2</td>
+<td>kernel only</td>
+<td>mapped: the same</td>
+</tr>
+<tr>
+<td><code>0xe0000000</code>–<code>0xffffffff</code></td>
+<td>kseg3</td>
+<td>kernel only — the MMIO console</td>
+<td>mapped: the same</td>
+</tr>
+</tbody>
+</table>
+<p>In <strong>user mode</strong> a kernel address raises an address error (checked
+before anything else).</p>
+<p>Every address a program uses is <strong>virtual</strong>.  The processor turns it
+into a <strong>physical</strong> address — the place in the RAM chips — before the
+access:</p>
+<ul>
+<li><strong>kseg0 and kseg1 are two windows on the same memory</strong>: the first
+  512 MB of physical memory.  <code>0x80000180</code> and <code>0xa0000180</code> are the same
+  byte, physical <code>0x00000180</code>; through kseg0 the access may be cached
+  (Config.K0 decides), through kseg1 never — boot code and devices use
+  kseg1.  The reset vector <code>0xbfc00380</code> is physical <code>0x1fc00380</code>.</li>
+<li>The <strong>mapped</strong> segments go through the <strong>MMU</strong> (memory management
+  unit).  eMIPS has the <strong>Fixed Mapping MMU</strong> of the MIPS32 manual
+  (Config.MT = 3): kuseg is moved up by 1 GB — <code>.data</code> at <code>0x10010000</code>
+  is physical <code>0x50010000</code> — and kseg2 / kseg3 keep their address.  While
+  <strong>Status.ERL = 1</strong> (the reset state) kuseg is not moved at all.  This
+  MMU has no supervisor mode.  The other kind, a <strong>TLB</strong>, maps every
+  page through a table the operating system fills — see
+  <a href="#the-tlb">The TLB</a> below (<code>--mmu tlb</code>).</li>
+</ul>
+<pre><code class="language-asm"># One byte, two names: store through kseg0, read through kseg1.
+# output: 1234
+main:   lui   $t0, 0x8010          # kseg0 0x80100000 -&gt; physical 0x00100000
+        li    $t1, 1234
+        sw    $t1, 0($t0)
+        lui   $t2, 0xa010          # kseg1 0xa0100000 -&gt; the same byte
+        lw    $a0, 0($t2)
+        li    $v0, 1               # print_int
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>The Instruction tab and <code>run --trace</code> show both addresses of every load
+and store, the rule the MMU used, and the <strong>cacheability attribute</strong>
+(2 = uncached, 3 = cacheable write-back).  The Memory pane's <strong>physical</strong>
+box shows the RAM by physical address; in the debugger, <code>translate
+ADDRESS</code> (<code>t</code>) and <code>mem -p ADDRESS</code>.</p>
+<h3 id="caches">Caches</h3>
+<p>By default eMIPS has no caches: every load and store goes to memory.
+Turn them on in <strong>Settings → Caches</strong> or with <code>--caches</code> (both 32 KB,
+as in a MIPS 24K core) or <code>--icache</code> / <code>--dcache SIZE[:WAYS[:LINE]]</code>.
+Then the processor has an <strong>instruction cache</strong> and a <strong>data cache</strong>:
+small fast memories that keep copies of recently used memory in
+<strong>lines</strong> of 32 bytes.  A 32 KB 4-way cache has 256 <strong>sets</strong> of 4 lines;
+the address picks the set and the line's <strong>tag</strong> (its physical address)
+says which memory it holds.  On a <strong>miss</strong> the least recently used line
+of the set is replaced by a copy of the memory around the address.</p>
+<p>The cacheability attribute decides what happens:</p>
+<ul>
+<li><strong>3, write-back</strong> (kseg0 and kuseg after boot): a store only changes
+  the cached copy and marks the line <strong>dirty</strong>; memory is updated when
+  the line is replaced or written back by a <code>cache</code> instruction.</li>
+<li><strong>0, write-through</strong>: a store writes memory too (and the cached copy,
+  if there is one).</li>
+<li><strong>2, uncached</strong> (kseg1 always): the cache is not used at all.</li>
+</ul>
+<p>So kseg0 and kseg1 can disagree: after a store through kseg0, memory —
+and kseg1, which reads it — still has the old value until the line is
+written back.</p>
+<pre><code class="language-asm"># caches: 32K
+# output: 0 1234
+main:   lui   $t0, 0x8010          # kseg0: cached, write-back
+        li    $t1, 1234
+        sw    $t1, 0($t0)          # into the data cache only
+        lui   $t2, 0xa010          # kseg1: the same byte, uncached
+        lw    $a0, 0($t2)          # memory still holds 0
+        li    $v0, 1
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        cache 0x19, 0($t0)         # Hit Writeback, data cache: memory = 1234
+        lw    $a0, 0($t2)
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>Code that writes instructions (a loader, a JIT, self-modifying code)
+meets the same problem between the two caches: the new instruction is in
+the data cache, while the instruction cache may still hold the old one.
+<code>synci</code> writes the data-cache line back and invalidates the
+instruction-cache line; <code>sync</code> and a <code>jr.hb</code> complete it (Vol. II-A
+SYNCI).  Without the <code>synci</code> line this program prints <code>1 1</code>:</p>
+<pre><code class="language-asm"># caches: 32K
+# output: 1 2
+main:   la    $s0, patch
+        jal   patch                # runs addiu $v0, $zero, 1 (now cached)
+        move  $a0, $v0
+        li    $v0, 1
+        syscall
+        li    $t0, 0x24020002      # the word of: addiu $v0, $zero, 2
+        sw    $t0, 0($s0)          # goes into the data cache
+        synci 0($s0)               # make it visible to instruction fetch
+        sync
+        jal   patch
+        move  $s1, $v0
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        move  $a0, $s1
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+patch:  addiu $v0, $zero, 1
+        jr.hb $ra
+</code></pre>
+<p>After a real reset the caches hold random contents; the boot firmware
+(the kernel and user boot modes) invalidates every line before the
+program starts, and boot code in the reset state must do the same with
+<code>cache</code> Index Store Tag.  The cache registers (TagLo, DataLo, ErrCtl,
+CacheErr) and the Cache Error exception are in
+<a href="06-reference.html#63-cp0-registers-and-their-bits">Phase 6, 6.3</a>.</p>
+<h3 id="the-l2-cache-and-the-write-buffer">The L2 cache and the write buffer</h3>
+<p>A 24K system can add a <strong>second-level cache</strong> below the two L1 caches
+(Settings → Caches → L2 cache, or <code>--l2 256K</code>): bigger (128 KB–1 MB),
+shared by instructions and data, and indexed by the <em>physical</em> address,
+so it has no aliases.  It fills a line whenever an L1 cache misses, but
+it is <strong>write-back without write allocate</strong>: a line the data cache writes
+back lands in the L2 if the L2 has it, otherwise it goes on to memory.
+So with an L2, writing the data-cache line back is no longer enough for
+memory (or a device doing DMA) to see the store — the L2 must write its
+line back too.  The same <code>cache</code> operations work on it with cache field
+3 (an L3, <code>--l3</code>, is field 2; a 24K has none).  Without the L2 this
+program prints <code>1234 1234</code>:</p>
+<pre><code class="language-asm"># caches: 32K
+# l2: 256K
+# output: 0 1234
+main:   lui   $t0, 0x8010          # kseg0: cached, write-back
+        li    $t1, 1234
+        sw    $t1, 0($t0)          # into the data cache
+        cache 0x19, 0($t0)         # Hit Writeback, data cache: into the L2
+        lui   $t2, 0xa010          # kseg1: memory itself
+        lw    $a0, 0($t2)          # still 0
+        li    $v0, 1
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        cache 0x1b, 0($t0)         # Hit Writeback, L2 (op 6, cache 3): memory = 1234
+        lw    $a0, 0($t2)
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>Between the core and the bus sits the <strong>write buffer</strong>
+(<code>--write-buffer</code>): four 32-byte entries.  Evicted lines and uncached
+stores pass straight through it, but two kinds of store wait there:</p>
+<ul>
+<li><strong>write-through</strong> stores (attribute 0) to the same 32-byte block are
+  <strong>merged</strong> into one entry while <code>Config.MM = 1</code>;</li>
+<li><strong>uncached accelerated</strong> stores (attribute 7, for frame buffers and
+  other write-only hardware) are <strong>gathered</strong> into a block, then sent as
+  one burst.</li>
+</ul>
+<p>A waiting entry goes out when its block is complete, when a load reads
+its block, when a store of the same kind goes to another block, on an
+exception (gathered blocks) and on <code>sync</code> — the instruction that tells
+the core "make my stores visible now".  Until then memory and devices
+do not have the data.  Gathering also has a surprise of its own: the
+24K writes the gathered words <strong>one after another</strong>, whatever their
+addresses, so software must store them in order (without the write
+buffer this program prints <code>0 22</code>):</p>
+<pre><code class="language-asm"># write-buffer: on
+# output: 22 0
+main:   mfc0  $t0, $16             # Config
+        ori   $t0, $t0, 7          # K0 = 7: kseg0 uncached accelerated
+        mtc0  $t0, $16
+        ehb
+        lui   $s0, 0x8010          # kseg0, the start of a 32-byte block
+        lui   $s1, 0xa010          # kseg1: the same memory, plain uncached
+        li    $t1, 11
+        sw    $t1, 0($s0)          # starts gathering the block
+        li    $t1, 22
+        sw    $t1, 8($s0)          # gathered next: lands at offset 4!
+        lw    $a0, 4($s1)          # a load of the block sends it first
+        li    $v0, 1
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        lw    $a0, 8($s1)          # nothing was written at offset 8
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>With ECC on the L2 (<code>--cache-ecc</code>), a 1-bit error is corrected
+silently; a 2-bit error is a Cache Error exception that is
+<strong>imprecise</strong>: the load that met it completes — with the bad value —
+and the exception is taken before the next instruction.</p>
+<h3 id="what-a-miss-costs">What a miss costs</h3>
+<p>In the 5-stage pipeline mode the caches also cost <strong>time</strong>.  Without
+caches eMIPS treats memory as ideal — every access takes the one cycle
+of its stage, like the on-chip SRAM of a small microcontroller.  With
+caches, memory is as slow as on a real 24K system: an L1 miss served by
+main memory waits 50 cycles for the first doubleword of the line and 1
+more for each of the other three — <strong>53 cycles</strong> — and one served by the
+L2 waits 12 + 3.  A data miss holds the instruction in MEM and every
+stage behind it waits (<code>ME ME ME ...</code> in the chart): the <strong>blocking
+cache</strong> of the textbook.  An instruction miss holds IF.</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/cache_sum.asm
+...
+250 cycles, 212 instructions retired, CPI 1.18
+stall cycles: branch 34
+</code></pre>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/cache_sum.asm --caches
+...
+466 cycles, 212 instructions retired, CPI 2.20
+stall cycles: I-miss 110, branch 34, memory 106
+</code></pre>
+<p>The array is two lines, so the first pass misses twice (2 × 53 = 106
+cycles); the second pass finds both lines in the cache and costs
+nothing extra.  The same goes for the code: its lines miss once each.
+That is why caches pay off — a loop that runs a thousand times pays the
+misses once.</p>
+<p>The costs are in <strong>Settings → Memory timing</strong> (or <code>--mem-timing
+MEM=20,BEAT=2</code>).  Writes have costs too: without a write buffer every
+write-through or uncached store waits for memory (10 cycles); with it
+the store goes on unless all 4 entries are still busy ("write buffer
+full"), and <code>sync</code> waits until they are empty.  <code>pref</code> loads a line in
+the background — issue it early enough and the load later finds the line
+already there.  <strong>Loads miss in the background</strong> (<code>--nonblocking</code>) is
+the 24K's real behaviour: the pipeline goes on after a missing load and
+only an instruction that needs the loaded register waits ("miss-wait").</p>
+<h3 id="watching-the-caches">Watching the caches</h3>
+<p>A cache cuts every address into three fields.  For the 1 KB
+direct-mapped data cache of the labs below (64 sets of one 16-byte
+line):</p>
+<pre><code class="language-text">  virtual address   ...           | index: bits 9..4 | offset: bits 3..0 |
+  physical address  tag: bits 31..10                                       |
+</code></pre>
+<p>The <strong>offset</strong> picks the byte in the line, the <strong>index</strong> picks the set,
+and the <strong>tag</strong> — the rest of the <em>physical</em> address — is stored with
+the line, so a lookup compares it to know whether the line holds this
+address.  (The L1 caches of a 24K take the index from the virtual
+address and the tag from the physical one, so the lookup can start
+before the translation is done; the L2 uses the physical address for
+both.)</p>
+<p>Every lookup is a <strong>hit</strong> or a <strong>miss</strong>, and a miss that brings in a
+line is one of the <strong>3 C's</strong>:</p>
+<ul>
+<li><strong>compulsory</strong> — the first access to that line: no cache avoids it
+  (only bigger lines or <code>pref</code> hide it);</li>
+<li><strong>capacity</strong> — the program uses more lines than the cache holds: a
+  <em>fully associative</em> cache of the same size would have missed too;</li>
+<li><strong>conflict</strong> — the line was thrown out only because too many lines
+  wanted <em>its set</em>: a fully associative cache would still have it.
+  More ways (associativity) cure it.</li>
+</ul>
+<p>eMIPS adds a fourth, <strong>invalidated</strong>: the program removed the line
+itself (<code>cache</code>, <code>synci</code>, <code>pref 25</code>).  Misses that bring in nothing —
+a write-through store miss, which does not allocate — are counted but
+not classified.</p>
+<p><code>--cache-stats</code> prints all this at the end of <code>run</code> or <code>pipe</code>.
+<code>docs/guide/labs/cache_conflict.asm</code> adds two arrays that lie exactly
+1 KB apart, so <code>a[i]</code> and <code>b[i]</code> have the same index:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/cache_conflict.asm --dcache 1K:1:16 --cache-stats
+...
+--- caches
+D-cache (1 KB, direct mapped, 16-byte lines, 64 sets)
+  accesses 512   hits 0 (0.0 %)   misses 512 (100.0 %)
+    load   hits 0        misses 512
+  misses that filled a line: 512 -- compulsory 128, capacity 0, conflict 384, invalidated 0
+  evictions 448, written back 0
+</code></pre>
+<p>Every load misses: <code>a[i]</code> throws out the line of <code>b[i]</code> and the other
+way round, although at any moment the loop needs only those two lines.
+With two ways per set (<code>--dcache 2K:2:16</code>: still 64 sets, two lines in
+each) both fit — only the 128 compulsory misses are left.</p>
+<p>In the debugger, <code>cache</code> shows the caches without touching them (no
+hit is counted, no LRU bit changes): <code>cache last</code> the accesses of the
+last step, <code>cache D LOC</code> how an address is cut and what its set holds,
+<code>cache D set N</code> one set with its data, <code>cache LOC</code> where a line is in
+every cache:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/cache_conflict.asm --dcache 1K:1:16
+(emips) until loop
+   0x00400014  addiu $v0, $zero, 0
+=&gt; 0x00400018  lw $t3, 0($t0)                   line 12: loop:   lw    $t3, 0($t0)          # a[i]
+(emips) step 2
+   0x0040001c  lw $t4, 0($t1)
+=&gt; 0x00400020  addu $v0, $v0, $t3               line 14: addu  $v0, $v0, $t3
+(emips) cache last
+fetch         fetch 0x4040001c: no cache for it, straight to memory
+data          D-cache load 0x50010400 set 0 way 0: MISS (compulsory), replaces line 0x50010000
+(emips) cache D b
+D-cache (1 KB, direct mapped, 16-byte lines, 64 sets): virtually indexed, physically tagged
+  tag    PA[31:10] = 0101000000000001000001 = 0x140041 (1310785)
+  index  VA[9:4] = 000000 = 0x0 (0)
+  offset VA[3:0] = 0000 = 0x0 (0)
+D-cache set 0  (direct mapped)
+  way 0  age 0  V-- tag 0x140041 (line 0x50010400)
+      +0   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+</code></pre>
+<p>(The physical address is the virtual one + 0x40000000: kuseg in the
+fixed mapping, <a href="06-reference.html">Phase 6</a>.)  In the GUI the <strong>Caches</strong>
+pane shows the same: pick a cache, step, and the line the last access
+used lights up green (hit) or red (miss), under the tag | index |
+offset of its address; the counters and the 3 C's are below.  The
+datapath names its memories after the caches and shows each hit or
+miss, with the L2 underneath (<a href="03-the-gui.html#caches">Phase 3</a>).</p>
+<h3 id="the-tlb">The TLB</h3>
+<p>With <code>--mmu tlb</code> (or <code>set mmu tlb</code> in the debugger) eMIPS has a
+<strong>TLB-based MMU</strong> (Config.MT = 1) instead of the fixed mapping, the MMU
+of a MIPS 24K.  The mapped segments — kuseg, kseg2, kseg3 — are cut
+into <strong>pages</strong> (4 KB unless the operating system says otherwise), and
+each virtual page can live in any physical <strong>frame</strong>.  The table that
+says where is the <strong>TLB</strong> (<em>translation lookaside buffer</em>): 32 entries
+by default (<code>tlb:16</code>, <code>tlb:64</code>), each mapping an aligned <strong>pair</strong> of
+pages:</p>
+<pre><code class="language-text">  EntryHi    VPN2 = VA bits 31..13 (the pair)          |  ASID (whose)
+  EntryLo0   PFN (frame of the even page) | C | D | V | G
+  EntryLo1   PFN (frame of the odd page)  | C | D | V | G
+  PageMask   the page size (4 KB .. 256 MB)
+</code></pre>
+<p>An access compares its page with every entry at once.  An entry
+matches when its VPN2 is the page pair and its <strong>ASID</strong> (address space
+ID) is the one in EntryHi — or its <strong>G</strong>lobal bit is set; VA bit 12
+then picks the even or the odd half (for 4 KB pages).  <strong>V</strong> (valid)
+must be 1, a store needs <strong>D</strong> (dirty: writable), and <strong>C</strong> is the
+cacheability attribute.  The physical address is the frame plus the
+offset in the page.  Three things can go wrong, each an exception that
+leaves the failing address in BadVAddr, its page pair in EntryHi.VPN2
+and Context.BadVPN2:</p>
+<ul>
+<li>no entry matches: <strong>TLB Refill</strong> (TLBL for a load or a fetch, TLBS
+  for a store) — with its own vector, EBase + 0x000 = <code>0x80000000</code>, so
+  that the most frequent exception is the fastest;</li>
+<li>the entry has V = 0: <strong>TLB Invalid</strong> (TLBL / TLBS, the general vector);</li>
+<li>a store to a page with D = 0: <strong>TLB Modified</strong> (Mod).</li>
+</ul>
+<p>Nothing fills the TLB by itself: the <strong>refill handler</strong> does, with four
+instructions — <code>mtc0</code> EntryLo0 / EntryLo1 (and PageMask), then
+<code>tlbwr</code>, which writes the entry the <strong>Random</strong> register points at (it
+counts down every cycle, but never below <strong>Wired</strong>: the entries below
+are kept for good), and <code>eret</code>.  <code>tlbwi</code> writes entry <strong>Index</strong>, <code>tlbp</code>
+finds the entry of EntryHi (Index bit 31 = 1: none), <code>tlbr</code> reads one
+back.  An operating system takes the frames from its page table; the
+eMIPS <strong>boot firmware</strong> installs a handler at <code>0x80000000</code> that maps
+kuseg at VA + 1 GB and kseg2 / kseg3 at the same address — what the
+fixed mapping does — so every program runs unchanged, just with a few
+refills more.  (A program with its own code at <code>0x80000000</code> keeps it;
+the loader still puts kuseg at VA + 1 GB.)
+<code>docs/guide/labs/tlb_pages.asm</code> reads two words 8 KB apart:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/tlb_pages.asm --mmu tlb:16
+(emips) translate b
+0x10012000 kuseg -&gt; physical 0x50012000  (not in the TLB yet; boot firmware refill handler: PA = VA + 0x40000000, cacheable; attribute 3 = cacheable, write-back)
+(emips) until 0x00400014
+   0x00400010  addiu $t0, $t0, 8192            ; $t0 = 0x10012000
+=&gt; 0x00400014  lw $t2, 0($t0)                   line 11: lw    $t2, 0($t0)       # refill: the pair of b
+(emips) step
+   0x00400014  lw $t2, 0($t0)                  ; EXCEPTION TLBL
+   exception TLBL (TLB refill) at 0x00400014, BadVAddr 0x10012000: no TLB entry matches -&gt; 0x80000000
+=&gt; 0x80000000  mfc0 $k1, $10
+(emips) continue 15
+   0x80000038  eret                            ; cp0:12.0 = 0x20000000
+=&gt; 0x00400014  lw $t2, 0($t0)                   line 11: lw    $t2, 0($t0)       # refill: the pair of b
+(emips) translate b
+0x10012000 kuseg -&gt; physical 0x50012000  (TLB entry 13 (global, 4 KB even page, D): PFN -&gt; PA 0x50012000; attribute 3 = cacheable, write-back)
+</code></pre>
+<p>The <code>lw</code> faults, the handler (15 instructions) writes entry 13 —
+Random's value at that moment — and <code>eret</code> runs the <code>lw</code> again, which
+now hits.  <code>cp0</code> shows EntryHi, EntryLo0 / 1, Index, Random, Wired,
+PageMask and Context; <code>run --trace</code> shows the TLB entry of every
+access.</p>
+<p>A few more things a real TLB does, and eMIPS too:</p>
+<ul>
+<li><strong>Micro-TLBs.</strong>  The 24K does not search the whole TLB on every
+  access: a 4-entry ITLB (fetches) and an 8-entry DTLB (loads and
+  stores) keep the last translations, and a miss in them costs the
+  pipeline 3 cycles while the main TLB (the <strong>JTLB</strong>) answers
+  (<code>--mem-timing UTLB=N</code>).  They never change a result.</li>
+<li><strong>No double entries.</strong>  Writing an entry that overlaps a valid one is
+  a <strong>Machine Check</strong> (MCheck, ExcCode 24; Status.TS = 1) and the write
+  does not happen; an overlapping <em>invalid</em> entry is simply dropped.</li>
+<li><strong>Supervisor mode</strong> (Status.KSU = 1) exists with a TLB: it reaches
+  kuseg and kseg2 (<em>sseg</em>), not kseg0 / kseg1 / kseg3.</li>
+<li><strong>Release 3</strong> adds per-page <strong>RI</strong> / <strong>XI</strong> (read / execute inhibit,
+  enabled in PageGrain), EntryHi.EHINV with <code>tlbinv</code> / <code>tlbinvf</code> to
+  invalidate entries, and BadInstr / BadInstrP (the faulting
+  instruction and its branch); Release 2-5 allow 1 KB pages
+  (PageGrain.ESP).</li>
+</ul>
+<h3 id="the-other-mmus">The other MMUs</h3>
+<p>The MIPS32 manual allows three more organizations, and eMIPS has them
+all (<code>--mmu</code>, Settings → Processor → MMU, <code>set mmu</code> in the debugger).
+After boot each one maps memory as the fixed mapping does, so every
+program runs on every MMU:</p>
+<ul>
+<li><strong>BAT</strong> (<code>--mmu bat</code>, <em>block address translation</em>, Config.MT = 2):
+  no pages, six base-and-bounds pairs — one for fetches and one for data
+  in each of kuseg, kseg2 and kseg3.  An address up to the entry's bound
+  is moved by its base (<code>PA = VA + base</code>); above it, or with V = 0, it is
+  a TLB Invalid exception.  <code>tlbwi</code> / <code>tlbr</code> load and read an entry
+  (Index, EntryHi = the bound, EntryLo0 = the base); <code>tlbp</code> and <code>tlbwr</code>
+  do not exist.</li>
+<li><strong>VTLB + FTLB</strong> (<code>--mmu ftlb</code>, MT = 4, the sizes of a MIPS P5600): a
+  64-entry fully associative TLB for pages of any size (the <em>VTLB</em>) next
+  to a 512-entry, 4-way set-associative TLB whose entries all have one
+  page size, 4 KB or 16 KB (the <em>FTLB</em>, Config4).  Like a cache, an FTLB
+  entry can only sit in the set its address selects (VA bits 19..13 XOR
+  VA bits 26..20 — a hash, so neighbouring regions spread over the sets),
+  so 512 entries cost little hardware.  After reset the FTLB is off
+  (Config6.FTLBEn = 0: MT reads 1, a plain JTLB); the boot firmware turns
+  it on, as Linux does.  <code>tlbwr</code> with the FTLB's page size in PageMask
+  writes the FTLB — which is what a refill handler does:</li>
+</ul>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/tlb_pages.asm --mmu ftlb
+(emips) until 0x00400018
+   0x00400014  lw $t2, 0($t0)                  ; $t2 = 0x00000002
+=&gt; 0x00400018  lw $t3, 4($t0)                   line 12: lw    $t3, 4($t0)       # same page: no refill
+(emips) translate b
+0x10012000 kuseg -&gt; physical 0x50012000  (FTLB set 9 way 3 (entry 457) (global, 4 KB even page, D): PFN -&gt; PA 0x50012000; attribute 3 = cacheable, write-back)
+</code></pre>
+<ul>
+<li><strong>Segmentation control and EVA</strong> (<code>+sc</code>, Release 3 and later): the
+  six regions (kseg3, kseg2, kseg1, kseg0 and the two halves of kuseg)
+  lose their fixed meaning; SegCtl0–2 say for each who may use it
+  (user / supervisor / kernel), whether it is mapped and, if not, where
+  in physical memory it lies.  After reset they describe the usual map.
+  With them come the <strong>EVA</strong> instructions (<code>lwe</code>, <code>swe</code>, <code>cachee</code> ...),
+  with which the kernel reaches user memory <em>with the user's rights and
+  mapping</em> — the kernel of the classic EVA layout gives user programs
+  3 GB instead of 2.  Without <code>+sc</code> the EVA instructions are reserved
+  instructions, as on a real core without EVA.</li>
+<li><strong>The hardware page table walker</strong> (<code>+pw</code>, Release 5 and later): a TLB
+  miss first walks the operating system's page table in memory —
+  directory, then page table, as set up in PWBase / PWField / PWSize —
+  and refills the TLB itself; only when the walk fails does the refill
+  exception happen.  <code>docs/guide/labs/page_walker.asm</code> builds a
+  two-level table that maps the first page of <code>.data</code> onto the frame of
+  the second, so the value printed tells who translated it:</li>
+</ul>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/page_walker.asm --mmu tlb+pw
+2
+...
+$ python3 -m emips run docs/guide/labs/page_walker.asm --mmu tlb
+1
+...
+</code></pre>
+<p>With the walker the load reads the second page's word (2) without any
+exception; without it the boot firmware's refill handler maps the page
+the usual way (1).</p>
+<h3 id="watching-the-tlb">Watching the TLB</h3>
+<p>Everything a TLB does can be watched without changing it: the views
+read the entries, they never translate through them — no micro-TLB is
+refilled, nothing is counted.  A translation goes from the virtual
+address to a <strong>micro-TLB</strong> (the ITLB for fetches, the DTLB for data),
+and when that has no copy to the TLB itself: the entry whose VPN2 (and
+ASID, or G) matches, then EntryLo0 or EntryLo1 as the even / odd bit
+says, whose <strong>PFN</strong> (physical frame number) and the offset make the
+physical address:</p>
+<pre><code class="language-text">  virtual address   | VPN2: bits 31..13   | even/odd: bit 12 | offset: bits 11..0 |
+                      matched in the TLB    EntryLo0 or 1
+  physical address  | PFN (of that EntryLo): bits 31..12     | offset: bits 11..0 |
+</code></pre>
+<p><code>tlb last</code> in the debugger shows each translation of the last step that
+way, <code>tlb</code> the entries in use, <code>tlb LOC</code> how an address translates now:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/tlb_pages.asm --mmu tlb:16
+(emips) until 0x00400014
+   0x00400010  addiu $t0, $t0, 8192            ; $t0 = 0x10012000
+=&gt; 0x00400014  lw $t2, 0($t0)                   line 11: lw    $t2, 0($t0)       # refill: the pair of b
+(emips) step
+   0x00400014  lw $t2, 0($t0)                  ; EXCEPTION TLBL
+   exception TLBL (TLB refill) at 0x00400014, BadVAddr 0x10012000: no TLB entry matches -&gt; 0x80000000
+=&gt; 0x80000000  mfc0 $k1, $10
+(emips) tlb last
+fetch       fetch 0x00400014: ITLB hit -&gt; TLB entry 1 (global, 4 KB even page, VD) -&gt; PFN 0x40400 -&gt; PA 0x40400014 (C3)
+data        load 0x10012000: DTLB miss -&gt; no TLB entry maps VPN2 0x08009 for ASID 0 -&gt; TLB Refill
+(emips) continue 15
+   0x80000038  eret                            ; cp0:12.0 = 0x20000000
+=&gt; 0x00400014  lw $t2, 0($t0)                   line 11: lw    $t2, 0($t0)       # refill: the pair of b
+(emips) step
+   0x00400014  lw $t2, 0($t0)                  ; $t2 = 0x00000002
+=&gt; 0x00400018  lw $t3, 4($t0)                   line 12: lw    $t3, 4($t0)       # same page: no refill
+(emips) tlb last
+fetch       fetch 0x00400014: ITLB hit -&gt; TLB entry 1 (global, 4 KB even page, VD) -&gt; PFN 0x40400 -&gt; PA 0x40400014 (C3)
+data        load 0x10012000: DTLB miss -&gt; TLB entry 13 (global, 4 KB even page, VD) -&gt; PFN 0x50012 -&gt; PA 0x50012000 (C3)
+(emips) tlb
+TLB: 16 dual entries; 3 in use; Wired 0, Random 10 (next TLBWR), ASID 0
+   #    VA range (page pair)     owner      page  even page (EntryLo0)     | odd page (EntryLo1)
+   1    VA 0x00400000-0x00401fff G          4 KB  PFN 0x40400 C3 VD        | PFN 0x40401 C3 VD
+  10  R invalidated (EHINV)
+  13    VA 0x10012000-0x10013fff G          4 KB  PFN 0x50012 C3 VD        | PFN 0x50013 C3 VD
+  15    VA 0x10010000-0x10011fff G          4 KB  PFN 0x50010 C3 VD        | PFN 0x50011 C3 VD
+  W = wired (TLBWR never replaces it), R = Random (the entry TLBWR writes next)
+(emips) tlb b
+0x10012000 (kuseg): mapped
+  VPN2 VA[31:13] = 0x8009 | even/odd VA[12] = 0 | offset VA[11:0] = 0x0
+  TLB entry 13 matches: VPN2 0x08009, global, 4 KB pages
+  even page: EntryLo0 = 0x0140049f: PFN 0x50012, C3 (cacheable, write-back), VD
+  PA = page 0x50012000 + offset 0x0 = 0x50012000
+  DTLB holds a copy (slot 1)
+</code></pre>
+<p>The first try of the <code>lw</code> finds no entry for the pair of <code>b</code>: a refill.
+The handler's <code>tlbwr</code> writes entry 13 (where Random pointed), and the
+<code>lw</code> runs again: the DTLB has no copy yet, the TLB hits in entry 13, and
+the even page's PFN 0x50012 makes PA 0x50012000.  More: <code>tlb micro</code> (the
+ITLB / DTLB copies and which slot the next miss replaces), <code>tlb entry
+N</code> (one entry, and what <code>tlbr</code> would read), <code>tlb set N</code> (an FTLB set),
+<code>tlb stats</code> — TLB lookups (every micro-TLB miss) with their hits and
+misses, the micro-TLBs' hit rates, the exceptions by kind, the page
+walks — also printed by <code>run --tlb-stats</code>.  <code>run --trace</code> shows the
+same <code>TLB:</code> lines for every instruction, and what <code>tlbwr</code>, <code>tlbwi</code>,
+<code>tlbp</code>, <code>tlbr</code> and <code>tlbinv</code> did.  In the GUI the <strong>TLB</strong> pane lights up
+the entry of the last translation (green: translated, red: a TLB
+exception) under its VPN2 | even/odd | offset, with the micro-TLBs and
+the counters below, and the datapath shows the micro-TLB under each
+memory (<a href="03-the-gui.html#tlb">Phase 3</a>).</p>
+<p><strong>Random is not quite a plain counter.</strong>  A refill handler takes the
+same number of cycles every time; a counter that steps every cycle
+could then give every refill the same entry, and two pages that need
+each other — the code of a loop and its data — would push each other
+out forever: the program hangs (a <em>livelock</em>).  The 24K's Random has a
+10-bit LFSR that skips a step now and then, and eMIPS has it too
+(<a href="#lab-9--the-reach-of-the-tlb">Lab 9</a>).</p>
+<p>File → Examples has two programs with a kernel of their own (also in
+<code>emips/gui/examples/</code>): <code>tlb_refill.asm</code>, a refill handler that reads a
+page table through Context and maps one frame at two virtual addresses,
+and <code>copy_on_write.asm</code>: two pages share a read-only frame until the
+first store to one of them, whose <strong>TLB Modified</strong> handler copies the
+frame and maps that page to the copy:</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/copy_on_write.asm --mmu tlb --tlb-stats
+1 1 2
+...
+--- TLB
+TLB
+  TLB lookups 7 (micro-TLB misses): hits 4 (57.1 %), misses 3 (42.9 %)
+  ITLB: 40 translations, hits 38 (95.0 %), misses 2
+  DTLB: 7 translations, hits 2 (28.6 %), misses 5
+  entries written 4
+  exceptions: TLB Modified 1, TLB Refill 3
+...
+exception Mod at 0x00400018, BadVAddr 0x00700000: TLB entry 7: the page is not writable (D = 0) -&gt; 0x80000180
+...
+</code></pre>
+<h2 id="59-more-than-one-core">5.9 More than one core</h2>
+<p>A multi-core MIPS — the 1004K, interAptiv, P5600 — is a <strong>Coherent
+Processing System</strong> (CPS): up to four cores (eMIPS: <code>--cores 2..4</code>,
+Settings → Processor → Cores, the debugger's <code>set cores N</code>) on one
+physical memory, plus three blocks every core reaches by loads and
+stores:</p>
+<table>
+<thead>
+<tr>
+<th>block</th>
+<th>where (physical)</th>
+<th>what it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CM</strong> — Coherence Manager</td>
+<td>GCRs at 0x1FBF8000 (kseg1 0xBFBF8000)</td>
+<td>which cores exist, who may write the GCRs, each core's reset base, coherence</td>
+</tr>
+<tr>
+<td><strong>CPC</strong> — Cluster Power Controller</td>
+<td>0x1BDE0000 once GCR_CPC_BASE enables it</td>
+<td>powers cores up and down, resets them, gates their clocks</td>
+</tr>
+<tr>
+<td><strong>GIC</strong> — Global Interrupt Controller</td>
+<td>0x1BDC0000 once GCR_GIC_BASE enables it</td>
+<td>routes interrupts to cores, interrupts between cores (<a href="#interrupts-between-cores-the-gic">the GIC</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Each core is a whole MIPS32 CPU: its own registers, CP0, TLB and L1
+caches.  A core knows which one it is from <strong>EBase.CPUNum</strong> (CP0 15.1,
+bits 9..0, read-only), <code>rdhwr $t0, $0</code> (Release 2) or GCR_CL_ID.</p>
+<p><strong>The boot.</strong>  In the kernel and user boot (the default) the firmware
+has done what boot code does on a CPS: every core may write the GCRs,
+the CPC is enabled, every core is powered up, in the coherence domain,
+and starts at <code>main</code> with its own stack (64 KB below the previous
+core's).  The program decides by CPUNum who does what — here four cores
+sum 1..100, a quarter each (<a href="labs/cores_sum.asm"><code>labs/cores_sum.asm</code></a>):</p>
+<pre><code class="language-asm"># cores: 4
+# output: 5050
+        .data
+part:   .word 0, 0, 0, 0             # each core's sum
+done:   .word 0, 0, 0, 0             # set when its sum is there
+        .text
+main:   mfc0  $s0, $15, 1            # EBase
+        andi  $s0, $s0, 0x3ff        # CPUNum: 0..3
+        li    $t0, 25
+        mul   $t1, $s0, $t0          # first = 25 * cpu + 1
+        addiu $t1, $t1, 1
+        addu  $t2, $t1, $t0          # last + 1
+        li    $t3, 0
+sum:    addu  $t3, $t3, $t1
+        addiu $t1, $t1, 1
+        bne   $t1, $t2, sum
+        sll   $t4, $s0, 2
+        sw    $t3, part($t4)         # part[cpu] = the sum
+        li    $t5, 1
+        sw    $t5, done($t4)         # then done[cpu] = 1
+        bnez  $s0, rest              # cores 1..3 are finished
+        li    $t4, 4                 # core 0: wait for done[1..3]
+        li    $t6, 16
+wait:   lw    $t5, done($t4)
+        beqz  $t5, wait
+        addiu $t4, $t4, 4
+        bne   $t4, $t6, wait
+        lw    $a0, part
+        lw    $t5, part + 4
+        addu  $a0, $a0, $t5
+        lw    $t5, part + 8
+        addu  $a0, $a0, $t5
+        lw    $t5, part + 12
+        addu  $a0, $a0, $t5
+        li    $v0, 1                 # print 5050
+        syscall
+        li    $v0, 10
+        syscall
+rest:   wait                         # nothing to do: wait (for an interrupt)
+        b     rest
+</code></pre>
+<p>In eMIPS a step runs <strong>every core</strong>: one instruction each (one clock
+cycle each in pipeline mode), core 0 first.  Real cores run on their own;
+what one core sees of another's stores, and when, is the memory
+ordering a later part of eMIPS models.  The spin loop on <code>done</code> works
+with or without caches: the boot maps memory <strong>coherent</strong> (CCA 5) and the
+Coherence Manager keeps the cores' data caches in agreement — see
+<a href="#coherent-caches">Coherent caches</a> below.</p>
+<p>The debugger shows every running core after a step; <code>cpu</code> lists them
+with their power state, <code>cpu N</code> chooses the one <code>regs</code>, <code>cp0</code>, <code>mem</code>,
+<code>view</code> and the charts show (in the GUI: the core selector in the
+toolbar; the editor's gutter marks the other cores' lines, and the
+<strong>System</strong> pane shows the cores, the coherence domain, the GIC and the
+CPS registers — <a href="03-the-gui.html#more-than-one-core-the-system-pane">Phase 3</a>;
+the debugger's <code>cps</code> lists the registers).  A breakpoint stops whichever
+core reaches it first, and that core becomes the selected one.  <code>exit</code>
+on any core ends the program.</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/cores_sum.asm --cores 4 -c &quot;step 2; cpu 2; regs $s0; continue; cpu&quot;
+(emips) step 2
+   0x00400004  andi $s0, $s0, 0x3ff            ; $s0 = 0x00000000
+=&gt; core 0  0x00400008  addiu $t0, $zero, 25             line 11: li    $t0, 25
+   core 1  0x00400008  addiu $t0, $zero, 25             line 11: li    $t0, 25
+   core 2  0x00400008  addiu $t0, $zero, 25             line 11: li    $t0, 25
+   core 3  0x00400008  addiu $t0, $zero, 25             line 11: li    $t0, 25
+(emips) cpu 2
+   core 0: U6 coherent execution, pc 0x00400008 (line 11)
+   core 1: U6 coherent execution, pc 0x00400008 (line 11)
+=&gt; core 2: U6 coherent execution, pc 0x00400008 (line 11)
+   core 3: U6 coherent execution, pc 0x00400008 (line 11)
+(emips) regs $s0
+   $s0 = 0x00000002  2  *
+(emips) continue
+5050
+the program exited
+   (ended)
+(emips) cpu
+   core 0: U6 coherent execution, pc 0x004000b8 (line 41) (exited)
+   core 1: U6 coherent execution, pc 0x004000bc (line 42) (waiting)
+=&gt; core 2: U6 coherent execution, pc 0x004000bc (line 42) (waiting)
+   core 3: U6 coherent execution, pc 0x004000bc (line 42) (waiting)
+</code></pre>
+<p><strong>Waking a core yourself.</strong>  With <code>--boot reset</code> the system is as
+power-on leaves it: core 0 runs, the others are powered down (SEQSTATE
+D0) — "only one processor should be powered up when power is first
+applied" (Boot-MIPS).  Core 0 starts another core the way boot code
+and Linux do:</p>
+<ol>
+<li>enable the CPC: <code>GCR_CPC_BASE</code> = 0x1BDE0000 | 1;</li>
+<li>let the other core write the GCRs: <code>GCR_ACCESS</code> (one bit per core;
+   all set after reset — software can lock a core out);</li>
+<li>choose the core: write its number &lt;&lt; 16 to <code>GCR_CL_OTHER</code> (GCR
+   0x2018) — the <strong>core-other</strong> block at GCR 0x4000 is now that core's —
+   and set its <code>GCR_CO_RESET_BASE</code> (0x4020, a 4 KB-aligned kseg0 / kseg1
+   address; its BEV exception vectors move with it: base + 0x380);</li>
+<li>the same for the CPC (<code>CPC_CL_OTHER</code>, 0x2010), then
+   <code>CPC_CO_CMD</code> (0x4000) = 3, <strong>PwrUp</strong> (1 ClockOff, 2 PwrDown, 4 Reset).</li>
+</ol>
+<p>The core starts at its reset base in the hardware reset state (BEV =
+ERL = 1, kernel mode, its caches and TLB not initialised), running but
+not coherent: <code>CPC_CO_STAT_CONF.SEQSTATE</code> (bits 22..19) reads 6, U5.
+When it joins the coherence domain (<code>GCR_CL_COHERENCE</code> = 0xff) it reads
+7, U6 — that is what Linux waits for.  ClockOff, PwrDown and Reset of a
+core in the domain wait until it leaves it; ClockOff of a running core
+stops its clock (D2, <code>0xA</code>: PwrUp resumes it where it was).
+(<a href="labs/cores_wake.asm"><code>labs/cores_wake.asm</code></a>):</p>
+<pre><code class="language-asm"># cores: 2
+# boot: reset
+# output: 0 6 7 42
+        .eqv  GCR, 0xbfbf8000        # the CM's registers (kseg1)
+        .eqv  CPC, 0xbbde0000        # the CPC's, once enabled (kseg1)
+        .data
+flag:   .word 0
+        .text
+main:   li    $s0, GCR
+        li    $t0, 0x1bde0001        # GCR_CPC_BASE: the CPC at 0x1BDE0000, on
+        sw    $t0, 0x0088($s0)
+        li    $t0, 3
+        sw    $t0, 0x0020($s0)       # GCR_ACCESS: cores 0 and 1 may write
+        li    $t0, 1 &lt;&lt; 16
+        sw    $t0, 0x2018($s0)       # GCR_CL_OTHER: core 1
+        la    $t0, secondary
+        li    $t1, 0xa0000000
+        or    $t0, $t0, $t1          # its kseg1 address (4 KB aligned)
+        sw    $t0, 0x4020($s0)       # GCR_CO_RESET_BASE
+        li    $s1, CPC
+        li    $t0, 1 &lt;&lt; 16
+        sw    $t0, 0x2010($s1)       # CPC_CL_OTHER: core 1
+        jal   state                  # 0 = D0, powered down
+        li    $t0, 3
+        sw    $t0, 0x4000($s1)       # CPC_CO_CMD = PwrUp
+        jal   state                  # 6 = U5, non-coherent execution
+        la    $s2, flag
+wait:   lw    $t0, 0($s2)
+        beqz  $t0, wait
+        jal   state                  # 7 = U6, coherent execution
+        lw    $a0, 0($s2)
+        li    $v0, 1                 # print what core 1 stored
+        syscall
+        li    $v0, 10
+        syscall
+
+state:  lw    $a0, 0x4008($s1)       # CPC_CO_STAT_CONF
+        srl   $a0, $a0, 19
+        andi  $a0, $a0, 0xf          # SEQSTATE
+        li    $v0, 1
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        jr    $ra
+
+        .align 12                    # a reset base is 4 KB aligned
+secondary:                           # core 1, from its reset
+        li    $s0, GCR
+        li    $t0, 0xff
+        sw    $t0, 0x2008($s0)       # GCR_CL_COHERENCE: join the domain
+        mfc0  $t0, $15, 1
+        andi  $t0, $t0, 0x3ff        # CPUNum = 1
+        addiu $t0, $t0, 41
+        la    $t1, flag
+        sw    $t0, 0($t1)
+park:   b     park
+</code></pre>
+<h3 id="coherent-caches">Coherent caches</h3>
+<p>Every core has its own L1 caches; the L2 (<code>--l2</code>) is <strong>shared</strong>, behind
+the Coherence Manager.  With write-back data caches two cores could hold
+different values for one address; the CM prevents that with the <strong>MESI</strong>
+protocol on every line of every data cache:</p>
+<table>
+<thead>
+<tr>
+<th>state</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M</strong> Modified</td>
+<td>the only copy, written (memory is stale)</td>
+</tr>
+<tr>
+<td><strong>E</strong> Exclusive</td>
+<td>the only copy, clean: the core may write it without asking</td>
+</tr>
+<tr>
+<td><strong>S</strong> Shared</td>
+<td>a clean copy; other cores may have one too — read only</td>
+</tr>
+<tr>
+<td><strong>I</strong> Invalid</td>
+<td>no copy</td>
+</tr>
+</tbody>
+</table>
+<p>Only the <strong>coherent</strong> cacheability attributes take part: <strong>5</strong> (a load
+miss asks for the line Shared — Exclusive when nobody else has it) and
+<strong>4</strong> (a load miss asks for it Exclusive).  3 is cacheable but <em>not</em>
+coherent: no core ever hears about it.  The boot sets Config.K0 / KU (and
+the TLB refill handler's pages) to 5, as Boot-MIPS does on coherent
+cores.  A miss goes to the CM, which sends an <strong>intervention</strong> to the
+other cores' data caches:</p>
+<ul>
+<li>a load miss: a core holding the line <strong>M</strong> writes it back and sends
+  it <em>cache to cache</em>; both end <strong>S</strong> (an <strong>E</strong> holder just becomes S);</li>
+<li>a store miss: the line is taken <strong>Exclusive</strong> — every other copy
+  becomes <strong>I</strong> (an M copy hands its data over) — and the store makes it
+  <strong>M</strong>;</li>
+<li>a store to an <strong>S</strong> line first sends an <strong>upgrade</strong>: the other copies
+  become I, the line M.  A store to an <strong>E</strong> line asks nobody.</li>
+</ul>
+<p><a href="labs/cores_mesi.asm"><code>labs/cores_mesi.asm</code></a> walks through all of it;
+<code>cm LOC</code> shows the state of LOC's line in every core, <code>cache last</code> what
+the CM did for the last access:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/cores_mesi.asm --cores 2 --caches -c &quot;step 7; cm x; step; cm x; step 2; cache last; cm x; step; cache last; cm x&quot;
+(emips) step 7
+   0x00400018  lw $t2, 0($t1)
+=&gt; core 0  0x0040001c  nop                              line 15: nop
+   core 1  0x00400044  sw $t0, 0($t1)                   line 25: sw    $t0, 0($t1)            # core 1, step 8
+(emips) cm x
+0x10010000: PA 0x50010000, attribute 5: core 0 Exclusive
+(emips) step
+   0x0040001c  nop
+=&gt; core 0  0x00400020  nop                              line 16: nop
+   core 1  0x00400048  b 0x00400048                     line 26: park:   b     park
+(emips) cm x
+0x10010000: PA 0x50010000, attribute 5: core 1 Modified
+(emips) step 2
+   0x00400024  lw $t3, 0($t1)                  ; $t3 = 0x00000007
+=&gt; core 0  0x00400028  sw $s0, 0($t1)                   line 18: sw    $s0, 0($t1)            # step 11
+   core 1  0x00400048  b 0x00400048                     line 26: park:   b     park
+(emips) cache last
+fetch         I-cache fetch 0x40400024 set 1 way 3: hit
+data          D-cache load 0x50010000 set 0 way 3: MISS (invalidated); core 1 had it M: sent cache to cache; core 1 M -&gt; S (written back to memory); now Shared
+(emips) cm x
+0x10010000: PA 0x50010000, attribute 5: core 0 Shared, core 1 Shared
+(emips) step
+   0x00400028  sw $s0, 0($t1)                  ; [0x10010000] = 0x00000000
+=&gt; core 0  0x0040002c  or $a0, $t3, $zero               line 19: move  $a0, $t3
+   core 1  0x0040004c  nop                              line 26: park:   b     park
+(emips) cache last
+fetch         I-cache fetch 0x40400028 set 1 way 3: hit
+data          D-cache store 0x50010000 set 0 way 3: hit; upgrade S -&gt; M: core 1 -&gt; I
+(emips) cm x
+0x10010000: PA 0x50010000, attribute 5: core 0 Modified
+</code></pre>
+<p>More of what the CM does:</p>
+<ul>
+<li><strong>The coherence domain.</strong>  <code>GCR_CL_COHERENCE</code> (GCR 0x2008): the core's
+  own bit puts it in coherent mode, bit <em>i</em> lets it receive core <em>i</em>'s
+  interventions (0xff: everything, what the boot and Linux write).  A
+  core leaves the domain by clearing it — after flushing its data cache,
+  or its stale lines stay behind.</li>
+<li><strong>Instruction caches are not coherent with stores</strong>: an instruction
+  refill reads the newest copy (even from another core's M line) without
+  taking it, but a line already in an I-cache stays as it is — <code>synci</code>
+  fixes that, in every core.</li>
+<li><strong>Cache operations are global</strong>: <code>cache</code> Hit Invalidate / Hit
+  Writeback (Invalidate) and <code>synci</code> on a coherent address are done by
+  every core of the domain (index operations stay local).</li>
+<li><strong>LL / SC across cores</strong>: another core's store to the line of an <code>ll</code>
+  clears its LLbit (the intervention invalidates the line), so the <code>sc</code>
+  fails and the loop retries — no update is lost.</li>
+<li><strong>The shared L2</strong>: one L2 for all cores.  The CM's <em>address regions</em>
+  (<code>GCR_REGn_BASE</code> / <code>MASK</code>, and <code>GCR_BASE</code> for the rest of memory) can
+  keep regions out of it (DROPL2, or an uncached CCA override) or make it
+  write-through for them.</li>
+<li><strong>Errors</strong>: accessing the GCRs / CPC with a cached attribute, or
+  copies in impossible states (two owners — a domain switch without a
+  flush), are recorded in <code>GCR_ERROR_CAUSE</code> / <code>ADDR</code> / <code>MULT</code> (GCR
+  0x48 / 0x50 / 0x58; writing the cause clears it).  <code>cm</code> shows them.</li>
+<li><strong>Time</strong>: in pipeline mode a miss served by another core costs
+  <code>C2C</code> cycles (14), an upgrade <code>UPG</code> (8) — Settings → Memory timing,
+  <code>--mem-timing</code>.  Every core's refills and writes travel on <strong>one
+  system bus</strong> behind the CM: one core's misses can make another wait.</li>
+</ul>
+<h3 id="memory-ordering">Memory ordering</h3>
+<p>Coherence says every core sees <em>one</em> value per address.  It does not say
+<strong>when</strong> a store becomes visible to the other cores, nor in which order
+two stores to different addresses do: that is the <strong>memory ordering</strong>,
+and on MIPS it is <em>weak</em> (Linux: "systems with weakly ordered memory
+access ... most MIPS systems").</p>
+<p>In eMIPS the instruction mode — and the pipeline with blocking caches —
+is <em>sequentially consistent</em>: every access takes effect when it
+executes, one core after the other.  The <strong>24K model</strong> (or <code>--nonblocking</code>)
+behaves like the hardware: a coherent store that needs the CM (a miss,
+or a line it holds only Shared) waits in the core's <strong>fill-store
+buffer</strong> while the core goes on; the CM takes it <code>INTV</code> cycles (4) later
+— only from then on do the other cores see it.  The storing core's own
+loads of those bytes get them from the buffer.  So a core's store can
+become visible <em>after</em> its own later load: both cores of</p>
+<pre><code class="language-mips"># core 0                 # core 1
+sw    $one, x            sw    $one, y
+lw    $t0, y             lw    $t1, x
+</code></pre>
+<p>can read 0 — impossible if the cores just took turns.
+<a href="labs/order_sb.asm"><code>labs/order_sb.asm</code></a> runs that 16 times:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/order_sb.asm --cores 2 --caches --pipeline --model 24k
+6 of 16 rounds: both loads saw 0
+...
+$ python3 -m emips run docs/guide/labs/order_sb.asm --cores 2 --caches
+0 of 16 rounds: both loads saw 0
+...
+</code></pre>
+<p><strong>SYNC</strong> puts order back.  Its <code>stype</code> (bits 10..6, <code>sync 0x10</code>) says
+which (24K Table 12.1):</p>
+<table>
+<thead>
+<tr>
+<th>stype</th>
+<th>name</th>
+<th>older …</th>
+<th>… before younger</th>
+<th>waits for completion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>SYNC</td>
+<td>loads, stores</td>
+<td>loads, stores</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>2 / 3</td>
+<td>intervention / memory SYNC (CM)</td>
+<td>loads, stores</td>
+<td>loads, stores</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>0x4</td>
+<td>SYNC_WMB</td>
+<td>stores</td>
+<td>stores</td>
+<td>no</td>
+</tr>
+<tr>
+<td>0x10</td>
+<td>SYNC_MB</td>
+<td>loads, stores</td>
+<td>loads, stores</td>
+<td>no</td>
+</tr>
+<tr>
+<td>0x11</td>
+<td>SYNC_ACQUIRE</td>
+<td>loads</td>
+<td>loads, stores</td>
+<td>no</td>
+</tr>
+<tr>
+<td>0x12</td>
+<td>SYNC_RELEASE</td>
+<td>loads, stores</td>
+<td>stores</td>
+<td>no</td>
+</tr>
+<tr>
+<td>0x13</td>
+<td>SYNC_RMB</td>
+<td>loads</td>
+<td>loads</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>A <em>completion</em> barrier (0, 2, 3, and any reserved value) waits until
+every earlier access is done; an <em>ordering</em> barrier waits for nothing,
+it only keeps the younger accesses behind the older ones (the 24K does
+its loads and stores in order, so in eMIPS WMB / MB / RELEASE send the
+waiting stores first, ACQUIRE / RMB need nothing).  <code>ll</code> / <code>sc</code> are no
+barriers: a lock takes <code>sync</code> after the acquire and before the release —
+<a href="labs/spinlock.asm"><code>labs/spinlock.asm</code></a> (and
+<a href="labs/race.asm"><code>labs/race.asm</code></a>, the same counter without a lock: half
+the updates are lost):</p>
+<pre><code class="language-asm"># cores: 2
+# output: 100
+        .data
+lock:   .word 0
+count:  .word 0
+done:   .word 0
+        .text
+main:   mfc0  $s0, $15, 1
+        andi  $s0, $s0, 0x3ff        # CPUNum
+        la    $s1, count
+        la    $s2, lock
+        li    $t0, 50
+loop:   ll    $t3, 0($s2)            # acquire
+        bnez  $t3, loop              # taken: spin
+        li    $t3, 1
+        sc    $t3, 0($s2)
+        beqz  $t3, loop              # someone was faster
+        sync                         # nothing below moves above
+        lw    $t1, 0($s1)            # the critical section
+        addiu $t1, $t1, 1
+        sw    $t1, 0($s1)
+        sync                         # nothing above moves below
+        sw    $zero, 0($s2)          # release
+        addiu $t0, $t0, -1
+        bnez  $t0, loop
+        bnez  $s0, core1
+w:      lw    $t2, done
+        beqz  $t2, w
+        lw    $a0, 0($s1)
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+core1:  sync
+        li    $t2, 1
+        sw    $t2, done
+park:   wait
+        b     park
+</code></pre>
+<p><strong>False sharing</strong>: two cores that write <em>different</em> words of one line
+make it travel between their caches on every store — no data is shared,
+but the line is.  <a href="labs/false_sharing.asm"><code>labs/false_sharing.asm</code></a>
+times it (<a href="#lab-19--false-sharing">Lab 19</a>).</p>
+<h3 id="interrupts-between-cores-the-gic">Interrupts between cores: the GIC</h3>
+<p>With more than one core the hardware interrupt pins of every core (HW0-
+HW5 = Cause.IP2-IP7) are driven by the <strong>Global Interrupt Controller</strong>
+(GIC, at 0x1BDC0000 = kseg1 0xBBDC0000 once <code>GCR_GIC_BASE</code> enables it).
+It collects the <em>external</em> interrupt sources (eMIPS: 40, as Boot-MIPS's
+example system; the console's TX and RX are sources 0 and 1) and sends
+each one to a pin — or the NMI input — of any core(s):</p>
+<table>
+<thead>
+<tr>
+<th>register (GIC offset)</th>
+<th>per source</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GIC_SH_POL</code> 0x100</td>
+<td>a bit</td>
+<td>level: 1 active high / 0 low; edge: 1 rising / 0 falling</td>
+</tr>
+<tr>
+<td><code>GIC_SH_TRIG</code> 0x180</td>
+<td>a bit</td>
+<td>0 level, 1 edge</td>
+</tr>
+<tr>
+<td><code>GIC_SH_DUAL</code> 0x200</td>
+<td>a bit</td>
+<td>edge on both edges</td>
+</tr>
+<tr>
+<td><code>GIC_SH_WEDGE</code> 0x280</td>
+<td>—</td>
+<td>write <code>0x80000000 + n</code>: raise edge source <em>n</em>; <code>n</code>: clear it</td>
+</tr>
+<tr>
+<td><code>GIC_SH_SMASK</code> / <code>RMASK</code> 0x380 / 0x300</td>
+<td>a bit</td>
+<td>enable / disable (write 1s)</td>
+</tr>
+<tr>
+<td><code>GIC_SH_MASK</code> / <code>PEND</code> 0x400 / 0x480</td>
+<td>a bit</td>
+<td>enabled / pending (read)</td>
+</tr>
+<tr>
+<td><code>GIC_SH_MAPn_PIN</code> 0x500 + 4n</td>
+<td>a word</td>
+<td>bit 31: to pin (5..0), bit 30: to NMI</td>
+</tr>
+<tr>
+<td><code>GIC_SH_MAPn_VP</code> 0x2000 + 0x20n</td>
+<td>a word</td>
+<td>a bit per core</td>
+</tr>
+</tbody>
+</table>
+<p>The local section (GIC + 0x8000, every core its own; + 0xC000: the core
+<code>GIC_VL_OTHER</code> names) has each core's local interrupts — its mask
+(<code>SMASK</code> / <code>RMASK</code>, <code>MASK</code>, <code>PEND</code>), where each goes (<code>*_MAP</code>) and the
+<strong>GIC count/compare</strong>: one 64-bit counter for the whole system
+(<code>GIC_SH_COUNTER</code>, also readable in user mode at GIC + 0x10000) and a
+<code>COMPARE</code> per core; when the counter reaches it, that core's COMPARE
+interrupt is pending until software writes <code>COMPARE</code> again.</p>
+<p>The core's own interrupts — its CP0 <strong>timer</strong>, its <strong>performance
+counters</strong> and its two <strong>software interrupts</strong> — are <em>routable</em>
+(<code>GIC_VL_CTL</code> bits 1-3 read 1, fixed when the core is built): the core
+sends them out, they show in the core's <code>GIC_VL_PEND</code> (timer 2, counters
+3, software 4 / 5) and go where their map says when enabled in its mask
+(<code>GIC_VL_TIMER_MAP</code> 0x48, <code>PERFCTR_MAP</code> 0x50, <code>SWINT0_MAP</code> 0x54,
+<code>SWINT1_MAP</code> 0x58).  Their maps come out of reset on pin 5 (IP7, where
+IntCtl.IPTI / IPPCI say), enabled — so a program sees what it would on
+one core, once the GIC is on (after a reset, <code>--boot reset</code>, it is off:
+<code>GCR_GIC_BASE.GIC_EN</code> = 0).  The software interrupts go through the GIC
+only in EIC mode; otherwise the core takes Cause.IP1..0 itself.</p>
+<p>Each core also has a <strong>watchdog</strong> (<code>GIC_VL_WD_CONFIG</code> 0x90, <code>WD_COUNT</code>
+0x94, <code>WD_INITIAL</code> 0x98): writing <code>WD_START</code> (bit 0) loads <code>WD_INITIAL</code>
+and counts down; at 0 it sets <code>WDINTR</code> and raises the local watchdog
+interrupt (its map resets to <strong>NMI</strong>).  TYPE (bits 3:1) 0 stops there,
+2 reloads and goes on (an interval timer), 1 reloads and, if software
+has not restarted it before the second expiry, <strong>resets every core</strong>
+(<code>WDRESET</code> then says so).  Software "kicks" it by writing <code>WD_START</code>
+again.</p>
+<p>The boot firmware does what Boot-MIPS's <code>init_gic</code> does: GIC on,
+sources 24-39 rising edge, enabled, 24 + <em>n</em> and 32 + <em>n</em> to core <em>n</em>
+(pin 0, IP2) — the <strong>inter-processor interrupts</strong> — and the console's
+sources to core 0's pins 0 / 1.  A core interrupts core <em>n</em> with one
+store: <code>sw</code> of <code>0x80000000 + 32 + n</code> to <code>GIC_SH_WEDGE</code>; <em>n</em>'s handler
+clears it with <code>32 + n</code>.  <a href="labs/ipi.asm"><code>labs/ipi.asm</code></a>: cores 1-3
+sleep in <code>wait</code>, core 0 wakes them one by one (3, 2, 1), each handler
+appends its number:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/ipi.asm --cores 4
+0x00000321
+...
+$ python3 -m emips debug docs/guide/labs/ipi.asm --cores 4 -c &quot;c; gic&quot;
+...
+GIC at 0x1bdc0000: 40 sources, counter 430
+  source  0: level, active high, enabled, idle, pin 0 (IP2) of VP(s) 0
+  source  1: level, active high, enabled, idle, pin 1 (IP3) of VP(s) 0
+  source 24: edge, rising, enabled, idle, pin 0 (IP2) of VP(s) 0
+...
+</code></pre>
+<p>A source mapped to <strong>NMI</strong> (<code>MAPn_PIN</code> bit 30) is the core's <em>Non
+Maskable Interrupt</em>: whatever Status says, the core leaves its
+instruction stream for the reset vector with Status.NMI = BEV = ERL = 1
+and the interrupted PC in ErrorEPC (<code>eret</code> returns there).</p>
+<h4 id="the-gic-as-an-external-interrupt-controller-eic-mode">The GIC as an External Interrupt Controller (EIC mode)</h4>
+<p>Vectored interrupts (<a href="#vectored-interrupts-and-shadow-register-sets">5.10</a>)
+give six pins a vector each.  An <strong>External Interrupt Controller</strong> gives
+up to 63 (Vol. III 6.1.1.3): the controller picks the most important
+pending interrupt and sends the core its number — the <strong>Requested
+Interrupt Priority Level</strong>, RIPL 1-63 — on the six interrupt lines,
+with the shadow set to use.  The GIC is one:</p>
+<ul>
+<li>a core's <code>GIC_VL_CTL</code> bit 0, <strong>EIC_MODE</strong> (its only writable bit),
+  drives the core's SI_EICPresent input: <strong>Config3.VEIC</strong> becomes 1;</li>
+<li>the core is in <strong>EIC mode</strong> when also IntCtl.VS ≠ 0, Cause.IV = 1 and
+  Status.BEV = 0;</li>
+<li>a map's field is now a vector number: field <em>n</em> is <strong>vector n + 1</strong>
+  (RIPL 0 means "nothing"); the GIC sends the highest pending, enabled
+  one, and the shadow set in <code>GIC_VL_EIC_SHADOW_SET</code> + 4 × vector (local
+  0x100);</li>
+<li>the core takes it when <strong>RIPL &gt; Status.IPL</strong> (IPL = Status bits 15-10,
+  where IM7-IM2 were; IE = 1, EXL = ERL = 0); it loads RIPL into
+  <strong>Cause.RIPL</strong> (bits 15-10, where IP7-IP2 were), the set into
+  <strong>SRSCtl.EICSS</strong>, switches to it and goes to <code>EBase + 0x200 + RIPL ×
+  spacing</code> (the 24K: the vector <em>is</em> RIPL);</li>
+<li>the core's own timer, counters and software interrupts reach it only
+  through the GIC now (their maps give them vectors).</li>
+</ul>
+<p>A handler that lets more important interrupts in raises IPL to its own
+RIPL (copy Cause.RIPL into Status.IPL), then clears EXL and sets IE:
+only a higher RIPL interrupts it — priorities in hardware, no masks to
+juggle.  The GUI shows it in Registers → Interrupts (the request, IPL,
+the RIPL and shadow set taken) and the System pane's GIC tab (every
+core's local interrupts and where they go: a vector in EIC mode).  <a href="labs/eic.asm"><code>labs/eic.asm</code></a>: core 0 gives its IPI vector
+10, software interrupt 0 vector 2 and its timer vector 5, each its own
+shadow set, raises the IPI and the software interrupt together, then
+lets the timer tick three times; it prints the vectors in the order
+taken and the ticks:</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/eic.asm --cores 2
+0x000000a2 3
+...
+$ python3 -m emips debug docs/guide/labs/eic.asm --cores 2 -c &quot;step 52&quot; -c srs
+...
+   core 0: exception Int (vector 10) at 0x0040009c -&gt; 0x80000700, shadow set 2
+   core 0: exception Int (vector 2) at 0x0040009c -&gt; 0x80000300, shadow set 3
+...
+(emips) srs
+interrupts: external interrupt controller (EIC), vector spacing 128 bytes
+   the controller requests RIPL 2 (shadow set 3), Status.IPL 0; last taken: Cause.RIPL 2, SRSCtl.EICSS 3
+   next: vector 2 -&gt; 0x80000300 (not taken now)
+GPR shadow sets 0-3: current (CSS) 3, previous (PSS) 0, exceptions (ESS) 0
+</code></pre>
+<h2 id="510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</h2>
+<p>An <strong>exception</strong> stops the normal flow when an instruction cannot
+complete (or a <code>syscall</code> / <code>break</code> / trap asks for the kernel).  The MIPS
+processor then, in one step:</p>
+<ol>
+<li>records the cause in <strong>Cause</strong> (ExcCode) and the instruction's address
+   in <strong>EPC</strong> (the branch's, with Cause.BD set, if it was in a delay
+   slot), and the bad address in <strong>BadVAddr</strong> for address errors;</li>
+<li>sets <strong>Status.EXL</strong>: the processor is now in <strong>kernel mode</strong> with
+   interrupts disabled;</li>
+<li>jumps to the <strong>exception vector</strong> — <code>0x80000180</code> (or <code>0xbfc00380</code>
+   while Status.BEV = 1, after a reset).</li>
+</ol>
+<p>The faulting instruction has <strong>no effect</strong>.  The handler finishes with
+<code>eret</code>, which clears EXL and jumps to EPC.</p>
+<p>Exceptions are <strong>precise</strong>: in the pipeline the exception is taken when
+the instruction reaches EX; everything older completes, everything
+younger is flushed — as if instructions ran one at a time.</p>
+<p><strong>Kernel and user mode</strong>: privileged instructions (<code>mfc0</code>, <code>mtc0</code>,
+<code>eret</code> ...) and kernel addresses are allowed only in kernel mode.
+Programs normally start in kernel mode in eMIPS (like MARS); start them
+in user mode (Settings → Memory &amp; boot, <code>--boot user</code>) to see the
+operating-system view.</p>
+<p><strong>Interrupts</strong> are exceptions from outside (ExcCode 0): the timer, the
+MMIO devices, or software.  They are taken between instructions when
+Status.IE = 1, EXL = 0, and the source is both pending (Cause.IP) and
+enabled (Status.IM).  EPC is the interrupted instruction, which runs
+normally after <code>eret</code>.  Details and a complete handler:
+<a href="02-writing-programs.html#211-exceptions-and-exception-handlers">Phase 2, 2.11–2.12</a>.</p>
+<h3 id="vectored-interrupts-and-shadow-register-sets">Vectored interrupts and shadow register sets</h3>
+<p>The handler above finds out <em>which</em> interrupt came by reading Cause.IP.
+Release 2 lets the hardware do it — <strong>vectored interrupts</strong> (Vol. III
+6.1.1.2), on every Release 2+ core of eMIPS (Config3.VInt = 1, as on the
+24K):</p>
+<ul>
+<li>set <strong>IntCtl.VS</strong> (<code>$12, 1</code>, bits 9–5) to the spacing between vectors,
+  in units of 32 bytes (1, 2, 4, 8 or 16), and <strong>Cause.IV</strong> = 1;</li>
+<li>an interrupt then goes to <code>EBase + 0x200 + n × spacing</code>, where <strong>n</strong>
+  is the highest pending enabled line — 7 (HW5, the timer) down to 0
+  (software interrupt 0).  With VS = 0, Cause.IV = 0 or Status.BEV = 1
+  the core is in the old <em>compatibility mode</em> (one vector).</li>
+</ul>
+<p>Each vector can also get its own copy of the 32 GPRs, a <strong>shadow
+register set</strong> (Vol. III 9.31).  eMIPS has 4 sets by default (Settings →
+Processor → GPR shadow sets, <code>--shadow-sets N</code>; a 24K is built with 1, 2
+or 4):</p>
+<ul>
+<li><strong>SRSMap</strong> (<code>$12, 3</code>) gives each vector 7..0 a set (4 bits each);
+  other exceptions use <strong>SRSCtl.ESS</strong> (<code>$12, 2</code>, bits 15–12);</li>
+<li>on the exception the processor copies the current set <strong>CSS</strong> (bits
+  3–0) into the previous set <strong>PSS</strong> (bits 9–6) and switches; <code>eret</code>
+  switches back (CSS ← PSS).  Not with Status.EXL = 1 (a nested
+  exception keeps the set) nor BEV = 1, nor for NMI / Cache Error;</li>
+<li><code>rdpgpr rd, rt</code> reads register rt of the previous set, <code>wrpgpr rd, rt</code>
+  writes register rd of it — how a handler reaches the interrupted
+  program's registers.</li>
+</ul>
+<p>The handler of a set needs no <code>sw</code> / <code>lw</code> of its registers — and what it
+leaves in them is still there at the next interrupt.  Here the timer
+(vector 7, set 2) counts in its <code>$s0</code>; at the third tick it raises
+software interrupt 1 (vector 1, set 1), whose handler turns the timer off
+and sets the program's <code>$s1</code> with <code>wrpgpr</code>.  Then <code>main</code> reads set 2's
+<code>$s0</code> (File → Examples → <em>Vectored interrupts and shadow register
+sets</em>):</p>
+<pre><code class="language-asm"># output: timer ticks: 3
+        .text
+main:   li    $t0, 4 &lt;&lt; 5            # IntCtl.VS = 4: 128-byte spacing
+        mtc0  $t0, $12, 1
+        li    $t0, 0x20000010        # SRSMap: vector 7 -&gt; set 2, vector 1 -&gt; set 1
+        mtc0  $t0, $12, 3
+        li    $t0, 0x00800000        # Cause.IV: vectored interrupts
+        mtc0  $t0, $13
+        mtc0  $zero, $9              # Count = 0
+        li    $t0, 100
+        mtc0  $t0, $11               # Compare: the first timer interrupt
+        li    $t0, 0x8201            # IM7 (timer), IM1 (software 1), IE
+        mtc0  $t0, $12
+wait:   beq   $s1, $zero, wait       # set 1's handler sets our $s1
+        nop
+        li    $t0, 2 &lt;&lt; 6            # SRSCtl.PSS = 2: the timer's set ...
+        mtc0  $t0, $12, 2
+        la    $t1, read
+        jr.hb $t1                    # (clear the hazard before rdpgpr)
+read:   rdpgpr $a1, $s0              # ... its $s0
+        la    $a0, ticks
+        li    $v0, 4
+        syscall
+        move  $a0, $a1
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+
+        .data
+ticks:  .asciiz &quot;timer ticks: &quot;
+
+        .ktext 0x80000280            # vector 1: software interrupt 1, set 1
+        mfc0  $t0, $13
+        andi  $t0, $t0, 0xfdff       # clear IP1 (keep IV)
+        lui   $t1, 0x0080
+        or    $t0, $t0, $t1
+        mtc0  $t0, $13
+        mfc0  $t0, $12               # the timer off: clear IM7
+        andi  $t0, $t0, 0x7fff
+        mtc0  $t0, $12
+        li    $t2, 1
+        wrpgpr $s1, $t2              # main's $s1 (the previous set) = 1
+        ehb
+        eret
+
+        .ktext 0x80000580            # vector 7: the timer, set 2
+        addiu $s0, $s0, 1            # survives: nobody else uses set 2
+        mfc0  $t0, $11
+        addiu $t0, $t0, 100          # the next tick (clears the interrupt)
+        mtc0  $t0, $11
+        li    $t1, 3
+        bne   $s0, $t1, out
+        mfc0  $t0, $13               # third tick: request software interrupt 1
+        ori   $t0, $t0, 0x0200
+        mtc0  $t0, $13
+out:    ehb
+        eret
+</code></pre>
+<p>In the debugger, <code>srs</code> shows the mode, the next vector and the sets
+(<code>srs 2</code>: set 2's registers), <code>step</code> prints <code>exception Int (vector 7) at
+... -&gt; 0x80000580, shadow set 2</code>; in the GUI, Registers →
+<strong>Interrupts</strong> (the mode, what is pending, the next vector, the sets).
+The 24K model also has the hazard of Table 2.7: an <code>rdpgpr</code> /
+<code>wrpgpr</code> right after the <code>mtc0</code> to SRSCtl still uses the old PSS (hence
+the <code>jr.hb</code>).</p>
+<h3 id="debug-mode-ejtag">Debug Mode: EJTAG</h3>
+<p>Above the kernel there is one more mode, for the <strong>debugger</strong>: EJTAG's
+<strong>Debug Mode</strong> (the <em>MIPS EJTAG Specification</em>, MD00047, chapter 2; eMIPS
+has the 24K's EJTAG 3.2).  It is entered only through a <strong>debug
+exception</strong> and left only by <code>deret</code>:</p>
+<ul>
+<li><code>sdbbp</code> (software debug breakpoint) — a debugger writes it over an
+  instruction (Debug.DBp);</li>
+<li><strong>single step</strong> — with Debug.SSt = 1 each <em>execution step</em> in
+  Non-Debug Mode is followed by a debug exception (Debug.DSS): one
+  instruction, or a branch together with its delay slot;</li>
+<li>a <strong>debug interrupt</strong> — the probe's DINT signal (Debug.DINT): Run →
+  Debug Interrupt, the Registers pane's Debug tab, <code>ejtag dint</code>.</li>
+</ul>
+<p>The processor saves only the restart address, in <strong>DEPC</strong> (<code>$24</code>; the
+branch's, with Debug.DBD, for a delay slot), sets the cause bit and
+<strong>Debug.DM</strong> in the <strong>Debug</strong> register (<code>$23</code>) and jumps to the <strong>debug
+vector 0xbfc00480</strong>.  Status, Cause, EPC and the shadow sets are not
+touched — the debugger can stop a program <em>inside</em> an exception handler.
+The handler has a scratch register for itself, <strong>DESAVE</strong> (<code>$31</code>), and
+kernel rights; interrupts and NMIs wait until <code>deret</code>, which clears DM
+and returns to DEPC (no delay slot).  An exception in the handler (a
+<code>break</code>, an address error ...) comes back to the same vector with only
+Debug.DExcCode and DEPC changed: the processor stays in Debug Mode.</p>
+<p>In Debug Mode the addresses 0xff200000–0xff3fffff are <strong>dseg</strong>: dmseg,
+the memory a probe serves, and drseg, the debug registers — the <strong>DCR</strong>
+at 0xff300000 (IntE / NMIE mask interrupts / NMIs in Non-Debug Mode,
+NMIpend shows a held NMI).  Debug.LSNM = 1 gives loads and stores there
+back to kseg3.</p>
+<p>This monitor single-steps a loop and counts the steps: <code>sdbbp</code> (code 0)
+turns single step on, <code>sdbbp 1</code> off (File → Examples → <em>EJTAG Debug
+Mode</em>):</p>
+<pre><code class="language-asm"># output: 10 in 14 steps
+        .text
+main:   sdbbp                        # monitor: single step from here
+        li    $t0, 4
+        li    $t1, 0
+loop:   addu  $t1, $t1, $t0          # 4 + 3 + 2 + 1
+        addiu $t0, $t0, -1
+        bnez  $t0, loop              # a branch and its delay slot: one step
+        sdbbp 1                      # monitor: stop stepping
+        move  $a0, $t1
+        li    $v0, 1
+        syscall
+        la    $a0, in
+        li    $v0, 4
+        syscall
+        move  $a0, $k1
+        li    $v0, 1
+        syscall
+        la    $a0, steps
+        li    $v0, 4
+        syscall
+        li    $v0, 10
+        syscall
+
+        .data
+in:     .asciiz &quot; in &quot;
+steps:  .asciiz &quot; steps&quot;
+
+        .ktext 0xbfc00480            # the debug vector (Debug Mode)
+monitor:
+        mtc0  $k0, $31               # DESAVE: one free register
+        mfc0  $k0, $23               # Debug: why are we here?
+        andi  $k0, $k0, 1            # DSS: a single step was taken
+        beqz  $k0, brk
+        addiu $k1, $k1, 1            # count it
+        b     back
+brk:    mfc0  $k0, $24               # DBp: DEPC = the sdbbp
+        lw    $k0, 0($k0)
+        ext   $k0, $k0, 6, 20        # its code field (bits 25..6)
+        bnez  $k0, off
+        li    $k0, 0x02000100        # code 0: CountDM, SSt = 1
+        b     set
+off:    li    $k0, 0x02000000        # code 1: CountDM, SSt = 0
+set:    mtc0  $k0, $23
+        mfc0  $k0, $24
+        addiu $k0, $k0, 4            # return past the sdbbp
+        mtc0  $k0, $24
+back:   mfc0  $k0, $31               # restore $k0
+        ehb
+        deret                        # back to Non-Debug Mode, at DEPC
+</code></pre>
+<p>Two <code>li</code>, then 4 iterations of three steps — <code>addu</code>, <code>addiu</code> and
+<code>bnez</code> with its delay slot as one: 14.  In the debugger, <code>step</code> prints
+the debug exception, the position line shows <code>[debug]</code>, and <code>ejtag</code>
+prints the Debug register (the cause, SSt, LSNM, CountDM, IEXI), DEPC,
+DESAVE and the DCR:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/debug_monitor.asm
+(emips) step
+   0x00400000  sdbbp                           ; EXCEPTION DBp
+   debug exception DBp at 0x00400000 -&gt; 0xbfc00480 (Debug Mode)
+=&gt; [debug] 0xbfc00480  mtc0 $k0, $31                    line 34: mtc0  $k0, $31               # DESAVE: one free register
+(emips) ejtag
+Debug Mode (Debug.DM = 1): kernel rights, dseg at 0xFF200000-0xFF3FFFFF, interrupts and NMIs wait
+   entered by DBp (DEPC 0x00400000)
+Debug 0x42118002: single step off (SSt), Count runs in Debug Mode (CountDM), imprecise errors held (IEXI)
+DEPC 0x00400000   DESAVE 0x00000000   debug vector 0xbfc00480
+DCR 0x200303da: interrupts enabled (IntE), NMI enabled (NMIE), probe none (ProbEn = 0)
+no hardware breakpoints (4 instruction, 2 data in drseg) nor watch registers (4 pairs) set
+TAP: Test-Logic-Reset, IR IDCODE (0x01), 0 TCK; IDCODE 0x00000001, IMPCODE 0x61004000
+ECR 0x80000008: Rocc, DM
+probe: none (dmseg accesses wait forever; probe on)
+PC sampling every 4096 cycles (DCR.PCR): last sample 0x00000000 (read)
+(emips) until back
+   0xbfc004d4  mtc0 $k0, $24                   ; cp0:24.0 = 0x00400004
+=&gt; [debug] 0xbfc004d8  mfc0 $k0, $31                    line 51: back:   mfc0  $k0, $31               # restore $k0
+(emips) step 4
+   0x00400004  addiu $t0, $zero, 4             ; $t0 = 0x00000004
+=&gt; 0x00400008  addiu $t1, $zero, 0              line 8: li    $t1, 0
+(emips) step
+   debug exception DSS at 0x00400008 -&gt; 0xbfc00480 (Debug Mode)
+=&gt; [debug] 0xbfc00480  mtc0 $k0, $31                    line 34: mtc0  $k0, $31               # DESAVE: one free register
+</code></pre>
+<p>The <code>sdbbp</code> entered Debug Mode; the monitor set SSt and returned past
+it; one instruction later the single step brought it back, with DEPC =
+the next instruction.  In the GUI: Registers → <strong>Debug</strong>, and the
+status bar says <em>Debug Mode</em>.  There is
+no probe yet: a dmseg access waits for one forever (the simulation
+stops and says so).</p>
+<h3 id="hardware-breakpoints-and-watch-registers">Hardware breakpoints and watch registers</h3>
+<p><code>sdbbp</code> must be written into the code; a debugger can also stop a
+program <strong>without changing it</strong>, with breakpoints in hardware:</p>
+<ul>
+<li><strong>Watch registers</strong> (Vol. III 9.51 / 9.52; the 24K has four pairs,
+  <code>$18</code> / <code>$19</code> select 0–3): WatchLo holds a doubleword address and
+  what to watch — I (fetch, pairs 0 and 1), R (load), W (store, pairs 2
+  and 3); WatchHi an ASID (or G = any) and a mask of address bits 11–3.
+  A match is an ordinary <strong>Watch exception</strong> (ExcCode 23) for the
+  kernel; WatchHi records the kind (write 1 to clear it).  While EXL or
+  ERL is set the exception waits in <strong>Cause.WP</strong> (a <em>deferred watch</em>,
+  taken after <code>eret</code>).</li>
+<li><strong>EJTAG hardware breakpoints</strong> (MD00047 chapter 5; 4 instruction and
+  2 data breakpoints on the 24K) in drseg, set by a debugger in Debug
+  Mode: IBAn / IBMn (address, mask), IBCn (BE = break, TE = only record
+  the match in IBS.BS); DBAn / DBMn, DBCn (load / store only, which byte
+  lanes count: BAI, value compare: BLM), DBVn the value.  An instruction
+  break (<strong>DIB</strong>) stops before the instruction; a data break without a
+  value (<strong>DDBL</strong> / <strong>DDBS</strong>) before the access — the load writes no
+  register, the store no memory, and it beats an address error.  A data
+  break <em>with</em> a value compare needs the data first: on the 24K it is
+  <strong>imprecise</strong> (DDBLImpr / DDBSImpr) — the access completes and the
+  debug exception comes before the next instruction.  Neither kind ever
+  matches in Debug Mode.</li>
+</ul>
+<p>Who overwrites <code>count</code>?  A watch on its doubleword names the store
+(File → <em>Open</em> <code>docs/guide/labs/watch_culprit.asm</code>):</p>
+<pre><code class="language-asm"># output: count was written at 0x00400034
+        .text
+main:   la    $t0, count
+        ori   $t0, $t0, 1          # WatchLo2: count's doubleword, W
+        mtc0  $t0, $18, 2
+        li    $t1, 0x40000000      # WatchHi2.G: any address space
+        mtc0  $t1, $19, 2
+        ehb
+        li    $s0, 3
+loop:   addiu $s0, $s0, -1         # ... a lot of other work ...
+        bnez  $s0, loop
+        la    $t2, count
+        sw    $zero, 0($t2)        # the culprit
+        li    $v0, 10
+        syscall
+
+        .data
+count:  .word 5
+msg:    .asciiz &quot;count was written at &quot;
+
+        .ktext 0x80000180          # the general exception vector
+        mfc0  $k0, $13
+        andi  $k0, $k0, 0x7c
+        li    $k1, 23 &lt;&lt; 2         # ExcCode 23: Watch
+        bne   $k0, $k1, other
+        la    $a0, msg
+        li    $v0, 4
+        syscall
+        mfc0  $a0, $14             # EPC: the store
+        li    $v0, 34
+        syscall
+        mtc0  $zero, $18, 2        # the watch off: the store may run now
+        li    $k0, 7
+        mtc0  $k0, $19, 2          # clear WatchHi2's I / R / W (write 1)
+        ehb
+        eret
+other:  li    $v0, 10
+        syscall
+</code></pre>
+<p>The debugger sets the EJTAG ones as a probe would (<code>ejtag ib N LOC</code>,
+<code>ejtag db N LOC [load|store] [value V]</code>, <code>ejtag watch N LOC i|r|w</code>,
+<code>ejtag clear</code>; <code>help ejtag</code>).  A data breakpoint on the same store comes
+<em>before</em> the watch (the priority of Table 5.1) — and this program has
+no debug handler:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/watch_culprit.asm
+(emips) ejtag db 0 count store
+data breakpoints (DBS.BS 0x0):
+   DB0 0x10010000 store break
+(emips) c
+stopped: FetchError: code fetch failed: no byte at 0xbfc00480 (physical 0x1fc00480) — the CPU took a debug exception (DDBS, DEPC 0x00400034) and jumped to the debug vector 0xbfc00480, but there is no debug handler there: write one (.ktext 0xbfc00480) that ends with deret
+   0x00400034  sw $zero, 0($t2)                ; EXCEPTION DDBS
+=&gt; [debug] 0xbfc00480  ?                             
+</code></pre>
+<h3 id="the-tap-and-a-probe">The TAP and a probe</h3>
+<p>A real debugger is a <strong>probe</strong> plugged into the chip's JTAG port, the
+EJTAG <strong>Test Access Port</strong> (MD00047 chapter 4; the 24K's 11.3–11.6).
+Four wires — TCK (clock), TMS (mode), TDI / TDO (data in / out) — drive
+a small state machine; every TCK it moves by TMS and shifts one bit
+through the selected register.  The probe first shifts a 5-bit
+<em>instruction</em> (IDCODE, IMPCODE, ADDRESS, DATA, CONTROL, ALL, FASTDATA,
+PCSAMPLE, EJTAGBOOT ...) to choose a register, then shifts the register
+itself: what comes out is its old value, what goes in its new one.  The
+debugger can do it by hand (<code>tap ir</code>, <code>tap dr</code>, <code>tap reset</code>):</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/probe_count.asm
+(emips) tap ir idcode
+IR &lt;- 0x01 (IDCODE); out 0b00001
+(emips) tap dr 0
+DR (IDCODE, 32 bits): out 0x00000001, in 0x0
+(emips) tap ir impcode
+IR &lt;- 0x03 (IMPCODE); out 0b00001
+(emips) tap dr 0
+DR (IMPCODE, 32 bits): out 0x61004000, in 0x0
+(emips) tap ir bypass
+IR &lt;- 0x1f (BYPASS); out 0b00001
+(emips) tap dr 0b1011 4
+DR (BYPASS, 4 bits): out 0x6, in 0xb
+</code></pre>
+<p>The <strong>EJTAG Control Register</strong> (CONTROL) connects the probe to the core:
+<strong>ProbEn</strong> = the probe serves dmseg, <strong>ProbTrap</strong> = the debug vector is
+<code>0xff200200</code> <em>in the probe's memory</em>, <strong>EjtagBrk</strong> = a debug interrupt,
+<strong>PrAcc / PRnW / Psz</strong> = a <em>processor access</em> waits, <strong>Rocc</strong> = the core
+was reset (the probe must acknowledge it first).  Each fetch, load or
+store the core makes to dmseg stops the core; the probe reads Address,
+reads or writes Data and writes PrAcc = 0 — dozens of TCKs per access —
+and the core goes on.  So a debug handler need not be in the target's
+memory at all: <code>probe on trap</code> connects a probe with ProbTrap, <code>probe
+load FILE</code> puts what a file assembles into dmseg into its memory.  This
+handler counts its calls in the probe's memory:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/probe_count.asm
+(emips) probe on trap
+probe connected; the program restarted
+(emips) probe load docs/guide/labs/probe_handler.asm
+52 bytes in the probe's EJTAG memory; the program restarted
+(emips) c
+the program exited
+   0x00400018  syscall
+   (ended)
+(emips) probe mem 0xff200100 1
+0xff200100  00000003
+</code></pre>
+<p>More of the probe: <code>probe break</code> (EjtagBrk: stop the running program),
+<code>probe on boot</code> (EJTAGBOOT: a debug interrupt right after reset, before
+the first instruction — how a board without working ROM is brought up),
+<code>probe fastdata W ...</code> (FASTDATA: loads from <code>0xff200000</code>–<code>0f</code> take
+these words, stores there are uploaded — block transfers), <code>probe mem</code>;
+in the GUI, the Debug tab's <em>EJTAG probe connected</em> and <em>Debug handler
+from the probe</em> boxes.  Without a probe a dmseg access waits forever.</p>
+<p>The TAP also carries <strong>PC sampling</strong> (MD00047 chapter 7): every 2^(5 +
+DCR.PCR) cycles the core puts the PC of the instruction completing then
+into the PCSAMPLE register; a probe that reads it often enough has a
+statistical profile, for free, of a program that runs at full speed:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/profile_me.asm
+(emips) probe on
+probe connected; the program restarted
+(emips) probe profile on
+PC sample collection on
+(emips) probe rate 0
+PC sampling every 32 cycles
+(emips) c
+the program exited
+   0x0040001c  syscall
+   (ended)
+(emips) probe profile
+    63  19.6%  0x00400038  sq  line 17
+    63  19.6%  0x00400040  sq  line 19
+    63  19.6%  0x00400048  sq  line 20
+    62  19.3%  0x0040003c  sq  line 18
+    62  19.3%  0x00400044  sq  line 20
+     3   0.9%  0x00400020  count  line 11
+     3   0.9%  0x00400024  count  line 12
+     3   0.9%  0x00400028  count  line 12
+</code></pre>
+<h3 id="mips-trace-pdtrace-and-the-tcb">MIPS Trace: PDtrace and the TCB</h3>
+<p>A breakpoint stops the program; <strong>trace</strong> watches it run at full speed
+and records where it went.  The 24K's optional <strong>MIPS Trace</strong> (MD00439,
+the <em>PDtrace Interface and Trace Control Block Specification</em>; the 24K's
+11.7–11.13) has two parts:</p>
+<ul>
+<li><strong>PDtrace</strong>, in the core: for every instruction that completes it
+  says only what a debugger could <em>not</em> work out from the program
+  itself — the completion code <strong>InsComp</strong> (<code>I</code> an instruction, <code>IL</code> /
+  <code>IS</code> a load / store, <code>IB</code> / <code>ILB</code> / <code>ISB</code> the same after a jump in the
+  flow, <code>IPC</code> a synchronisation point) and, when needed, <strong>records</strong>:
+  <code>TPC</code> the new PC after a <code>jr</code> / <code>jalr</code>, an exception or an <code>eret</code>
+  (a branch to a label sends nothing: its target is in the code), <code>TLA</code>
+  / <code>TSA</code> load / store addresses, <code>TD</code> the data, <code>TMOAS</code> the mode and
+  ASID.  PCs and addresses are compressed — a delta from the last one
+  when it is short — and every 2^(5 + SyP) cycles an <code>IPC</code> with a full
+  PC lets a decoder start anywhere.  The records leave on a 32-bit bus,
+  one a cycle; a FIFO evens out bursts, and when it is full the trace
+  <em>overflows</em> (a <code>TF5</code>, then a restart) — or, with <strong>IO</strong> (inhibit
+  overflow), the core waits.</li>
+<li>The <strong>Trace Control Block</strong> (TCB), behind the TAP: it packs each
+  cycle into a <strong>trace format</strong> (<code>TF1</code> a cycle with nothing completed —
+  only when cycle-accurate —, <code>TF2</code> an instruction, <code>TF3</code> / <code>TF4</code> one
+  with a record, <code>TF5</code> overflow, <code>TF6</code> a TCB message) of 1 to 50 bits,
+  and the formats into 64-bit <strong>trace words</strong> (4 bits of Type — how much
+  of the word finishes the format the last one cut — and 60 of formats)
+  in an 8 KB on-chip trace memory (1024 words): <em>Trace-To</em> keeps the
+  newest, <em>Trace-From</em> stops when full.  A probe sets it up and reads
+  it with TAP instructions TCBCONTROLA / B / C and TCBDATA.</li>
+</ul>
+<p>The debugger is that probe: <code>trace on</code> scans the TCB's registers (the
+scans are recorded, so Step Back and Reset keep the setting), <code>trace
+show</code> reads the trace words and <strong>regenerates</strong> the flow from them and
+the program, as trace software does:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/trace_me.asm
+(emips) trace on all
+trace on, controlled by the TCB (TCBCONTROLA): modes USKED, any ASID; PC+load addresses+store addresses+load data+store data; sync every 32 cycles
+TCB: recording (EN), Trace-To; 0 of 1024 trace words, 0 formats
+(emips) break odd
+breakpoint at 0x00400068  or $v0, $t0, $zero               line 26: odd:    move  $v0, $t0              # x
+(emips) c
+breakpoint
+   0x00400030  nop
+=&gt; 0x00400068  or $v0, $t0, $zero               line 26: odd:    move  $v0, $t0              # x
+(emips) c
+breakpoint
+   0x00400030  nop
+=&gt; 0x00400068  or $v0, $t0, $zero               line 26: odd:    move  $v0, $t0              # x
+(emips) trace show 12
+   -- mode kernel, ASID 0 (sync)
+   0x00400038  IPC addiu $s1, $s1, 4           line 16
+   0x0040003c  I   addiu $s2, $s2, -1          line 17
+   0x00400040  I   bne $s2, $zero, 0x00400018  line 18
+   0x00400044  I   nop                         line 18
+   0x00400018  ILB lw $t0, 0($s1)              load 0x10010010  data 0x5
+   0x0040001c  I   andi $t1, $t0, 1            line 10
+   0x00400020  I   sll $t1, $t1, 2             line 11
+   0x00400024  I   addu $t1, $s0, $t1          line 12
+   0x00400028  IL  lw $t9, 0($t1)              load 0x10010004  data 0x400068
+   0x0040002c  I   jalr $t9                    line 14
+   0x00400030  I   nop                         line 14
+</code></pre>
+<p><code>trace</code> shows the settings and the TCB, <code>trace formats</code> / <code>trace words</code>
+what is really in its memory:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/trace_me.asm
+(emips) trace on
+trace on, controlled by the TCB (TCBCONTROLA): modes USKED, any ASID; PC; sync every 32 cycles
+TCB: recording (EN), Trace-To; 0 of 1024 trace words, 0 formats
+(emips) c
+56
+the program exited
+   0x00400058  syscall
+   (ended)
+(emips) trace
+trace on, controlled by the TCB (TCBCONTROLA): modes USKED, any ASID; PC; sync every 32 cycles
+TCB: recording (EN), Trace-To; 25 of 1024 trace words, 131 formats, 32 bits in the open word
+   TCBCONTROLA 0x0283e011  TCBCONTROLB 0x00000001  TCBCONTROLC 0x00800000  TCBCONFIG 0x008a0021
+(emips) trace formats 4
+   TF2 I
+   TF2 I
+   TF3 IPC TMOAS 0x00008000
+   TF3 I TPC 0x00400054
+(emips) trace words 2
+     24  0xc9000020003b0331  Type 1
+     25  0x0000000004000549  Type 9
+</code></pre>
+<p>The options of <code>trace on</code>: the modes traced (<code>u k s e d</code>: user,
+kernel, supervisor, exception level, Debug Mode) and <code>asid N</code> (with a
+TLB), what besides the PC (<code>la sa ld sd</code>, <code>addresses</code>, <code>data</code>, <code>all</code>),
+<code>ca</code> (cycle-accurate: the stall cycles too — try it in the pipeline
+mode), <code>from</code> (Trace-From), <code>tb</code> (a PC for <em>every</em> branch), <code>io</code>, <code>sync
+N</code>, <code>tlsif</code> (a call / return bit and the I- and D-cache misses), <code>wait</code>
+(record only after a start trigger).  <strong>Triggers</strong> (TCBTRIG0–3, <code>trace
+trigger N dm|probe start|end|about|info [tf6 INFO] [once] [out]</code>) act
+on an event — entering Debug Mode, the probe's trigger input (<code>trace
+in</code>) — by starting or stopping the recording, keeping half the memory
+after it (<em>about</em>), writing a <code>TF6</code> into the trace, or signalling the
+probe.  A hardware instruction / data breakpoint with <em>trigger</em> (<code>ejtag
+ib N LOC trigger</code>) can start (<code>001</code>) or stop (<code>000</code>) tracing at an
+instruction when CP0 <strong>TraceIBPC</strong> / <strong>TraceDBPC</strong> say so, and a program
+can take trace over itself: <strong>TraceControl.TS</strong> = 1 makes CP0
+TraceControl / TraceControl2 the controls instead of TCBCONTROLA, and
+a write to <strong>UserTraceData</strong> puts a value in the trace (<code>TU1</code> / <code>TU2</code>)
+— a cheap <code>printf</code> that does not change the timing.  In the GUI the
+<strong>Trace</strong> pane (a bottom tab) has the main switches and the
+regenerated flow.  See <a href="#lab-29--what-a-trace-costs">Lab 29</a>.</p>
+<h2 id="511-floating-point-ieee-754">5.11 Floating point (IEEE 754)</h2>
+<p>A <strong>single</strong> (32 bits) is <code>sign · exponent (8 bits, biased by 127) ·
+fraction (23 bits)</code>; a <strong>double</strong> (64 bits) has an 11-bit exponent
+(bias 1023) and a 52-bit fraction:</p>
+<pre><code>value = (−1)^sign × 1.fraction × 2^(exponent − bias)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Exponent field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 … max − 1</td>
+<td>a <strong>normal</strong> number</td>
+</tr>
+<tr>
+<td>0, fraction 0</td>
+<td><strong>zero</strong> (+0 or −0)</td>
+</tr>
+<tr>
+<td>0, fraction ≠ 0</td>
+<td>a <strong>subnormal</strong> number (tiny, <code>0.fraction × 2^(1 − bias)</code>)</td>
+</tr>
+<tr>
+<td>all ones, fraction 0</td>
+<td><strong>infinity</strong></td>
+</tr>
+<tr>
+<td>all ones, fraction ≠ 0</td>
+<td><strong>NaN</strong> (not a number)</td>
+</tr>
+</tbody>
+</table>
+<p>Most decimal fractions cannot be stored exactly: <code>0.1</code> becomes
+<code>0.10000000149011612</code> in single precision.  Every operation rounds its
+exact result once, to the nearest representable value (by default; FCSR
+selects the rounding mode), and records the IEEE flags (invalid, divide
+by zero, overflow, underflow, inexact) in <strong>FCSR</strong> — or raises the FPE
+exception if that flag's exception is enabled.</p>
+<p><strong>NaNs on MIPS</strong>: before Release 6, MIPS marks a <em>quiet</em> NaN with a 0 in
+the fraction's top bit (the default NaN is <code>0x7fbfffff</code>); Release 6 uses
+the IEEE 754-2008 convention, the opposite (<code>0x7fc00000</code>).  eMIPS follows
+the selected release, and the number converter shows both.</p>
+<p><strong>Tools → Number Converter</strong> and <code>print</code> in the debugger take any value
+apart into sign, exponent and fraction.  See <a href="#lab-6--01--02--03">Lab 6</a>.</p>
+<h2 id="512-labs">5.12 Labs</h2>
+<p>Each lab gives a task, a way to check your answer with eMIPS, and the
+answer (click to open it — try first!).  The lab programs are in
+<code>docs/guide/labs/</code>.</p>
+<h3 id="lab-1--decode-by-hand">Lab 1 — Decode by hand</h3>
+<p>Decode these words from the sum example into instructions, field by
+field (the formats are in <a href="#51-how-an-instruction-is-encoded">5.1</a>):
+<code>0x8d0b0000</code>, <code>0x1520fffb</code> (it is at address <code>0x00400020</code>), <code>0x0810000a</code>
+(at <code>0x00400000</code>).</p>
+<p><strong>Check</strong>: Tools → Encoder / Decoder (set <em>At address</em>), or
+<code>decode WORD</code> in the debugger.</p>
+<details>
+<summary>Answer</summary>
+<ul>
+<li><code>0x8d0b0000</code> = <code>100011 01000 01011 0000000000000000</code>: op 35 = <strong>LW</strong>,
+  base 8 = <code>$t0</code>, rt 11 = <code>$t3</code>, offset 0 → <code>lw $t3, 0($t0)</code>.</li>
+<li><code>0x1520fffb</code> = <code>000101 01001 00000 1111111111111011</code>: op 5 = <strong>BNE</strong>,
+  rs = <code>$t1</code>, rt = <code>$zero</code>, offset −5 → target 0x00400024 − 20 =
+  <code>0x00400010</code>: <code>bne $t1, $zero, 0x00400010</code> (that is <code>bnez $t1, loop</code>).</li>
+<li><code>0x0810000a</code> = <code>000010</code> + <code>0x010000a</code>: <strong>J</strong>, target
+  <code>0x010000a × 4</code> = <code>0x00400028</code> → <code>j 0x00400028</code>.</li>
+</ul>
+</details>
+<h3 id="lab-2--predict-the-pipeline">Lab 2 — Predict the pipeline</h3>
+<p>For each program in <code>docs/guide/labs/</code> — <code>alu_forwarding.asm</code>,
+<code>load_use.asm</code>, <code>branch_after_alu.asm</code>, <code>branch_after_load.asm</code>,
+<code>multiply.asm</code> — predict how many stall cycles it has <strong>with</strong> and
+<strong>without</strong> forwarding, and why.</p>
+<p><strong>Check</strong>: <code>python3 -m emips pipe FILE</code> and <code>... --no-forwarding</code> (or
+the window's Pipeline chart, with the forwarding box on and off).</p>
+<details>
+<summary>Answer</summary>
+<table>
+<thead>
+<tr>
+<th>Program</th>
+<th>With forwarding</th>
+<th>Without</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>alu_forwarding</td>
+<td>0</td>
+<td>4 (2 for each dependency)</td>
+</tr>
+<tr>
+<td>load_use</td>
+<td>1 (load-use)</td>
+<td>2</td>
+</tr>
+<tr>
+<td>branch_after_alu</td>
+<td>1 (branch)</td>
+<td>2</td>
+</tr>
+<tr>
+<td>branch_after_load</td>
+<td>2 (branch)</td>
+<td>2</td>
+</tr>
+<tr>
+<td>multiply</td>
+<td>3 (EX busy: <code>mul</code>) + 2 (multiply unit: <code>mflo</code>)</td>
+<td>the same 5 + 4</td>
+</tr>
+</tbody>
+</table>
+<p>Without forwarding a value can only be read after its producer's WB
+(written in the first half, read in the second): the consumer's ID must
+wait until then.</p>
+</details>
+<h3 id="lab-3--remove-the-stalls">Lab 3 — Remove the stalls</h3>
+<p><code>docs/guide/labs/lab3_sum.asm</code> sums eight numbers in a loop.  It takes
+77 cycles, 16 of them stalls:</p>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/lab3_sum.asm
+36
+...
+77 cycles, 57 instructions retired, CPI 1.35
+stall cycles: branch 8, load-use 8
+</code></pre>
+<p>Make it faster <strong>without changing what it computes</strong>: reorder the loop
+so that nothing waits, and make the branch delay slot do useful work
+(<code>.set noreorder</code>).  How many cycles can you reach?</p>
+<details>
+<summary>Answer</summary>
+<p>Move the two independent <code>addiu</code>s between the load and its use, and put
+the <code>addu</code> into the delay slot (<code>docs/guide/labs/lab3_solution.asm</code>):</p>
+<pre><code class="language-asm"># output: 36
+        .data
+nums:   .word 1, 2, 3, 4, 5, 6, 7, 8
+        .text
+main:   la    $t0, nums
+        li    $t1, 8
+        move  $t2, $zero
+        .set  noreorder         # we fill the delay slot ourselves
+loop:   lw    $t3, 0($t0)
+        addiu $t1, $t1, -1      # independent: hides the load delay
+        addiu $t0, $t0, 4
+        bnez  $t1, loop         # $t1 is ready (EX/MEM -&gt; ID forwarding)
+        addu  $t2, $t2, $t3     # the delay slot: runs on every round
+        .set  reorder
+        move  $a0, $t2
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/lab3_solution.asm
+36
+...
+53 cycles, 49 instructions retired, CPI 1.08
+</code></pre>
+<p>No stalls are left, and the loop body is 5 instructions instead of 6
+(no <code>nop</code>): 24 cycles saved.</p>
+</details>
+<h3 id="lab-4--an-exception-handler">Lab 4 — An exception handler</h3>
+<p><code>docs/guide/labs/lab4_misaligned.asm</code> reads a word at an address that is
+not a multiple of 4.  Run it: the processor takes an address error and
+finds no handler.  Write the handler (<code>.ktext 0x80000180</code>) so the program
+prints <code>bad address</code> followed by the bad address (in hex), skips the
+instruction and finishes.</p>
+<p>Hints: BadVAddr is CP0 register 8; print_hex is service 34; save the
+registers your handler changes; EPC is register 14.</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-asm"># output: bad address 0x10010002
+        .data
+data:   .word 0x11223344, 0x55667788
+        .text
+main:   la    $t0, data
+        lw    $t1, 2($t0)       # misaligned: Address Error (AdEL)
+        li    $v0, 10
+        syscall
+
+        .kdata
+msg:    .asciiz &quot;bad address &quot;
+save:   .word 0, 0
+        .ktext 0x80000180
+handler: la   $k0, save         # save what the handler changes
+        sw    $v0, 0($k0)
+        sw    $a0, 4($k0)
+        la    $a0, msg
+        li    $v0, 4
+        syscall
+        mfc0  $a0, $8           # BadVAddr
+        li    $v0, 34           # print_hex
+        syscall
+        la    $k0, save         # restore
+        lw    $v0, 0($k0)
+        lw    $a0, 4($k0)
+        mfc0  $k0, $14          # EPC: the lw
+        addiu $k0, $k0, 4       # skip it
+        mtc0  $k0, $14
+        ehb                     # the EPC write done before eret reads it
+        eret
+</code></pre>
+</details>
+<h3 id="lab-5--signed-or-unsigned">Lab 5 — Signed or unsigned?</h3>
+<p>Predict what this program prints, then run it:</p>
+<pre><code class="language-asm"># output: 1 0 -1 15 -1 255 
+        .data
+byte:   .byte 0xff
+        .text
+main:   li    $t0, -1           # 0xffffffff
+        li    $t1, 1
+        slt   $a0, $t0, $t1
+        jal   show
+        sltu  $a0, $t0, $t1
+        jal   show
+        sra   $a0, $t0, 4
+        jal   show
+        srl   $a0, $t0, 28
+        jal   show
+        la    $t2, byte
+        lb    $a0, 0($t2)
+        jal   show
+        lbu   $a0, 0($t2)
+        jal   show
+        li    $v0, 10
+        syscall
+
+show:   li    $v0, 1            # print $a0 and a space
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        jr    $ra
+</code></pre>
+<details>
+<summary>Answer</summary>
+<p><code>1 0 -1 15 -1 255</code>: as signed, −1 &lt; 1 (<code>slt</code> = 1), as unsigned
+4 294 967 295 is not &lt; 1 (<code>sltu</code> = 0); <code>sra</code> keeps the sign (still −1),
+<code>srl</code> brings in zeros (<code>0x0000000f</code> = 15); <code>lb</code> sign-extends <code>0xff</code> to −1,
+<code>lbu</code> zero-extends it to 255.</p>
+</details>
+<h3 id="lab-6--01--02--03">Lab 6 — 0.1 + 0.2 = 0.3?</h3>
+<p>Does <code>0.1 + 0.2 == 0.3</code> hold in single precision?  In double?</p>
+<pre><code class="language-asm"># output: equal\ndifferent\n
+        .data
+s01:    .float  0.1
+s02:    .float  0.2
+s03:    .float  0.3
+d01:    .double 0.1
+d02:    .double 0.2
+d03:    .double 0.3
+same:   .asciiz &quot;equal\n&quot;
+diff:   .asciiz &quot;different\n&quot;
+        .text
+main:   la    $t0, s01          # single precision
+        lwc1  $f0, 0($t0)
+        lwc1  $f1, 4($t0)
+        lwc1  $f2, 8($t0)
+        add.s $f3, $f0, $f1
+        c.eq.s $f3, $f2
+        jal   report
+        la    $t0, d01          # double precision
+        ldc1  $f4, 0($t0)
+        ldc1  $f6, 8($t0)
+        ldc1  $f8, 16($t0)
+        add.d $f10, $f4, $f6
+        c.eq.d $f10, $f8
+        jal   report
+        li    $v0, 10
+        syscall
+
+report: la    $a0, same
+        bc1t  print             # the comparison's result
+        la    $a0, diff
+print:  li    $v0, 4
+        syscall
+        jr    $ra
+</code></pre>
+<p><strong>Check</strong> with the number converter: look at <code>0.1</code>, <code>0.2</code> and <code>0.3</code> as
+single and as double.</p>
+<details>
+<summary>Answer</summary>
+<p>Single: <strong>equal</strong> — 0.1 and 0.2 round so that their sum rounds to the
+same single as 0.3 (<code>0x3e99999a</code>).  Double: <strong>different</strong> — 0.1 + 0.2 is
+<code>0.30000000000000004</code>, one unit in the last place above the double
+nearest to 0.3.  Neither 0.1, 0.2 nor 0.3 is exact in binary; whether the
+rounding errors cancel depends on the precision.  Never compare floats
+for exact equality — compare the difference with a small tolerance.</p>
+</details>
+<h3 id="lab-7--byte-order">Lab 7 — Byte order</h3>
+<p><code>docs/guide/labs/lab7_endian.asm</code> stores the word <code>0x11223344</code> and loads
+the byte at its address with <code>lbu</code>.  Predict the output on a big-endian
+and on a little-endian processor, then run it both ways (<code>--little</code>, or
+Configure → Byte Order).</p>
+<details>
+<summary>Answer</summary>
+<p>Big-endian: <code>0x00000011</code> (the most significant byte is at the lowest
+address).  Little-endian: <code>0x00000044</code>.  The word itself reads back as
+<code>0x11223344</code> either way.</p>
+</details>
+<h3 id="lab-8--the-3-cs">Lab 8 — The 3 C's</h3>
+<p><code>docs/guide/labs/cache_capacity.asm</code> sums a 2 KB array twice;
+<code>docs/guide/labs/cache_conflict.asm</code> adds two 1 KB arrays.  Run each
+with <code>--dcache 1K:1:16 --cache-stats</code>.  For each program: which kind of
+miss dominates, and which of these removes it — a bigger cache
+(<code>--dcache 4K:1:16</code>), more ways (<code>--dcache 2K:2:16</code>), or moving the
+second array one line further (<code>.space 16</code> between the arrays)?</p>
+<details>
+<summary>Answer</summary>
+<p><code>cache_capacity.asm</code>: 128 compulsory misses in the first pass, 128
+<strong>capacity</strong> misses in the second — 2 KB do not fit in 1 KB, whatever
+the associativity.  Only a bigger cache helps: with 4 KB the second
+pass hits every time (128 misses left, all compulsory).</p>
+<p><code>cache_conflict.asm</code>: 128 compulsory and 384 <strong>conflict</strong> misses.  Two
+ways remove all conflicts, and so does the padding: with <code>.space 16</code>
+between the arrays <code>b[i]</code> sits in the set after <code>a[i]</code> and the
+direct-mapped cache hits 384 times (<code>a</code> and <code>b</code> still need 128 lines,
+more than the 64 the cache has, but each line is used up before it is
+thrown out).</p>
+</details>
+<h3 id="lab-9--the-reach-of-the-tlb">Lab 9 — The reach of the TLB</h3>
+<p><code>docs/guide/labs/tlb_reach.asm</code> reads one word in each of 24 page
+pairs, twice.  Run it with <code>--mmu tlb:16 --tlb-stats</code>, then with
+<code>tlb:32</code> and <code>tlb:64</code>.  How many refills would a perfect TLB of each
+size need, and why does eMIPS report more?  How much memory does a
+TLB of N entries reach at once with 4 KB pages?</p>
+<details>
+<summary>Answer</summary>
+<p>A TLB entry maps one page pair (8 KB), so N entries reach N × 8 KB:
+128 KB with 16 entries, 256 KB with 32.  The loop needs 24 pairs for
+its data plus one for its code.  With 16 entries even a perfect TLB
+misses again in the second pass (25 + 24 = 49 refills — eMIPS shows
+49); with 32 or 64 a perfect TLB would need only the first 25.  eMIPS
+reports more (35 with 32 entries, 28 with 64) because <code>tlbwr</code> writes
+the entry <strong>Random</strong> points at, whether it is in use or not: some
+refills throw out a pair the second pass still needs.  Random
+replacement costs a little, but needs no hardware to track the use of
+64 entries.</p>
+</details>
+<h3 id="lab-10--a-refill-handler-of-your-own">Lab 10 — A refill handler of your own</h3>
+<p>Open the example <code>tlb_refill.asm</code> (File → Examples; it switches the MMU
+to a TLB).  Step to the first <code>lw</code> and watch the TLB pane while the
+handler runs.  Why must <code>main</code> be in kseg0 (<code>.ktext</code>) and set Context
+before the program's code runs?  Then add a page table entry for the
+page pair at <code>0x00800000</code> that maps it to the code's frames, and read
+the first instruction word through it.</p>
+<details>
+<summary>Answer</summary>
+<p>Fetching the first instruction in kuseg is already a TLB miss: the
+handler reads the page table through Context, so Context.PTEBase must
+point at the table before any kuseg address is used — and the code
+that sets it must run unmapped, in kseg0.  (Context = 0 would make the
+handler read address <code>0x00002000</code>, itself a kuseg address: a second
+miss inside the handler, which goes to the general vector at
+<code>0x80000180</code>.)  The entry of VPN2 <code>0x00400</code> (<code>0x00800000 &gt;&gt; 13</code>) is at
+PT + <code>0x00400</code> × 16 = <code>0x90004000</code>:</p>
+<pre><code class="language-mips">        .kdata 0x90004000
+        .word 0x0101001f, 0x0101005f   # the code's frames, a second time
+</code></pre>
+<p>and <code>lui $t0, 0x0080</code> + <code>lw $a0, 0($t0)</code> reads <code>0x3c041001</code>, the first
+word of the code (<code>lui $a0, 0x1001</code>: the first half of <code>lw $a0, value</code>).</p>
+</details>
+<h3 id="lab-11--copy-on-write">Lab 11 — Copy-on-write</h3>
+<p>Run the example <code>copy_on_write.asm</code> and follow the TLB Modified
+exception in the TLB pane: which entry does <code>tlbp</code> find, and what does
+<code>tlbwi</code> change in it?  After the copy the parent's page is still
+read-only, so its first store would copy the frame again — although no
+one else uses it any more.  What would a kernel need to know to avoid
+that copy?</p>
+<details>
+<summary>Answer</summary>
+<p><code>tlbp</code> finds the entry the refill handler wrote for the child's page
+pair (the one that matches EntryHi, which the exception set to the
+failing page pair); <code>tlbwi</code> rewrites it with the new EntryLo0: the
+copy's PFN and D = 1, so the retried <code>sw</code> writes the child's own frame.
+To let the parent write without copying, the kernel must count the
+pages mapping each frame (a <em>reference count</em>): when the child got its
+copy, the shared frame had one user left, the parent, and its entry can
+simply be made writable (D = 1) at its next TLB Modified exception.</p>
+</details>
+<h3 id="lab-12--measure-it-yourself">Lab 12 — Measure it yourself</h3>
+<p>Run <code>docs/guide/labs/perf_count.asm</code> with <code>--dcache 1K:1:16</code>, <code>--dcache
+4K:1:16</code> and <code>--dcache 1K:1:32</code>.  Explain each number of load misses.
+Then change the program so counter 1 counts <strong>data cache accesses</strong>
+(event 10 of counter 0 — which counter must it use now?) and compute
+the miss rate.</p>
+<details>
+<summary>Answer</summary>
+<p>The array is 2 KB, read twice.  1 KB cache, 16-byte lines: 128 lines per
+pass, the second pass finds none of them (they did not fit): <strong>256</strong>.
+4 KB: the array fits, only the first pass misses: <strong>128</strong>.  1 KB with
+32-byte lines: half as many lines per pass but still no room: 2 × 64 =
+<strong>128</strong> — bigger lines halve the compulsory and capacity misses of a
+sequential walk.  Data cache accesses are event 10 of <strong>counter 0</strong>
+only, so the two must swap: counter 0 = accesses (<code>(10 &lt;&lt; 5) | 0x2</code>),
+counter 1 = load misses; 1024 loads, 256 misses: a miss rate of 25 %
+with the 1 KB cache (one miss per four words of a 16-byte line).</p>
+</details>
+<h3 id="lab-13--predict-the-24k">Lab 13 — Predict the 24K</h3>
+<p>On the 24K (<code>--model 24k</code>), how many cycles does each pair below lose,
+and why?  Check with <code>pipe --model 24k</code> and its chart (put each pair
+in a small program after <code>li $t1, 0x10010000</code> and two <code>nop</code>s).</p>
+<ol>
+<li><code>addu $t0, $t1, $t1</code> then <code>addu $t2, $t0, $t0</code></li>
+<li><code>addu $t0, $t1, $zero</code> then <code>lw $t2, 0($t0)</code></li>
+<li><code>lw $t0, 0($t1)</code> then <code>lw $t2, 0($t0)</code></li>
+<li><code>mul $t0, $t1, $t1</code> then <code>addu $t2, $t0, $t0</code></li>
+</ol>
+<p>Then run <code>branch_predict.asm</code> with <code>--model 24k</code> and with the 5-stage
+model: why is the 24K slower on it, although its pipeline usually
+stalls less?</p>
+<details>
+<summary>Answer</summary>
+<ol>
+<li><strong>None</strong>: the ALU result goes from EX straight to the next
+   instruction's EX.</li>
+<li><strong>One</strong>: the address is added in AG, a stage before EX — the <code>lw</code>
+   waits a cycle in RF for <code>$t0</code> (the skewed ALU's price).</li>
+<li><strong>Two</strong>: load data comes at the end of MS; the second <code>lw</code> needs it
+   in AG.</li>
+<li><strong>Four</strong>: <code>mul</code> runs in the multiply unit, its result reaches the ALU
+   four cycles later (Table 2.6 of the 24K manual).</li>
+</ol>
+<p>On <code>branch_predict.asm</code> the 5-stage model decides branches in ID and
+never guesses: one stall cycle per branch whose register was just
+computed (200 here).  The 24K guesses; the alternating branch is guessed
+wrong about half the time (52 mispredictions, each about six cycles
+until the right instruction executes), and a taken branch fetches its
+target three cycles after itself — a tight loop is fetched slower than
+it could run (<code>fetch</code> stalls).  Longer loops, and branches that do not
+alternate, favour the 24K.</p>
+</details>
+<h3 id="lab-14--hide-the-misses">Lab 14 — Hide the misses</h3>
+<p>Run <code>docs/guide/labs/miss_overlap.asm</code> with <code>--model 24k --caches</code>,
+then with <code>BLOCK</code> set to 1.  Then (with <code>BLOCK</code> back to 0) insert
+<code>addu $t6, $t2, $t2</code> right after the first <code>lw</code>: how many cycles now,
+and why?  Which counters would show the difference best?</p>
+<details>
+<summary>Answer</summary>
+<p>137 cycles with non-blocking loads, 292 with blocking ones: blocking,
+each miss stops the pipeline for about 54 cycles, one after the other;
+non-blocking, the four misses are on their way together and only the
+first <code>addu</code> waits.  The inserted <code>addu</code> needs <code>$t2</code> at once, so it
+waits for the first miss <em>before</em> the other loads have even started:
+189 cycles — the first miss is paid in full, the other three still
+overlap.  The counters show it: event 37 of counter 1 (<code>dcache_stall</code>, D$
+miss stall cycles) against event 39 of counter 0 (<code>dcache_miss_cycles</code>,
+cycles with a miss outstanding) — the gap between them is the time the
+non-blocking loads saved.  Compilers schedule loads early for this
+reason.</p>
+</details>
+<h3 id="lab-15--find-the-hazard">Lab 15 — Find the hazard</h3>
+<p>This handler skips the instruction that caused the exception.  On the
+5-stage model it works; with <code>--model 24k</code> the program never ends.
+Why, and what is the smallest fix?</p>
+<pre><code class="language-mips">        .ktext 0x80000180
+        mfc0  $k0, $14
+        addiu $k0, $k0, 4
+        mtc0  $k0, $14
+        eret
+</code></pre>
+<details>
+<summary>Answer</summary>
+<p><code>eret</code> reads EPC one instruction after <code>mtc0</code> wrote it: within the
+24K's spacing of 2 (Table 2.7: MTC0 → ERET, EPC) it still sees the old
+EPC, returns to the failing instruction, which fails again — forever.
+Put an <code>ehb</code> between <code>mtc0</code> and <code>eret</code> (or two other instructions, as
+code for Release 1 cores did with <code>ssnop</code> / <code>nop</code>).  The pipeline chart
+shows the <code>ehb</code> waiting two cycles for the write.</p>
+</details>
+<h3 id="lab-16--how-long-is-a-divide">Lab 16 — How long is a divide?</h3>
+<p><code>docs/guide/labs/divide_time.asm</code> reads the cycle counter around each
+<code>divu</code> + <code>mflo</code>, for dividends of 7, 13, 21 and 29 bits.  Run it with
+<code>--model 24k</code>, on the 5-stage model and in instruction mode.  Explain
+the three sets of numbers.</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/divide_time.asm --model 24k
+10 18 26 34
+...
+</code></pre>
+<p>The 24K divides one bit a cycle but skips the dividend's leading zero
+bytes (<em>early-in</em>, Table 2.2): 8, 16, 24 or 32 cycles for a dividend of
+up to 8, 16, 24 or 32 significant bits — the numbers grow by 8.  (A
+signed <code>div</code> with a negative operand takes 2 more: the sign adjustment.)
+The 5-stage model has one fixed divide latency (Settings → Processor →
+Pipeline latencies): <code>37 37 37 37</code>.  Instruction mode counts one cycle
+per instruction: <code>3 3 3 3</code> — it is not a timing model.</p>
+</details>
+<h3 id="lab-17--when-the-caches-disagree">Lab 17 — When the caches disagree</h3>
+<p><code>docs/guide/labs/cores_sum.asm</code> prints 5050 with <code>--cores 4 --caches</code>
+too.  <code>docs/guide/labs/cores_cache.asm</code> first sets Config.KU to 3 —
+cacheable, but <strong>not coherent</strong> — and still prints 5050.  Delete its two
+<code>cache</code> instructions: it never prints.  Why?  What do the <code>cache</code>
+instructions do, and why does every core's result get a 32-byte line of
+its own?</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/cores_cache.asm --cores 4 --caches
+5050
+...
+</code></pre>
+<p>With CCA 3 no core hears about the others' accesses: the stores of
+cores 1–3 stay in their own write-back data caches, and core 0 keeps
+reading its own copy of the flag — the zero it loaded first.  The
+program does by hand what the Coherence Manager does for CCA 5: the
+writer pushes its line to memory with <code>cache 0x19</code> (Hit Writeback D;
+<code>sync</code> waits for it), the reader drops its stale copy with <code>cache 0x11</code>
+(Hit Invalidate D) before every load, so the load misses and reads
+memory.  (For a non-coherent address the CM does not make the operations
+global: each core does its own.)  A writeback writes the <strong>whole line</strong>:
+if two cores' words shared a line, each would write back its old copy of
+the other's word over the other's result (<em>false sharing</em>).  Hence
+<code>.align 5</code> and one line per core.</p>
+</details>
+<h3 id="lab-18--store-buffering">Lab 18 — Store buffering</h3>
+<p>Run <code>docs/guide/labs/order_sb.asm</code> with <code>--cores 2 --caches --pipeline
+--model 24k</code>, then in instruction mode.  Explain the two counts.  Remove
+the <code>#</code> before its <code>sync</code>: what changes, and which <code>stype</code> would be the
+lightest one that still helps?</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/order_sb.asm --cores 2 --caches --pipeline --model 24k
+6 of 16 rounds: both loads saw 0
+...
+</code></pre>
+<p>Both lines are Shared in both caches, so each store needs an upgrade:
+it waits in the fill-store buffer, and the CM orders it 4 cycles later.
+The load right after it hits the line it holds Shared — the other
+core's store has not invalidated it yet — and reads 0.  When both cores
+reach their store within those cycles, both loads see 0 (in the other
+rounds one core is a little ahead).  Instruction mode performs every
+store at once: always 0 of 16.  With <code>sync</code> the store is performed (and
+waited for) before the load: 0 of 16.  The store must go before a
+<em>younger load</em>: SYNC_MB (<code>sync 0x10</code>) is enough — WMB orders only stores
+before stores, ACQUIRE only loads before.</p>
+</details>
+<h3 id="lab-19--false-sharing">Lab 19 — False sharing</h3>
+<p>Run <code>docs/guide/labs/false_sharing.asm</code> with <code>--cores 2 --caches
+--pipeline --model 24k</code>, then with <code>STRIDE</code> 32 instead of 4; after each
+run look at the Coherence Manager (<code>debug ... -c "c; cm"</code>).  Then try the
+5-stage pipeline (<code>--pipeline</code>) and instruction mode.</p>
+<details>
+<summary>Answer</summary>
+<p>With <code>STRIDE</code> 4 the two counters share a line: every store needs the
+line Exclusive, so it goes back and forth between the caches (about 100
+CM requests and 90 cache-to-cache transfers, against 15 with <code>STRIDE</code>
+32), and core 0's loop takes 495 Count ticks instead of 207.  The
+5-stage pipeline's blocking caches wait for every transfer: 752 against
+227.  The 24K hides part of it — its stores wait in the fill-store
+buffer and its loads take their own bytes from there.  Instruction mode
+has no time (150 both), but the CM traffic is the same.  Keep data that
+different cores write in different lines (<code>.align 5</code>).</p>
+</details>
+<h3 id="lab-20--wake-them-all-at-once">Lab 20 — Wake them all at once</h3>
+<p>Change <code>docs/guide/labs/ipi.asm</code> so that core 0 wakes cores 1-3 with <strong>one</strong>
+store.  Which GIC register do you write first, and what does the output
+become?</p>
+<details>
+<summary>Answer</summary>
+<p>Give one IPI source several cores: <code>GIC_SH_MAPn_VP</code> has a bit per core.
+Before sending, core 0 writes <code>0b1110</code> to <code>GIC_SH_MAP_VP</code> of, say,
+source 33 (offset <code>0x2000 + 0x20 * 33</code>) and then raises source 33 once.
+Every core's handler must then clear the <em>same</em> source (33) — the first
+one to do it clears it for all.  The three handlers now run at the same
+time, so their read-modify-writes of <code>order</code> and <code>count</code> race: make them
+atomic with <code>ll</code> / <code>sc</code> loops (as <code>spinlock.asm</code>).  Then it prints
+<code>0x00000123</code> — in each step core 1 goes first, then 2, then 3.</p>
+</details>
+<h3 id="lab-21--priorities-in-hardware">Lab 21 — Priorities in hardware</h3>
+<p>In <code>docs/guide/labs/eic.asm</code> the vector-2 handler (software interrupt 0)
+runs with EXL = 1: nothing interrupts it.  Make the timer (vector 5)
+able to interrupt it — but not the other way round.  What do the two
+handlers need, and what must the vector-2 handler restore before its
+<code>eret</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>In EIC mode a handler opens itself to <em>more important</em> interrupts by
+raising Status.IPL to its own level: the vector-2 handler saves EPC,
+Status and SRSCtl (a nested exception overwrites EPC and switches
+sets), copies Cause.RIPL (2) into Status.IPL (<code>ins</code> of bits 15-10),
+clears EXL and sets IE.  Now RIPL 5 &gt; IPL 2: the timer interrupts it,
+in its own set 1, and returns into it.  The timer handler keeps EXL = 1
+(or raises IPL to 5): a vector-2 request (2 &lt; 5) waits.  Before its
+<code>eret</code> the vector-2 handler disables interrupts (<code>di</code>), restores Status
+(EXL = 1 again), EPC and SRSCtl, <code>ehb</code>.  Without raising IPL — IPL 0 —
+its own request would interrupt it again at once: always clear the
+source first.
+<a href="labs/eic_nested.asm"><code>labs/eic_nested.asm</code></a> does it and prints
+<code>0x000000a2 3 3</code>: all three ticks came while the vector-2 handler ran.</p>
+</details>
+<h3 id="lab-22--where-the-arguments-go">Lab 22 — Where the arguments go</h3>
+<p><a href="labs/c_calls.c"><code>labs/c_calls.c</code></a> (prebuilt: <code>c_calls.elf</code>) calls
+<code>mix(1, 2, 3, 4, 5, 6)</code>.  Stop at <code>mix</code> (<code>break mix</code>, <code>c</code>): where are
+the six arguments?  Where will the result be when it returns?</p>
+<details>
+<summary>Answer</summary>
+<p>The o32 calling convention: the first four arguments in <code>$a0</code>-<code>$a3</code>
+(1, 2, 3, 4); the others on the stack, at <code>16($sp)</code> and <code>20($sp)</code> of
+the caller — <code>mem $sp</code> shows 5 and 6 there (the 16 bytes below are the
+<em>home area</em> the caller reserves for <code>$a0</code>-<code>$a3</code>, which a callee may
+spill into).  The result comes back in <code>$v0</code> (91).  <code>mix</code> then moves
+<code>$sp</code> down by 24 for its own frame.</p>
+</details>
+<h3 id="lab-23--recursion-and-the-stack">Lab 23 — Recursion and the stack</h3>
+<p><a href="labs/c_recursion.c"><code>labs/c_recursion.c</code></a>: <code>fact(6)</code>.  Stop on <code>return
+1;</code> (line 8).  How many frames does <code>bt</code> show, and how far down has
+<code>$sp</code> gone?  Then <code>finish</code>: where are you?</p>
+<details>
+<summary>Answer</summary>
+<p>Eight: <code>fact</code> six times (n = 6 ... 1), <code>main</code>, <code>__start</code>.  Each <code>fact</code>
+frame is 40 bytes (<code>addiu $sp, $sp, -40</code>: <code>$ra</code>, <code>$fp</code>, the argument,
+a temporary, padding to keep <code>$sp</code> 8-byte aligned): <code>$sp</code> is 6 × 40
+bytes below where <code>main</code> called it.  <code>finish</code> returns to the caller —
+the <code>fact</code> that called this one, after its <code>jal</code>, still on line 9 — and
+<code>bt</code> shows one frame less.</p>
+</details>
+<h3 id="lab-24--what-the-optimiser-does">Lab 24 — What the optimiser does</h3>
+<p>The same C (<a href="labs/c_opt.c"><code>labs/c_opt.c</code></a>) built with <code>-O 0</code>
+(<code>c_opt_O0.elf</code>) and <code>-O 2</code> (<code>c_opt_O2.elf</code>).  Run both in the pipeline
+(<code>python3 -m emips pipe ...</code>): instructions, cycles, stalls?  Look at
+the second loop in both listings (<code>dis</code>): why the difference?</p>
+<details>
+<summary>Answer</summary>
+<p><code>-O 0</code>: 3191 instructions, 3849 cycles, 454 load-use stalls; <code>-O 2</code>:
+935 instructions, 1134 cycles, no load-use stall.  At <code>-O 0</code> every
+variable lives in memory: each use of <code>i</code> and <code>sum</code> is a <code>lw</code>, each
+change a <code>sw</code>, and a load is often used by the next instruction (a
+stall).  At <code>-O 2</code> <code>i</code> and <code>sum</code> stay in registers, the loop is three
+instructions plus a delay slot that does useful work (<code>addu</code> of the
+sum), and the scheduler puts an instruction between the <code>lw</code> and its
+use.</p>
+</details>
+<h3 id="lab-25--why-volatile">Lab 25 — Why <code>volatile</code></h3>
+<p><a href="labs/c_mmio.c"><code>labs/c_mmio.c</code></a> echoes the MMIO keyboard to the
+display in capitals (<code>run --keys "hi there." c_mmio.elf</code> prints <code>HI
+THERE</code>).  <code>emips.h</code> declares the device registers <code>volatile</code>.  Build it
+again with <code>MMIO_*</code> replaced by plain <code>*(unsigned *)0xFFFF0000</code> ...
+(not <code>volatile</code>) at <code>-O 2</code>: what does it print, and where does it
+hang?</p>
+<details>
+<summary>Answer</summary>
+<p>It prints <code>H</code> and then spins forever on a <code>j</code> to itself.  Without
+<code>volatile</code> the compiler may assume memory changes only when the program
+writes it: it reads the display's ready bit <strong>once</strong>, before the loop
+(<code>lw</code> of 0xFFFF0008), and turns <code>while (!ready)</code> into "if not ready,
+loop forever".  After the first character the display is busy for a
+few cycles — not ready at that one read — so the program never looks
+again.  <code>volatile</code> forces a load for every read in the source.</p>
+</details>
+<h3 id="lab-26--one-step-at-a-time">Lab 26 — One step at a time</h3>
+<p><a href="labs/ejtag_trace.asm"><code>labs/ejtag_trace.asm</code></a> is a debug monitor that
+single-steps five instructions of <code>main</code> — <code>li</code>, <code>jal double</code>, its delay
+slot, <code>double</code>'s two instructions with <code>jr</code>'s slot, an <code>addiu</code> — and logs
+DEPC at every Debug Single Step exception.  Predict the addresses it
+prints (<code>dis 0x00400000 6</code> and <code>dis double</code> help).  Why is no delay slot
+among them, and why does a step never <em>start</em> with DBD = 1?</p>
+<details>
+<summary>Answer</summary>
+<p><code>0x00400008 0x00400054 0x00400058 0x00400010 0x00400014</code>: DEPC is the
+<em>next</em> instruction to run, not the one just stepped (MD00047 2.3.9) —
+after <code>li</code> the <code>jal</code>; after <code>jal</code> and its slot, <code>double</code>; after <code>addu</code>,
+<code>jr</code>; after <code>jr</code> and its slot, the <code>addiu</code> back in <code>main</code>; after it, the
+<code>sdbbp 1</code> that stops the stepping.  A branch and its delay slot are
+one execution step, so the exception comes only after the slot, never
+inside the pair — DEPC is never a delay slot and Debug.DBD is never set
+for a single step.</p>
+</details>
+<h3 id="lab-27--precise-or-not">Lab 27 — Precise or not</h3>
+<p>In <a href="labs/watch_culprit.asm"><code>labs/watch_culprit.asm</code></a> a data breakpoint
+without a value (<code>ejtag db 0 count store</code>) stops at the culprit
+<em>before</em> the watch.  Now give it a value: <code>ejtag db 0 count store value
+0</code>, then <code>c</code>.  What is printed, which debug exception comes, and where
+does DEPC point?  Why?</p>
+<details>
+<summary>Answer</summary>
+<p><code>count was written at 0x00400034</code>, then a <strong>DDBSImpr</strong> with DEPC =
+0x00400038, the instruction <em>after</em> the store.  A breakpoint with a
+value compare cannot decide before the data is on the bus, so on the
+24K it does not stop the access (MD00343 11.2.5.2): the watch, next in
+priority, is taken first; its handler turns the watch off and returns
+to the store; the store completes (count = 0 matches the value) and the
+data break is reported imprecisely, before the next instruction — the
+store will not run again after <code>deret</code>.  Without a value the match is
+known from the address alone: precise, the store has not happened and
+DEPC is the store.</p>
+</details>
+<h3 id="lab-28--what-a-probe-costs">Lab 28 — What a probe costs</h3>
+<p>Run <a href="labs/probe_count.asm"><code>labs/probe_count.asm</code></a> with its debug handler
+in the probe (<a href="labs/probe_handler.asm"><code>labs/probe_handler.asm</code></a>: <code>probe on
+trap</code>, <code>probe load ...</code>, <code>c</code>), then <code>probe</code>.  How many processor
+accesses did the probe serve, and why that many?  About how many TCKs
+does one take?</p>
+<details>
+<summary>Answer</summary>
+<p>51: three debug exceptions, and each pass through the handler makes 17
+dmseg accesses — its 13 instructions are <em>fetched</em> from the probe one by
+one, plus 2 loads and 2 stores of the count and the saved <code>$k1</code>.  Each
+is a full exchange on the TAP: poll the ECR, read Address, read or write
+Data, clear PrAcc — about 190 TCKs (the TAP line shows ~9800 for the
+run).  At a 10 MHz TCK a handler from the probe takes milliseconds,
+while the core waits: this is why debuggers put large handlers in
+target memory (ProbTrap = 0, ProbEn = 1 still gives them dmseg for
+messages) or move blocks with FASTDATA.</p>
+</details>
+<h3 id="lab-29--what-a-trace-costs">Lab 29 — What a trace costs</h3>
+<p>Run <a href="labs/trace_me.asm"><code>labs/trace_me.asm</code></a> with <code>trace on</code>, <code>c</code>, then
+<code>trace</code>: how many bits of trace does an instruction cost on average?
+Which instructions sent a PC (<code>trace formats</code>), and why not the <code>bnez</code>
+back to <code>loop</code>?  Then <code>trace on tb</code> and <code>trace on all</code>: how many more
+trace words, and why?</p>
+<details>
+<summary>Answer</summary>
+<p>131 instructions fill 25 trace words and 32 bits — 1532 bits, about
+12 bits an instruction.  Most instructions cost a 4-bit <code>TF2</code>; what is
+expensive are the 21 <code>TF3</code>s with a PC (42 bits each): the first PC, the
+8 <code>jalr</code> and 8 <code>jr</code> targets (in a register: only the trace can tell
+them) and 4 synchronisation points, each with a <code>TMOAS</code>.  The <code>bnez</code>
+sends nothing: its target is in the instruction, and the decoder reads
+the program.  <code>tb</code> adds the 7 taken <code>bnez</code> (30 words); <code>all</code> adds a
+<code>TLA</code> and a <code>TD</code> for each of the 16 loads (47 words — almost twice as
+much).  The TCB holds 8 KB: at 12 bits an instruction that is about
+5000 instructions of history — some microseconds of a real 24K — which
+is why trace is compressed this hard, and why you choose what to trace
+(and when: triggers).</p>
+</details>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>
+</main>
+</body>
+</html>

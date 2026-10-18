@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 1 — Getting started · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html" aria-current="page">1 Getting started</a></li>
+<li><a href="02-writing-programs.html">2 Writing programs</a></li>
+<li><a href="03-the-gui.html">3 The GUI</a></li>
+<li><a href="04-command-line.html">4 The command line</a></li>
+<li><a href="05-understanding.html">5 Understanding</a></li>
+<li><a href="06-reference.html">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-1--getting-started">Phase 1 — Getting started</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · next: <a href="02-writing-programs.html">Phase 2 — Writing programs</a></nav>
+<p>This phase gets eMIPS running on your computer and walks you through a
+first program, once in the graphical window and once in the terminal.
+It takes about fifteen minutes.</p>
+<ul>
+<li><a href="#11-what-emips-is">1.1 What eMIPS is</a></li>
+<li><a href="#12-what-you-need">1.2 What you need</a></li>
+<li><a href="#13-installing">1.3 Installing</a></li>
+<li><a href="#14-starting-emips">1.4 Starting eMIPS</a></li>
+<li><a href="#15-a-first-program-in-the-window">1.5 A first program in the window</a></li>
+<li><a href="#16-the-same-program-in-the-5-stage-pipeline">1.6 The same program in the 5-stage pipeline</a></li>
+<li><a href="#17-a-first-program-in-the-terminal">1.7 A first program in the terminal</a></li>
+<li><a href="#18-writing-your-own-program">1.8 Writing your own program</a></li>
+<li><a href="#19-keys-worth-remembering">1.9 Keys worth remembering</a></li>
+</ul>
+<hr>
+<h2 id="11-what-emips-is">1.1 What eMIPS is</h2>
+<p>eMIPS simulates a <strong>MIPS32</strong> processor — the architecture used in most
+computer-architecture courses (Patterson &amp; Hennessy).  It:</p>
+<ul>
+<li><strong>assembles</strong> your <code>.asm</code> program (MARS / SPIM / GNU syntax), or loads
+  machine code from an <strong>Intel HEX</strong> file and disassembles it;</li>
+<li><strong>runs</strong> it on a model that behaves like a real MIPS32 core: all 32
+  registers, HI / LO, the floating-point unit, coprocessor 0 (exceptions,
+  interrupts, the timer), branch delay slots, big- or little-endian
+  memory, and every MIPS32 release from R1 to R6;</li>
+<li><strong>shows what happens inside</strong>: the bit fields of each instruction, the
+  ALU's inputs and result, the memory address, and the classic <strong>5-stage
+  pipeline</strong> (IF, ID, EX, MEM, WB) with its forwarding paths and stalls.</li>
+</ul>
+<p>The reference is real MIPS: where a simpler simulator would take a
+shortcut, eMIPS does what the MIPS32 manuals say a processor does.  When
+your program works in eMIPS it works on MIPS.</p>
+<p>You can use it two ways — a <strong>window</strong> (the GUI) or the <strong>terminal</strong>
+(the CLI).  Both run the same engine and behave identically.</p>
+<h2 id="12-what-you-need">1.2 What you need</h2>
+<ul>
+<li><strong>Python 3.10 or newer</strong> (<code>python3 --version</code> tells you).</li>
+<li>For the window: <strong>PyQt6</strong> (or PySide6 — either works).</li>
+<li>The eMIPS files (the repository).</li>
+</ul>
+<p>Nothing else: the simulator itself needs no other packages.</p>
+<h2 id="13-installing">1.3 Installing</h2>
+<h3 id="option-a--use-it-straight-from-the-repository">Option A — use it straight from the repository</h3>
+<p>The simplest way: no installation step at all.</p>
+<pre><code class="language-bash">git clone https://github.com/protektwar/eMIPS.git
+cd eMIPS
+python3 -m emips --help
+</code></pre>
+<p>For the window, add the Qt library once — through your system's package
+manager or pip:</p>
+<pre><code class="language-bash">sudo apt install python3-pyqt6        # Debian / Ubuntu
+# or
+pip install PyQt6
+</code></pre>
+<p>Run every <code>python3 -m emips ...</code> command from inside the <code>eMIPS</code> folder.</p>
+<h3 id="option-b--install-it-as-a-python-package">Option B — install it as a Python package</h3>
+<p>From inside the <code>eMIPS</code> folder:</p>
+<pre><code class="language-bash">pip install &quot;.[gui]&quot;        # eMIPS + PyQt6
+</code></pre>
+<p>This also gives you an <code>emips-gui</code> command, and <code>python3 -m emips</code> then
+works from any folder.  Developers who change the code use
+<code>pip install -e ".[gui,test]"</code> (an <em>editable</em> install that follows the
+files, plus the test tools).</p>
+<p>Other optional parts: <code>[test]</code> (pytest, to run the test suite),
+<code>[oracle]</code> (Unicorn — only for cross-checking the simulator),
+<code>[diagrams]</code> (Pillow — only for the diagram scripts in <code>ready/</code>).</p>
+<h3 id="check-that-it-works">Check that it works</h3>
+<pre><code class="language-bash">python3 -m emips --help
+</code></pre>
+<p>lists the commands: <code>asm</code>, <code>dis</code>, <code>run</code>, <code>pipe</code>, <code>debug</code>, <code>gui</code>.</p>
+<blockquote>
+<p><strong>Licence note.</strong> PyQt6 is licensed GPL v3 (or commercially); PySide6
+is LGPL.  eMIPS works with either — install the one that suits you.</p>
+</blockquote>
+<h2 id="14-starting-emips">1.4 Starting eMIPS</h2>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The window, empty</td>
+<td><code>python3 -m emips gui</code> (or <code>emips-gui</code>)</td>
+</tr>
+<tr>
+<td>The window with a program</td>
+<td><code>python3 -m emips gui myprog.asm</code></td>
+</tr>
+<tr>
+<td>The window with machine code</td>
+<td><code>python3 -m emips gui myprog.hex</code></td>
+</tr>
+<tr>
+<td>Run a program in the terminal</td>
+<td><code>python3 -m emips run myprog.asm</code></td>
+</tr>
+<tr>
+<td>The terminal debugger</td>
+<td><code>python3 -m emips debug myprog.asm</code></td>
+</tr>
+</tbody>
+</table>
+<p>The window starts <strong>empty</strong> unless you name a file.  A file that cannot
+be opened is reported in the <em>Messages</em> pane and the window starts empty.</p>
+<p>The example programs used in this guide live in the folder
+<code>emips/gui/examples/</code> and are also in the window's
+<strong>File → Examples</strong> menu.</p>
+<h2 id="15-a-first-program-in-the-window">1.5 A first program in the window</h2>
+<p>Start the window:</p>
+<pre><code class="language-bash">python3 -m emips gui
+</code></pre>
+<p><img alt="The window right after starting" src="img/01-start-empty.png"></p>
+<p>The window has:</p>
+<ul>
+<li>the <strong>menu bar</strong> (File, Edit, Run, View, Tools, Configure, Help) and,
+  under it, the <strong>toolbar</strong> with the run controls: <em>Assemble</em>, <em>Reset</em>,
+  <em>Step Back</em>, <em>Step</em>, <em>Run</em>, <em>Pause</em>, the <strong>mode</strong> (Instruction or
+  5-stage pipeline), <strong>forwarding</strong> and the run <strong>speed</strong>;</li>
+<li>the <strong>editor</strong> on the left, with a colour legend under it;</li>
+<li>in the middle, the <strong>Datapath</strong>, <strong>Pipeline</strong>, <strong>Disassembly</strong> and
+  <strong>Instruction</strong> tabs;</li>
+<li>on the right, the <strong>Registers</strong>;</li>
+<li>at the bottom, the <strong>Console</strong> (what the program prints and reads),
+  <strong>Memory</strong> and <strong>Messages</strong>;</li>
+<li>the <strong>status bar</strong> at the very bottom: steps (or cycles), the PC, and
+  the MIPS32 release and byte order in use.</li>
+</ul>
+<p>Every pane can be moved, tabbed together with another or pulled out into
+its own window by dragging its title.  <strong>View → Reset Layout</strong> puts
+everything back.</p>
+<h3 id="load-the-example">Load the example</h3>
+<p>Choose <strong>File → Examples → Sum of an array (loop, load, syscalls)</strong>.</p>
+<p><img alt="The example, assembled and ready" src="img/01-example-loaded.png"></p>
+<p>The program adds the four numbers stored at <code>nums</code> and prints the result:</p>
+<pre><code class="language-asm">        .data
+nums:   .word 3, 4, 5, 6          # four 32-bit numbers in memory
+msg:    .asciiz &quot;sum = &quot;          # a text, ending with a 0 byte
+        .text
+main:   la    $t0, nums           # $t0 = address of nums
+        li    $t1, 4              # $t1 = how many numbers are left
+        move  $t2, $zero          # $t2 = the sum, starts at 0
+loop:   lw    $t3, 0($t0)         # $t3 = the number at $t0
+        addu  $t2, $t2, $t3       # add it to the sum
+        addiu $t0, $t0, 4         # next number (4 bytes further)
+        addiu $t1, $t1, -1        # one less left
+        bnez  $t1, loop           # more left? go round again
+        li    $v0, 4              # print_string(msg)
+        la    $a0, msg
+        syscall
+        li    $v0, 1              # print_int($t2)
+        move  $a0, $t2
+        syscall
+        li    $v0, 10             # exit
+        syscall
+</code></pre>
+<p>Loading an example <strong>assembles</strong> it at once.  The <strong>amber line</strong>
+(line 6, <code>la $t0, nums</code>) is the <strong>next instruction to execute</strong> — it has
+not run yet.  The Disassembly tab shows the machine words the assembler
+produced; you will notice that <code>la</code> became <strong>two</strong> instructions (<code>lui</code>
+and <code>addiu</code>): it is a <em>pseudo-instruction</em>, a convenience the assembler
+expands (Phase 2 explains them all).</p>
+<h3 id="step-through-it">Step through it</h3>
+<p>Press <strong>Step</strong> (or <strong>F10</strong>) five times.  Each press executes one machine
+instruction:</p>
+<ol>
+<li><code>lui $t0, 0x1001</code> — first half of <code>la</code></li>
+<li><code>addiu $t0, $t0, 0</code> — second half: <code>$t0</code> = 0x10010000, the address of <code>nums</code></li>
+<li><code>addiu $t1, $zero, 4</code> — that is <code>li $t1, 4</code></li>
+<li><code>or $t2, $zero, $zero</code> — that is <code>move $t2, $zero</code></li>
+<li><code>lw $t3, 0($t0)</code> — loads the first number, 3</li>
+</ol>
+<p><img alt="After five steps" src="img/01-after-five-steps.png"></p>
+<p>Look at:</p>
+<ul>
+<li>the <strong>editor</strong>: the amber line moved to line 10 — <code>addu</code> is next;</li>
+<li>the <strong>Registers</strong>: the register the last instruction changed (<code>$t3 = 3</code>)
+  is highlighted;</li>
+<li>the <strong>Datapath</strong>: the instruction just executed (<code>lw $t3, 0($t0)</code>) is
+  drawn going through all five stages, with its values on the wires —
+  the PC, the instruction word <code>8d0b0000</code>, the registers read, the ALU
+  adding the base address and the offset, the memory read and the
+  register written back;</li>
+</ul>
+<p><img alt="The datapath for lw $t3, 0($t0)" src="img/01-datapath.png"></p>
+<ul>
+<li>the <strong>Instruction</strong> tab: the instruction taken apart — its bit fields
+  (op, base, rt, offset), what the ALU did and where the operands came
+  from, the address it accessed, and its effects.</li>
+</ul>
+<p><img alt="The Instruction tab for lw $t3, 0($t0)" src="img/01-instruction-panel.png"></p>
+<p>Hover the mouse over any part of the datapath for a short explanation of
+what it does.</p>
+<p><strong>Step Back</strong> (Shift+F10) undoes a step — try it, then step forward
+again.  You can go back as far as the start.</p>
+<h3 id="run-it-to-the-end">Run it to the end</h3>
+<p>Press <strong>Run</strong> (F5).  The program runs (the speed slider sets how fast)
+and stops when it exits:</p>
+<p><img alt="Finished" src="img/01-finished.png"></p>
+<p>The <strong>Console</strong> shows <code>sum = 18</code>, <code>$t2</code> holds 18 (0x12), and the status
+bar says <em>37 steps — ended</em>.  <strong>Reset</strong> (Ctrl+R) starts the program
+again from the beginning.</p>
+<h3 id="breakpoints">Breakpoints</h3>
+<p>Click the number <strong>9</strong> in the editor's margin: a red dot appears — a
+<strong>breakpoint</strong> on <code>loop: lw ...</code>.  Press <strong>Reset</strong>, then <strong>Run</strong>: the
+program stops each time it reaches line 9, so you can watch <code>$t2</code> grow
+(0, 3, 7, 12) by pressing Run again.  Click the dot to remove it.
+(<strong>F9</strong> sets or clears a breakpoint on the line the cursor is on.)</p>
+<h2 id="16-the-same-program-in-the-5-stage-pipeline">1.6 The same program in the 5-stage pipeline</h2>
+<p>So far each Step executed one whole instruction.  A real MIPS processor
+overlaps five instructions at a time, each in a different <strong>stage</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>IF</strong> — fetch</td>
+<td>read the instruction at the PC from memory</td>
+</tr>
+<tr>
+<td><strong>ID</strong> — decode</td>
+<td>decode it, read its registers; branches decide here</td>
+</tr>
+<tr>
+<td><strong>EX</strong> — execute</td>
+<td>the ALU computes (a result, or a memory address)</td>
+</tr>
+<tr>
+<td><strong>MEM</strong> — memory</td>
+<td>loads read and stores write data memory</td>
+</tr>
+<tr>
+<td><strong>WB</strong> — write back</td>
+<td>the result is written into the register file</td>
+</tr>
+</tbody>
+</table>
+<p>Set the toolbar mode to <strong>5-stage pipeline</strong> (the program restarts) and
+press Step nine times.  Now <strong>each step is one clock cycle</strong>:</p>
+<p><img alt="The pipeline at cycle 9" src="img/01-pipeline-mode.png"></p>
+<ul>
+<li>the <strong>editor</strong> colours each line by the stage its instruction is in
+  (the legend under the editor names the colours);</li>
+<li>the <strong>Datapath</strong> shows five different instructions at once, one per
+  stage.  At cycle 9 the <code>addu $t2, $t2, $t3</code> in EX needs <code>$t3</code>, which the
+  <code>lw</code> in WB has only just loaded — the value is <strong>forwarded</strong> to the ALU
+  (the red wire, <em>fwd MEM/WB</em>), and the <strong>(bubble)</strong> in MEM is the stall
+  cycle the load cost one cycle earlier;</li>
+<li>the <strong>status bar</strong> shows the cycle count and the <strong>CPI</strong> (cycles per
+  instruction — 1.0 would be a perfect pipeline).</li>
+</ul>
+<p>Open the <strong>Pipeline</strong> tab for the classic chart — one row per
+instruction, one column per cycle; <code>--</code> marks a cycle stalled in ID:</p>
+<p><img alt="The pipeline chart" src="img/01-pipeline-chart.png"></p>
+<p>Untick <strong>forwarding</strong> in the toolbar and run the program again: without
+forwarding every dependent instruction waits for the write-back, the
+chart fills with <code>--</code>, and the CPI goes up.  Phase 5 explains all of
+this.</p>
+<h2 id="17-a-first-program-in-the-terminal">1.7 A first program in the terminal</h2>
+<p>Everything also works without the window.  Run the same example:</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/sum_array.asm
+sum = 18
+
+--- 37 steps, pc = 0x0040004c, 37 cycles (exited)
+$zero 0x00000000    $at 0x00000000    $v0 0x0000000a    $v1 0x00000000
+  $a0 0x00000012    $a1 0x00000000    $a2 0x00000000    $a3 0x00000000
+  $t0 0x10010010    $t1 0x00000000    $t2 0x00000012    $t3 0x00000006
+  ...
+   pc  0x0040004c    hi  0x00000000    lo  0x00000000
+</code></pre>
+<p>The program's output comes first, then the final state of the registers.
+If a program reads input (<code>read_int</code> ...), type it in the terminal.</p>
+<p>For a closer look, start the <strong>debugger</strong> and type commands at its
+<code>(emips)</code> prompt:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/sum_array.asm
+eMIPS debugger — MIPS32 R5, big-endian, instruction mode. Type help.
+=&gt; 0x00400000  lui $t0, 0x1001                  line 6: main:   la    $t0, nums
+(emips) break loop
+breakpoint at 0x00400010  lw $t3, 0($t0)                   line 9: loop:   lw    $t3, 0($t0)
+(emips) continue
+breakpoint
+   0x0040000c  or $t2, $zero, $zero
+=&gt; 0x00400010  lw $t3, 0($t0)                   line 9: loop:   lw    $t3, 0($t0)
+(emips) step
+   0x00400010  lw $t3, 0($t0)                  ; $t3 = 0x00000003
+=&gt; 0x00400014  addu $t2, $t2, $t3               line 10: addu  $t2, $t2, $t3
+(emips) regs $t2 $t3
+   $t2 = 0x00000000  0
+   $t3 = 0x00000003  3  *
+(emips) delete all
+all breakpoints deleted
+(emips) continue
+sum = 18
+the program exited
+   0x00400048  syscall
+   (ended)
+(emips) quit
+</code></pre>
+<ul>
+<li><code>=&gt;</code> marks the next instruction; the line above it is the instruction
+  just executed and what it changed.  In <code>regs</code>, <code>*</code> marks a register
+  the last step changed.</li>
+<li><code>break loop</code> uses the <strong>label</strong>; <code>break 9</code> (a line number) and
+  <code>break 0x00400010</code> (an address) do the same.</li>
+<li><code>help</code> lists every command; <code>help step</code> explains one.</li>
+</ul>
+<p>Phase 4 covers the terminal completely.</p>
+<h2 id="18-writing-your-own-program">1.8 Writing your own program</h2>
+<ol>
+<li><strong>File → New</strong> (Ctrl+N) — an empty editor.</li>
+<li>Type a program.  The smallest complete one:
+<pre><code class="language-asm">        .text
+main:   li    $a0, 42        # the number to print
+        li    $v0, 1         # service 1: print_int
+        syscall
+        li    $v0, 10        # service 10: exit
+        syscall
+</code></pre>
+</li>
+<li><strong>Assemble</strong> (Ctrl+B).  If there is a mistake, the line turns red and
+   the <em>Messages</em> pane says what is wrong, e.g. <code>line 2: unknown
+   instruction 'lii'</code>.  (You do not have to assemble before every run: by
+   default Step and Run assemble again by themselves when you changed the
+   text.)</li>
+<li><strong>Run</strong> (F5) — the Console shows <code>42</code>.</li>
+<li><strong>File → Save</strong> (Ctrl+S) — name it <code>something.asm</code>.</li>
+</ol>
+<p>Always end a program with the <strong>exit</strong> system call (<code>li $v0, 10</code> +
+<code>syscall</code>).  Without it the processor goes on fetching past your last
+instruction, finds no code there and stops with a message saying exactly
+that.</p>
+<h2 id="19-keys-worth-remembering">1.9 Keys worth remembering</h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Ctrl+B</strong></td>
+<td>Assemble</td>
+</tr>
+<tr>
+<td><strong>F10</strong></td>
+<td>Step (one instruction, or one cycle in pipeline mode)</td>
+</tr>
+<tr>
+<td><strong>Shift+F10</strong></td>
+<td>Step back</td>
+</tr>
+<tr>
+<td><strong>F5</strong> / <strong>F6</strong></td>
+<td>Run / Pause</td>
+</tr>
+<tr>
+<td><strong>Ctrl+F10</strong></td>
+<td>Run to the line the cursor is on</td>
+</tr>
+<tr>
+<td><strong>F9</strong></td>
+<td>Breakpoint on / off at the cursor line</td>
+</tr>
+<tr>
+<td><strong>Ctrl+R</strong></td>
+<td>Reset (restart the program)</td>
+</tr>
+<tr>
+<td><strong>Ctrl+N / Ctrl+O / Ctrl+S</strong></td>
+<td>New / Open / Save</td>
+</tr>
+<tr>
+<td><strong>F1</strong></td>
+<td>Help → User Guide (this guide)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Help → Keyboard Shortcuts</strong> shows them all.</p>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · next: <a href="02-writing-programs.html">Phase 2 — Writing programs</a></nav>
+</main>
+</body>
+</html>

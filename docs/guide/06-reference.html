@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 6 — Reference and troubleshooting · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html">1 Getting started</a></li>
+<li><a href="02-writing-programs.html">2 Writing programs</a></li>
+<li><a href="03-the-gui.html">3 The GUI</a></li>
+<li><a href="04-command-line.html">4 The command line</a></li>
+<li><a href="05-understanding.html">5 Understanding</a></li>
+<li><a href="06-reference.html" aria-current="page">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-6--reference-and-troubleshooting">Phase 6 — Reference and troubleshooting</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
+<p>Tables to look things up, every message eMIPS can stop with and what to
+do about it, what is not simulated, frequently asked questions, and notes
+for teachers.</p>
+<ul>
+<li><a href="#61-system-calls">6.1 System calls</a></li>
+<li><a href="#62-registers">6.2 Registers</a></li>
+<li><a href="#63-cp0-registers-and-their-bits">6.3 CP0 registers and their bits</a></li>
+<li><a href="#64-the-fpu-control-register-fcsr">6.4 The FPU control register (FCSR)</a></li>
+<li><a href="#65-exception-codes">6.5 Exception codes</a></li>
+<li><a href="#66-memory-map">6.6 Memory map</a></li>
+<li><a href="#67-when-the-simulation-stops">6.7 When the simulation stops</a></li>
+<li><a href="#68-what-is-not-simulated">6.8 What is not simulated</a></li>
+<li><a href="#69-frequently-asked-questions">6.9 Frequently asked questions</a></li>
+<li><a href="#610-for-teachers">6.10 For teachers</a></li>
+<li><a href="#611-glossary">6.11 Glossary</a></li>
+</ul>
+<hr>
+<h2 id="61-system-calls">6.1 System calls</h2>
+<p><code>$v0</code> = service; arguments in <code>$a0</code>–<code>$a3</code> / <code>$f12</code>; results in <code>$v0</code> /
+<code>$f0</code> (<a href="02-writing-programs.html#29-system-calls">Phase 2, 2.9</a>).</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>$v0</code></th>
+<th>Service</th>
+<th>In</th>
+<th>Out</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td>print_int</td>
+<td><code>$a0</code></td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td>print_float</td>
+<td><code>$f12</code></td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>print_double</td>
+<td><code>$f12</code> (<code>$f12</code>/<code>$f13</code>)</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>print_string</td>
+<td><code>$a0</code> = address</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>read_int</td>
+<td></td>
+<td><code>$v0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td>read_float</td>
+<td></td>
+<td><code>$f0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">7</td>
+<td>read_double</td>
+<td></td>
+<td><code>$f0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td>read_string</td>
+<td><code>$a0</code> = buffer, <code>$a1</code> = size</td>
+<td>at most size − 1 characters, newline kept, 0 byte</td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td>sbrk</td>
+<td><code>$a0</code> = bytes</td>
+<td><code>$v0</code> = address (heap from <code>0x10040000</code>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>exit</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>print_char</td>
+<td><code>$a0</code></td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>read_char</td>
+<td></td>
+<td><code>$v0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">17</td>
+<td>exit2</td>
+<td><code>$a0</code> = exit code</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">34</td>
+<td>print_hex</td>
+<td><code>$a0</code></td>
+<td>e.g. <code>0x0000002a</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">35</td>
+<td>print_binary</td>
+<td><code>$a0</code></td>
+<td>32 digits</td>
+</tr>
+<tr>
+<td style="text-align: right;">36</td>
+<td>print_unsigned</td>
+<td><code>$a0</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>Any other number in <code>$v0</code> takes the <strong>System Call exception</strong>.</p>
+<h2 id="62-registers">6.2 Registers</h2>
+<table>
+<thead>
+<tr>
+<th>Number</th>
+<th>Name</th>
+<th>Use</th>
+<th style="text-align: center;">Preserved across calls</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>$0</code></td>
+<td><code>$zero</code></td>
+<td>constant 0</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>$1</code></td>
+<td><code>$at</code></td>
+<td>assembler temporary</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td><code>$2</code>–<code>$3</code></td>
+<td><code>$v0</code>–<code>$v1</code></td>
+<td>results, syscall number</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td><code>$4</code>–<code>$7</code></td>
+<td><code>$a0</code>–<code>$a3</code></td>
+<td>arguments</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td><code>$8</code>–<code>$15</code></td>
+<td><code>$t0</code>–<code>$t7</code></td>
+<td>temporaries</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td><code>$16</code>–<code>$23</code></td>
+<td><code>$s0</code>–<code>$s7</code></td>
+<td>saved</td>
+<td style="text-align: center;"><strong>yes</strong></td>
+</tr>
+<tr>
+<td><code>$24</code>–<code>$25</code></td>
+<td><code>$t8</code>–<code>$t9</code></td>
+<td>temporaries</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td><code>$26</code>–<code>$27</code></td>
+<td><code>$k0</code>–<code>$k1</code></td>
+<td>kernel (exception handler)</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>$28</code></td>
+<td><code>$gp</code></td>
+<td>global pointer (<code>0x10008000</code>)</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td><code>$29</code></td>
+<td><code>$sp</code></td>
+<td>stack pointer (<code>0x7fffeffc</code>)</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td><code>$30</code></td>
+<td><code>$fp</code> / <code>$s8</code></td>
+<td>frame pointer</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td><code>$31</code></td>
+<td><code>$ra</code></td>
+<td>return address</td>
+<td style="text-align: center;">yes</td>
+</tr>
+</tbody>
+</table>
+<p>Also: <strong>PC</strong>, <strong>HI</strong> / <strong>LO</strong> (<code>mult</code>, <code>div</code>; <code>mfhi</code>, <code>mflo</code>), the FPU's
+<code>$f0</code>–<code>$f31</code> and FCSR (<a href="#64-the-fpu-control-register-fcsr">6.4</a>), and CP0
+(<a href="#63-cp0-registers-and-their-bits">6.3</a>).</p>
+<h2 id="63-cp0-registers-and-their-bits">6.3 CP0 registers and their bits</h2>
+<p>Read with <code>mfc0 rt, $n</code>, write with <code>mtc0 rt, $n</code> (kernel mode).  The
+ones a student program uses:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>$n</code></th>
+<th>Register</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0</td>
+<td>Index</td>
+<td>(TLB) the entry <code>tlbwi</code> / <code>tlbr</code> use; <code>tlbp</code> puts the matching one here, bit 31 (P) = 1: no match</td>
+</tr>
+<tr>
+<td style="text-align: right;">1</td>
+<td>Random</td>
+<td>(TLB) the entry <code>tlbwr</code> writes: counts down every cycle from the last entry to Wired (a 10-bit LFSR skips a step now and then, against livelocks)</td>
+</tr>
+<tr>
+<td style="text-align: right;">2 / 3</td>
+<td>EntryLo0 / EntryLo1</td>
+<td>(TLB) the even / odd page of an entry: PFN (29–6) = physical frame, C (5–3) cacheability, D (2) writable, V (1) valid, G (0) global; RI (31) / XI (30) read / execute inhibit (Release 3, PageGrain)</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>Context</td>
+<td>(TLB) PTEBase (31–23) for the OS; BadVPN2 (22–4) = the failing page pair</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>PageMask</td>
+<td>(TLB) the page size of an entry: 0 = 4 KB, <code>0x6000</code> 16 KB ... <code>0x1fffe000</code> 256 MB</td>
+</tr>
+<tr>
+<td style="text-align: right;">5, 1</td>
+<td>PageGrain</td>
+<td>(TLB) RIE / XIE (31 / 30) enable RI / XI, ESP (28) 1 KB pages, IEC (27) TLBRI / TLBXI codes, MCCause (4–0): 1 double TLB entry, 3 / 4 bad FTLB write, 5 page walk</td>
+</tr>
+<tr>
+<td style="text-align: right;">5, 2–4</td>
+<td>SegCtl0–2</td>
+<td>(segmentation control) two 16-bit segment configurations each: PA (15–9), AM (6–4: who may use it, mapped or not), EU (3), C (2–0)</td>
+</tr>
+<tr>
+<td style="text-align: right;">5, 5–7; 6, 6</td>
+<td>PWBase, PWField, PWSize, PWCtl</td>
+<td>(page table walker) the table's base, where each index lies in the address, how many bits it has, PWEn (31) on</td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td>Wired</td>
+<td>(TLB) entries below it are never chosen by <code>tlbwr</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td>BadVAddr</td>
+<td>the address of the last address error or TLB exception</td>
+</tr>
+<tr>
+<td style="text-align: right;">8, 1 / 2</td>
+<td>BadInstr / BadInstrP</td>
+<td>(Release 3+ with a TLB, Release 6) the faulting instruction / the branch before it</td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td>Count</td>
+<td>counts up (every 2 cycles by default)</td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>Compare</td>
+<td>timer interrupt when Count = Compare; writing it clears the interrupt</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>Status</td>
+<td>mode, interrupt enables, coprocessor enables</td>
+</tr>
+<tr>
+<td style="text-align: right;">12, 1</td>
+<td>IntCtl</td>
+<td>IPTI (31–29) = 7: the timer is IP7; IPPCI (28–26) = 7: the performance counters; VS (9–5) vector spacing (0 = one vector; 1, 2, 4, 8, 16 × 32 bytes: vectored interrupts, Release 2+)</td>
+</tr>
+<tr>
+<td style="text-align: right;">12, 2</td>
+<td>SRSCtl</td>
+<td>GPR shadow sets: HSS (29–26) the highest set, EICSS (21–18) the set the EIC sent with the last interrupt, ESS (15–12) the set of exceptions, PSS (9–6) the previous set (<code>rdpgpr</code> / <code>wrpgpr</code>, <code>eret</code> returns to it), CSS (3–0) the current set</td>
+</tr>
+<tr>
+<td style="text-align: right;">12, 3</td>
+<td>SRSMap</td>
+<td>the shadow set of each interrupt vector 7..0 (4 bits each, vector 0 in bits 3–0)</td>
+</tr>
+<tr>
+<td style="text-align: right;">13</td>
+<td>Cause</td>
+<td>the last exception and the pending interrupts</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>EntryHi</td>
+<td>(TLB) VPN2 (31–13) = the page pair of an entry or of the failing address; ASID (7–0) = the current address space; EHINV (10) invalidate (Release 3)</td>
+</tr>
+<tr>
+<td style="text-align: right;">14</td>
+<td>EPC</td>
+<td>where to return after the exception</td>
+</tr>
+<tr>
+<td style="text-align: right;">16</td>
+<td>Config</td>
+<td>MT (9–7) = 3 fixed mapping MMU, 1 TLB; K0 / KU / K23 (KU, K23: fixed mapping only) = cacheability of kseg0 / kuseg / kseg2+3: 0 write-through, 2 uncached, 3 write-back, 7 uncached accelerated; MM (18) = 1: the write buffer merges write-through stores</td>
+</tr>
+<tr>
+<td style="text-align: right;">16, 1</td>
+<td>Config1</td>
+<td>the cache shapes: IS / IL / IA (bits 24–16) and DS / DL / DA (15–7) = sets, line size, ways; line size 0 = no cache</td>
+</tr>
+<tr>
+<td style="text-align: right;">16, 2</td>
+<td>Config2</td>
+<td>the L3 / L2 shapes: TS / TL / TA (27–16) and SS / SL / SA (11–0); L2B (12) = 1: the L2 is bypassed</td>
+</tr>
+<tr>
+<td style="text-align: right;">16, 4 / 5</td>
+<td>Config4 / Config5</td>
+<td>IE (30–29) TLB invalidate instructions; the FTLB's page size, ways, sets / Config5: K (30), CV (29), EVA (28)</td>
+</tr>
+<tr>
+<td style="text-align: right;">16, 7</td>
+<td>Config7</td>
+<td>HCI (bit 18) = 1: the caches come up invalid (Settings → Caches)</td>
+</tr>
+<tr>
+<td style="text-align: right;">18, 0–3 / 19, 0–3</td>
+<td>WatchLo / WatchHi</td>
+<td>watch registers: WatchLo VAddr (31–3, a doubleword), I (2, pairs 0–1) / R (1) / W (0, pairs 2–3) enables; WatchHi M (31) more pairs, G (30) any ASID, ASID (23–16), Mask (11–3), I / R / W (2–0) what matched (write 1 to clear) (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">23</td>
+<td>Debug</td>
+<td>(EJTAG) DM (30) Debug Mode, DBD (31) the debug exception was in a delay slot, LSNM (28) dseg loads / stores go to memory, Doze / Halt (27 / 26) the core slept, CountDM (25) Count runs in Debug Mode, CacheEP / DBusEP (22 / 21) an imprecise error waits, IEXI (20) imprecise errors held, EJTAGver (17–15) = 3, DExcCode (14–10) the exception in Debug Mode, SSt (8) single step; what entered Debug Mode: DINT (5), DIB (4), DDBS / DDBL (3 / 2), DBp (1), DSS (0) (<a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">24</td>
+<td>DEPC</td>
+<td>(EJTAG) where <code>deret</code> returns: the instruction of the debug exception (its branch with Debug.DBD)</td>
+</tr>
+<tr>
+<td style="text-align: right;">25, 0 / 2</td>
+<td>PerfCtl0 / PerfCtl1</td>
+<td>performance counter control: Event (11–5), IE (4) interrupt on overflow, U / S / K / EXL (3–0) count in user / supervisor / kernel mode / with EXL = 1; M (31) another counter follows (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">25, 1 / 3</td>
+<td>PerfCnt0 / PerfCnt1</td>
+<td>the counts; bit 31 = 1 with IE: the counter interrupt (Cause.PCI, IP7)</td>
+</tr>
+<tr>
+<td style="text-align: right;">26</td>
+<td>ErrCtl</td>
+<td>cache test / parity control: PE (31) parity on, PO (30), WST (29) way-select test mode, L2P (23) L2 ECC (checked while PE ≠ L2P), FE / SE (19 / 20) first / second cache error, PCI, PI, PD</td>
+</tr>
+<tr>
+<td style="text-align: right;">27</td>
+<td>CacheErr</td>
+<td>what the last Cache Error found: EC (30) 0 = L1, 1 = L2 / L3; ED data, ET tag, EF fatal / second error, EW dirty bit; L1: ER (31) instruction 0 / data 1, Way (21–20), Index (19–0); L2 / L3: Way (21–19), Index (18–0)</td>
+</tr>
+<tr>
+<td style="text-align: right;">28, 0 / 2</td>
+<td>ITagLo / DTagLo</td>
+<td>a line's tag for <code>cache</code> Index Load / Store Tag: PA (31–11), V (7) valid, D (6) dirty, L (5) locked, P (0) parity</td>
+</tr>
+<tr>
+<td style="text-align: right;">28, 1 / 3; 29, 1</td>
+<td>IDataLo / DDataLo; IDataHi</td>
+<td>the data <code>cache</code> Index Load Tag reads (D: a word; I: a doubleword in IDataHi:IDataLo)</td>
+</tr>
+<tr>
+<td style="text-align: right;">28, 4</td>
+<td>L23TagLo</td>
+<td>an L2 / L3 line's tag: PA (31 down to the way size), V (7), D (6), L (5), P (0); in WST mode the LRU (14–8), dirty bits (23–16) and their parity (31–24)</td>
+</tr>
+<tr>
+<td style="text-align: right;">28, 5; 29, 5</td>
+<td>L23DataLo; L23DataHi</td>
+<td>the L2 / L3 doubleword of Index Load Tag / Index Store Data (L23DataLo[7:0]: the check bits of Index Store ECC)</td>
+</tr>
+<tr>
+<td style="text-align: right;">30</td>
+<td>ErrorEPC</td>
+<td>the return address while Status.ERL = 1 (after reset or a Cache Error)</td>
+</tr>
+<tr>
+<td style="text-align: right;">31</td>
+<td>DESAVE</td>
+<td>(EJTAG) a scratch register for the debug handler</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Status</strong> (<code>$12</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Bits</th>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>IE</td>
+<td>interrupts enabled</td>
+</tr>
+<tr>
+<td>1</td>
+<td>EXL</td>
+<td>exception level: set on an exception; kernel mode, interrupts off</td>
+</tr>
+<tr>
+<td>2</td>
+<td>ERL</td>
+<td>error level: set at reset; <code>eret</code> then returns to <strong>ErrorEPC</strong>; kuseg is not mapped</td>
+</tr>
+<tr>
+<td>4–3</td>
+<td>KSU</td>
+<td>0 kernel, 2 user (when EXL = ERL = 0); bit 3 reads 0 (no supervisor mode)</td>
+</tr>
+<tr>
+<td>15–8</td>
+<td>IM7–IM0</td>
+<td>interrupt mask, one bit per line; in EIC mode bits 15–10 are <strong>IPL</strong>, the priority level the core runs at</td>
+</tr>
+<tr>
+<td>22</td>
+<td>BEV</td>
+<td>exceptions go to the boot vectors (<code>0xbfc00380</code>)</td>
+</tr>
+<tr>
+<td>26</td>
+<td>FR</td>
+<td>FPU registers are 64 bits</td>
+</tr>
+<tr>
+<td>28–31</td>
+<td>CU0–CU3</td>
+<td>coprocessor usable (CU1 = the FPU)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cause</strong> (<code>$13</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Bits</th>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>6–2</td>
+<td>ExcCode</td>
+<td>which exception (<a href="#65-exception-codes">6.5</a>)</td>
+</tr>
+<tr>
+<td>15–8</td>
+<td>IP7–IP0</td>
+<td>pending interrupts (IP7 timer and performance counters, IP3 MMIO keyboard, IP2 MMIO display, IP1–IP0 software); in EIC mode bits 15–10 are <strong>RIPL</strong>, the level of the interrupt taken last</td>
+</tr>
+<tr>
+<td>22</td>
+<td>WP</td>
+<td>a watch exception waits (deferred while EXL / ERL = 1); software clears it</td>
+</tr>
+<tr>
+<td>23</td>
+<td>IV</td>
+<td>interrupts use the special vector (offset <code>0x200</code>; with IntCtl.VS ≠ 0 the vector table)</td>
+</tr>
+<tr>
+<td>26</td>
+<td>PCI</td>
+<td>a performance counter interrupt is pending (Release 2+)</td>
+</tr>
+<tr>
+<td>27</td>
+<td>DC</td>
+<td>stop Count</td>
+</tr>
+<tr>
+<td>29–28</td>
+<td>CE</td>
+<td>which coprocessor, for Coprocessor Unusable</td>
+</tr>
+<tr>
+<td>30</td>
+<td>TI</td>
+<td>the timer interrupt is pending</td>
+</tr>
+<tr>
+<td>31</td>
+<td>BD</td>
+<td>the exception was in a branch delay slot (EPC = the branch)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="64-the-fpu-control-register-fcsr">6.4 The FPU control register (FCSR)</h2>
+<p>Read with <code>cfc1 rt, $31</code>, write with <code>ctc1 rt, $31</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Bits</th>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1–0</td>
+<td>RM</td>
+<td>rounding: 0 nearest, 1 toward zero, 2 toward +∞, 3 toward −∞</td>
+</tr>
+<tr>
+<td>6–2</td>
+<td>Flags</td>
+<td>sticky IEEE flags since last cleared: V Z O U I (bit 6 … bit 2)</td>
+</tr>
+<tr>
+<td>11–7</td>
+<td>Enables</td>
+<td>trap (FPE exception) on V Z O U I</td>
+</tr>
+<tr>
+<td>17–12</td>
+<td>Cause</td>
+<td>the flags of the last operation (E, V, Z, O, U, I)</td>
+</tr>
+<tr>
+<td>18 / 19</td>
+<td>NAN2008 / ABS2008</td>
+<td>2008 NaN and ABS/NEG rules (1 in Release 6, read-only)</td>
+</tr>
+<tr>
+<td>23, 31–25</td>
+<td>FCC0, FCC7–FCC1</td>
+<td>condition codes of <code>c.cond</code> / <code>bc1t</code> (not in Release 6)</td>
+</tr>
+<tr>
+<td>24</td>
+<td>FS</td>
+<td>flush tiny results to zero</td>
+</tr>
+</tbody>
+</table>
+<p>V = invalid operation, Z = divide by zero, O = overflow, U = underflow,
+I = inexact.</p>
+<p><strong><code>cache op, offset(base)</code></strong> (kernel mode, or CU0): <code>op</code> = operation × 4
++ cache (0 instruction, 1 data, 3 L2, 2 L3); index operations name a line by
+<em>way × way size + set × line size</em> (an unmapped kseg0 address; the L2 / L3
+use the physical address), hit operations by an address:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>op</code></th>
+<th>Cache</th>
+<th>Operation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;"><code>0x00</code> / <code>0x01</code></td>
+<td>I / D</td>
+<td>Index Invalidate / Index Writeback Invalidate</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x04</code> / <code>0x05</code></td>
+<td>I / D</td>
+<td>Index Load Tag (into TagLo, DataLo)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x08</code> / <code>0x09</code></td>
+<td>I / D</td>
+<td>Index Store Tag (from TagLo: how boot code initializes a cache)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x10</code> / <code>0x11</code></td>
+<td>I / D</td>
+<td>Hit Invalidate (dirty data is lost)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x14</code> / <code>0x15</code></td>
+<td>I / D</td>
+<td>Fill / Hit Writeback Invalidate</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x19</code></td>
+<td>D</td>
+<td>Hit Writeback (memory updated, line stays)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x1c</code> / <code>0x1d</code></td>
+<td>I / D</td>
+<td>Fetch and Lock (the line is never replaced)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x03</code> / <code>0x07</code> / <code>0x0b</code></td>
+<td>L2</td>
+<td>Index Writeback Invalidate / Index Load Tag / Index Store Tag</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x0f</code></td>
+<td>L2</td>
+<td>Index Store Data (from L23DataHi:L23DataLo)</td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>0x13</code> / <code>0x17</code> / <code>0x1b</code> / <code>0x1f</code></td>
+<td>L2</td>
+<td>Hit Invalidate / Hit Writeback Invalidate / Hit Writeback / Fetch and Lock</td>
+</tr>
+</tbody>
+</table>
+<p>The L3 operations are the L2 ones minus 1 (<code>0x1a</code> = Hit Writeback, L3).</p>
+<p><code>synci offset(base)</code> (any mode) writes the data-cache line back and
+invalidates the instruction-cache line; <code>pref hint, offset(base)</code> loads a
+line early (hints 0–7), writes one back and invalidates it (25) or
+allocates a zeroed line for a store (30); hint 25 also sends a gathered
+uncached accelerated block.  <code>sync</code> empties the write buffer's waiting
+entries.  Without caches all of them do nothing.</p>
+<h2 id="65-exception-codes">6.5 Exception codes</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">ExcCode</th>
+<th>Name</th>
+<th>Cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0</td>
+<td>Int</td>
+<td>interrupt</td>
+</tr>
+<tr>
+<td style="text-align: right;">1</td>
+<td>Mod</td>
+<td>TLB Modified: a store to a page with D = 0</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td>TLBL</td>
+<td>TLB Refill (no entry) or Invalid (V = 0) on a load or a fetch; also RI / XI with PageGrain.IEC = 0</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>TLBS</td>
+<td>TLB Refill or Invalid on a store</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>AdEL</td>
+<td>address error on a load or an instruction fetch (misaligned, or kernel address in user mode)</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>AdES</td>
+<td>address error on a store</td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td>Sys</td>
+<td><code>syscall</code> not handled by the services</td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td>Bp</td>
+<td><code>break</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>RI</td>
+<td>reserved instruction: unknown, not in this release, or not available in this model</td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>CpU</td>
+<td>coprocessor unusable: FPU off, or CP0 instruction in user mode</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>Ov</td>
+<td>signed integer overflow (<code>add</code>, <code>addi</code>, <code>sub</code>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">13</td>
+<td>Tr</td>
+<td>a trap instruction's condition was true</td>
+</tr>
+<tr>
+<td style="text-align: right;">15</td>
+<td>FPE</td>
+<td>floating-point exception (an enabled IEEE flag)</td>
+</tr>
+<tr>
+<td style="text-align: right;">19 / 20</td>
+<td>TLBRI / TLBXI</td>
+<td>a load from a read-inhibited / a fetch from an execute-inhibited page (PageGrain.IEC = 1)</td>
+</tr>
+<tr>
+<td style="text-align: right;">23</td>
+<td>WATCH</td>
+<td>a watch register matched a fetch, load or store (deferred in Cause.WP while EXL / ERL = 1)</td>
+</tr>
+<tr>
+<td style="text-align: right;">24</td>
+<td>MCheck</td>
+<td>Machine Check: a TLB write would make two valid entries match (Status.TS = 1)</td>
+</tr>
+</tbody>
+</table>
+<p>Vectors: <code>0x80000180</code> (<code>0x80000200</code> for interrupts with Cause.IV); with
+Status.BEV = 1, <code>0xbfc00380</code> (<code>0xbfc00400</code>).  A TLB Refill taken with
+Status.EXL = 0 goes to <code>0x80000000</code> (<code>0xbfc00200</code>).</p>
+<p>The <strong>debug exceptions</strong> (EJTAG) have no ExcCode either and change only
+Debug and DEPC: <code>sdbbp</code> (DBp), single step (DSS), a debug interrupt
+(DINT) jump to the debug vector <code>0xbfc00480</code> in Debug Mode; an
+exception <em>in</em> Debug Mode comes back there with its ExcCode in
+Debug.DExcCode (9 also for <code>sdbbp</code>, 30 for a cache error)
+(<a href="05-understanding.html#debug-mode-ejtag">Debug Mode</a>).</p>
+<p>The <strong>Cache Error</strong> exception has no ExcCode and leaves Cause alone: a
+parity error found in a cache (Settings → Caches → parity, and
+ErrCtl.PE = 1) sets CacheErr, ErrorEPC and Status.ERL and jumps to
+<code>0xa0000100</code> — kseg1, so the handler does not use the broken cache —
+or <code>0xbfc00300</code> with Status.BEV = 1.  An uncorrectable L2 / L3 ECC error
+is <strong>imprecise</strong>: the instruction that met it completes (a load gets the
+bad value) and the exception comes before the next one, with ErrorEPC
+pointing there; one met by an instruction fetch is taken at that fetch.</p>
+<h2 id="66-memory-map">6.6 Memory map</h2>
+<table>
+<thead>
+<tr>
+<th>Address</th>
+<th>Physical</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x00400000</code></td>
+<td><code>0x40400000</code></td>
+<td><code>.text</code> — your program</td>
+</tr>
+<tr>
+<td><code>0x10010000</code></td>
+<td><code>0x50010000</code></td>
+<td><code>.data</code> — your data</td>
+</tr>
+<tr>
+<td><code>0x10008000</code></td>
+<td><code>0x50008000</code></td>
+<td><code>$gp</code></td>
+</tr>
+<tr>
+<td><code>0x10040000</code></td>
+<td><code>0x50040000</code></td>
+<td>heap (<code>sbrk</code>)</td>
+</tr>
+<tr>
+<td><code>0x7fffeffc</code></td>
+<td><code>0xbfffeffc</code></td>
+<td><code>$sp</code> at the start; the stack grows down</td>
+</tr>
+<tr>
+<td><code>0x80000180</code></td>
+<td><code>0x00000180</code></td>
+<td><code>.ktext</code> — the exception handler</td>
+</tr>
+<tr>
+<td><code>0x90000000</code></td>
+<td><code>0x10000000</code></td>
+<td><code>.kdata</code></td>
+</tr>
+<tr>
+<td><code>0xbfc00380</code></td>
+<td><code>0x1fc00380</code></td>
+<td>the exception vector while Status.BEV = 1</td>
+</tr>
+<tr>
+<td><code>0xbfc00480</code></td>
+<td><code>0x1fc00480</code></td>
+<td>the EJTAG debug vector (Debug Mode)</td>
+</tr>
+<tr>
+<td><code>0xff200000</code>–<code>0xff3fffff</code></td>
+<td>none</td>
+<td>in Debug Mode: dseg — dmseg (the probe's memory) and drseg (the debug registers, the DCR at <code>0xff300000</code>)</td>
+</tr>
+<tr>
+<td><code>0xffff0000</code>–<code>0xffff000c</code></td>
+<td>the same</td>
+<td>the MMIO keyboard and display (<a href="02-writing-programs.html#210-the-memory-mapped-console">Phase 2, 2.10</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Physical addresses with the fixed mapping MMU after the default boot
+(Status.ERL = 0); in the reset state kuseg addresses are their own
+physical address.  Segments, who may access them and how they are
+translated: <a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>.</p>
+<h2 id="67-when-the-simulation-stops">6.7 When the simulation stops</h2>
+<p>Besides normal ends (exit, a breakpoint, the cursor line, an input
+request, the step limit), the simulation stops with a message in the
+status bar and the Messages pane (GUI), or after <code>stopped:</code> (terminal).
+The assembler's messages are in <a href="02-writing-programs.html#217-common-assembly-errors">Phase 2, 2.17</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Message (start)</th>
+<th>What happened</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>... the program ran past its last instruction</code></td>
+<td>there is no exit at the end; the processor fetched beyond the code</td>
+<td>end the program with <code>li $v0, 10</code> + <code>syscall</code></td>
+</tr>
+<tr>
+<td><code>... the CPU took exception XXX (Cause.ExcCode n, EPC 0x...) and jumped to the exception vector 0x..., but there is no handler there</code></td>
+<td>an exception happened (see <a href="#65-exception-codes">6.5</a>) and there is no handler at the vector</td>
+<td>fix the instruction at EPC — or write a handler at that address, or stop on exceptions (Settings → Exceptions, <code>--exceptions stop</code>)</td>
+</tr>
+<tr>
+<td><code>MipsException: AdEL exception in LW at 0x...</code></td>
+<td><em>Exceptions: stop</em> is on and an exception happened</td>
+<td>as above; the registers show the state before the instruction</td>
+</tr>
+<tr>
+<td><code>... the program is loaded at this address, but with the fixed mapping MMU kuseg is at PA = VA + 0x40000000 while Status.ERL = 0 ...</code></td>
+<td>Status.ERL changed after the program was loaded (in the reset state), so kuseg now maps somewhere else</td>
+<td>keep code that leaves the reset state in kseg0 / kseg1 (<code>.ktext</code>), or start with the default boot (<a href="#69-frequently-asked-questions">6.9</a>)</td>
+</tr>
+<tr>
+<td><code>... the CPU took a debug exception (DBp, DEPC 0x...) and jumped to the debug vector 0xbfc00480, but there is no debug handler there</code></td>
+<td>an <code>sdbbp</code>, a single step or a debug interrupt entered EJTAG Debug Mode and nothing is at the debug vector</td>
+<td>write a debug handler (<code>.ktext 0xbfc00480</code>, ending with <code>deret</code>) — <a href="05-understanding.html#debug-mode-ejtag">Debug Mode</a></td>
+</tr>
+<tr>
+<td><code>ProbeWaitError: load from dmseg 0x... with ECR.ProbEn = 0</code> / <code>... the probe did not finish the processor access</code></td>
+<td>Debug Mode software used dmseg (0xff200000–0xff2fffff), which only a probe serves; there is none (or, in the FASTDATA area, it had no word to give): the core would wait forever</td>
+<td>connect one (<code>probe on</code>, the Debug tab), queue FASTDATA words (<code>probe fastdata</code>) — or keep the debug handler and its data in ordinary memory</td>
+</tr>
+<tr>
+<td><code>Reserved Instruction</code> on <code>tlbwr</code>, <code>tlbp</code> ...</td>
+<td>the TLB instructions with the fixed mapping MMU (which has no TLB)</td>
+<td>pick a TLB: <code>--mmu tlb</code>, Settings → Processor → MMU</td>
+</tr>
+<tr>
+<td><code>UnmappedAddress: no TLB entry maps 0x... now</code></td>
+<td>a syscall service (print_string ...) or a view read an address that no TLB entry maps — possible when the program has its own refill handler</td>
+<td>touch the data with a load first, or let the boot firmware's handler map it</td>
+</tr>
+<tr>
+<td><code>CP0RegisterError: CP0 register not modeled: MFC0 reg=20 sel=0</code></td>
+<td>a CP0 register eMIPS does not have</td>
+<td>use the registers of <a href="#63-cp0-registers-and-their-bits">6.3</a></td>
+</tr>
+<tr>
+<td><code>Intel HEX: line n: checksum mismatch</code> / <code>malformed record</code> / <code>unknown record type</code></td>
+<td>the HEX file is damaged or not Intel HEX</td>
+<td>regenerate it</td>
+</tr>
+<tr>
+<td><code>the program waits for input</code></td>
+<td>a <code>read_...</code> service and no input given</td>
+<td>type it (Console / terminal), or <code>input TEXT</code></td>
+</tr>
+<tr>
+<td><code>step limit reached</code></td>
+<td>Run's step limit (Settings → Run)</td>
+<td>Run again to continue — or look for an endless loop</td>
+</tr>
+</tbody>
+</table>
+<p>A program that never ends and never reads input — an endless loop —
+simply keeps running: press <strong>Pause</strong> (F6) or <strong>Ctrl+C</strong> in the terminal.</p>
+<h2 id="68-what-is-not-simulated">6.8 What is not simulated</h2>
+<p>eMIPS models a MIPS32 core with its CP0, FPU and the classic pipeline.
+Not included:</p>
+<ul>
+<li><strong>a TLB by default</strong> — addresses are translated by the Fixed Mapping
+  MMU (<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>),
+  where the TLB instructions are reserved instructions and there is no
+  supervisor mode; <code>--mmu</code> selects the others: <code>tlb</code> (a 24K's TLB,
+  <a href="05-understanding.html#the-tlb">The TLB</a>), <code>bat</code>, <code>ftlb</code> (VTLB + FTLB),
+  with <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (the page table
+  walker) — <a href="05-understanding.html#the-other-mmus">The other MMUs</a>; XPA
+  (more than 32 physical address bits) is not modelled;</li>
+<li><strong>bus errors</strong> — every physical address is RAM (never-written bytes
+  read 0);</li>
+<li><strong>memory wait states without caches</strong> — then every access takes one
+  cycle.  The caches (L1, L2, L3) and the write buffer are simulated when
+  turned on (Settings → Caches, <code>--caches</code>, <code>--l2</code>, <code>--write-buffer</code>):
+  they hold the data, so stale copies, self-modifying code, merged and
+  gathered stores behave as on a 24K, and in the pipeline mode misses,
+  writes and <code>sync</code> cost cycles (Settings → Memory timing);</li>
+<li><strong>off-chip trace</strong> (the TCB's probe interface, PIB / TR_DATA) — MIPS
+  Trace itself (PDtrace and the TCB's on-chip trace memory) is simulated,
+  like EJTAG Debug Mode, the hardware breakpoints, the watch registers,
+  the TAP with a probe and PC sampling; <strong>microMIPS /
+  MIPS16e</strong> (<code>jalx</code> is a reserved instruction);</li>
+<li><strong>ASEs</strong>: MSA (SIMD), DSP, MT, MIPS-3D, paired-single floating point,
+  COP2 (Coprocessor Unusable), the optional Release 6 modules;</li>
+<li><strong>an external interrupt controller on one core</strong> — EIC mode needs the
+  GIC: a multi-core system (<code>--cores 2</code>), <a href="05-understanding.html#the-gic-as-an-external-interrupt-controller-eic-mode">The GIC as an External
+  Interrupt Controller</a>;</li>
+<li><strong>CP0 hazards in the 5-stage model</strong> (<code>ehb</code> is a no-op there; the 24K
+  model has them, <a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)
+  and some CP0 registers;</li>
+<li><strong>with more than one core</strong> (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>):
+  the CPC
+  carries a command out at once (no power-up delays); the instruction
+  mode and blocking caches are sequentially consistent, the weak ordering
+  of the hardware shows with the 24K model / non-blocking caches
+  (<a href="05-understanding.html#memory-ordering">Memory ordering</a>).</li>
+</ul>
+<p>Pipeline model choices (documented in <a href="05-understanding.html#53-the-5-stage-pipeline">Phase 5, 5.3–5.4</a>):
+store data is needed in EX (load → store stalls one cycle); the FPU
+blocks EX for its latency.</p>
+<p>Where the MIPS32 manual leaves a result <strong>UNPREDICTABLE</strong>, eMIPS picks
+one and documents it — for example, division by zero gives HI = LO =
+<code>0xffffffff</code> (pre-R6) or 0 (R6), and a branch in a delay slot takes the
+inner branch's target.  The full list is <code>emips.sim.DEVIATIONS</code>:</p>
+<pre><code class="language-text">python3 -c &quot;from emips.sim import DEVIATIONS; print(*DEVIATIONS.items(), sep='\n')&quot;
+</code></pre>
+<h2 id="69-frequently-asked-questions">6.9 Frequently asked questions</h2>
+<p><strong>My program works in MARS but not in eMIPS.</strong>  See <a href="02-writing-programs.html#215-differences-from-mars-and-spim">Phase 2,
+2.15</a>: most
+often an immediate operand where eMIPS (like the real assembler) wants a
+register (<code>blt $t0, 5, L</code>), a MARS-only pseudo-instruction (<code>rem</code>, <code>l.s</code>),
+or code that relies on exceptions being ignored.</p>
+<p><strong>Why is there a <code>nop</code> after every branch in the Disassembly?</strong>  The
+branch delay slot: the instruction after a branch always executes on
+MIPS; the assembler puts a <code>nop</code> there for you (<code>.set reorder</code>).  Write
+<code>.set noreorder</code> to fill it yourself.</p>
+<p><strong>Why does <code>li $t0, 0x12345678</code> take two steps?</strong>  It is two
+instructions (<code>lui</code> + <code>ori</code>); 32-bit constants do not fit in one.</p>
+<p><strong>Why does <code>$t0</code> hold <code>0x10010000</code> after <code>la $t0, nums</code>?</strong>  That is the
+address of <code>nums</code> — <code>.data</code> starts at <code>0x10010000</code>.  <code>lw $t0, nums</code>
+loads the <em>value</em> stored there.</p>
+<p><strong>The register I changed in the Registers pane...</strong>  The views are read
+only — change values with instructions.</p>
+<p><strong>Step Back is slow.</strong>  It replays the program from the start; in long
+programs set a breakpoint and run instead.</p>
+<p><strong>The CPI of my program is above 2 although there are few stalls.</strong>
+Short programs are dominated by filling and draining the pipeline
+(<a href="05-understanding.html#56-reading-the-cpi">Phase 5, 5.6</a>).</p>
+<p><strong>My handler at <code>0xbfc00380</code> (reset state) returns to address 0.</strong>
+While Status.ERL = 1 (after reset), <code>eret</code> returns to <strong>ErrorEPC</strong>, not
+EPC, and clears ERL.  Boot code clears ERL first (<code>mfc0</code>, clear bit 2,
+<code>mtc0</code>) — and, like real boot code, runs from kseg0 / kseg1: clearing
+ERL moves kuseg up by 1 GB (the fixed mapping), so a program loaded in
+kuseg while ERL = 1 is no longer at its addresses afterwards.</p>
+<p><strong>With caches on, kseg1 shows an old value.</strong>  The store went through
+kseg0 into the data cache (write-back); memory is updated when the line
+is written back (<code>cache 0x19</code>, or when it is replaced).  This is what a
+real MIPS does — devices and boot code read memory, not the cache.</p>
+<p><strong><code>syscall</code> prints nothing.</strong>  Check <code>$v0</code> (the service number) and the
+argument register; with <em>System call services</em> off, <code>syscall</code> takes an
+exception instead.</p>
+<p><strong>Can I use eMIPS for MIPS64?</strong>  No — MIPS32 only (R1–R6).  The
+assembler does not know MIPS64 instructions such as <code>daddu</code>, and as
+machine code they are reserved instructions.</p>
+<p><strong>Where are my settings stored?</strong>  <code>~/.config/eMIPS/eMIPS.ini</code> (Linux;
+the equivalent per-user folder elsewhere).  Delete it to start fresh.</p>
+<h2 id="610-for-teachers">6.10 For teachers</h2>
+<p><strong>Worksheets as debugger scripts.</strong>  A file of debugger commands
+(<code>-x</code>) reproduces a session exactly — breakpoints, register values,
+pipeline charts — so a worksheet can be checked, or handed out with its
+expected output (<a href="04-command-line.html#49-scripts">Phase 4, 4.9</a>):</p>
+<pre><code class="language-text">python3 -m emips debug lab.asm -x worksheet.cmd &gt; expected.txt
+</code></pre>
+<p><strong>Checking students' programs.</strong>  <code>run</code> prints the program's output
+first, then the registers; feed the input from a file and compare:</p>
+<pre><code class="language-text">python3 -m emips run student.asm --steps 1000000 &lt; input.txt &gt; result.txt
+</code></pre>
+<p>Options worth fixing for an exercise: <code>--strict</code> (no
+pseudo-instructions), <code>--noreorder</code> (they must fill delay slots),
+<code>--release R6</code>, <code>--boot user</code> (operating-system exercises),
+<code>--exceptions stop</code>, <code>--no-syscalls</code> (write the handler yourself).</p>
+<p><strong>In the classroom.</strong>  Pipeline mode with the speed slider at its
+slowest, the Datapath and the Pipeline chart side by side (drag the
+Pipeline tab next to the Datapath), and the <strong>forwarding</strong> box toggled
+live show hazards better than any slide.  The <strong>dark</strong> or <strong>light</strong>
+theme (Configure → Theme) suits the projector; zoom the editor with
+Ctrl++.</p>
+<p><strong>Adding examples.</strong>  Put an <code>.asm</code> file in <code>emips/gui/examples/</code> and
+add it to <code>EXAMPLES</code> in <code>emips/gui/examples/__init__.py</code> with its
+expected output: it appears in File → Examples.</p>
+<p><strong>Translating the interface.</strong>  <code>python3 tools/extract_gui_strings.py ro</code>
+creates <code>emips/gui/translations/emips_ro.ts</code>; fill it with Qt Linguist
+(or any text editor) — Configure → Language then offers it.</p>
+<h2 id="611-glossary">6.11 Glossary</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALU</td>
+<td>arithmetic-logic unit: adds, compares, shifts ...</td>
+</tr>
+<tr>
+<td>big- / little-endian</td>
+<td>the most / least significant byte of a word at the lowest address</td>
+</tr>
+<tr>
+<td>bubble</td>
+<td>an empty slot in the pipeline, inserted by a stall</td>
+</tr>
+<tr>
+<td>compulsory / capacity / conflict miss</td>
+<td>the 3 C's: the first access to a line / the program needs more lines than the cache holds / too many lines want one set (<a href="05-understanding.html#watching-the-caches">Phase 5</a>)</td>
+</tr>
+<tr>
+<td>index / offset / tag</td>
+<td>the address fields a cache uses: the set, the byte in the line, the rest of the physical address stored with the line</td>
+</tr>
+<tr>
+<td>cache</td>
+<td>a small fast memory holding copies of memory lines; set, way, tag, line: <a href="05-understanding.html#caches">Phase 5, 5.8</a></td>
+</tr>
+<tr>
+<td>dirty line</td>
+<td>a cached line changed by stores and not yet written back to memory</td>
+</tr>
+<tr>
+<td>CP0</td>
+<td>coprocessor 0: the system control registers (Status, Cause, EPC ...)</td>
+</tr>
+<tr>
+<td>CP1</td>
+<td>coprocessor 1: the floating-point unit</td>
+</tr>
+<tr>
+<td>CPI</td>
+<td>cycles per instruction</td>
+</tr>
+<tr>
+<td>performance counter</td>
+<td>a CP0 register that counts events (cycles, instructions, cache misses, stall cycles ...) in the modes its control register selects</td>
+</tr>
+<tr>
+<td>delay slot</td>
+<td>the instruction after a branch / jump, always executed (pre-R6)</td>
+</tr>
+<tr>
+<td>EPC</td>
+<td>exception program counter: where <code>eret</code> returns</td>
+</tr>
+<tr>
+<td>exception</td>
+<td>a forced jump to the handler when an instruction cannot complete</td>
+</tr>
+<tr>
+<td>forwarding (bypassing)</td>
+<td>feeding a result to a later instruction before it is written back</td>
+</tr>
+<tr>
+<td>hazard</td>
+<td>a reason an instruction cannot proceed normally in the pipeline</td>
+</tr>
+<tr>
+<td>immediate</td>
+<td>a constant inside the instruction word</td>
+</tr>
+<tr>
+<td>kernel / user mode</td>
+<td>privileged / restricted execution</td>
+</tr>
+<tr>
+<td>MMIO</td>
+<td>memory-mapped I/O: devices read and written like memory</td>
+</tr>
+<tr>
+<td>MMU</td>
+<td>memory management unit: translates virtual addresses to physical ones (the fixed mapping MMU, or a TLB)</td>
+</tr>
+<tr>
+<td>TLB</td>
+<td>translation lookaside buffer: the table of page mappings a TLB-based MMU uses; refill, invalid, modified: its exceptions (<a href="05-understanding.html#the-tlb">Phase 5</a>)</td>
+</tr>
+<tr>
+<td>page / frame</td>
+<td>a block of virtual / physical memory (4 KB by default) that the TLB maps as a whole</td>
+</tr>
+<tr>
+<td>ASID</td>
+<td>address space identifier: which process a TLB entry belongs to (unless it is global)</td>
+</tr>
+<tr>
+<td>micro-TLB</td>
+<td>a tiny copy of recent translations next to the fetch unit (ITLB) or the load/store unit (DTLB); the main TLB behind them is the JTLB</td>
+</tr>
+<tr>
+<td>VPN2 / PFN</td>
+<td>virtual page number of a page pair (VA bits 31..13 for 4 KB pages), matched in the TLB / physical frame number in an EntryLo: the frame's address ÷ 4 KB</td>
+</tr>
+<tr>
+<td>refill handler</td>
+<td>the code at the TLB Refill vector (<code>0x80000000</code>) that loads the missing entry, usually from the page table (<a href="05-understanding.html#watching-the-tlb">Phase 5</a>)</td>
+</tr>
+<tr>
+<td>page table</td>
+<td>the operating system's table of every page's EntryLo; Context points into it after a TLB miss</td>
+</tr>
+<tr>
+<td>copy-on-write</td>
+<td>pages shared read-only until the first store, whose TLB Modified exception copies the frame (example <code>copy_on_write.asm</code>)</td>
+</tr>
+<tr>
+<td>BAT</td>
+<td>block address translation: base-and-bounds relocation of whole segments instead of pages</td>
+</tr>
+<tr>
+<td>FTLB / VTLB</td>
+<td>a set-associative TLB of one page size / the fully associative TLB beside it for any page size</td>
+</tr>
+<tr>
+<td>EVA</td>
+<td>enhanced virtual addressing: segmentation control plus kernel loads and stores with user rights</td>
+</tr>
+<tr>
+<td>page table walker</td>
+<td>hardware that refills the TLB from the page table in memory, without an exception</td>
+</tr>
+<tr>
+<td>physical / virtual address</td>
+<td>where a byte is in the RAM / the address a program uses</td>
+</tr>
+<tr>
+<td>pipeline register</td>
+<td>the latch between two stages (IF/ID, ID/EX, EX/MEM, MEM/WB)</td>
+</tr>
+<tr>
+<td>pseudo-instruction</td>
+<td>assembler shorthand expanded into real instructions</td>
+</tr>
+<tr>
+<td>release</td>
+<td>a version of the MIPS32 architecture (R1–R6)</td>
+</tr>
+<tr>
+<td>sign- / zero-extension</td>
+<td>widening a value by copying its sign bit / adding zeros</td>
+</tr>
+<tr>
+<td>stall</td>
+<td>holding an instruction back for a cycle</td>
+</tr>
+<tr>
+<td>syscall</td>
+<td>a request to the operating system (here: the simulated services)</td>
+</tr>
+<tr>
+<td>UNPREDICTABLE</td>
+<td>the manual leaves the result undefined; eMIPS documents its choice</td>
+</tr>
+<tr>
+<td>write-back / write-through</td>
+<td>a store changes only the cache (memory later) / the cache and memory</td>
+</tr>
+<tr>
+<td>write buffer</td>
+<td>the queue of stores between the core and memory; <code>sync</code> empties it</td>
+</tr>
+<tr>
+<td>L2 cache</td>
+<td>the second-level cache below the instruction and data caches</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
+</main>
+</body>
+</html>

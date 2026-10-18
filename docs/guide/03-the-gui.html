@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 3 — The GUI in depth · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html">1 Getting started</a></li>
+<li><a href="02-writing-programs.html">2 Writing programs</a></li>
+<li><a href="03-the-gui.html" aria-current="page">3 The GUI</a></li>
+<li><a href="04-command-line.html">4 The command line</a></li>
+<li><a href="05-understanding.html">5 Understanding</a></li>
+<li><a href="06-reference.html">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-3--the-gui-in-depth">Phase 3 — The GUI in depth</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="02-writing-programs.html">Phase 2 — Writing programs</a> · next: <a href="04-command-line.html">Phase 4 — The command line</a></nav>
+<p>This phase describes the window completely: every pane, every menu
+item, every setting.  Phase 1 showed the basics; come here when you want
+to know exactly what something does.</p>
+<ul>
+<li><a href="#31-the-window">3.1 The window</a></li>
+<li><a href="#32-the-editor">3.2 The editor</a></li>
+<li><a href="#33-running-a-program">3.3 Running a program</a></li>
+<li><a href="#34-the-datapath">3.4 The Datapath</a></li>
+<li><a href="#35-the-pipeline-chart">3.5 The Pipeline chart</a></li>
+<li><a href="#36-disassembly-and-instruction">3.6 Disassembly and Instruction</a></li>
+<li><a href="#37-registers">3.7 Registers</a></li>
+<li><a href="#38-memory">3.8 Memory</a></li>
+<li><a href="#39-console-and-messages">3.9 Console and Messages</a></li>
+<li><a href="#310-tools">3.10 Tools</a></li>
+<li><a href="#311-settings">3.11 Settings</a></li>
+<li><a href="#312-theme-and-language">3.12 Theme and language</a></li>
+<li><a href="#313-the-menus-item-by-item">3.13 The menus, item by item</a></li>
+</ul>
+<hr>
+<h2 id="31-the-window">3.1 The window</h2>
+<p><img alt="The parts of the window" src="img/03-window-areas.png"></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Part</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Menu bar</strong></td>
+<td>File, Edit, Run, View, Tools, Configure, Help (<a href="#313-the-menus-item-by-item">3.13</a>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Toolbar</strong></td>
+<td>Assemble, Reset, Step Back, Step, Run, Pause; the mode; forwarding; the core (with more than one); the run speed</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Editor</strong></td>
+<td>your program (<a href="#32-the-editor">3.2</a>)</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Legend</strong></td>
+<td>what the editor's colours mean</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Views</strong></td>
+<td>Datapath, Pipeline, Disassembly, Instruction — tabs of one area</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Registers</strong></td>
+<td>GPRs, PC / CP0, FPU (<a href="#37-registers">3.7</a>)</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Console, Memory, Caches, TLB, Counters, Trace, System, Messages</strong></td>
+<td>tabs of the bottom area</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Status bar</strong></td>
+<td>steps or cycles (and CPI), the PC, the release and byte order</td>
+</tr>
+</tbody>
+</table>
+<h3 id="moving-the-panes">Moving the panes</h3>
+<p>Everything except the editor is a <strong>pane</strong> with a title bar:</p>
+<ul>
+<li><strong>drag</strong> its title bar to another edge of the window, or onto another
+  pane to make them tabs of one area;</li>
+<li><strong>double-click</strong> its title bar (or press the small button at its right)
+  to <strong>detach</strong> it into a window of its own — useful on a second screen.
+  A detached pane is a normal window: title bar with minimize, maximize
+  and close, a frame to resize it, and a <strong>Dock</strong> button (or double-click
+  the bar under the title) that puts it back where it was;</li>
+<li><strong>close</strong> it with ✕, and bring it back from the <strong>View</strong> menu;</li>
+<li><strong>View → Reset Layout</strong> restores the arrangement shown above.</li>
+</ul>
+<p>The window remembers its size and layout, and all your options, between
+sessions (in <code>~/.config/eMIPS/eMIPS.ini</code> on Linux).</p>
+<h2 id="32-the-editor">3.2 The editor</h2>
+<p>The editor holds your assembly source.  Line numbers are on the left.</p>
+<p><strong>Line colours</strong> (explained by the legend under the editor):</p>
+<table>
+<thead>
+<tr>
+<th>Colour</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>amber</td>
+<td>instruction mode: the <strong>next instruction to execute</strong> (not executed yet)</td>
+</tr>
+<tr>
+<td>blue / green / orange / purple / grey</td>
+<td>pipeline mode: the instruction in <strong>IF / ID / EX / MEM / WB</strong> in the last cycle</td>
+</tr>
+<tr>
+<td>red</td>
+<td>the line of an <strong>assembly error</strong></td>
+</tr>
+<tr>
+<td>red dot in the margin</td>
+<td>a <strong>breakpoint</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Breakpoints</strong>: click a line number, or press <strong>F9</strong> on the line the
+cursor is on.  <strong>Edit → Clear All Breakpoints</strong> removes them all.</p>
+<p><strong>Editing helpers</strong> (Edit menu):</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Find, Replace (a bar opens under the editor; Enter = next, Esc closes)</td>
+<td>Ctrl+F, Ctrl+H</td>
+</tr>
+<tr>
+<td>Find next / previous</td>
+<td>F3, Shift+F3</td>
+</tr>
+<tr>
+<td>Go to line</td>
+<td>Ctrl+G</td>
+</tr>
+<tr>
+<td>Comment / uncomment the selected lines (<code>#</code>)</td>
+<td>Ctrl+/</td>
+</tr>
+<tr>
+<td>Indent / unindent the selected lines</td>
+<td>Ctrl+], Ctrl+[</td>
+</tr>
+<tr>
+<td>Larger / smaller / normal text</td>
+<td>Ctrl++, Ctrl+−, Ctrl+0</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Find and replace" src="img/03-editor-find.png"></p>
+<p>The window title shows the file name, with <code>*</code> when there are unsaved
+changes; New, Open, Examples and Quit ask whether to save them.</p>
+<p><strong>Intel HEX files</strong> open as a <strong>read-only listing</strong> (address, word,
+instruction, then the data) — see <a href="02-writing-programs.html#216-intel-hex-files">Phase 2, 2.16</a>.
+You can set breakpoints and run to the cursor on its lines like on
+source.  Changing the release or byte order re-decodes it.</p>
+<p><img alt="An Intel HEX image" src="img/03-hex-listing.png"></p>
+<h2 id="33-running-a-program">3.3 Running a program</h2>
+<table>
+<thead>
+<tr>
+<th>Button</th>
+<th>Key</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Assemble</strong></td>
+<td>Ctrl+B</td>
+<td>assemble the editor text (or reload the HEX image) and restart</td>
+</tr>
+<tr>
+<td><strong>Reset</strong></td>
+<td>Ctrl+R</td>
+<td>restart the program from the beginning (breakpoints and given input are kept)</td>
+</tr>
+<tr>
+<td><strong>Step Back ◀</strong></td>
+<td>Shift+F10</td>
+<td>undo the last step</td>
+</tr>
+<tr>
+<td><strong>Step ▶</strong></td>
+<td>F10</td>
+<td>one instruction — or one clock cycle in pipeline mode</td>
+</tr>
+<tr>
+<td><strong>Run ▶▶</strong></td>
+<td>F5</td>
+<td>run until a breakpoint, the end, an error or an input request</td>
+</tr>
+<tr>
+<td><strong>Pause ❚❚</strong></td>
+<td>F6</td>
+<td>stop running</td>
+</tr>
+<tr>
+<td>Run → Run to Cursor</td>
+<td>Ctrl+F10</td>
+<td>run until the line the cursor is on</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Mode</strong> (toolbar list, or Run → Mode):</p>
+<ul>
+<li><strong>Instruction</strong> — each step executes one whole instruction; the views
+  show that instruction.</li>
+<li><strong>5-stage pipeline</strong> — each step is one <strong>clock cycle</strong>; five
+  instructions are in flight, one per stage.  Changing the mode restarts
+  the program.</li>
+</ul>
+<p><strong>Forwarding</strong> (toolbar check box, or Run → Forwarding): with it off, the
+pipeline has no bypass paths and every dependent instruction waits until
+its operand has been written back.</p>
+<p><strong>Speed</strong> (the slider), from slow to fast:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Position</th>
+<th>Runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td>one step every 0.6 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td>one step every 0.25 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>one step every 0.08 s (the default)</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>about 330 steps per second</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>about 20 000 steps per second (views updated when it stops)</td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td>as fast as possible (views updated when it stops)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Step back</strong> works by running the program again from the start up to
+the previous step — exactly, because the simulation is deterministic and
+the console input you gave is fed again in the same order.  In a long
+program this takes a moment.</p>
+<p><strong>Assembling automatically</strong>: if you edit the source and press Step or
+Run, the program is assembled again first (and therefore restarts); the
+status bar says so.  Settings → Assembler can turn this off.</p>
+<p><strong>Input</strong>: when the program reads (<code>read_int</code> ...), running stops and the
+Console's input line turns amber: type the value and press Enter, then
+Step or Run again (<a href="#39-console-and-messages">3.9</a>).</p>
+<p><strong>When it stops</strong>, the status bar says why: <em>breakpoint</em>, <em>reached the
+cursor line</em>, <em>the program has ended</em>, <em>step limit reached</em> or an error,
+which also goes to the Messages pane — for example an exception with no
+handler is explained there (<a href="02-writing-programs.html#211-exceptions-and-exception-handlers">Phase 2, 2.11</a>).</p>
+<h2 id="34-the-datapath">3.4 The Datapath</h2>
+<p>The Datapath draws the classic 5-stage MIPS pipeline (Patterson &amp;
+Hennessy).  The stages are the coloured columns, separated by the grey
+<strong>pipeline registers</strong> (IF/ID, ID/EX, EX/MEM, MEM/WB) that hold
+everything the next stage needs.  Above each column: the stage name and
+the instruction in it.</p>
+<p><img alt="The datapath, parts numbered" src="img/03-datapath-parts.png"></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Part</th>
+<th>Stage</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>PC mux</strong> (M)</td>
+<td>IF</td>
+<td>chooses the next PC: PC + 4, or the branch / jump target decided in ID</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>PC</strong></td>
+<td>IF</td>
+<td>the address of the instruction being fetched (value below it)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>+4</strong></td>
+<td>IF</td>
+<td>PC + 4, the address of the next instruction</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Instruction memory</strong></td>
+<td>IF</td>
+<td>reads the instruction word at the PC (value below it)</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Control</strong></td>
+<td>ID</td>
+<td>decodes the opcode into the control signals, shown under it: RegDst, ALUSrc, MemtoReg, RegWrite, MemRead, MemWrite, Branch, Jump</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Registers</strong></td>
+<td>ID / WB</td>
+<td>the register file: reads <code>rs</code> and <code>rt</code> in ID; written by WB (first half of the cycle, so ID reads the new value in the same cycle)</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Sign-extend</strong></td>
+<td>ID</td>
+<td>the 16-bit immediate made 32 bits (value shown as <code>imm</code>)</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Branch target</strong></td>
+<td>ID</td>
+<td>PC + 4 + offset × 4</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>=</strong></td>
+<td>ID</td>
+<td>the branch comparator: branches are decided in ID</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>Hazard detection</strong></td>
+<td>ID</td>
+<td>red when it <strong>stalls</strong> ID (a bubble goes into EX)</td>
+</tr>
+<tr>
+<td>11</td>
+<td><strong>Forwarding muxes A, B</strong></td>
+<td>EX</td>
+<td>each ALU operand comes from the register, or is <strong>forwarded</strong> from EX/MEM or MEM/WB</td>
+</tr>
+<tr>
+<td>12</td>
+<td><strong>Src</strong> (ALUSrc)</td>
+<td>EX</td>
+<td>operand B is the register or the immediate</td>
+</tr>
+<tr>
+<td>13</td>
+<td><strong>ALU</strong></td>
+<td>EX</td>
+<td>the operation is written above it (<code>a + b</code>, <code>a \| b</code> ...), the result at its right</td>
+</tr>
+<tr>
+<td>14</td>
+<td><strong>Dst</strong> (RegDst)</td>
+<td>EX</td>
+<td>the destination register: <code>rt</code>, <code>rd</code> or <code>$ra</code> (value: <code>dest $t2</code>)</td>
+</tr>
+<tr>
+<td>15</td>
+<td><strong>Forwarding unit</strong></td>
+<td>EX</td>
+<td>red when it forwards an operand</td>
+</tr>
+<tr>
+<td>16</td>
+<td><strong>Data memory</strong></td>
+<td>MEM</td>
+<td>loads read and stores write at the ALU's address (<code>read</code> / <code>write</code> values)</td>
+</tr>
+<tr>
+<td>17</td>
+<td><strong>WB mux</strong> (MemtoReg)</td>
+<td>WB</td>
+<td>writes back the loaded data or the ALU result (value: <code>$t3 &lt;- 00000003</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>How to read it</strong></p>
+<ul>
+<li>A part or wire <strong>in colour</strong> is used by the instruction in that stage;
+  grey ones are not.</li>
+<li><strong>Red</strong> wires are forwarding paths; a red <strong>Hazard detection</strong> box is a
+  stall.</li>
+<li>The <strong>values</strong> on the wires are the real ones of this cycle: PC,
+  instruction word, register names, immediate, ALU operands (with where
+  each came from — <code>($t2)</code> the register file, <code>(fwd MEM/WB)</code> forwarded,
+  <code>(imm)</code> the immediate), ALU result, memory address and data, the
+  register written.</li>
+<li>Under the diagram: the <strong>cycle</strong> number, the <strong>stall</strong> reason, and
+  the cycle's events (forwarding, branch decisions, flushes).</li>
+<li><strong>Hover</strong> over any part for a short explanation; <strong>click</strong> it for a
+  window saying what the part is, how it works inside, and what it does
+  in this cycle — its inputs, what it chose or computed, and why (from
+  the trace of the cycle on the screen).  The window follows every step
+  until you close it; click another part to switch.</li>
+<li><strong>View → Datapath Part Numbers</strong> puts the numbers of the table above
+  on the drawing (the window's title carries the number too).</li>
+</ul>
+<p><img alt="Mux B (11) at cycle 9" src="img/03-datapath-part.png"></p>
+<p><strong>Control</strong> (5) and the <strong>ALU</strong> (13) open their logic as gates, drawn
+above the text:</p>
+<ul>
+<li><strong>Control</strong> — the main control unit as <strong>PLAs</strong>, as Patterson &amp;
+  Hennessy draw it: the <em>opcode decoder</em> (op5..op0 — each input as a
+  true and an inverted column, each product term a row ANDing the inputs
+  with a dot, the OR plane ORing terms into the control signals) and,
+  for an opcode whose instructions differ (SPECIAL, REGIMM, SPECIAL2 /
+  3, COP0 / 1 …), the <em>secondary decoder</em> its escape line enables, on
+  the field that tells them apart (funct, rt, rs; Release 6's compact
+  branches by comparators: rs = 0, rt = 0, rs = rt, rs &lt; rt).  Lit lines
+  carry a 1 — the opcode's bits, the product term that matches, the
+  signals it makes.</li>
+<li><strong>ALU</strong> — the <em>ALU control</em> PLA (ALUOp from the main control + funct →
+  Ainvert, Bnegate, Operation, Unsigned and the shifter's lines) and one
+  <em>ALU bit slice</em> in gate symbols: the Ainvert / Bnegate muxes, the AND,
+  OR and XOR gates, the full adder with its carries, the result mux
+  (0 AND, 1 OR, 2 sum, 3 Less, 4 XOR, 5 the shifter) and, on bit 31,
+  the Overflow and Set logic.  Pick the bit with <strong>ALU bit slice</strong>.  Under
+  them, every row of 32 bits (a, b, a', b', AND, OR, XOR, the carries,
+  SUM, Less, the result — the one the mux passes highlighted), Zero,
+  Overflow and Set, and the barrel shifter's five stages for a shift.</li>
+</ul>
+<p>The logic covers every MIPS32 instruction of the release: real MIPS
+decoders are not published, so eMIPS generates these PLAs from its own
+decode (minimized; a test checks them against every instruction) —
+with a 4-bit ALUOp, since the textbook's 2 bits name only add, subtract
+and "look at funct".  The gate values are worked out from the operands
+the trace recorded and always give the result it recorded.  (With the
+24K model, RF shows the main control and EX the ALU.)</p>
+<p><img alt="The main control: the opcode decoder for addiu" src="img/03-datapath-control.png"></p>
+<p><img alt="The ALU control for addu" src="img/03-datapath-alu-control.png"></p>
+<p><img alt="Inside the ALU: addu, bit 0" src="img/03-datapath-alu.png"></p>
+<p>At cycle 9 of the sum example, <code>addu $t2, $t2, $t3</code> in EX gets <code>$t3</code>
+<strong>forwarded from MEM/WB</strong> — the <code>lw</code> in WB has just loaded it:</p>
+<p><img alt="Forwarding at cycle 9" src="img/03-datapath-forwarding.png"></p>
+<p>Two cycles later <code>bnez</code> (that is <code>bne $t1, $zero, loop</code>) is in ID and
+needs <code>$t1</code>, which the <code>addiu</code> in EX is still computing: <strong>Hazard
+detection</strong> stalls ID for a cycle (<em>STALL — branch: branch needs $t1
+from addiu $t1, $t1, -1 (in EX)</em>):</p>
+<p><img alt="A branch stall at cycle 11" src="img/03-datapath-stall.png"></p>
+<p>In <strong>instruction mode</strong> there is no overlap: the one instruction just
+executed is drawn in all five stages (<em>executed: ...</em> under the diagram).</p>
+<p><strong>With caches</strong> (Settings → Caches) the two memories become the
+<strong>I-cache</strong> and the <strong>D-cache</strong> (named with their shape, <code>32K:4:32</code>),
+and the level below them — the L2, or memory — is drawn under each.
+Under a cache: what the access did — <code>I$ hit: set 0 way 3</code>, or in red
+<code>D$ MISS (compulsory)</code>, the set and the way the line went to, and while
+the line is coming <code>waiting: 53 more cycle(s)</code>; under the L2: whether it
+had the line.  A miss lights the cache and the refill wire red:</p>
+<p><img alt="A data-cache miss waiting in MEM" src="img/03-datapath-caches.png"></p>
+<p>The <code>lw</code> in MEM missed (the first access to the array), the L2 missed
+too, and the pipeline waits for memory: <em>STALL — memory: lw $t3, 0($t0)
+waits in MEM</em>.  The cost of a miss is explained in
+<a href="05-understanding.html#what-a-miss-costs">Phase 5</a>.</p>
+<p><strong>With a TLB</strong> (Settings → Processor → MMU) the first line under each
+memory says what its micro-TLB did: <code>ITLB hit</code>, or in red <code>DTLB MISS:
+TLB entry 13</code> (the main TLB had the translation: 3 cycles in the
+pipeline) and <code>TLB Refill</code> under it when no entry had it.  The
+<a href="#tlb">TLB pane</a> shows the entries.</p>
+<p>The model's details — what stalls how long, why branches are decided in
+ID, how multiply and divide occupy the pipeline — are in Phase 5.</p>
+<h3 id="the-mips-24k">The MIPS 24K</h3>
+<p>With the <strong>24K</strong> pipeline model (Settings → Processor → Pipeline model)
+the pane draws the 24K's nine stages instead:</p>
+<p><img alt="The 24K pipeline: a misprediction redirects the fetch" src="img/03-datapath-24k.png"></p>
+<ul>
+<li>The top row: IF, IS, IT (the fetch unit, two instructions a cycle),
+  RF, AG, EX, MS, ER, WB, each with its instruction, filled in the colour
+  of the textbook stage doing the same work.  Red is the stage where the
+  pipeline is held, with the reason (the fetch unit had nothing, a
+  missing load, a busy divider ...).  The <strong>redirect</strong> wire from EX back
+  to IF lights up when the fetch restarts: a misprediction (here the
+  <code>bne</code> was predicted not taken), an exception, <code>eret</code>.</li>
+<li>Below: the <strong>instruction buffer</strong> (what the fetch unit has fetched
+  ahead), <strong>branch prediction</strong> (the last prediction and resolution,
+  the branch history table entries used, the return stack), the
+  <strong>units</strong> (the multiply / divide unit, the FPU, the load / store unit
+  with its load data queue and fill-store buffer) and the <strong>CP0 writes
+  on their way</strong> — the hazards an instruction would still see.</li>
+<li>At the bottom: the cycle, what the fetch unit is doing, the stall and
+  the cycle's events.</li>
+<li><strong>Click</strong> a stage or one of the four boxes below for what it does
+  inside and in this cycle (the same window as above); with View →
+  Datapath Part Numbers they are numbered 1-9 (IF … WB), 10 the
+  instruction buffer, 11 branch prediction, 12 the units, 13 the CP0
+  hazards.</li>
+</ul>
+<p>The model is explained in <a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>.</p>
+<h2 id="35-the-pipeline-chart">3.5 The Pipeline chart</h2>
+<p>One row per instruction, one column per clock cycle; each cell is the
+stage the instruction was in.  <code>--</code> (red) is a cycle <strong>stalled</strong> in ID;
+<code>IF IF</code> is a fetch repeated because of a stall; <code>EX EX EX</code> is an
+instruction holding EX (a multiplication).  The last 24 cycles are shown.</p>
+<p><img alt="The pipeline chart of the hazards example" src="img/03-pipeline-chart-full.png"></p>
+<p>The chart exists in pipeline mode only.  The status bar shows the CPI.
+With the 24K model the stages are IF IS IT RF AG EX MS ER WB, every
+instruction in the fetch unit has its row, and <code>xx</code> (red) marks an
+instruction killed (fetched on a wrong path, or behind an exception).</p>
+<h2 id="36-disassembly-and-instruction">3.6 Disassembly and Instruction</h2>
+<p><strong>Disassembly</strong> lists the machine code of the program: address, word,
+instruction, source line.  It shows what pseudo-instructions became, and
+the <code>nop</code>s the assembler put in delay slots.  The current instruction
+(or, in pipeline mode, each stage's) is coloured; breakpoints are red.</p>
+<p><img alt="Disassembly" src="img/03-disassembly.png"></p>
+<p><strong>Instruction</strong> takes the last executed instruction apart: its address
+and text, its format (R, I, J ...) and word, a <strong>bit-field table</strong> (name,
+bits, value and meaning of each field), then what the <strong>ALU</strong> did (the
+operation, each operand and where it came from, the result), the
+<strong>address</strong> it accessed (base + offset, segment, privilege, alignment,
+and the <strong>physical</strong> address the MMU made of it, with the rule and the
+cacheability attribute),
+the <strong>branch</strong> decision, and its <strong>effects</strong> (memory read / written,
+registers changed).  An exception is shown in red.  See the picture in
+<a href="01-getting-started.html#15-a-first-program-in-the-window">Phase 1</a>.</p>
+<h3 id="the-source-pane-c-programs">The Source pane (C programs)</h3>
+<p>An ELF executable built from C (<a href="02-writing-programs.html#218-programs-in-c">Phase 2,
+2.18</a>) opens as a read-only
+listing — the disassembly, with each C line above its instructions —
+and the <strong>Source</strong> pane shows the C file itself, at the line the
+program is on (it follows the program from file to file).  Click its
+gutter to set a breakpoint on a C line.  Below, the <strong>call stack</strong>: the
+calls not returned yet, innermost first (click one to see its line).
+<strong>Step Line</strong> (F11) runs to the next C line, into calls; <strong>Next Line</strong>
+(Ctrl+F11) over calls; <strong>Finish</strong> (Shift+F11) until the function
+returns.  For an assembly program the editor is the source: the pane
+shows the call stack, and Step Line steps a source line (a
+pseudo-instruction's several instructions at once).</p>
+<p><img alt="The Source pane: c_recursion.c on return 1;, six fact() frames deep" src="img/03-source.png"></p>
+<h2 id="37-registers">3.7 Registers</h2>
+<p>Five tabs:</p>
+<ul>
+<li><strong>GPRs</strong> — the 32 registers in hex and decimal; those changed by the
+  last step are <strong>highlighted</strong>.</li>
+<li><strong>PC / CP0</strong> — <code>pc</code>, <code>hi</code>, <code>lo</code>, and the coprocessor-0 registers
+  <strong>Status</strong>, <strong>Cause</strong>, <strong>EPC</strong>, <strong>BadVAddr</strong>, <strong>Count</strong>, <strong>Compare</strong>,
+  <strong>IntCtl</strong>, <strong>SRSCtl</strong>, <strong>SRSMap</strong>, the MMU's registers, the performance counters <strong>PerfCtl0/1</strong> and
+  <strong>PerfCnt0/1</strong> (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>),
+  and the FPU's <strong>FCSR</strong>.</li>
+<li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
+  double.</li>
+<li><strong>Interrupts</strong> — the interrupt mode (compatibility, vectored, EIC),
+  the vector spacing, what is pending and enabled (or, in EIC mode, the
+  RIPL the controller requests, Status.IPL and the RIPL / shadow set
+  taken last), the vector the next interrupt goes to; and with more than
+  one GPR set (Settings → Processor → GPR shadow sets) the sets: pick
+  one (the current and the previous are marked) to see its 32
+  registers, with SRSMap's vector → set mapping
+  (<a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5</a>).
+  The debugger's <code>srs</code> prints the same.</li>
+<li><strong>Debug</strong> — EJTAG: Debug Mode or not, what entered it (SDBBP, single
+  step, a debug interrupt, an exception in Debug Mode), the Debug
+  register's single step / LSNM / CountDM / IEXI, DEPC, DESAVE, the DCR
+  and the debug vector, the hardware breakpoints and watch registers set
+  (the debugger's <code>ejtag ib / db / watch</code> sets them), the TAP and the
+  probe; the boxes <em>EJTAG probe connected</em> and <em>Debug handler from the
+  probe</em> connect a probe (ProbEn / ProbTrap; the program restarts —
+  <a href="05-understanding.html#the-tap-and-a-probe">Phase 5</a>); the <strong>Debug Interrupt (DINT)</strong> button requests a
+  debug interrupt as a probe does
+  (<a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>).  The debugger's
+  <code>ejtag</code> prints the same.  In Debug Mode the PC / CP0 tab adds Debug,
+  DEPC and DESAVE, and the status bar says <em>Debug Mode</em>.</li>
+</ul>
+<p><strong>View → Register Names</strong> switches between <code>$t0</code> and <code>$8</code> everywhere.</p>
+<table>
+<thead>
+<tr>
+<th>PC / CP0</th>
+<th>FPU</th>
+<th>Interrupts</th>
+<th>Debug</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><img alt="PC and CP0" src="img/03-registers-cp0.png"></td>
+<td><img alt="FPU registers" src="img/03-registers-fpu.png"></td>
+<td><img alt="Interrupts: the timer handler in shadow set 2" src="img/03-registers-interrupts.png"></td>
+<td><img alt="Debug: the monitor after a single step" src="img/03-registers-debug.png"></td>
+</tr>
+</tbody>
+</table>
+<h2 id="38-memory">3.8 Memory</h2>
+<p>A hex dump: each row is an address and four 32-bit words, then the same
+16 bytes as text.</p>
+<ul>
+<li>Choose a region: <strong>.data</strong> (<code>0x10010000</code>), <strong>.text</strong> (<code>0x00400000</code>),
+  <strong>stack</strong> (from just below <code>$sp</code>), <strong>MMIO</strong> (the four console device
+  registers at <code>0xffff0000</code>);</li>
+<li>or type an <strong>address</strong> (e.g. <code>0x10010010</code>) and press Enter; clear the
+  box to go back to the region;</li>
+<li>tick <strong>physical</strong> to see the RAM by physical address — the region
+  jumps to where the MMU puts it (<code>.data</code> → <code>0x50010000</code>), and a typed
+  address is then physical
+  (<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>).</li>
+</ul>
+<p><img alt="Memory" src="img/03-memory.png"></p>
+<p>Words are shown as the processor reads them in the current byte order.</p>
+<h3 id="caches">Caches</h3>
+<p>The <strong>Caches</strong> pane (a tab of the bottom area) shows one cache at a
+time — pick it in the box: I-cache, D-cache, L2, L3, whichever the
+machine has (Settings → Caches).</p>
+<p><img alt="The Caches pane" src="img/03-caches.png"></p>
+<ul>
+<li>At the top: the cache's shape and the <strong>last access</strong> to it, with its
+  address cut into <strong>tag | index | offset</strong> (the bits, the value, and
+  whether they come from the virtual or the physical address).</li>
+<li>The table: one row per set, one column per way.  A cell is the line's
+  <strong>tag</strong> in hex, its age <code>a0</code> … (<code>a0</code> = used most recently, the oldest
+  is replaced next), <code>D</code> dirty, <code>L</code> locked; <code>-</code> is an invalid line.  The
+  line of the last access is <strong>green</strong> for a hit, <strong>red</strong> for a miss
+  (the line just filled).  Hover a cell for its address and its data.</li>
+<li>It lists the sets holding lines (and the one last used); <strong>all sets</strong>
+  lists every set (caches up to 1024 sets).</li>
+<li>At the bottom: the <strong>statistics</strong> — accesses, hits and misses per kind
+  of access (load, store, fetch, pref; read and write for the L2), the
+  misses by their cause (<strong>compulsory, capacity, conflict</strong>,
+  invalidated), evictions and write-backs, and with the D-cache the write
+  buffer's counters.  <strong>Reset statistics</strong> starts them again (the
+  contents stay).</li>
+</ul>
+<p>Looking never changes the cache: no hit is counted and no LRU bit moves
+because the pane shows them.  The 3 C's are explained in
+<a href="05-understanding.html#watching-the-caches">Phase 5</a>.</p>
+<h3 id="tlb">TLB</h3>
+<p>The <strong>TLB</strong> pane (a tab of the bottom area) shows the MMU's entries when
+the machine has a TLB or a BAT (Settings → Processor → MMU; the two TLB
+examples switch to one by themselves).</p>
+<p><img alt="The TLB pane" src="img/03-tlb.png"></p>
+<ul>
+<li>At the top: the <strong>last translation</strong> — the access, the micro-TLB hit
+  or miss, the entry, PFN and physical address (or the TLB exception) —
+  with its virtual address cut into <strong>VPN2 | even/odd | offset</strong>, and
+  what <code>tlbwr</code>, <code>tlbwi</code>, <code>tlbp</code>, <code>tlbr</code> or <code>tlbinv</code> did in that step.</li>
+<li>The entries: VA range of the page pair, owner (<code>G</code> global or the
+  ASID), page size, and the even / odd page (PFN, cacheability C, flags
+  V D RI XI).  <code>W</code> marks the wired entries, <code>R</code> the one Random points at
+  (<code>tlbwr</code> writes it next).  The entry of the last translation is
+  <strong>green</strong> when it translated, <strong>red</strong> when it raised an exception;
+  its half used is in bold.  It lists the entries in use (and the wired
+  ones and Random's); <strong>all entries</strong> lists every one, also those never
+  written or invalidated.  Hover an entry number for the details.  With
+  an FTLB, <code>V5</code> is VTLB entry 5 and <code>F9.3</code> FTLB set 9, way 3.</li>
+<li>Below: the <strong>ITLB</strong> and <strong>DTLB</strong> slots, the copies of recent
+  translations (<code>*</code> = replaced at the next miss), and the statistics
+  (TLB lookups, hits, misses, exceptions, page walks) with the registers
+  a refill handler uses.  <strong>Reset statistics</strong> starts the counters
+  again.</li>
+</ul>
+<p>With the BAT MMU the table shows its six base-and-bounds entries.  As
+with the caches, looking changes nothing: no micro-TLB is refilled and
+nothing is counted because the pane shows it
+(<a href="05-understanding.html#watching-the-tlb">Phase 5, Watching the TLB</a>).</p>
+<h3 id="counters">Counters</h3>
+<p>The <strong>Counters</strong> pane (a tab of the bottom area) sets and shows the two
+performance counters (CP0 register 25).</p>
+<p><img alt="The Counters pane" src="img/03-counters.png"></p>
+<p>For each counter: the <strong>event</strong> it counts (the MIPS 24K's lists; events
+marked <em>24K model</em> count in that pipeline model only), the modes it
+counts in (<strong>U</strong> user, <strong>S</strong> supervisor — with a TLB —, <strong>K</strong> kernel,
+<strong>EXL</strong> exception handlers; a new event starts with U and K), whether
+its overflow raises the counter interrupt, and the <strong>count</strong>.  Below:
+the ratio of the two counters (the CPI when they count cycles and
+instructions).  Setting a counter here does what a program does with
+<code>mtc0 $25</code>, and is kept across Reset and Step Back; a program that sets
+the counters itself wins
+(<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>).</p>
+<h3 id="trace">Trace</h3>
+<p>The <strong>Trace</strong> pane (a tab of the bottom area) is a trace probe on the
+selected core's TCB.</p>
+<p><img alt="The Trace pane" src="img/03-trace.png"></p>
+<p><strong>Trace</strong> turns MIPS Trace on (into the on-chip
+trace memory), <strong>Addresses</strong> / <strong>Data</strong> add the load and store
+addresses and data, <strong>Cycle-accurate</strong> the stall cycles, <strong>Trace-From</strong>
+stops when the memory is full (else it keeps the newest), <strong>All
+branches</strong> sends the PC of every branch, <strong>No overflow</strong> stalls the core
+rather than lose trace.  Below: the state of the TCB and the program
+flow regenerated from the trace words (the last 200 instructions; only
+while the pane is shown).  The settings are TAP scans, kept across Reset
+and Step Back (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>).</p>
+<h3 id="more-than-one-core-the-system-pane">More than one core: the System pane</h3>
+<p>With Settings → Processor → <strong>Cores</strong> above 1, the toolbar's <strong>core
+selector</strong> (with each core's power state) chooses the core every pane
+shows — registers, datapath, pipeline chart, caches, TLB, counters,
+memory as <em>that</em> core sees it.  In the editor's gutter <strong>C1</strong>, <strong>C2</strong> …
+mark the lines where the <em>other</em> cores are (their next instruction; the
+highlighted line is the selected core's):</p>
+<p><img alt="The editor with core 1's position" src="img/03-cores-editor.png"></p>
+<p>The <strong>System</strong> pane (a tab of the bottom area) shows the whole system
+(<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>):</p>
+<ul>
+<li><strong>Cores</strong> — each core's power state (the CPC's SEQSTATE, or waiting /
+  exited), PC and source line, mode and the interrupt pins asserted;
+  click a core to select it.</li>
+<li><strong>Coherence</strong> — every core's <code>GCR_CL_COHERENCE</code> (coherent mode, whose
+  interventions it hears), what the Coherence Manager did, and the line
+  the selected core's last data access used: its MESI state in every
+  core's data cache (Modified / Exclusive / Shared highlighted).</li>
+<li><strong>GIC</strong> — the enabled interrupt sources (trigger, pending, which pin
+  — or, for a core in EIC mode, which vector — of which cores); every
+  core's local interrupts (the GIC's count / compare, and the core's own
+  timer, performance counters and software interrupts, which the GIC
+  routes: pending, enabled, where they go); every core's pins (EIC mode:
+  the RIPL it is sent, with its shadow set) and COMPARE
+  (<a href="05-understanding.html#the-gic-as-an-external-interrupt-controller-eic-mode">The GIC as an External Interrupt Controller</a>).</li>
+<li><strong>Registers</strong> — the GCRs (global and each core's block), the CPC and
+  the GIC, as the cores read them.</li>
+</ul>
+<p><img alt="The System pane: the cores" src="img/03-system-cores.png"></p>
+<p><img alt="The System pane: coherence" src="img/03-system-coherence.png"></p>
+<p><img alt="The System pane: the GIC, core 0 in EIC mode (labs/eic.asm)" src="img/03-system-gic.png"></p>
+<h2 id="39-console-and-messages">3.9 Console and Messages</h2>
+<p>The <strong>Console</strong> shows what the program prints (system calls and the MMIO
+display), and has two input fields:</p>
+<ul>
+<li><strong>read_int / read_string ...</strong> — when the program waits for input this
+  field turns amber; type the value, press Enter, then Step or Run.</li>
+<li><strong>MMIO keyboard</strong> — the keys you type here (Enter sends them, and the
+  Enter key itself) go to the memory-mapped keyboard, one at a time.</li>
+</ul>
+<p><img alt="The console waiting for input" src="img/03-console-input.png"></p>
+<p><strong>Messages</strong> logs what happened: assemblies, loaded files, errors with
+their line number, breakpoints set or cleared, the input you gave.</p>
+<p><img alt="An assembly error" src="img/03-assembly-error.png"></p>
+<h2 id="310-tools">3.10 Tools</h2>
+<p>The <strong>Tools</strong> menu opens three panes (hidden until you use them; they
+follow the release, register names and strict mode in use):</p>
+<p><strong>Instruction Reference</strong> (Ctrl+Shift+I) — every instruction of the
+selected release.  Search by mnemonic, description or family ("branch",
+"float", "load word"); select one to see its syntax, its encoding with
+the fields named, the release that introduced (and removed) it, whether
+it has a delay slot or needs kernel mode, and how eMIPS simulates it.
+Double-click, or <em>Insert into editor</em>, puts its syntax at the cursor.</p>
+<p><img alt="The instruction reference" src="img/03-tool-reference.png"></p>
+<p><strong>Encoder / Decoder</strong> (Ctrl+Shift+E) — type a 32-bit word (<code>0x8fa80004</code>,
+binary or decimal) to see its fields and instruction, or an instruction
+(<code>sw $ra, 4($sp)</code>) to see its machine word(s).  A pseudo-instruction
+shows every word it becomes; <em>At address</em> sets the PC for branch and
+jump targets.</p>
+<p><img alt="The encoder" src="img/03-tool-encoder.png"></p>
+<p><strong>Number Converter</strong> (Ctrl+Shift+N) — type a number in any form (<code>42</code>,
+<code>-7</code>, <code>0x2a</code>, <code>0b101</code>, <code>'A'</code>, <code>1.5</code>, <code>inf</code>, <code>nan</code>) to see it in hex,
+unsigned, signed, binary, octal, as text, and as an IEEE-754 single and
+double with its sign / exponent / fraction fields, the formula, and the
+rounding error when the value cannot be stored exactly.</p>
+<p><img alt="The number converter" src="img/03-tool-converter.png"></p>
+<h3 id="the-user-guide">The user guide</h3>
+<p><strong>Help → User Guide</strong> (F1) opens this guide in a window of its own.</p>
+<p><img alt="The user guide in eMIPS" src="img/03-guide.png"></p>
+<p>Back / forward (Alt+←, Alt+→), <strong>Contents</strong>, and a find field (Ctrl+F, Enter
+for the next match) work as in a web browser.  Above every complete program of the
+guide, <strong>Open in the editor</strong> puts it in the editor and assembles it (a
+program for another release switches to it); a link to a lab program
+(<code>labs/….asm</code>, <code>.c</code>, <code>.elf</code>) opens that file.  The answers of
+the labs stay folded until you click <strong>▸ Answer</strong>.  <strong>Open in a web
+browser</strong> shows the same page in your browser — the guide is a set of HTML pages
+in <code>docs/guide/</code> (start at <code>index.html</code>), readable without eMIPS too.</p>
+<h2 id="311-settings">3.11 Settings</h2>
+<p><strong>Configure → Settings…</strong> (Ctrl+,) has seven tabs.  <em>OK</em> or <em>Apply</em> stores
+the values (they are remembered); <em>Restore Defaults</em> resets every tab.
+A change that affects how the program is assembled re-assembles it; any
+other change restarts it.</p>
+<p><strong>Processor</strong></p>
+<p><img alt="Settings: Processor" src="img/03-settings-processor.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Release</td>
+<td>MIPS32 R1, R2, R3, R5 (default) or R6 (<a href="02-writing-programs.html#214-mips32-releases-r1-to-r6">Phase 2, 2.14</a>)</td>
+</tr>
+<tr>
+<td>Byte order</td>
+<td>big-endian (default) or little-endian</td>
+</tr>
+<tr>
+<td>Pipeline model</td>
+<td>the textbook <strong>5-stage</strong> pipeline (default) or the <strong>MIPS 24K</strong>'s 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>); the Datapath pane, the chart and the other panes follow both</td>
+</tr>
+<tr>
+<td>Forwarding</td>
+<td>the pipeline's bypass paths (same as the toolbar box); the 5-stage model only — the 24K always has its bypasses</td>
+</tr>
+<tr>
+<td>Count timer increments</td>
+<td>every cycle, or every 2 cycles (default, like most MIPS cores)</td>
+</tr>
+<tr>
+<td>Cores</td>
+<td>1 (default) to 4: more than one is a multi-core system (one memory, the Coherence Manager, the Cluster Power Controller, <a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); the toolbar then has a <strong>core selector</strong> — the core the panes show, with its power state; every running core steps together.  The data caches are kept coherent: the Caches pane shows each line's MESI state (M / E / S), the last access what the Coherence Manager did (<a href="05-understanding.html#coherent-caches">Coherent caches</a>)</td>
+</tr>
+<tr>
+<td>GPR shadow sets</td>
+<td>1 to 16 (default 4, the most a 24K has): copies of the GPRs an exception or interrupt switches to (SRSCtl, SRSMap; Release 2+) — <a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5</a></td>
+</tr>
+<tr>
+<td>MMU</td>
+<td>the fixed mapping (default), BAT, the TLB of a MIPS 24K with 16, 32 or 64 entries, or the VTLB + FTLB of a P5600, also with segmentation control, EVA and the page table walker (<a href="05-understanding.html#the-tlb">Phase 5, The TLB</a>); the CP0 tab then lists the MMU's registers</td>
+</tr>
+<tr>
+<td>Pipeline latencies</td>
+<td>how many cycles MUL, MULT / MADD, DIV and the FPU operations take in the 5-stage pipeline (the 24K model has the latencies of its manual)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Assembler</strong></p>
+<p><img alt="Settings: Assembler" src="img/03-settings-assembler.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Allow pseudo-instructions</td>
+<td>on</td>
+<td>off = <strong>strict mode</strong>: only real machine instructions</td>
+</tr>
+<tr>
+<td>Fill branch delay slots with nop</td>
+<td>on</td>
+<td>the initial <code>.set reorder</code> / <code>.set noreorder</code></td>
+</tr>
+<tr>
+<td>Assemble automatically when the source changed</td>
+<td>on</td>
+<td>Step / Run assemble first</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Memory &amp; boot</strong> — the state the program starts in:</p>
+<p><img alt="Settings: Memory &amp; boot" src="img/03-settings-boot.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kernel mode, like MARS (default)</td>
+<td>kernel mode, FPU on, exceptions to the handler at <code>0x80000180</code>, <code>$sp</code> and <code>$gp</code> set</td>
+</tr>
+<tr>
+<td>User mode</td>
+<td>the same, but in user mode: privileged instructions and kernel addresses raise exceptions</td>
+</tr>
+<tr>
+<td>Hardware reset state</td>
+<td>as after a real reset: exceptions to <code>0xbfc00380</code>, FPU and interrupts off, Status.ERL = 1 (kuseg not mapped)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Caches</strong> — the caches and the write buffer (<a href="05-understanding.html#caches">Phase 5, 5.8</a>):</p>
+<p><img alt="Settings: Caches" src="img/03-settings-caches.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Instruction cache, Data cache</td>
+<td><em>none</em> (default), 8K, 16K, 32K or 64K (4-way, 32-byte lines, as a MIPS 24K), or type SIZE:WAYS:LINE (<code>16K:2:32</code>)</td>
+</tr>
+<tr>
+<td>L2 cache, L3 cache</td>
+<td><em>none</em> (default), 128K–1M (L2) / 1M, 2M or 4M:8:64 (L3), 8-way, 32-byte lines unless given, or SIZE:WAYS:LINE (at most 8192 sets per way); an L3 needs an L2</td>
+</tr>
+<tr>
+<td>Parity on the L1 cache arrays</td>
+<td>ErrCtl.PE can be set, and a corrupted line raises the Cache Error exception</td>
+</tr>
+<tr>
+<td>ECC on the L2 / L3</td>
+<td>ErrCtl.L2P can be set: 1-bit errors are corrected, 2-bit errors raise an imprecise Cache Error</td>
+</tr>
+<tr>
+<td>Write buffer</td>
+<td>4 × 32 bytes between the core and memory: write-through stores merge, uncached accelerated ones are gathered, <code>sync</code> empties it</td>
+</tr>
+<tr>
+<td>Contents after reset</td>
+<td>random, as on real chips (default), or invalid (Config7.HCI = 1); the kernel and user boot modes invalidate the caches anyway</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Memory timing</strong> — what a cache miss or a write costs in the 5-stage
+pipeline mode (<a href="05-understanding.html#what-a-miss-costs">Phase 5, 5.8</a>);
+without caches memory takes one cycle:</p>
+<p><img alt="Settings: Memory timing" src="img/03-settings-timing.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1 miss served by the L2 / L3 / memory</td>
+<td>cycles until the first doubleword of the line arrives (12 / 25 / 50; memory also for uncached reads)</td>
+</tr>
+<tr>
+<td>each further doubleword of a line</td>
+<td>1 cycle per doubleword on the 64-bit bus</td>
+</tr>
+<tr>
+<td>extra for an uncached read past an L2</td>
+<td>4 cycles</td>
+</tr>
+<tr>
+<td>the system taking one write</td>
+<td>10 cycles per write-buffer entry, or per store without a write buffer</td>
+</tr>
+<tr>
+<td>micro-TLB miss</td>
+<td>3 cycles to refill the ITLB / DTLB from the main TLB (with the TLB MMU, also without caches)</td>
+</tr>
+<tr>
+<td>coherent miss served by another core's cache</td>
+<td>14 cycles to the first doubleword of a line sent cache to cache (more than one core, <a href="05-understanding.html#coherent-caches">Coherent caches</a>)</td>
+</tr>
+<tr>
+<td>store to a Shared line</td>
+<td>8 cycles for the upgrade that invalidates the other copies</td>
+</tr>
+<tr>
+<td>coherent request: until the other cores see it</td>
+<td>4 cycles before a store waiting in the fill-store buffer is visible to the other cores (<a href="05-understanding.html#memory-ordering">Memory ordering</a>)</td>
+</tr>
+<tr>
+<td>Loads miss in the background</td>
+<td>off: a miss stops the pipeline (blocking); on: only an instruction that needs the loaded register waits (the 24K's hit under miss)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Exceptions &amp; I/O</strong></p>
+<p><img alt="Settings: Exceptions and I/O" src="img/03-settings-io.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Take it, like the hardware (default)</td>
+<td>CP0 records the exception and the CPU jumps to the handler</td>
+</tr>
+<tr>
+<td>Stop the simulation</td>
+<td>stop at the faulting instruction and show the exception — for debugging</td>
+</tr>
+<tr>
+<td>System call services</td>
+<td>on: the MARS / SPIM services; off: <code>syscall</code> raises the System Call exception</td>
+</tr>
+<tr>
+<td>MMIO delays</td>
+<td>cycles the display stays busy after a character, cycles between keys</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Run</strong></p>
+<p><img alt="Settings: Run" src="img/03-settings-run.png"></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Run stops after</td>
+<td>a step limit for Run (protects against endless loops; Run again continues); <em>no limit</em> by default</td>
+</tr>
+</tbody>
+</table>
+<h2 id="312-theme-and-language">3.12 Theme and language</h2>
+<p><strong>Configure → Theme</strong>: <strong>System</strong> (follows your desktop, also when it
+switches between light and dark while eMIPS runs), <strong>Light</strong> or <strong>Dark</strong>.
+Everything follows the theme, the datapath and the coloured cells
+included.</p>
+<p><img alt="The dark theme" src="img/03-theme-dark.png"></p>
+<p><strong>Configure → Language</strong>: English, plus any translation installed; the
+change applies the next time eMIPS starts.  Translations are files in
+<code>emips/gui/translations/</code> (Qt Linguist <code>.ts</code>); to start one, run
+<code>python3 tools/extract_gui_strings.py ro</code> (for Romanian) and fill in the
+translations with Qt Linguist or a text editor.</p>
+<h2 id="313-the-menus-item-by-item">3.13 The menus, item by item</h2>
+<p><strong>File</strong></p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Key</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New</td>
+<td>Ctrl+N</td>
+<td>an empty editor (asks to save changes)</td>
+</tr>
+<tr>
+<td>Open…</td>
+<td>Ctrl+O</td>
+<td>an assembly source (<code>.asm</code>, <code>.s</code>) or an Intel HEX file (<code>.hex</code>)</td>
+</tr>
+<tr>
+<td>Open Intel HEX…</td>
+<td></td>
+<td>a file as Intel HEX, whatever its name</td>
+</tr>
+<tr>
+<td>Open Recent</td>
+<td></td>
+<td>the last eight files</td>
+</tr>
+<tr>
+<td>Examples</td>
+<td></td>
+<td>the nine example programs (an R6 example switches the release to R6)</td>
+</tr>
+<tr>
+<td>Save / Save As…</td>
+<td>Ctrl+S</td>
+<td>save the source</td>
+</tr>
+<tr>
+<td>Export → Intel HEX… / Listing…</td>
+<td></td>
+<td>the machine code as Intel HEX; a listing (address, word, instruction, source)</td>
+</tr>
+<tr>
+<td>Quit</td>
+<td></td>
+<td>leave (asks to save changes)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Edit</strong> — Undo / Redo (Ctrl+Z / Ctrl+Y), Cut / Copy / Paste / Select
+All, Find… / Replace… / Find Next / Find Previous / Go to Line…, Toggle
+Comment / Indent / Unindent, Toggle Breakpoint (F9), Clear All
+Breakpoints.  Undo, Copy and Paste act on the field that has the
+keyboard focus (the editor, a console field ...).</p>
+<p><strong>Run</strong> — Assemble, Run, Pause, Step, Step Back, Run to Cursor, Reset;
+Debug Interrupt (DINT: EJTAG Debug Mode, <a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>);
+Mode (Instruction / 5-stage pipeline); Forwarding.</p>
+<p><strong>View</strong> — show or hide each pane (Datapath, Pipeline, Disassembly,
+Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
+System, Messages); Register Names (ABI <code>$t0</code> / numbers
+<code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
+<p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
+<p><strong>Configure</strong> — Settings…; MIPS32 Release; Byte Order; Theme; Language.</p>
+<p><strong>Help</strong> — User Guide (F1: this guide in a window of its own — see
+<a href="#the-user-guide">The user guide</a>), Quick Start, Keyboard Shortcuts (the complete list, as
+your system shows them), System Calls, Registers, About eMIPS, About Qt.</p>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="02-writing-programs.html">Phase 2 — Writing programs</a> · next: <a href="04-command-line.html">Phase 4 — The command line</a></nav>
+</main>
+</body>
+</html>

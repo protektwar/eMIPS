@@ -1,0 +1,164 @@
+/* The eMIPS user guide: one stylesheet for every page.  Colours meet
+   WCAG AA contrast in both schemes; the GUI's guide browser replaces this
+   file with one made from its own theme (emips/gui/guideview.py). */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #57606a;
+  --link: #0757b8;
+  --link-visited: #6639ba;
+  --rule: #d0d7de;
+  --code-bg: #f3f5f7;
+  --code-fg: #1f2328;
+  --nav-bg: #f6f8fa;
+  --current-bg: #0757b8;
+  --current-fg: #ffffff;
+  --focus: #bf5700;
+  --summary: #0b5d2a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181c;
+    --fg: #e6e8eb;
+    --muted: #a7afb8;
+    --link: #79b8ff;
+    --link-visited: #c9a7ff;
+    --rule: #39414a;
+    --code-bg: #1f242a;
+    --code-fg: #e6e8eb;
+    --nav-bg: #1c2026;
+    --current-bg: #79b8ff;
+    --current-fg: #0d1117;
+    --focus: #ffab70;
+    --summary: #7ee2a8;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  line-height: 1.6;
+}
+
+main {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 4rem;
+}
+
+a { color: var(--link); text-underline-offset: 0.15em; }
+a:visited { color: var(--link-visited); }
+a:focus-visible, summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--current-bg);
+  color: var(--current-fg);
+  z-index: 10;
+}
+.skip:focus { left: 0.5rem; }
+
+header {
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--rule);
+}
+.guide-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 0.5rem 1rem;
+  list-style: none;
+}
+.guide-nav a {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.3rem;
+  text-decoration: none;
+  color: var(--fg);
+}
+.guide-nav a:hover { text-decoration: underline; }
+.guide-nav a[aria-current="page"] {
+  background: var(--current-bg);
+  color: var(--current-fg);
+}
+
+.pager {
+  margin: 1rem 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+h1, h2, h3, h4 { line-height: 1.25; margin: 2rem 0 0.75rem; }
+h1 { font-size: 2rem; margin-top: 1rem; }
+h2 { font-size: 1.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); }
+h3 { font-size: 1.2rem; }
+h4 { font-size: 1.05rem; }
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+
+code, pre, kbd {
+  font-family: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+code {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 0.75rem 1rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--rule);
+  overflow-x: auto;
+  line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: 1em; }
+
+table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  display: block;
+  overflow-x: auto;
+}
+th, td {
+  border: 1px solid var(--rule);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+th { background: var(--nav-bg); }
+
+img { max-width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 0.3rem; }
+
+details {
+  margin: 1rem 0;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+}
+summary { cursor: pointer; font-weight: 600; color: var(--summary); }
+
+@media print {
+  header, .skip, .pager { display: none; }
+  details { border: 0; padding: 0; }
+  a { color: inherit; }
+}

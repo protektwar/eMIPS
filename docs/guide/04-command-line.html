@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 4 — The command line · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html">1 Getting started</a></li>
+<li><a href="02-writing-programs.html">2 Writing programs</a></li>
+<li><a href="03-the-gui.html">3 The GUI</a></li>
+<li><a href="04-command-line.html" aria-current="page">4 The command line</a></li>
+<li><a href="05-understanding.html">5 Understanding</a></li>
+<li><a href="06-reference.html">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-4--the-command-line">Phase 4 — The command line</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a> · next: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
+<p>Everything the window does is also available in a terminal: assemble,
+disassemble, run, show the pipeline, and debug interactively.  The
+terminal runs the same engine as the window, so results are identical.
+It is handy over SSH, for quick checks, and for <strong>scripts</strong> — a teacher's
+worksheet can be a list of debugger commands.</p>
+<p>All commands start with <code>python3 -m emips</code> (run from the eMIPS folder,
+or anywhere once installed with pip).  The transcripts below are real
+output — the test suite re-runs them.</p>
+<ul>
+<li><a href="#41-overview">4.1 Overview</a></li>
+<li><a href="#42-options-shared-by-several-commands">4.2 Options shared by several commands</a></li>
+<li><a href="#43-asm--assemble">4.3 asm — assemble</a></li>
+<li><a href="#44-dis--disassemble-intel-hex">4.4 dis — disassemble Intel HEX</a></li>
+<li><a href="#45-run--run-a-program">4.5 run — run a program</a></li>
+<li><a href="#46-pipe--the-5-stage-pipeline">4.6 pipe — the 5-stage pipeline</a></li>
+<li><a href="#47-debug--the-interactive-debugger">4.7 debug — the interactive debugger</a></li>
+<li><a href="#48-debugger-commands">4.8 Debugger commands</a></li>
+<li><a href="#49-scripts">4.9 Scripts</a></li>
+<li><a href="#410-gui">4.10 gui</a></li>
+</ul>
+<hr>
+<h2 id="41-overview">4.1 Overview</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>asm FILE</code></td>
+<td>assemble: print the listing, optionally write Intel HEX</td>
+</tr>
+<tr>
+<td><code>dis FILE.hex</code></td>
+<td>disassemble the words of an Intel HEX file</td>
+</tr>
+<tr>
+<td><code>run FILE</code></td>
+<td>run a program; then print the registers (and more)</td>
+</tr>
+<tr>
+<td><code>pipe FILE</code></td>
+<td>run on the 5-stage pipeline: chart, CPI, stalls, events</td>
+</tr>
+<tr>
+<td><code>debug [FILE]</code></td>
+<td>the interactive debugger</td>
+</tr>
+<tr>
+<td><code>gui [FILE]</code></td>
+<td>open the window</td>
+</tr>
+</tbody>
+</table>
+<p><code>python3 -m emips COMMAND --help</code> lists every option of a command.</p>
+<h2 id="42-options-shared-by-several-commands">4.2 Options shared by several commands</h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Commands</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--release R1\|R2\|R3\|R5\|R6</code></td>
+<td>all</td>
+<td>the MIPS32 release (default R5)</td>
+</tr>
+<tr>
+<td><code>--little</code></td>
+<td>all</td>
+<td>little-endian (default big)</td>
+</tr>
+<tr>
+<td><code>--numeric</code></td>
+<td>asm, dis, debug</td>
+<td>registers as <code>$8</code> instead of <code>$t0</code></td>
+</tr>
+<tr>
+<td><code>--strict</code></td>
+<td>asm, run, pipe, debug</td>
+<td>strict mode: no pseudo-instructions</td>
+</tr>
+<tr>
+<td><code>--noreorder</code></td>
+<td>asm, run, pipe, debug</td>
+<td>start in <code>.set noreorder</code> (no automatic delay-slot <code>nop</code>)</td>
+</tr>
+<tr>
+<td><code>--boot kernel\|user\|reset</code></td>
+<td>run, pipe, debug</td>
+<td>the start state (default kernel, like MARS)</td>
+</tr>
+<tr>
+<td><code>--exceptions cp0\|stop</code></td>
+<td>run, pipe, debug</td>
+<td>take exceptions like the hardware (default) or stop</td>
+</tr>
+<tr>
+<td><code>--no-syscalls</code></td>
+<td>run, pipe, debug</td>
+<td><code>syscall</code> raises the exception instead of the services</td>
+</tr>
+<tr>
+<td><code>--keys TEXT</code></td>
+<td>run, pipe, debug</td>
+<td>type TEXT on the memory-mapped keyboard</td>
+</tr>
+<tr>
+<td><code>--pipeline</code></td>
+<td>run, debug</td>
+<td>5-stage pipeline: a step is a clock cycle</td>
+</tr>
+<tr>
+<td><code>--no-forwarding</code></td>
+<td>run, pipe, debug</td>
+<td>the pipeline without forwarding paths</td>
+</tr>
+<tr>
+<td><code>--caches</code></td>
+<td>run, pipe, debug</td>
+<td>the L1 caches of a MIPS 24K: 32 KB instruction and data cache, 4-way, 32-byte lines</td>
+</tr>
+<tr>
+<td><code>--icache</code> / <code>--dcache SIZE[:WAYS[:LINE]]</code></td>
+<td>run, pipe, debug</td>
+<td>one cache of that shape (<code>16K</code>, <code>8K:2:32</code>; <code>none</code> = off)</td>
+</tr>
+<tr>
+<td><code>--cache-parity</code></td>
+<td>run, pipe, debug</td>
+<td>the caches have parity (ErrCtl.PE, the Cache Error exception)</td>
+</tr>
+<tr>
+<td><code>--cache-init random\|hardware</code></td>
+<td>run, pipe, debug</td>
+<td>cache contents after reset: random (default) or invalid</td>
+</tr>
+<tr>
+<td><code>--l2</code> / <code>--l3 SIZE[:WAYS[:LINE]]</code></td>
+<td>run, pipe, debug</td>
+<td>an L2 (<code>256K</code>: 8-way, 32-byte lines; <code>512K:4:64</code>) and, below it, an L3 (<code>2M</code>)</td>
+</tr>
+<tr>
+<td><code>--cache-ecc</code></td>
+<td>run, pipe, debug</td>
+<td>the L2 / L3 have ECC (ErrCtl.L2P, imprecise Cache Error)</td>
+</tr>
+<tr>
+<td><code>--write-buffer</code></td>
+<td>run, pipe, debug</td>
+<td>the 24K write buffer: merges write-through stores, gathers uncached accelerated ones, <code>sync</code> empties it</td>
+</tr>
+<tr>
+<td><code>--mem-timing KEY=N,...</code></td>
+<td>run, pipe, debug</td>
+<td>pipeline memory cycles: <code>L2</code> (12), <code>L3</code> (25), <code>MEM</code> (50), <code>BEAT</code> (1), <code>BYPASS</code> (4), <code>WRITE</code> (10) with caches; <code>UTLB</code> (3) a micro-TLB miss with the TLB; <code>C2C</code> (14) a miss served by another core's cache, <code>UPG</code> (8) an upgrade, <code>INTV</code> (4) until a waiting coherent store is visible, with <code>--cores</code></td>
+</tr>
+<tr>
+<td><code>--nonblocking</code></td>
+<td>run, pipe, debug</td>
+<td>pipeline: loads miss in the background (hit under miss)</td>
+</tr>
+<tr>
+<td><code>--model 5-stage\|24k</code></td>
+<td>run, pipe, debug</td>
+<td>the pipeline model: the textbook 5-stage pipeline (default) or the MIPS 24K's 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--cores N</code></td>
+<td>run, pipe, debug</td>
+<td>a multi-core system of N cores (2–4): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's)</td>
+</tr>
+<tr>
+<td><code>--shadow-sets N</code></td>
+<td>run, pipe, debug</td>
+<td>GPR shadow sets, 1–16 (default 4, a 24K's most; Release 2+): what SRSCtl.HSS says, the sets an exception / vectored interrupt switches to (<a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5, 5.10</a>)</td>
+</tr>
+<tr>
+<td><code>--mmu SPEC</code></td>
+<td>run, pipe, debug</td>
+<td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code> (<a href="05-understanding.html#the-tlb">Phase 5</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>They mean the same as the window's Settings (<a href="03-the-gui.html#311-settings">Phase 3, 3.11</a>).</p>
+<h2 id="43-asm--assemble">4.3 asm — assemble</h2>
+<pre><code class="language-console">$ python3 -m emips asm emips/gui/examples/sum_array.asm
+00400000  3c081001  lui $t0, 0x1001                  # main:   la    $t0, nums
+00400004  25080000  addiu $t0, $t0, 0                # main:   la    $t0, nums
+00400008  24090004  addiu $t1, $zero, 4              # li    $t1, 4
+0040000c  00005025  or $t2, $zero, $zero             # move  $t2, $zero
+00400010  8d0b0000  lw $t3, 0($t0)                   # loop:   lw    $t3, 0($t0)
+...
+</code></pre>
+<p>Each line: address, machine word, the instruction as the processor sees
+it, and the source line it came from — so you see what every
+pseudo-instruction became.  An error stops with the line number:
+<code>prog.asm: line 2: unknown instruction 'lii'</code>.</p>
+<p><code>--hex FILE.hex</code> also writes the program as Intel HEX.</p>
+<h2 id="44-dis--disassemble-intel-hex">4.4 dis — disassemble Intel HEX</h2>
+<pre><code class="language-console">$ python3 -m emips asm emips/gui/examples/sum_array.asm --hex sum.hex
+...
+$ python3 -m emips dis sum.hex
+00400000  3c081001  lui $t0, 0x1001
+00400004  25080000  addiu $t0, $t0, 0
+00400008  24090004  addiu $t1, $zero, 4
+...
+</code></pre>
+<p>(<code>asm --hex</code> prints the listing too.)  <code>dis</code> decodes every complete
+word in the file (data too — it cannot tell
+code from data).  Use the same <code>--release</code> and <code>--little</code> the code was
+made for.</p>
+<h2 id="45-run--run-a-program">4.5 run — run a program</h2>
+<p><code>run</code> runs until the program exits, runs past its last instruction,
+reaches a breakpoint, or <code>--steps</code> (default 100 000) are done.  Its
+output appears as it is printed; when it reads input (<code>read_int</code> ...),
+type the input in the terminal (or pipe it in:
+<code>echo 7 | python3 -m emips run prog.asm</code>).  Then the registers:</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/sum_array.asm
+sum = 18
+
+--- 37 steps, pc = 0x0040004c, 37 cycles (exited)
+$zero 0x00000000    $at 0x00000000    $v0 0x0000000a    $v1 0x00000000
+  $a0 0x00000012    $a1 0x00000000    $a2 0x00000000    $a3 0x00000000
+  $t0 0x10010010    $t1 0x00000000    $t2 0x00000012    $t3 0x00000006
+...
+   pc  0x0040004c    hi  0x00000000    lo  0x00000000
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--steps N</code></td>
+<td>stop after N steps</td>
+</tr>
+<tr>
+<td><code>--break LOC</code></td>
+<td>stop before the instruction at LOC (repeatable)</td>
+</tr>
+<tr>
+<td><code>--until LOC</code></td>
+<td>stop when LOC is the next instruction</td>
+</tr>
+<tr>
+<td><code>--trace</code></td>
+<td>print what happens inside every instruction</td>
+</tr>
+<tr>
+<td><code>--cp0</code></td>
+<td>also print the CP0 registers</td>
+</tr>
+<tr>
+<td><code>--fpu</code></td>
+<td>also print the FPU registers</td>
+</tr>
+<tr>
+<td><code>--mem LOC[:WORDS]</code></td>
+<td>also print memory from LOC (repeatable)</td>
+</tr>
+<tr>
+<td><code>--cache-stats</code></td>
+<td>also print the cache statistics: hits, misses, the 3 C's (<a href="05-understanding.html#watching-the-caches">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--tlb-stats</code></td>
+<td>also print the TLB statistics: lookups, hits, misses, exceptions, page walks (<a href="05-understanding.html#watching-the-tlb">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--perf EVENT[,EVENT]</code></td>
+<td>set the performance counters to count these events (user and kernel mode) and print them at the end (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--pipeline</code></td>
+<td>run on the 5-stage pipeline and print the chart (as <code>pipe</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>A <strong>location</strong> (LOC) is an address (<code>0x00400010</code>), a source line number
+(<code>12</code>), a label (<code>loop</code>), or a register holding an address (<code>$sp</code>).</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/factorial.asm --break fact --mem '$sp:4'
+stopped at 0x00400020  addiu $sp, $sp, -8               line 13: fact:   addiu $sp, $sp, -8      # push $ra and $s0
+
+--- 3 steps, pc = 0x00400020, 3 cycles
+...
+--- memory $sp
+0x7fffeff0  00000000 00000000 00000000 00000000  ................
+</code></pre>
+<p>(The quotes around <code>'$sp:4'</code> stop the shell from replacing <code>$sp</code>.)</p>
+<p><strong><code>--trace</code></strong> prints, for every instruction, its fields, what the ALU
+did and where its operands came from, the memory access and the
+registers it changed:</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/sum_array.asm --trace --steps 2
+0x00400000: lui $t0, 0x1001   (I-format, 0x3c081001)
+  decode: op[31:26]=001111 LUI | rs[25:21]=00000 $zero | rt[20:16]=01000 $t0 | immediate[15:0]=0001000000000001 4097
+  ALU: b &lt;&lt; 16; b = 0x00001001 from immediate 0x1001 (zero-extended) -&gt; 0x10010000
+  $t0: 0x00000000 -&gt; 0x10010000
+0x00400004: addiu $t0, $t0, 0   (I-format, 0x25080000)
+  decode: op[31:26]=001001 ADDIU | rs[25:21]=01000 $t0 | rt[20:16]=01000 $t0 | immediate[15:0]=0000000000000000 0
+  ALU: a + b; a = 0x10010000 from $t0 (register file); b = 0x00000000 from immediate 0x0000 (sign-extended) -&gt; 0x10010000
+...
+</code></pre>
+<p>The memory-mapped keyboard gets its keys from <code>--keys</code> (the newline is a
+key too):</p>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/mmio_echo.asm --keys &quot;ok\n&quot;
+...
+</code></pre>
+<p>(<code>\n</code> is typed literally here; in a shell, <code>--keys $'ok\n'</code> passes a
+real newline.  Both work.)</p>
+<h2 id="46-pipe--the-5-stage-pipeline">4.6 pipe — the 5-stage pipeline</h2>
+<p><code>pipe</code> runs the program on the 5-stage pipeline and prints the
+<strong>pipeline chart</strong> (one row per instruction, one column per cycle; <code>--</code>
+is a stall in ID), the cycle count, the CPI and the stall cycles by
+cause.  <code>--events</code> adds what happened each cycle:</p>
+<pre><code class="language-console">$ python3 -m emips pipe emips/gui/examples/pipeline_hazards.asm --events --width 24
+...
+00400008   lw $t1, 0($t0)                     IF ID EX ME WB
+0040000c   addu $t2, $t1, $t1                    IF -- ID EX ME WB
+...
+0040002c   mul $s0, $t7, $t7                                                   IF ID EX EX EX EX ME WB
+00400030   addu $s1, $s0, $s0                                                     IF -- -- -- ID EX ME WB
+...
+24 cycles, 15 instructions retired, CPI 1.60
+stall cycles: branch 1, ex-busy 3, load-use 1
+    4  forward $t0: EX/MEM -&gt; EX (lui $t0, 0x1001 -&gt; addiu $t0, $t0, 0)
+    5  load-use: $t1 from lw $t1, 0($t0)
+...
+   13  forward $t7: EX/MEM -&gt; ID (or $t7, $t6, $t5 -&gt; beq $t7, $zero, 0x00400034)
+   13  beq $t7, $zero, 0x00400034: not taken
+...
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--cycles N</code></td>
+<td>stop after N cycles (default 10 000)</td>
+</tr>
+<tr>
+<td><code>--width N</code></td>
+<td>how many cycles the chart shows (default 40)</td>
+</tr>
+<tr>
+<td><code>--events</code></td>
+<td>forwarding, stalls, branch decisions, flushes per cycle</td>
+</tr>
+<tr>
+<td><code>--views</code></td>
+<td>the events plus the full view of the instructions in ID and EX</td>
+</tr>
+<tr>
+<td><code>--cache-stats</code></td>
+<td>the cache statistics at the end (as <code>run</code>)</td>
+</tr>
+<tr>
+<td><code>--tlb-stats</code></td>
+<td>the TLB statistics at the end (as <code>run</code>)</td>
+</tr>
+<tr>
+<td><code>--perf EVENT[,EVENT]</code></td>
+<td>the performance counters (as <code>run</code>)</td>
+</tr>
+<tr>
+<td><code>--no-forwarding</code></td>
+<td>without forwarding paths — compare the CPI</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-console">$ python3 -m emips run emips/gui/examples/pipeline_hazards.asm --pipeline --no-forwarding
+...
+37 cycles, 15 instructions retired, CPI 2.47
+stall cycles: ex-busy 3, no-forwarding 15
+</code></pre>
+<p>Rows marked <code>(no code here)</code> at the end are instructions the pipeline
+had already started fetching after the program's last instruction; they
+never execute.</p>
+<h2 id="47-debug--the-interactive-debugger">4.7 debug — the interactive debugger</h2>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/factorial.asm
+eMIPS debugger — MIPS32 R5, big-endian, instruction mode. Type help.
+=&gt; 0x00400000  addiu $a0, $zero, 5              line 4: main:   li    $a0, 5
+(emips) break fact
+breakpoint at 0x00400020  addiu $sp, $sp, -8               line 13: fact:   addiu $sp, $sp, -8      # push $ra and $s0
+(emips) continue
+breakpoint
+   0x00400008  nop
+=&gt; 0x00400020  addiu $sp, $sp, -8               line 13: fact:   addiu $sp, $sp, -8      # push $ra and $s0
+(emips) continue
+breakpoint
+   0x00400044  nop
+=&gt; 0x00400020  addiu $sp, $sp, -8               line 13: fact:   addiu $sp, $sp, -8      # push $ra and $s0
+(emips) regs $a0 $ra
+   $a0 = 0x00000004  4
+   $ra = 0x00400048  4194376
+(emips) delete fact
+(emips) finish
+   0x0040005c  nop
+=&gt; 0x00400048  mul $v0, $v0, $s0                line 21: mul   $v0, $v0, $s0
+(emips) regs $v0
+   $v0 = 0x00000018  24
+(emips) quit
+</code></pre>
+<p>How to read it:</p>
+<ul>
+<li><code>=&gt;</code> is the <strong>next instruction</strong> (not executed yet), with its source
+  line.  In pipeline mode it is the instruction about to enter EX.</li>
+<li>The indented line before it is the instruction <strong>just executed</strong> and
+  what it changed (<code>; $t3 = 0x00000003</code>, <code>; [0x7fffeff8] = 0x0040000c</code>).
+  Here it is the <code>nop</code> in a delay slot (the jump's, or the <code>jal</code>'s).</li>
+<li>The second <code>continue</code> stopped in the recursive call <code>fact(4)</code> (<code>$a0</code> =
+  4); <code>finish</code> ran until that call returned to <code>fact(5)</code> — <code>$v0</code> =
+  fact(4) = 24.</li>
+</ul>
+<p>Start it without a file and use <code>load FILE</code> at the prompt.  Press
+<strong>Ctrl+C</strong> to stop a long run (the debugger stays), <strong>Ctrl+D</strong> or <code>quit</code>
+to leave.  When the program reads input, the debugger asks for it
+(<code>program input&gt;</code>) — or give it beforehand with <code>input TEXT</code>.</p>
+<h2 id="48-debugger-commands">4.8 Debugger commands</h2>
+<p><code>help</code> lists them; <code>help COMMAND</code> explains one.  Short forms are in
+brackets.</p>
+<p><strong>Running</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>step [N]</code> (<code>s</code>)</td>
+<td>N instructions — or N clock cycles in pipeline mode</td>
+</tr>
+<tr>
+<td><code>next [N]</code> (<code>n</code>)</td>
+<td>like step, but a call (<code>jal</code>, <code>jalr</code>, <code>bal</code>, <code>balc</code> ...) runs to its return as one step</td>
+</tr>
+<tr>
+<td><code>back [N]</code></td>
+<td>undo N steps</td>
+</tr>
+<tr>
+<td><code>continue [N]</code> (<code>c</code>, <code>run</code>, <code>r</code>)</td>
+<td>run until a breakpoint, the end, an error or an input request (at most N steps)</td>
+</tr>
+<tr>
+<td><code>stepline [N]</code> (<code>sl</code>)</td>
+<td>run to the next <strong>source line</strong> — a C line of a compiled program, a source line of an assembly one; into calls</td>
+</tr>
+<tr>
+<td><code>nextline [N]</code> (<code>nl</code>)</td>
+<td>like stepline, but a call runs as one step</td>
+</tr>
+<tr>
+<td><code>until LOC</code> (<code>u</code>)</td>
+<td>run until the instruction at LOC is next</td>
+</tr>
+<tr>
+<td><code>finish</code></td>
+<td>run until the current function returns to its caller (by the call stack: a recursive call returning to the same address does not stop it)</td>
+</tr>
+<tr>
+<td><code>reset</code></td>
+<td>restart the program (breakpoints and given input are kept)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Breakpoints</strong>: <code>break LOC</code> (<code>b</code>) sets one, <code>break</code> alone lists them,
+<code>delete LOC</code> (<code>d</code>) or <code>delete all</code> removes them.  For a compiled program
+(an ELF with line information) LOC can be a C line — <code>17</code> (the current
+file; <code>main</code>'s before the program gets there) or <code>file.c:17</code> — or a
+function name; a line that starts in several places (a <code>for</code> with its
+condition and increment) gets a breakpoint on each.</p>
+<p><strong>Looking</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>regs</code></td>
+<td>all 32 registers, PC, HI, LO (<code>*</code> = changed by the last command)</td>
+</tr>
+<tr>
+<td><code>regs $t0 $sp ...</code></td>
+<td>some registers, hex and decimal</td>
+</tr>
+<tr>
+<td><code>cp0</code></td>
+<td>PC, HI, LO, Status, Cause, EPC, BadVAddr, Count, Compare, IntCtl, SRSCtl, SRSMap (in Debug Mode Debug, DEPC, DESAVE), FCSR</td>
+</tr>
+<tr>
+<td><code>srs</code> / <code>srs N</code></td>
+<td>the interrupt mode (compatibility / vectored), the next vector, the GPR shadow sets (current, previous, the exceptions' set, SRSMap) / set N's registers</td>
+</tr>
+<tr>
+<td><code>ejtag</code> / <code>ejtag dint</code></td>
+<td>EJTAG: Debug Mode or not and what entered it, the Debug register (single step SSt, LSNM, CountDM, IEXI), DEPC, DESAVE, the DCR, the debug vector, the hardware breakpoints and watch registers / request a debug interrupt (the DINT input) (<a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>probe</code> / <code>probe on [trap] [boot]</code> / <code>probe off</code> / <code>probe load FILE</code> / <code>probe break</code> / <code>probe fastdata W...</code> / <code>probe mem ADDR [WORDS]</code> / <code>probe profile [on\|off]</code> / <code>probe rate N</code></td>
+<td>the TAP's state, the ECR and the probe's last processor accesses / connect an EJTAG probe (ProbEn; trap: the debug handler from its memory at <code>0xff200200</code>; boot: EJTAGBOOT) / remove it / load a file's dmseg bytes into its memory / EjtagBrk / words for FASTDATA / its memory / collect PC samples, show where they fell / the sample rate (<a href="05-understanding.html#the-tap-and-a-probe">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>trace</code> / <code>trace on [OPTIONS]</code> / <code>trace off</code> / <code>trace show [N]</code> / <code>trace words [N]</code> / <code>trace formats [N]</code> / <code>trace trigger N dm\|probe start\|end\|about\|info [tf6 INFO] [once] [out]</code> / <code>trace trigger N off</code> / <code>trace in</code></td>
+<td>MIPS Trace through the TCB: the settings and the TCB / trace on (modes <code>u k s e d</code>, <code>asid N</code>, <code>la sa ld sd addresses data all</code>, <code>ca</code>, <code>from</code>, <code>tb</code>, <code>io</code>, <code>sync N</code>, <code>tlsif</code>, <code>keep</code>, <code>wait</code>) / off / the regenerated flow / the trace words / the trace formats / a trigger / the probe's trigger input (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>tap ir CODE</code> / <code>tap dr VALUE [BITS]</code> / <code>tap reset</code></td>
+<td>scan the TAP by hand: an instruction (IDCODE, IMPCODE, CONTROL ... or a number), a data register (prints what came out), Test-Logic-Reset</td>
+</tr>
+<tr>
+<td><code>ejtag ib N LOC [mask M] [asid A] [trigger]</code> / <code>ejtag db N LOC [load\|store] [mask M] [value V] [asid A] [trigger]</code> / <code>ejtag watch N LOC i\|r\|w\|rw [mask M] [asid A]</code> / <code>ejtag ib\|db\|watch N off</code> / <code>ejtag clear</code></td>
+<td>set an EJTAG instruction (0–3) / data (0–1) breakpoint or a watch register pair (0, 1 fetches; 2, 3 loads / stores) as a probe would; turn one off; clear the match bits (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>fpu</code></td>
+<td><code>$f0</code>–<code>$f31</code> as single and double, FCSR</td>
+</tr>
+<tr>
+<td><code>mem LOC [WORDS]</code> (<code>x</code>)</td>
+<td>memory as words and text (default 16 words); <code>mem -p ADDRESS</code> dumps physical memory</td>
+</tr>
+<tr>
+<td><code>translate LOC</code> (<code>t</code>)</td>
+<td>the physical address the MMU makes of a virtual one, and how (<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>)</td>
+</tr>
+<tr>
+<td><code>cache</code></td>
+<td>every cache: its shape, valid lines, hit rate</td>
+</tr>
+<tr>
+<td><code>cache stats [reset]</code></td>
+<td>hits and misses per kind of access, the 3 C's, evictions, the write buffer; <code>reset</code> starts them again</td>
+</tr>
+<tr>
+<td><code>cache last</code></td>
+<td>the cache accesses of the last step (fetch and data; IF and MEM in pipeline mode)</td>
+</tr>
+<tr>
+<td><code>cache I\|D\|L2\|L3</code></td>
+<td>the sets of that cache holding lines</td>
+</tr>
+<tr>
+<td><code>cache D set N</code></td>
+<td>one set: each way's tag, age (LRU), dirty / locked, data</td>
+</tr>
+<tr>
+<td><code>cache D LOC</code></td>
+<td>how LOC is cut into tag | index | offset, and its set</td>
+</tr>
+<tr>
+<td><code>cache LOC</code></td>
+<td>where the line of LOC is, in every cache</td>
+</tr>
+<tr>
+<td><code>cache wb</code></td>
+<td>the write buffer's counters and open entries</td>
+</tr>
+<tr>
+<td><code>tlb</code></td>
+<td>the TLB (<code>--mmu</code>): the entries in use, Wired, Random, the ASID; the six entries of a BAT</td>
+</tr>
+<tr>
+<td><code>tlb all</code></td>
+<td>every entry, also those never written or invalidated</td>
+</tr>
+<tr>
+<td><code>tlb entry N</code></td>
+<td>one entry: its pages, PFNs, flags and what <code>tlbr</code> would read</td>
+</tr>
+<tr>
+<td><code>tlb set N</code></td>
+<td>the ways of FTLB set N (<code>--mmu ftlb</code>)</td>
+</tr>
+<tr>
+<td><code>tlb micro</code></td>
+<td>the ITLB / DTLB copies, their counters, the slot the next miss replaces</td>
+</tr>
+<tr>
+<td><code>tlb stats [reset]</code></td>
+<td>TLB lookups, hits, misses, exceptions by kind, page walks; <code>reset</code> starts them again</td>
+</tr>
+<tr>
+<td><code>tlb last</code></td>
+<td>the translations of the last step (fetch, data, and what <code>tlbwr</code> / <code>tlbp</code> ... did)</td>
+</tr>
+<tr>
+<td><code>perf</code></td>
+<td>the performance counters: count, event, modes, the overflow interrupt (a counter set with <code>perf N ...</code> is kept across <code>reset</code> and <code>back</code>)</td>
+</tr>
+<tr>
+<td><code>perf events [N]</code></td>
+<td>the events counter N (0 or 1) can count, by name and number</td>
+</tr>
+<tr>
+<td><code>perf N EVENT [MODES] [ie]</code></td>
+<td>count EVENT (name or number) on counter N in MODES (<code>u</code> user, <code>s</code> supervisor, <code>k</code> kernel, <code>x</code> exception level; default <code>uk</code>), <code>ie</code> = interrupt on overflow; the count restarts at 0</td>
+</tr>
+<tr>
+<td><code>perf N off</code> / <code>perf N = VALUE</code></td>
+<td>stop counter N / write its count</td>
+</tr>
+<tr>
+<td><code>core</code></td>
+<td>inside the MIPS 24K model (<code>set model 24k</code>, <code>mode pipeline</code>): the fetch unit, its instruction buffer, branch prediction, the units, the CP0 hazards</td>
+</tr>
+<tr>
+<td><code>core buffer</code> / <code>core predict</code> / <code>core units</code></td>
+<td>one part: the buffer, the BHT and return stack with the last prediction, the multiply / divide unit, FPU, load / store unit and the CP0 writes on their way</td>
+</tr>
+<tr>
+<td><code>cpu</code></td>
+<td>the cores (<code>--cores N</code>): each one's power state (the CPC's SEQSTATE), position, <code>(waiting)</code> / <code>(exited)</code>; <code>=&gt;</code> marks the one the other commands show</td>
+</tr>
+<tr>
+<td><code>cpu N</code></td>
+<td>show core N: <code>regs</code>, <code>cp0</code>, <code>mem</code>, <code>view</code>, <code>chart</code>, ... look at it (a breakpoint selects the core that reaches it)</td>
+</tr>
+<tr>
+<td><code>cm</code></td>
+<td>the Coherence Manager (<code>--cores N</code>): each core's GCR_COHERENCE (coherent mode, whose interventions it receives), what the CM did (requests, interventions, cache-to-cache transfers, invalidations, upgrades, writebacks, globalized cache operations), the shared L2, the CM error (<a href="05-understanding.html#coherent-caches">Phase 5, Coherent caches</a>)</td>
+</tr>
+<tr>
+<td><code>cm LOC</code></td>
+<td>the MESI state of LOC's line in every core's data cache</td>
+</tr>
+<tr>
+<td><code>cps</code></td>
+<td>the registers of a multi-core system as the cores read them: the GCRs (global and each core's block), the CPC (each core's command and SEQSTATE), the GIC (configuration, counter, masks, pending; each core's local interrupts)</td>
+</tr>
+<tr>
+<td><code>gic</code></td>
+<td>the Global Interrupt Controller (<code>--cores N</code>): its counter, every enabled source (trigger, polarity, pending, which pin / NMI of which cores), every core's local interrupts, pins and COMPARE (<a href="05-understanding.html#interrupts-between-cores-the-gic">Phase 5, the GIC</a>)</td>
+</tr>
+<tr>
+<td><code>tlb LOC</code></td>
+<td>how LOC translates now: VPN2 | even/odd | offset, the entry, PFN, PA — or the exception an access would take (<a href="05-understanding.html#watching-the-tlb">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>dis [LOC] [N]</code></td>
+<td>disassembly (default: around the current instruction)</td>
+</tr>
+<tr>
+<td><code>list [LINE\|LOC]</code> (<code>l</code>)</td>
+<td>source lines (<code>=&gt;</code> current, <code>*</code> breakpoint); a compiled program: its C file (<code>list 17</code>, <code>list file.c:17</code>, <code>list main</code>)</td>
+</tr>
+<tr>
+<td><code>bt</code> (<code>backtrace</code>)</td>
+<td>the call stack: the calls not returned yet, innermost first — function, address, source line</td>
+</tr>
+<tr>
+<td><code>where</code></td>
+<td>the position, steps or cycles, CPI</td>
+</tr>
+<tr>
+<td><code>view</code></td>
+<td>inside the last executed instruction: fields, ALU, address, effects</td>
+</tr>
+<tr>
+<td><code>chart [CYCLES]</code></td>
+<td>pipeline mode: the chart of the last cycles (default 24)</td>
+</tr>
+<tr>
+<td><code>print VALUE</code> (<code>p</code>)</td>
+<td>a register, label, number or float in every form</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/sum_array.asm
+(emips) until 13
+   0x0040001c  addiu $t1, $t1, -1              ; $t1 = 0x00000003
+=&gt; 0x00400020  bne $t1, $zero, 0x00400010       line 13: bnez  $t1, loop
+(emips) x nums 4
+0x10010000  00000003 00000004 00000005 00000006  ................
+(emips) print $t2
+hex 0x00000003   unsigned 3   signed 3   text '....'
+bin 0000 0000 0000 0000 0000 0000 0000 0011
+(emips) dis pc 4
+=&gt; 0x00400020  1520fffb  bne $t1, $zero, loop             13
+   0x00400024  00000000  nop                              13
+   0x00400028  24020004  addiu $v0, $zero, 4              14
+   0x0040002c  3c041001  lui $a0, 0x1001                  15
+(emips) view
+0x0040001c: addiu $t1, $t1, -1   (I-format, 0x2529ffff)
+  decode: op[31:26]=001001 ADDIU | rs[25:21]=01001 $t1 | rt[20:16]=01001 $t1 | immediate[15:0]=1111111111111111 -1
+  ALU: a + b; a = 0x00000004 from $t1 (register file); b = 0xffffffff from immediate 0xffff (sign-extended) -&gt; 0x00000003
+  $t1: 0x00000004 -&gt; 0x00000003
+</code></pre>
+<p><strong>In pipeline mode</strong> (<code>--pipeline</code>, or <code>mode pipeline</code>) a step is a
+clock cycle: each one prints the five stages, then the forwarding, stall
+and branch events of that cycle:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/pipeline_hazards.asm --pipeline
+(emips) until 15
+cycle 11   IF beq $t7, $zero, 0x00400034 | ID or $t7, $t6, $t5 | EX subu $t6, $t5, $t1 | MEM addu $t5, $t3, $t2 | WB addiu $t4, $zero, 1
+   forward $t5: EX/MEM -&gt; EX (addu $t5, $t3, $t2 -&gt; subu $t6, $t5, $t1)
+(emips) chart 10
+           instruction                   2  3  4  5  6  7  8  9 10 11
+00400000   lui $t0, 0x1001              ID EX ME WB
+00400004   addiu $t0, $t0, 0            IF ID EX ME WB
+00400008   lw $t1, 0($t0)                  IF ID EX ME WB
+0040000c   addu $t2, $t1, $t1                 IF -- ID EX ME WB
+00400010   lw $t3, 4($t0)                        IF IF ID EX ME WB
+00400014   addiu $t4, $zero, 1                         IF ID EX ME WB
+00400018   addu $t5, $t3, $t2                             IF ID EX ME
+0040001c   subu $t6, $t5, $t1                                IF ID EX
+00400020   or $t7, $t6, $t5                                     IF ID
+00400024   beq $t7, $zero, 0x00400034                              IF
+stall cycles: load-use 1
+</code></pre>
+<p><strong>Tools</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>decode WORD</code></td>
+<td>an instruction word: its fields and instruction</td>
+</tr>
+<tr>
+<td><code>encode INSTRUCTION</code></td>
+<td>the machine word(s) of an instruction (pseudo: every word)</td>
+</tr>
+<tr>
+<td><code>ref TEXT</code></td>
+<td>instructions matching TEXT (a pseudo-instruction is explained)</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/sum_array.asm
+(emips) decode 0x8fa80004
+0x8fa80004  lw $t0, 4($sp)    (Load Word, I-format)
+  op[31:26]=100011 (LW)  base[25:21]=11101 ($sp)  rt[20:16]=01000 ($t0)  offset[15:0]=0000000000000100 (4)
+(emips) ref blt
+blt is a pseudo-instruction; the assembler writes: slt $at, ... + bne $at, $zero, label
+bltz rs, label                   Branch on Less Than Zero  [since R1, delay slot]
+bltzal rs, label                 Branch on Less Than Zero and Link  [since R1, removed in R6, delay slot]
+bltzall rs, label                Branch on Less Than Zero and Link Likely  [since R1, removed in R6, delay slot]
+bltzl rs, label                  Branch on Less Than Zero Likely  [since R1, removed in R6, delay slot]
+(emips) print 0.1
+hex 0x3dcccccd   unsigned 1036831949   signed 1036831949   text '=...'
+bin 0011 1101 1100 1100 1100 1100 1100 1101
+single 0.10000000149011612   (normal: +1.fraction × 2^(123 − 127) = +1.fraction × 2^-4)
+double 0.1   (normal: +1.fraction × 2^(1019 − 1023) = +1.fraction × 2^-4)
+note: single precision cannot hold 0.1 exactly: stored 0.10000000149011612 (error +1.49e-09)
+</code></pre>
+<p><strong>Console</strong>: <code>input TEXT</code> gives a line to the next <code>read_int</code> /
+<code>read_string</code> ...; <code>keys TEXT</code> types on the memory-mapped keyboard (<code>\n</code>
+is Enter).</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/hello_input.asm
+(emips) input 7
+(emips) continue
+Enter a number: squared = 49
+the program exited
+   0x00400048  syscall
+   (ended)
+</code></pre>
+<p><strong>Setup</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mode instruction\|pipeline</code></td>
+<td>switch the mode (restarts the program)</td>
+</tr>
+<tr>
+<td><code>set release R1..R6</code></td>
+<td>the MIPS32 release</td>
+</tr>
+<tr>
+<td><code>set endian big\|little</code></td>
+<td>the byte order</td>
+</tr>
+<tr>
+<td><code>set forwarding on\|off</code></td>
+<td>the pipeline's forwarding paths</td>
+</tr>
+<tr>
+<td><code>set model 5-stage\|24k</code></td>
+<td>the pipeline model of <code>mode pipeline</code></td>
+</tr>
+<tr>
+<td><code>set cores 1..4</code></td>
+<td>the number of cores</td>
+</tr>
+<tr>
+<td><code>set shadow-sets 1..16</code></td>
+<td>GPR shadow sets (1 = the normal GPRs only)</td>
+</tr>
+<tr>
+<td><code>set strict on\|off</code></td>
+<td>strict mode (no pseudo-instructions)</td>
+</tr>
+<tr>
+<td><code>set reorder on\|off</code></td>
+<td>automatic delay-slot <code>nop</code>s</td>
+</tr>
+<tr>
+<td><code>set boot kernel\|user\|reset</code></td>
+<td>the start state</td>
+</tr>
+<tr>
+<td><code>set exceptions cp0\|stop</code></td>
+<td>take exceptions, or stop the simulation</td>
+</tr>
+<tr>
+<td><code>set syscalls on\|off</code></td>
+<td>the system-call services</td>
+</tr>
+<tr>
+<td><code>set names abi\|numeric</code></td>
+<td><code>$t0</code> or <code>$8</code></td>
+</tr>
+<tr>
+<td><code>set icache\|dcache\|l2\|l3 SIZE[:WAYS[:LINE]]</code></td>
+<td>a cache of that shape (<code>none</code> = without)</td>
+</tr>
+<tr>
+<td><code>set write-buffer on\|off</code></td>
+<td>the write buffer</td>
+</tr>
+<tr>
+<td><code>set mmu SPEC</code></td>
+<td>the MMU, as <code>--mmu</code></td>
+</tr>
+<tr>
+<td><code>load FILE</code></td>
+<td>load another program (<code>.asm</code> or <code>.hex</code>)</td>
+</tr>
+<tr>
+<td><code>quit</code> (<code>q</code>)</td>
+<td>leave</td>
+</tr>
+</tbody>
+</table>
+<p>Changing an option re-assembles or restarts the program.  If it no
+longer assembles, nothing runs until it does:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/sum_array.asm
+(emips) set strict on
+error: line 6: la is a pseudo-instruction (strict mode); write: lui rt, %hi(label) + addiu rt, rt, %lo(label)  [main:   la    $t0, nums]
+(emips) continue
+error: no program loaded (load FILE)
+(emips) set strict off
+=&gt; 0x00400000  lui $t0, 0x1001                  line 6: main:   la    $t0, nums
+</code></pre>
+<h2 id="49-scripts">4.9 Scripts</h2>
+<p>Instead of typing at the prompt, give the commands with <strong><code>-c</code></strong>
+(separated by <code>;</code>) or in a file with <strong><code>-x</code></strong> (one per line, <code>#</code> starts a
+comment).  Each command is printed before its output, so the result reads
+like a session — useful for worksheets, for checking answers, and for
+comparing two versions of a program:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/sum_array.asm -c 'break loop; continue; continue; regs $t2'
+(emips) break loop
+breakpoint at 0x00400010  lw $t3, 0($t0)                   line 9: loop:   lw    $t3, 0($t0)
+(emips) continue
+breakpoint
+   0x0040000c  or $t2, $zero, $zero
+=&gt; 0x00400010  lw $t3, 0($t0)                   line 9: loop:   lw    $t3, 0($t0)
+(emips) continue
+breakpoint
+   0x00400024  nop
+=&gt; 0x00400010  lw $t3, 0($t0)                   line 9: loop:   lw    $t3, 0($t0)
+(emips) regs $t2
+   $t2 = 0x00000003  3
+</code></pre>
+<p>A script file, <code>lab1.cmd</code>:</p>
+<pre><code class="language-text"># Lab 1: watch the sum grow
+break loop
+continue
+regs $t2
+continue
+regs $t2
+</code></pre>
+<pre><code class="language-text">python3 -m emips debug emips/gui/examples/sum_array.asm -x lab1.cmd
+</code></pre>
+<p>With a script, the program's input comes from the terminal (or a pipe):
+<code>echo 7 | python3 -m emips debug prog.asm -c "continue"</code>.</p>
+<p>Add <code>--stop-at-end</code> to stop when the program runs past its last
+instruction instead of reporting an error.</p>
+<h2 id="410-gui">4.10 gui</h2>
+<pre><code class="language-text">python3 -m emips gui [FILE.asm | FILE.hex]
+</code></pre>
+<p>opens the window (Phase 3), optionally with a file.  If neither PyQt6
+nor PySide6 is installed it says so and how to install one.</p>
+<h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
+<pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
+                    [--little] [-O 0|1|2|3|s] [-v]
+</code></pre>
+<p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
+ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
+memory map (<a href="02-writing-programs.html#218-programs-in-c">Phase 2, 2.18</a>).
+<code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
+<code>.c</code> file too (built for the session's release and byte order) and every
+command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
+disassembly with each C line above its instructions.</p>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a> · next: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
+</main>
+</body>
+</html>

@@ -1,0 +1,2372 @@
+{
+  "schema": 1,
+  "about": "Cited corrections applied by tools/build_isaref.py on top of the raw Ruby dump (emips/data/instructions.json, never hand-edited). Real MIPS wins: every entry cites the MIPS32 manual and was cross-checked with tools/audit_isa_binutils.py.",
+  "references": {
+    "II-A": "MIPS32 Architecture For Programmers, Volume II-A: The MIPS32 Instruction Set Manual (MD00086), Revision 5.04 -- instruction pages and Appendix A 'Instruction Bit Encodings'",
+    "cross-check": "GNU binutils 2.42 mips-linux-gnu-objdump -m mips:isa32r2 -M no-aliases (tools/audit_isa_binutils.py)"
+  },
+  "letters": {
+    "s": "rs",
+    "t": "rt",
+    "d": "rd",
+    "a": "sa",
+    "b": "base",
+    "o": "offset",
+    "i": "immediate",
+    "e": "code",
+    "h": "hint",
+    "z": "msbd",
+    "P": "lsb",
+    "S": "fs",
+    "D": "fd",
+    "T": "ft",
+    "R": "fr",
+    "c": "cc",
+    "I": "impl",
+    "q": "offset",
+    "w": "offset",
+    "y": "immediate",
+    "g": "offset",
+    "n": "sa",
+    "k": "bp",
+    "j": "code",
+    "v": "sel"
+  },
+  "corrections": [
+    {
+      "id": "M2-001",
+      "op": "patch",
+      "name": "LWL",
+      "set": {
+        "encode": "100010bbbbbtttttoooooooooooooooo",
+        "opcode": "100010",
+        "opcodeName": "LWL"
+      },
+      "ref": "II-A LWL; II-A App. A, 'MIPS32 Encoding of the Opcode Field'",
+      "why": "Ruby table carried LH's opcode 100001; LWL is opcode 100010. With the old key LWL tied with LH and could never decode."
+    },
+    {
+      "id": "M2-002",
+      "op": "patch",
+      "name": "SWC2",
+      "set": {
+        "encode": "111010bbbbbTTTTToooooooooooooooo",
+        "opcode": "111010",
+        "opcodeName": "SWC2"
+      },
+      "ref": "II-A SWC2; II-A App. A, 'MIPS32 Encoding of the Opcode Field'",
+      "why": "Ruby table carried SWC1's opcode 111001; SWC2 is opcode 111010. With the old key SWC2 tied with SWC1 and could never decode."
+    },
+    {
+      "id": "M2-003",
+      "op": "patch",
+      "name": "PREF",
+      "set": {
+        "encode": "110011bbbbbhhhhhoooooooooooooooo",
+        "opcode": "110011",
+        "opcodeName": "PREF"
+      },
+      "ref": "II-A PREF; II-A App. A, 'MIPS32 Encoding of the Opcode Field'",
+      "why": "Ruby template used opcode 010001 (COP1), so PREF swallowed every COP1 word no more-specific FPU row matched; PREF is opcode 110011 (the row's own 'function' field already said so)."
+    },
+    {
+      "id": "M2-004",
+      "op": "patch",
+      "name": "MOVZ.S",
+      "set": {
+        "encode": "01000110000tttttSSSSSDDDDD010010"
+      },
+      "ref": "II-A MOVZ.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template used function 001010 (CEIL.L); MOVZ.fmt is function 010010 (the row's own functionInfo fct already said so)."
+    },
+    {
+      "id": "M2-005",
+      "op": "patch",
+      "name": "MOVZ.D",
+      "set": {
+        "encode": "01000110001tttttSSSSSDDDDD010010"
+      },
+      "ref": "II-A MOVZ.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template used function 001010 (CEIL.L); MOVZ.fmt is function 010010 (the row's own functionInfo fct already said so)."
+    },
+    {
+      "id": "M2-006",
+      "op": "patch",
+      "name": "MOVZ.PS",
+      "set": {
+        "encode": "01000110110tttttSSSSSDDDDD010010"
+      },
+      "ref": "II-A MOVZ.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template used function 001010 (CEIL.L); MOVZ.fmt is function 010010 (the row's own functionInfo fct already said so)."
+    },
+    {
+      "id": "M2-007",
+      "op": "patch",
+      "name": "SQRT.S",
+      "set": {
+        "encode": "0100011000000000SSSSSDDDDD000100"
+      },
+      "ref": "II-A SQRT.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template used function 010110, which is RSQRT.fmt; SQRT.fmt is function 000100."
+    },
+    {
+      "id": "M2-008",
+      "op": "patch",
+      "name": "SQRT.D",
+      "set": {
+        "encode": "0100011000100000SSSSSDDDDD000100"
+      },
+      "ref": "II-A SQRT.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template used function 010110, which is RSQRT.fmt; SQRT.fmt is function 000100."
+    },
+    {
+      "id": "M2-009",
+      "op": "patch",
+      "name": "MOVF.S",
+      "set": {
+        "encode": "01000110000ccc00SSSSSDDDDD010001"
+      },
+      "ref": "II-A MOVF.fmt; II-A App. A, 'MIPS32 COP1 Encoding of tf Bit When rs=S, D, or PS, Function=MOVCF'",
+      "why": "Ruby template fixed the cc field (bits 20..18) to 000; MOVF.fmt takes any condition code cc, only bit 17 (0) and tf (bit 16 = 0) are fixed."
+    },
+    {
+      "id": "M2-010",
+      "op": "patch",
+      "name": "MOVF.D",
+      "set": {
+        "encode": "01000110001ccc00SSSSSDDDDD010001"
+      },
+      "ref": "II-A MOVF.fmt; II-A App. A, 'MIPS32 COP1 Encoding of tf Bit When rs=S, D, or PS, Function=MOVCF'",
+      "why": "Ruby template fixed the cc field (bits 20..18) to 000; MOVF.fmt takes any condition code cc, only bit 17 (0) and tf (bit 16 = 0) are fixed."
+    },
+    {
+      "id": "M2-011",
+      "op": "patch",
+      "name": "MOVF.PS",
+      "set": {
+        "encode": "01000110110ccc00SSSSSDDDDD010001"
+      },
+      "ref": "II-A MOVF.fmt; II-A App. A, 'MIPS32 COP1 Encoding of tf Bit When rs=S, D, or PS, Function=MOVCF'",
+      "why": "Ruby template fixed the cc field (bits 20..18) to 000; MOVF.fmt takes any condition code cc, only bit 17 (0) and tf (bit 16 = 0) are fixed."
+    },
+    {
+      "id": "M2-012",
+      "op": "patch",
+      "name": "LHE",
+      "set": {
+        "encode": "011111bbbbbtttttooooooooo0101101"
+      },
+      "ref": "II-A LHE; II-A App. A, 'MIPS32 SPECIAL3 Encoding of Function Field for Release 2 of the Architecture'",
+      "why": "Ruby template set bit 6 to 1; EVA loads have offset[8:0] in bits 15..7, bit 6 = 0, function in bits 5..0."
+    },
+    {
+      "id": "M2-013",
+      "op": "patch",
+      "name": "LHUE",
+      "set": {
+        "encode": "011111bbbbbtttttooooooooo0101001"
+      },
+      "ref": "II-A LHUE; II-A App. A, 'MIPS32 SPECIAL3 Encoding of Function Field for Release 2 of the Architecture'",
+      "why": "Ruby template set bit 6 to 1; EVA loads have offset[8:0] in bits 15..7, bit 6 = 0, function in bits 5..0."
+    },
+    {
+      "id": "M2-014",
+      "op": "patch",
+      "name": "LLE",
+      "set": {
+        "encode": "011111bbbbbtttttooooooooo0101110"
+      },
+      "ref": "II-A LLE; II-A App. A, 'MIPS32 SPECIAL3 Encoding of Function Field for Release 2 of the Architecture'",
+      "why": "Ruby template set bit 6 to 1; EVA loads have offset[8:0] in bits 15..7, bit 6 = 0, function in bits 5..0."
+    },
+    {
+      "id": "M2-015",
+      "op": "patch",
+      "name": "C.F.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110000"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-016",
+      "op": "patch",
+      "name": "C.UN.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110001"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-017",
+      "op": "patch",
+      "name": "C.EQ.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110010"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-018",
+      "op": "patch",
+      "name": "C.UEQ.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110011"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-019",
+      "op": "patch",
+      "name": "C.OLT.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110100"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-020",
+      "op": "patch",
+      "name": "C.ULT.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110101"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-021",
+      "op": "patch",
+      "name": "C.OLE.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110110"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-022",
+      "op": "patch",
+      "name": "C.ULE.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00110111"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-023",
+      "op": "patch",
+      "name": "C.SF.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111000"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-024",
+      "op": "patch",
+      "name": "C.NGLE.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111001"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-025",
+      "op": "patch",
+      "name": "C.SEQ.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111010"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-026",
+      "op": "patch",
+      "name": "C.NGL.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111011"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-027",
+      "op": "patch",
+      "name": "C.LT.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111100"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-028",
+      "op": "patch",
+      "name": "C.NGE.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111101"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-029",
+      "op": "patch",
+      "name": "C.LE.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111110"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-030",
+      "op": "patch",
+      "name": "C.NGT.PS",
+      "set": {
+        "encode": "01000110110TTTTTSSSSSccc00111111"
+      },
+      "ref": "II-A C.cond.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "Ruby template left fmt (bits 25..21) variable; C.cond.PS requires fmt = PS (10110). The variable fmt made C.cond.PS decode words of other formats (and BC1/MSA branches)."
+    },
+    {
+      "id": "M2-031",
+      "op": "patch",
+      "name": "JR",
+      "set": {
+        "encode": "000000sssss000000000000000001000"
+      },
+      "ref": "II-A JR, JR.HB; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field'",
+      "why": "Ruby template left the hint field (bits 10..6) variable; JR requires hint = 0 (hint = 10000 is JR.HB, other values are reserved)."
+    },
+    {
+      "id": "M2-032",
+      "op": "patch",
+      "name": "JALR",
+      "set": {
+        "encode": "000000sssss00000ddddd00000001001"
+      },
+      "ref": "II-A JALR, JALR.HB; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field'",
+      "why": "Ruby template left the hint field (bits 10..6) variable; JALR requires hint = 0 (hint = 10000 is JALR.HB, other values are reserved)."
+    },
+    {
+      "id": "M2-033",
+      "op": "patch",
+      "name": "JALR.HB",
+      "set": {
+        "encode": "000000sssss00000ddddd10000001001"
+      },
+      "ref": "II-A JALR.HB; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field'",
+      "why": "Ruby template left hint bits 9..6 variable; JALR.HB is hint = 10000 exactly."
+    },
+    {
+      "id": "M2-034",
+      "op": "remove",
+      "name": "DDIV",
+      "ref": "II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field' (function 011110 is MIPS64-only)",
+      "why": "DDIV is a MIPS64 instruction; on a MIPS32 core the word raises Reserved Instruction. The Ruby table listed it, which made the legacy '201 vector' 0x0000001E decode to DDIV."
+    },
+    {
+      "id": "M2-035",
+      "op": "remove",
+      "name": "DDIVU",
+      "ref": "II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field' (function 011111 is MIPS64-only)",
+      "why": "DDIVU is a MIPS64 instruction; on a MIPS32 core the word raises Reserved Instruction. The Ruby table listed it, which made the legacy '201 vector' 0x0000001E decode to DDIV."
+    },
+    {
+      "id": "M2-036",
+      "op": "add",
+      "name": "BGEZALL",
+      "since": "R1",
+      "encode": "000001sssss10011oooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch on Greater Than or Equal to Zero and Link Likely",
+      "ref": "II-A BGEZALL; II-A App. A, 'MIPS32 REGIMM Encoding of rt Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-037",
+      "op": "add",
+      "name": "SDBBP",
+      "since": "R1",
+      "encode": "011100eeeeeeeeeeeeeeeeeeee111111",
+      "instrType": "R",
+      "desc": "Software Debug Breakpoint",
+      "ref": "II-A SDBBP; II-A App. A, 'MIPS32 SPECIAL2 Encoding of Function Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-038",
+      "op": "add",
+      "name": "EXT",
+      "since": "R2",
+      "encode": "011111ssssstttttzzzzzPPPPP000000",
+      "instrType": "R",
+      "desc": "Extract Bit Field",
+      "ref": "II-A EXT; II-A App. A, 'MIPS32 SPECIAL3 Encoding of Function Field for Release 2 of the Architecture'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-039",
+      "op": "add",
+      "name": "SEB",
+      "since": "R2",
+      "encode": "01111100000tttttddddd10000100000",
+      "instrType": "R",
+      "desc": "Sign-Extend Byte",
+      "ref": "II-A SEB; II-A App. A, 'MIPS32 BSHFL Encoding of sa Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-040",
+      "op": "add",
+      "name": "SEH",
+      "since": "R2",
+      "encode": "01111100000tttttddddd11000100000",
+      "instrType": "R",
+      "desc": "Sign-Extend Halfword",
+      "ref": "II-A SEH; II-A App. A, 'MIPS32 BSHFL Encoding of sa Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-041",
+      "op": "add",
+      "name": "WSBH",
+      "since": "R2",
+      "encode": "01111100000tttttddddd00010100000",
+      "instrType": "R",
+      "desc": "Word Swap Bytes Within Halfwords",
+      "ref": "II-A WSBH; II-A App. A, 'MIPS32 BSHFL Encoding of sa Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-042",
+      "op": "add",
+      "name": "ROTR",
+      "since": "R2",
+      "encode": "00000000001tttttdddddaaaaa000010",
+      "instrType": "R",
+      "desc": "Rotate Word Right",
+      "ref": "II-A ROTR; II-A App. A, 'MIPS32 SRL/SRLV Encoding of Shift/Rotate'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-043",
+      "op": "add",
+      "name": "ROTRV",
+      "since": "R2",
+      "encode": "000000ssssstttttddddd00001000110",
+      "instrType": "R",
+      "desc": "Rotate Word Right Variable",
+      "ref": "II-A ROTRV; II-A App. A, 'MIPS32 SRL/SRLV Encoding of Shift/Rotate'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-044",
+      "op": "add",
+      "name": "RDHWR",
+      "since": "R2",
+      "encode": "01111100000tttttddddd00000111011",
+      "instrType": "R",
+      "desc": "Read Hardware Register",
+      "ref": "II-A RDHWR; II-A App. A, 'MIPS32 SPECIAL3 Encoding of Function Field for Release 2 of the Architecture'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-045",
+      "op": "add",
+      "name": "RDPGPR",
+      "since": "R2",
+      "encode": "01000001010tttttddddd00000000000",
+      "instrType": "R",
+      "desc": "Read GPR from Previous Shadow Set",
+      "ref": "II-A RDPGPR; II-A App. A, 'MIPS32 COP0 Encoding of rs Field' / 'MFMC0 Encoding'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-046",
+      "op": "add",
+      "name": "WRPGPR",
+      "since": "R2",
+      "encode": "01000001110tttttddddd00000000000",
+      "instrType": "R",
+      "desc": "Write to GPR in Previous Shadow Set",
+      "ref": "II-A WRPGPR; II-A App. A, 'MIPS32 COP0 Encoding of rs Field' / 'MFMC0 Encoding'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-047",
+      "op": "add",
+      "name": "DI",
+      "since": "R2",
+      "encode": "01000001011ttttt0110000000000000",
+      "instrType": "R",
+      "desc": "Disable Interrupts",
+      "ref": "II-A DI; II-A App. A, 'MIPS32 COP0 Encoding of rs Field' / 'MFMC0 Encoding'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-048",
+      "op": "add",
+      "name": "EI",
+      "since": "R2",
+      "encode": "01000001011ttttt0110000000100000",
+      "instrType": "R",
+      "desc": "Enable Interrupts",
+      "ref": "II-A EI; II-A App. A, 'MIPS32 COP0 Encoding of rs Field' / 'MFMC0 Encoding'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-049",
+      "op": "add",
+      "name": "EHB",
+      "since": "R2",
+      "encode": "00000000000000000000000011000000",
+      "instrType": "R",
+      "desc": "Execution Hazard Barrier",
+      "ref": "II-A EHB; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field' (SLL r0, r0, 3)",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-050",
+      "op": "add",
+      "name": "PAUSE",
+      "since": "R2",
+      "encode": "00000000000000000000000101000000",
+      "instrType": "R",
+      "desc": "Wait for the LLBit to Clear",
+      "ref": "II-A PAUSE; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field' (SLL r0, r0, 5)",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-051",
+      "op": "add",
+      "name": "SYNCI",
+      "since": "R2",
+      "encode": "000001bbbbb11111oooooooooooooooo",
+      "instrType": "I",
+      "desc": "Synchronize Caches to Make Instruction Writes Effective",
+      "ref": "II-A SYNCI; II-A App. A, 'MIPS32 REGIMM Encoding of rt Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-052",
+      "op": "add",
+      "name": "JR.HB",
+      "since": "R2",
+      "encode": "000000sssss000000000010000001000",
+      "instrType": "R",
+      "desc": "Jump Register with Hazard Barrier",
+      "ref": "II-A JR.HB; II-A App. A, 'MIPS32 SPECIAL Opcode Encoding of Function Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-053",
+      "op": "add",
+      "name": "MFHC1",
+      "since": "R2",
+      "encode": "01000100011tttttSSSSS00000000000",
+      "instrType": "R",
+      "desc": "Move Word From High Half of Floating Point Register",
+      "ref": "II-A MFHC1; II-A App. A, 'MIPS32 COP1 Encoding of rs Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-054",
+      "op": "add",
+      "name": "MTHC1",
+      "since": "R2",
+      "encode": "01000100111tttttSSSSS00000000000",
+      "instrType": "R",
+      "desc": "Move Word to High Half of Floating Point Register",
+      "ref": "II-A MTHC1; II-A App. A, 'MIPS32 COP1 Encoding of rs Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-055",
+      "op": "add",
+      "name": "MFHC2",
+      "since": "R2",
+      "encode": "01001000011tttttIIIIIIIIIIIIIIII",
+      "instrType": "R",
+      "desc": "Move Word From High Half of Coprocessor 2 Register",
+      "ref": "II-A MFHC2; II-A App. A, 'MIPS32 COP2 Encoding of rs Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-056",
+      "op": "add",
+      "name": "MTHC2",
+      "since": "R2",
+      "encode": "01001000111tttttIIIIIIIIIIIIIIII",
+      "instrType": "R",
+      "desc": "Move Word to High Half of Coprocessor 2 Register",
+      "ref": "II-A MTHC2; II-A App. A, 'MIPS32 COP2 Encoding of rs Field'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-057",
+      "op": "add",
+      "name": "CVT.L.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD100101",
+      "instrType": "R",
+      "desc": "Floating Point Convert to Long Fixed Point",
+      "ref": "II-A CVT.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-058",
+      "op": "add",
+      "name": "ROUND.L.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD001000",
+      "instrType": "R",
+      "desc": "Floating Point Round to Long Fixed Point",
+      "ref": "II-A ROUND.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-059",
+      "op": "add",
+      "name": "TRUNC.L.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD001001",
+      "instrType": "R",
+      "desc": "Floating Point Truncate to Long Fixed Point",
+      "ref": "II-A TRUNC.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-060",
+      "op": "add",
+      "name": "FLOOR.L.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD001011",
+      "instrType": "R",
+      "desc": "Floating Point Floor to Long Fixed Point",
+      "ref": "II-A FLOOR.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-061",
+      "op": "add",
+      "name": "RECIP.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD010101",
+      "instrType": "R",
+      "desc": "Reciprocal Approximation",
+      "ref": "II-A RECIP.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-062",
+      "op": "add",
+      "name": "RSQRT.S",
+      "since": "R2",
+      "encode": "0100011000000000SSSSSDDDDD010110",
+      "instrType": "R",
+      "desc": "Reciprocal Square Root Approximation",
+      "ref": "II-A RSQRT.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-063",
+      "op": "add",
+      "name": "CVT.L.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD100101",
+      "instrType": "R",
+      "desc": "Floating Point Convert to Long Fixed Point",
+      "ref": "II-A CVT.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-064",
+      "op": "add",
+      "name": "ROUND.L.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD001000",
+      "instrType": "R",
+      "desc": "Floating Point Round to Long Fixed Point",
+      "ref": "II-A ROUND.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-065",
+      "op": "add",
+      "name": "TRUNC.L.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD001001",
+      "instrType": "R",
+      "desc": "Floating Point Truncate to Long Fixed Point",
+      "ref": "II-A TRUNC.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-066",
+      "op": "add",
+      "name": "FLOOR.L.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD001011",
+      "instrType": "R",
+      "desc": "Floating Point Floor to Long Fixed Point",
+      "ref": "II-A FLOOR.L.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-067",
+      "op": "add",
+      "name": "RECIP.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD010101",
+      "instrType": "R",
+      "desc": "Reciprocal Approximation",
+      "ref": "II-A RECIP.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-068",
+      "op": "add",
+      "name": "RSQRT.D",
+      "since": "R2",
+      "encode": "0100011000100000SSSSSDDDDD010110",
+      "instrType": "R",
+      "desc": "Reciprocal Square Root Approximation",
+      "ref": "II-A RSQRT.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-069",
+      "op": "add",
+      "name": "CVT.S.L",
+      "since": "R2",
+      "encode": "0100011010100000SSSSSDDDDD100000",
+      "instrType": "R",
+      "desc": "Floating Point Convert to Single Floating Point (from Long)",
+      "ref": "II-A CVT.S.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M2-070",
+      "op": "add",
+      "name": "CVT.D.L",
+      "since": "R2",
+      "encode": "0100011010100000SSSSSDDDDD100001",
+      "instrType": "R",
+      "desc": "Floating Point Convert to Double Floating Point (from Long)",
+      "ref": "II-A CVT.D.fmt; II-A App. A, 'MIPS32 COP1 Encoding of Function Field When rs=S/D/W/L/PS'",
+      "why": "MIPS32 instruction missing from the Ruby table."
+    },
+    {
+      "id": "M3-001",
+      "op": "add",
+      "name": "BC",
+      "since": "R6",
+      "encode": "110010qqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "instrType": "I",
+      "desc": "Branch, Compact",
+      "ref": "II-A (R6) BC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-002",
+      "op": "add",
+      "name": "BALC",
+      "since": "R6",
+      "encode": "111010qqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "instrType": "I",
+      "desc": "Branch and Link, Compact",
+      "ref": "II-A (R6) BALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-003",
+      "op": "add",
+      "name": "BEQZC",
+      "since": "R6",
+      "encode": "110110ssssswwwwwwwwwwwwwwwwwwwww",
+      "instrType": "I",
+      "desc": "Branch if Equal to Zero, Compact",
+      "ref": "II-A (R6) BEQZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-004",
+      "op": "add",
+      "name": "JIC",
+      "since": "R6",
+      "encode": "11011000000tttttiiiiiiiiiiiiiiii",
+      "instrType": "I",
+      "desc": "Jump Indexed, Compact",
+      "ref": "II-A (R6) JIC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-005",
+      "op": "add",
+      "name": "BNEZC",
+      "since": "R6",
+      "encode": "111110ssssswwwwwwwwwwwwwwwwwwwww",
+      "instrType": "I",
+      "desc": "Branch if Not Equal to Zero, Compact",
+      "ref": "II-A (R6) BNEZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-006",
+      "op": "add",
+      "name": "JIALC",
+      "since": "R6",
+      "encode": "11111000000tttttiiiiiiiiiiiiiiii",
+      "instrType": "I",
+      "desc": "Jump Indexed and Link, Compact",
+      "ref": "II-A (R6) JIALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-007",
+      "op": "add",
+      "name": "BOVC",
+      "since": "R6",
+      "encode": "001000ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch on Overflow, Compact",
+      "ref": "II-A (R6) BOVC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          ">=",
+          "rt"
+        ]
+      ]
+    },
+    {
+      "id": "M3-008",
+      "op": "add",
+      "name": "BEQZALC",
+      "since": "R6",
+      "encode": "00100000000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Equal to Zero and Link, Compact",
+      "ref": "II-A (R6) BEQZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-009",
+      "op": "add",
+      "name": "BEQC",
+      "since": "R6",
+      "encode": "001000ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Equal, Compact",
+      "ref": "II-A (R6) BEQC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rs",
+          "<",
+          "rt"
+        ]
+      ]
+    },
+    {
+      "id": "M3-010",
+      "op": "add",
+      "name": "BNVC",
+      "since": "R6",
+      "encode": "011000ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch on No Overflow, Compact",
+      "ref": "II-A (R6) BNVC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          ">=",
+          "rt"
+        ]
+      ]
+    },
+    {
+      "id": "M3-011",
+      "op": "add",
+      "name": "BNEZALC",
+      "since": "R6",
+      "encode": "01100000000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Not Equal to Zero and Link, Compact",
+      "ref": "II-A (R6) BNEZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-012",
+      "op": "add",
+      "name": "BNEC",
+      "since": "R6",
+      "encode": "011000ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Not Equal, Compact",
+      "ref": "II-A (R6) BNEC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rs",
+          "<",
+          "rt"
+        ]
+      ]
+    },
+    {
+      "id": "M3-013",
+      "op": "add",
+      "name": "BLEZALC",
+      "since": "R6",
+      "encode": "00011000000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if <= 0 and Link, Compact",
+      "ref": "II-A (R6) BLEZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-014",
+      "op": "add",
+      "name": "BGEZALC",
+      "since": "R6",
+      "encode": "000110ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if >= 0 and Link, Compact",
+      "ref": "II-A (R6) BGEZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "==",
+          "rt"
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-015",
+      "op": "add",
+      "name": "BGEUC",
+      "since": "R6",
+      "encode": "000110ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if >= Unsigned, Compact",
+      "ref": "II-A (R6) BGEUC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          "rt"
+        ],
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-016",
+      "op": "add",
+      "name": "BGTZALC",
+      "since": "R6",
+      "encode": "00011100000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if > 0 and Link, Compact",
+      "ref": "II-A (R6) BGTZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-017",
+      "op": "add",
+      "name": "BLTZALC",
+      "since": "R6",
+      "encode": "000111ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if < 0 and Link, Compact",
+      "ref": "II-A (R6) BLTZALC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "==",
+          "rt"
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-018",
+      "op": "add",
+      "name": "BLTUC",
+      "since": "R6",
+      "encode": "000111ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if < Unsigned, Compact",
+      "ref": "II-A (R6) BLTUC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          "rt"
+        ],
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-019",
+      "op": "add",
+      "name": "BLEZC",
+      "since": "R6",
+      "encode": "01011000000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if <= 0, Compact",
+      "ref": "II-A (R6) BLEZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-020",
+      "op": "add",
+      "name": "BGEZC",
+      "since": "R6",
+      "encode": "010110ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if >= 0, Compact",
+      "ref": "II-A (R6) BGEZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "==",
+          "rt"
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-021",
+      "op": "add",
+      "name": "BGEC",
+      "since": "R6",
+      "encode": "010110ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if >=, Compact",
+      "ref": "II-A (R6) BGEC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          "rt"
+        ],
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-022",
+      "op": "add",
+      "name": "BGTZC",
+      "since": "R6",
+      "encode": "01011100000tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if > 0, Compact",
+      "ref": "II-A (R6) BGTZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-023",
+      "op": "add",
+      "name": "BLTZC",
+      "since": "R6",
+      "encode": "010111ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if < 0, Compact",
+      "ref": "II-A (R6) BLTZC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "==",
+          "rt"
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-024",
+      "op": "add",
+      "name": "BLTC",
+      "since": "R6",
+      "encode": "010111ssssstttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if <, Compact",
+      "ref": "II-A (R6) BLTC; II-A Release 6, compact branches; App. A 'Release 6 POP encodings' (fields compared, not fixed)",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "constraint": [
+        [
+          "rs",
+          "!=",
+          "rt"
+        ],
+        [
+          "rs",
+          "!=",
+          0
+        ],
+        [
+          "rt",
+          "!=",
+          0
+        ]
+      ]
+    },
+    {
+      "id": "M3-025",
+      "op": "add",
+      "name": "BC1EQZ",
+      "since": "R6",
+      "encode": "01000101001TTTTToooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Coprocessor 1 Register Bit 0 Equal to Zero",
+      "ref": "II-A (R6) BC1EQZ; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-026",
+      "op": "add",
+      "name": "BC1NEZ",
+      "since": "R6",
+      "encode": "01000101101TTTTToooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Coprocessor 1 Register Bit 0 Not Equal to Zero",
+      "ref": "II-A (R6) BC1NEZ; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-027",
+      "op": "add",
+      "name": "BC2EQZ",
+      "since": "R6",
+      "encode": "01001001001tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Coprocessor 2 Condition Equal to Zero",
+      "ref": "II-A (R6) BC2EQZ; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-028",
+      "op": "add",
+      "name": "BC2NEZ",
+      "since": "R6",
+      "encode": "01001001101tttttoooooooooooooooo",
+      "instrType": "I",
+      "desc": "Branch if Coprocessor 2 Condition Not Equal to Zero",
+      "ref": "II-A (R6) BC2NEZ; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-029",
+      "op": "add",
+      "name": "AUI",
+      "since": "R6",
+      "encode": "001111ssssstttttiiiiiiiiiiiiiiii",
+      "instrType": "I",
+      "desc": "Add Upper Immediate",
+      "ref": "II-A (R6) AUI; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-030",
+      "op": "add",
+      "name": "AUIPC",
+      "since": "R6",
+      "encode": "111011sssss11110iiiiiiiiiiiiiiii",
+      "instrType": "I",
+      "desc": "Add Upper Immediate to PC",
+      "ref": "II-A (R6) AUIPC; II-A Release 6, PC-relative instructions; App. A 'Release 6 PCREL encoding'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-031",
+      "op": "add",
+      "name": "ALUIPC",
+      "since": "R6",
+      "encode": "111011sssss11111iiiiiiiiiiiiiiii",
+      "instrType": "I",
+      "desc": "Aligned Add Upper Immediate to PC",
+      "ref": "II-A (R6) ALUIPC; II-A Release 6, PC-relative instructions; App. A 'Release 6 PCREL encoding'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-032",
+      "op": "add",
+      "name": "ADDIUPC",
+      "since": "R6",
+      "encode": "111011sssss00yyyyyyyyyyyyyyyyyyy",
+      "instrType": "I",
+      "desc": "Add Immediate to PC (unsigned)",
+      "ref": "II-A (R6) ADDIUPC; II-A Release 6, PC-relative instructions; App. A 'Release 6 PCREL encoding'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-033",
+      "op": "add",
+      "name": "LWPC",
+      "since": "R6",
+      "encode": "111011sssss01yyyyyyyyyyyyyyyyyyy",
+      "instrType": "I",
+      "desc": "Load Word PC-relative",
+      "ref": "II-A (R6) LWPC; II-A Release 6, PC-relative instructions; App. A 'Release 6 PCREL encoding'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-034",
+      "op": "add",
+      "name": "ALIGN",
+      "since": "R6",
+      "encode": "011111ssssstttttddddd010kk100000",
+      "instrType": "R",
+      "desc": "Concatenate two GPRs and extract a word",
+      "ref": "II-A (R6) ALIGN; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-035",
+      "op": "add",
+      "name": "BITSWAP",
+      "since": "R6",
+      "encode": "01111100000tttttddddd00000100000",
+      "instrType": "R",
+      "desc": "Swap Bits within each Byte",
+      "ref": "II-A (R6) BITSWAP; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-036",
+      "op": "add",
+      "name": "LSA",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd000nn000101",
+      "instrType": "R",
+      "desc": "Load Scaled Address",
+      "ref": "II-A (R6) LSA; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-037",
+      "op": "add",
+      "name": "SELEQZ",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00000110101",
+      "instrType": "R",
+      "desc": "Select integer GPR if zero",
+      "ref": "II-A (R6) SELEQZ; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-038",
+      "op": "add",
+      "name": "SELNEZ",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00000110111",
+      "instrType": "R",
+      "desc": "Select integer GPR if not zero",
+      "ref": "II-A (R6) SELNEZ; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-039",
+      "op": "add",
+      "name": "MUL@R6",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00010011000",
+      "instrType": "R",
+      "desc": "Multiply Words Signed, Low Word",
+      "ref": "II-A (R6) MUL; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "MUL"
+    },
+    {
+      "id": "M3-040",
+      "op": "add",
+      "name": "MUH",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00011011000",
+      "instrType": "R",
+      "desc": "Multiply Words Signed, High Word",
+      "ref": "II-A (R6) MUH; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-041",
+      "op": "add",
+      "name": "MULU",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00010011001",
+      "instrType": "R",
+      "desc": "Multiply Words Unsigned, Low Word",
+      "ref": "II-A (R6) MULU; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-042",
+      "op": "add",
+      "name": "MUHU",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00011011001",
+      "instrType": "R",
+      "desc": "Multiply Words Unsigned, High Word",
+      "ref": "II-A (R6) MUHU; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-043",
+      "op": "add",
+      "name": "DIV@R6",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00010011010",
+      "instrType": "R",
+      "desc": "Divide Words Signed",
+      "ref": "II-A (R6) DIV; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "DIV"
+    },
+    {
+      "id": "M3-044",
+      "op": "add",
+      "name": "MOD",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00011011010",
+      "instrType": "R",
+      "desc": "Modulo Words Signed",
+      "ref": "II-A (R6) MOD; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-045",
+      "op": "add",
+      "name": "DIVU@R6",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00010011011",
+      "instrType": "R",
+      "desc": "Divide Words Unsigned",
+      "ref": "II-A (R6) DIVU; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "DIVU"
+    },
+    {
+      "id": "M3-046",
+      "op": "add",
+      "name": "MODU",
+      "since": "R6",
+      "encode": "000000ssssstttttddddd00011011011",
+      "instrType": "R",
+      "desc": "Modulo Words Unsigned",
+      "ref": "II-A (R6) MODU; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-047",
+      "op": "add",
+      "name": "CLZ@R6",
+      "since": "R6",
+      "encode": "000000sssss00000ddddd00001010000",
+      "instrType": "R",
+      "desc": "Count Leading Zeros in Word",
+      "ref": "II-A (R6) CLZ; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "CLZ"
+    },
+    {
+      "id": "M3-048",
+      "op": "add",
+      "name": "CLO@R6",
+      "since": "R6",
+      "encode": "000000sssss00000ddddd00001010001",
+      "instrType": "R",
+      "desc": "Count Leading Ones in Word",
+      "ref": "II-A (R6) CLO; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "CLO"
+    },
+    {
+      "id": "M3-049",
+      "op": "add",
+      "name": "SDBBP@R6",
+      "since": "R6",
+      "encode": "000000jjjjjjjjjjjjjjjjjjjj001110",
+      "instrType": "R",
+      "desc": "Software Debug Breakpoint",
+      "ref": "II-A (R6) SDBBP; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "SDBBP"
+    },
+    {
+      "id": "M3-050",
+      "op": "add",
+      "name": "SIGRIE",
+      "since": "R6",
+      "encode": "0000010000010111jjjjjjjjjjjjjjjj",
+      "instrType": "I",
+      "desc": "Signal Reserved Instruction Exception",
+      "ref": "II-A (R6) SIGRIE; II-A Release 6, App. A 'SPECIAL Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-051",
+      "op": "add",
+      "name": "LL@R6",
+      "since": "R6",
+      "encode": "011111bbbbbtttttooooooooo0110110",
+      "instrType": "R",
+      "desc": "Load Linked Word",
+      "ref": "II-A (R6) LL; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "LL"
+    },
+    {
+      "id": "M3-052",
+      "op": "add",
+      "name": "SC@R6",
+      "since": "R6",
+      "encode": "011111bbbbbtttttooooooooo0100110",
+      "instrType": "R",
+      "desc": "Store Conditional Word",
+      "ref": "II-A (R6) SC; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "SC"
+    },
+    {
+      "id": "M3-053",
+      "op": "add",
+      "name": "CACHE@R6",
+      "since": "R6",
+      "encode": "011111bbbbbhhhhhooooooooo0100101",
+      "instrType": "R",
+      "desc": "Perform Cache Operation",
+      "ref": "II-A (R6) CACHE; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "CACHE"
+    },
+    {
+      "id": "M3-054",
+      "op": "add",
+      "name": "PREF@R6",
+      "since": "R6",
+      "encode": "011111bbbbbhhhhhooooooooo0110101",
+      "instrType": "R",
+      "desc": "Prefetch",
+      "ref": "II-A (R6) PREF; II-A Release 6, App. A 'SPECIAL3 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "PREF"
+    },
+    {
+      "id": "M3-055",
+      "op": "add",
+      "name": "LWC2@R6",
+      "since": "R6",
+      "encode": "01001001010tttttbbbbbggggggggggg",
+      "instrType": "R",
+      "desc": "LWC2 (Release 6 encoding)",
+      "ref": "II-A (R6) LWC2; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "LWC2"
+    },
+    {
+      "id": "M3-056",
+      "op": "add",
+      "name": "SWC2@R6",
+      "since": "R6",
+      "encode": "01001001011tttttbbbbbggggggggggg",
+      "instrType": "R",
+      "desc": "SWC2 (Release 6 encoding)",
+      "ref": "II-A (R6) SWC2; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "SWC2"
+    },
+    {
+      "id": "M3-057",
+      "op": "add",
+      "name": "LDC2@R6",
+      "since": "R6",
+      "encode": "01001001110tttttbbbbbggggggggggg",
+      "instrType": "R",
+      "desc": "LDC2 (Release 6 encoding)",
+      "ref": "II-A (R6) LDC2; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "LDC2"
+    },
+    {
+      "id": "M3-058",
+      "op": "add",
+      "name": "SDC2@R6",
+      "since": "R6",
+      "encode": "01001001111tttttbbbbbggggggggggg",
+      "instrType": "R",
+      "desc": "SDC2 (Release 6 encoding)",
+      "ref": "II-A (R6) SDC2; II-A Release 6, App. A 'COP2 Encoding of rs Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded).",
+      "mnemonic": "SDC2"
+    },
+    {
+      "id": "M3-059",
+      "op": "add",
+      "name": "CMP.AF.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000000",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.AF.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-060",
+      "op": "add",
+      "name": "CMP.UN.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UN.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-061",
+      "op": "add",
+      "name": "CMP.EQ.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.EQ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-062",
+      "op": "add",
+      "name": "CMP.UEQ.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UEQ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-063",
+      "op": "add",
+      "name": "CMP.LT.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000100",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.LT.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-064",
+      "op": "add",
+      "name": "CMP.ULT.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000101",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.ULT.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-065",
+      "op": "add",
+      "name": "CMP.LE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000110",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.LE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-066",
+      "op": "add",
+      "name": "CMP.ULE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD000111",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.ULE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-067",
+      "op": "add",
+      "name": "CMP.SAF.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001000",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SAF.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-068",
+      "op": "add",
+      "name": "CMP.SUN.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUN.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-069",
+      "op": "add",
+      "name": "CMP.SEQ.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SEQ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-070",
+      "op": "add",
+      "name": "CMP.SUEQ.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUEQ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-071",
+      "op": "add",
+      "name": "CMP.SLT.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001100",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SLT.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-072",
+      "op": "add",
+      "name": "CMP.SULT.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001101",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SULT.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-073",
+      "op": "add",
+      "name": "CMP.SLE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001110",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SLE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-074",
+      "op": "add",
+      "name": "CMP.SULE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD001111",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SULE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-075",
+      "op": "add",
+      "name": "CMP.OR.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD010001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.OR.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-076",
+      "op": "add",
+      "name": "CMP.UNE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD010010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UNE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-077",
+      "op": "add",
+      "name": "CMP.NE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD010011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.NE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-078",
+      "op": "add",
+      "name": "CMP.SOR.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD011001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SOR.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-079",
+      "op": "add",
+      "name": "CMP.SUNE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD011010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUNE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-080",
+      "op": "add",
+      "name": "CMP.SNE.S",
+      "since": "R6",
+      "encode": "01000110100TTTTTSSSSSDDDDD011011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SNE.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-081",
+      "op": "add",
+      "name": "CMP.AF.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000000",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.AF.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-082",
+      "op": "add",
+      "name": "CMP.UN.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UN.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-083",
+      "op": "add",
+      "name": "CMP.EQ.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.EQ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-084",
+      "op": "add",
+      "name": "CMP.UEQ.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UEQ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-085",
+      "op": "add",
+      "name": "CMP.LT.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000100",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.LT.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-086",
+      "op": "add",
+      "name": "CMP.ULT.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000101",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.ULT.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-087",
+      "op": "add",
+      "name": "CMP.LE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000110",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.LE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-088",
+      "op": "add",
+      "name": "CMP.ULE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD000111",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.ULE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-089",
+      "op": "add",
+      "name": "CMP.SAF.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001000",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SAF.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-090",
+      "op": "add",
+      "name": "CMP.SUN.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUN.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-091",
+      "op": "add",
+      "name": "CMP.SEQ.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SEQ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-092",
+      "op": "add",
+      "name": "CMP.SUEQ.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUEQ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-093",
+      "op": "add",
+      "name": "CMP.SLT.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001100",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SLT.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-094",
+      "op": "add",
+      "name": "CMP.SULT.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001101",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SULT.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-095",
+      "op": "add",
+      "name": "CMP.SLE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001110",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SLE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-096",
+      "op": "add",
+      "name": "CMP.SULE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD001111",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SULE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-097",
+      "op": "add",
+      "name": "CMP.OR.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD010001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.OR.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-098",
+      "op": "add",
+      "name": "CMP.UNE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD010010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.UNE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-099",
+      "op": "add",
+      "name": "CMP.NE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD010011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.NE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-100",
+      "op": "add",
+      "name": "CMP.SOR.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD011001",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SOR.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-101",
+      "op": "add",
+      "name": "CMP.SUNE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD011010",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SUNE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-102",
+      "op": "add",
+      "name": "CMP.SNE.D",
+      "since": "R6",
+      "encode": "01000110101TTTTTSSSSSDDDDD011011",
+      "instrType": "R",
+      "desc": "Floating Point Compare Setting Mask",
+      "ref": "II-A (R6) CMP.SNE.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-103",
+      "op": "add",
+      "name": "SEL.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD010000",
+      "instrType": "R",
+      "desc": "Select floating point values with FPR condition",
+      "ref": "II-A (R6) SEL.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-104",
+      "op": "add",
+      "name": "SELEQZ.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD010100",
+      "instrType": "R",
+      "desc": "Select floating point value if bit 0 of ft is zero",
+      "ref": "II-A (R6) SELEQZ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-105",
+      "op": "add",
+      "name": "SELNEZ.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD010111",
+      "instrType": "R",
+      "desc": "Select floating point value if bit 0 of ft is not zero",
+      "ref": "II-A (R6) SELNEZ.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-106",
+      "op": "add",
+      "name": "MADDF.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011000",
+      "instrType": "R",
+      "desc": "Fused Floating Point Multiply Add",
+      "ref": "II-A (R6) MADDF.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-107",
+      "op": "add",
+      "name": "MSUBF.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011001",
+      "instrType": "R",
+      "desc": "Fused Floating Point Multiply Subtract",
+      "ref": "II-A (R6) MSUBF.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-108",
+      "op": "add",
+      "name": "MIN.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011100",
+      "instrType": "R",
+      "desc": "Minimum",
+      "ref": "II-A (R6) MIN.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-109",
+      "op": "add",
+      "name": "MINA.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011101",
+      "instrType": "R",
+      "desc": "Minimum Absolute",
+      "ref": "II-A (R6) MINA.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-110",
+      "op": "add",
+      "name": "MAX.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011110",
+      "instrType": "R",
+      "desc": "Maximum",
+      "ref": "II-A (R6) MAX.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-111",
+      "op": "add",
+      "name": "MAXA.S",
+      "since": "R6",
+      "encode": "01000110000TTTTTSSSSSDDDDD011111",
+      "instrType": "R",
+      "desc": "Maximum Absolute",
+      "ref": "II-A (R6) MAXA.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-112",
+      "op": "add",
+      "name": "RINT.S",
+      "since": "R6",
+      "encode": "0100011000000000SSSSSDDDDD011010",
+      "instrType": "R",
+      "desc": "Floating Point Round to Integral",
+      "ref": "II-A (R6) RINT.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-113",
+      "op": "add",
+      "name": "CLASS.S",
+      "since": "R6",
+      "encode": "0100011000000000SSSSSDDDDD011011",
+      "instrType": "R",
+      "desc": "Scalar Floating-Point Class Mask",
+      "ref": "II-A (R6) CLASS.S; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-114",
+      "op": "add",
+      "name": "SEL.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD010000",
+      "instrType": "R",
+      "desc": "Select floating point values with FPR condition",
+      "ref": "II-A (R6) SEL.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-115",
+      "op": "add",
+      "name": "SELEQZ.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD010100",
+      "instrType": "R",
+      "desc": "Select floating point value if bit 0 of ft is zero",
+      "ref": "II-A (R6) SELEQZ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-116",
+      "op": "add",
+      "name": "SELNEZ.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD010111",
+      "instrType": "R",
+      "desc": "Select floating point value if bit 0 of ft is not zero",
+      "ref": "II-A (R6) SELNEZ.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-117",
+      "op": "add",
+      "name": "MADDF.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011000",
+      "instrType": "R",
+      "desc": "Fused Floating Point Multiply Add",
+      "ref": "II-A (R6) MADDF.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-118",
+      "op": "add",
+      "name": "MSUBF.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011001",
+      "instrType": "R",
+      "desc": "Fused Floating Point Multiply Subtract",
+      "ref": "II-A (R6) MSUBF.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-119",
+      "op": "add",
+      "name": "MIN.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011100",
+      "instrType": "R",
+      "desc": "Minimum",
+      "ref": "II-A (R6) MIN.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-120",
+      "op": "add",
+      "name": "MINA.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011101",
+      "instrType": "R",
+      "desc": "Minimum Absolute",
+      "ref": "II-A (R6) MINA.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-121",
+      "op": "add",
+      "name": "MAX.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011110",
+      "instrType": "R",
+      "desc": "Maximum",
+      "ref": "II-A (R6) MAX.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-122",
+      "op": "add",
+      "name": "MAXA.D",
+      "since": "R6",
+      "encode": "01000110001TTTTTSSSSSDDDDD011111",
+      "instrType": "R",
+      "desc": "Maximum Absolute",
+      "ref": "II-A (R6) MAXA.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-123",
+      "op": "add",
+      "name": "RINT.D",
+      "since": "R6",
+      "encode": "0100011000100000SSSSSDDDDD011010",
+      "instrType": "R",
+      "desc": "Floating Point Round to Integral",
+      "ref": "II-A (R6) RINT.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-124",
+      "op": "add",
+      "name": "CLASS.D",
+      "since": "R6",
+      "encode": "0100011000100000SSSSSDDDDD011011",
+      "instrType": "R",
+      "desc": "Scalar Floating-Point Class Mask",
+      "ref": "II-A (R6) CLASS.D; II-A Release 6, App. A 'COP1 Encoding of Function Field (Release 6)'",
+      "why": "Release 6 instruction (new or re-encoded)."
+    },
+    {
+      "id": "M3-125",
+      "op": "add",
+      "name": "RDHWR@R6",
+      "since": "R6",
+      "encode": "01111100000tttttddddd00vvv111011",
+      "instrType": "R",
+      "desc": "Read Hardware Register (with select)",
+      "mnemonic": "RDHWR",
+      "ref": "II-A (R6) RDHWR; Release 6 adds the sel field (bits 8..6)",
+      "why": "Release 6 instruction (new or re-encoded)."
+    }
+  ]
+}

@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 2 — Writing programs · eMIPS user guide</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header>
+<nav class="guide-nav" aria-label="Guide">
+<ul>
+<li><a href="index.html">Contents</a></li>
+<li><a href="01-getting-started.html">1 Getting started</a></li>
+<li><a href="02-writing-programs.html" aria-current="page">2 Writing programs</a></li>
+<li><a href="03-the-gui.html">3 The GUI</a></li>
+<li><a href="04-command-line.html">4 The command line</a></li>
+<li><a href="05-understanding.html">5 Understanding</a></li>
+<li><a href="06-reference.html">6 Reference</a></li>
+</ul>
+</nav>
+</header>
+<main id="main">
+<h1 id="phase-2--writing-programs">Phase 2 — Writing programs</h1>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
+<p>This phase is about the language: how a MIPS assembly program is written
+for eMIPS, what the assembler accepts, and how a program talks to the
+outside world — system calls, the memory-mapped console, exceptions,
+interrupts and the floating-point unit.</p>
+<p>The syntax is the one of <strong>GNU <code>as</code></strong>, which is also what MARS and SPIM
+use, so most course material works unchanged.  Where eMIPS differs from
+MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
+<ul>
+<li><a href="#21-the-shape-of-a-program">2.1 The shape of a program</a></li>
+<li><a href="#22-registers">2.2 Registers</a></li>
+<li><a href="#23-instructions-and-operands">2.3 Instructions and operands</a></li>
+<li><a href="#24-numbers-characters-and-expressions">2.4 Numbers, characters and expressions</a></li>
+<li><a href="#25-data">2.5 Data</a></li>
+<li><a href="#26-pseudo-instructions">2.6 Pseudo-instructions</a></li>
+<li><a href="#27-branch-delay-slots">2.7 Branch delay slots</a></li>
+<li><a href="#28-functions-and-the-stack">2.8 Functions and the stack</a></li>
+<li><a href="#29-system-calls">2.9 System calls</a></li>
+<li><a href="#210-the-memory-mapped-console">2.10 The memory-mapped console</a></li>
+<li><a href="#211-exceptions-and-exception-handlers">2.11 Exceptions and exception handlers</a></li>
+<li><a href="#212-interrupts-and-the-timer">2.12 Interrupts and the timer</a></li>
+<li><a href="#213-floating-point">2.13 Floating point</a></li>
+<li><a href="#214-mips32-releases-r1-to-r6">2.14 MIPS32 releases (R1 to R6)</a></li>
+<li><a href="#215-differences-from-mars-and-spim">2.15 Differences from MARS and SPIM</a></li>
+<li><a href="#216-intel-hex-files">2.16 Intel HEX files</a></li>
+<li><a href="#217-common-assembly-errors">2.17 Common assembly errors</a></li>
+</ul>
+<hr>
+<h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
+<pre><code class="language-asm"># output: Hello, MIPS!\n
+        .data                           # data goes here
+greeting: .asciiz &quot;Hello, MIPS!\n&quot;
+        .text                           # instructions go here
+main:   la    $a0, greeting             # $a0 = address of the text
+        li    $v0, 4                    # service 4 = print_string
+        syscall
+        li    $v0, 10                   # service 10 = exit
+        syscall
+</code></pre>
+<ul>
+<li><strong>One statement per line</strong>: an instruction, a directive (a word
+  starting with <code>.</code>) or nothing.  A line may start with one or more
+  <strong>labels</strong> (<code>name:</code>).</li>
+<li><strong>Comments</strong> start with <code>#</code> and run to the end of the line.</li>
+<li><strong>Labels</strong> name an address: letters, digits, <code>_</code>, <code>.</code> and <code>$</code>, not
+  starting with a digit.  Case matters (<code>Loop</code> ≠ <code>loop</code>).</li>
+<li><strong>Segments</strong>: <code>.text</code> for instructions, <code>.data</code> for data.  You can
+  switch back and forth as often as you like.</li>
+<li>The program starts at the label <strong><code>main</code></strong> (or <code>__start</code>, or the
+  beginning of <code>.text</code>).</li>
+<li>A program ends with the <strong>exit</strong> system call (<code>li $v0, 10</code> +
+  <code>syscall</code>).  Without it the processor runs past the last instruction
+  and the simulation stops with a message saying so.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Segment</th>
+<th>Starts at</th>
+<th>For</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.text</code></td>
+<td><code>0x00400000</code></td>
+<td>your instructions</td>
+</tr>
+<tr>
+<td><code>.data</code></td>
+<td><code>0x10010000</code></td>
+<td>your data</td>
+</tr>
+<tr>
+<td><code>.ktext</code></td>
+<td><code>0x80000180</code></td>
+<td>the exception handler (kernel code) — <a href="#211-exceptions-and-exception-handlers">2.11</a></td>
+</tr>
+<tr>
+<td><code>.kdata</code></td>
+<td><code>0x90000000</code></td>
+<td>kernel data</td>
+</tr>
+</tbody>
+</table>
+<p>Each can be given an address: <code>.text 0x00400100</code>, <code>.data 0x10020000</code>.
+The stack pointer <code>$sp</code> starts at <code>0x7fffeffc</code> and the heap (<code>sbrk</code>) at
+<code>0x10040000</code>.</p>
+<h2 id="22-registers">2.2 Registers</h2>
+<p>MIPS has 32 general-purpose registers.  Write them by name or number:
+<code>$t0</code> and <code>$8</code> are the same register.</p>
+<table>
+<thead>
+<tr>
+<th>Number</th>
+<th>Name</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>$0</code></td>
+<td><code>$zero</code></td>
+<td>always 0 (writes are ignored)</td>
+</tr>
+<tr>
+<td><code>$1</code></td>
+<td><code>$at</code></td>
+<td>reserved for the assembler (pseudo-instructions)</td>
+</tr>
+<tr>
+<td><code>$2</code>–<code>$3</code></td>
+<td><code>$v0</code>–<code>$v1</code></td>
+<td>function results; <code>$v0</code> = syscall number</td>
+</tr>
+<tr>
+<td><code>$4</code>–<code>$7</code></td>
+<td><code>$a0</code>–<code>$a3</code></td>
+<td>function arguments</td>
+</tr>
+<tr>
+<td><code>$8</code>–<code>$15</code></td>
+<td><code>$t0</code>–<code>$t7</code></td>
+<td>temporaries (a call may change them)</td>
+</tr>
+<tr>
+<td><code>$16</code>–<code>$23</code></td>
+<td><code>$s0</code>–<code>$s7</code></td>
+<td>saved (a function must preserve them)</td>
+</tr>
+<tr>
+<td><code>$24</code>–<code>$25</code></td>
+<td><code>$t8</code>–<code>$t9</code></td>
+<td>temporaries</td>
+</tr>
+<tr>
+<td><code>$26</code>–<code>$27</code></td>
+<td><code>$k0</code>–<code>$k1</code></td>
+<td>reserved for the exception handler</td>
+</tr>
+<tr>
+<td><code>$28</code></td>
+<td><code>$gp</code></td>
+<td>global pointer</td>
+</tr>
+<tr>
+<td><code>$29</code></td>
+<td><code>$sp</code></td>
+<td>stack pointer</td>
+</tr>
+<tr>
+<td><code>$30</code></td>
+<td><code>$fp</code> (<code>$s8</code>)</td>
+<td>frame pointer</td>
+</tr>
+<tr>
+<td><code>$31</code></td>
+<td><code>$ra</code></td>
+<td>return address (written by <code>jal</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Besides these: <strong>HI</strong> and <strong>LO</strong> (results of <code>mult</code> / <code>div</code>, read with
+<code>mfhi</code> / <code>mflo</code>), the <strong>PC</strong>, the floating-point registers <strong><code>$f0</code>–<code>$f31</code></strong>
+(<a href="#213-floating-point">2.13</a>) and the coprocessor-0 registers, accessed
+by number with <code>mfc0</code> / <code>mtc0</code> (<a href="#211-exceptions-and-exception-handlers">2.11</a>).</p>
+<h2 id="23-instructions-and-operands">2.3 Instructions and operands</h2>
+<p>An instruction is a mnemonic followed by operands separated by commas.
+The order is the MIPS manual's: <strong>destination first</strong>.</p>
+<pre><code class="language-mips">        addu  $t2, $t0, $t1       # $t2 = $t0 + $t1          (three registers)
+        addiu $t0, $t0, -4        # $t0 = $t0 - 4            (register + immediate)
+        sll   $t1, $t1, 2         # $t1 = $t1 &lt;&lt; 2           (shift amount 0..31)
+        lw    $t3, 8($sp)         # $t3 = memory[$sp + 8]    (offset(base))
+        sw    $t3, 0($t0)         # memory[$t0] = $t3
+        beq   $t0, $t1, done      # branch to a label
+        j     loop                # jump to a label
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Operand</th>
+<th>Written</th>
+<th>Range</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>register</td>
+<td><code>$t0</code>, <code>$8</code></td>
+<td></td>
+</tr>
+<tr>
+<td>signed immediate (<code>addi</code>, <code>addiu</code>, <code>slti</code> ...)</td>
+<td><code>-5</code>, <code>0x7fff</code></td>
+<td>−32768 … 32767</td>
+</tr>
+<tr>
+<td>unsigned immediate (<code>andi</code>, <code>ori</code>, <code>xori</code>)</td>
+<td><code>255</code>, <code>0xffff</code></td>
+<td>0 … 65535</td>
+</tr>
+<tr>
+<td>upper immediate (<code>lui</code>)</td>
+<td><code>0x1001</code></td>
+<td>0 … 65535</td>
+</tr>
+<tr>
+<td>memory</td>
+<td><code>offset(base)</code>, <code>(base)</code></td>
+<td>offset −32768 … 32767</td>
+</tr>
+<tr>
+<td>branch target</td>
+<td>a label (or an absolute address <code>0x00400010</code>)</td>
+<td>±128 KB around the branch</td>
+</tr>
+<tr>
+<td>jump target (<code>j</code>, <code>jal</code>)</td>
+<td>a label</td>
+<td>the same 256 MB region</td>
+</tr>
+</tbody>
+</table>
+<p>A value that does not fit is an error that names the range, e.g.
+<code>andi: immediate -1 out of range 0..65535</code> — use <code>li</code> (below) to put a
+large constant in a register first.</p>
+<p><strong>Loads and stores</strong> move bytes (<code>lb</code>, <code>lbu</code>, <code>sb</code>), halfwords (<code>lh</code>,
+<code>lhu</code>, <code>sh</code>) or words (<code>lw</code>, <code>sw</code>).  The address must be a multiple of
+the size (except in Release 6), or the processor raises an
+<strong>address error</strong> exception.  <code>lb</code> / <code>lh</code> sign-extend, <code>lbu</code> / <code>lhu</code>
+zero-extend.</p>
+<p>The complete list of instructions, with their syntax and encoding, is in
+the GUI under <strong>Tools → Instruction Reference</strong> (or <code>ref TEXT</code> in the
+terminal debugger).</p>
+<h2 id="24-numbers-characters-and-expressions">2.4 Numbers, characters and expressions</h2>
+<table>
+<thead>
+<tr>
+<th>Written</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>42</code>, <code>-7</code></td>
+<td>decimal</td>
+</tr>
+<tr>
+<td><code>0x2a</code>, <code>0X2A</code></td>
+<td>hexadecimal</td>
+</tr>
+<tr>
+<td><code>0b101010</code></td>
+<td>binary</td>
+</tr>
+<tr>
+<td><code>'A'</code>, <code>'\n'</code></td>
+<td>the character's code (65, 10)</td>
+</tr>
+</tbody>
+</table>
+<p>Wherever a number goes you can write an <strong>expression</strong>: <code>+ - * /</code>,
+<code>&lt;&lt; &gt;&gt;</code>, <code>&amp; |</code>, unary <code>-</code> and <code>~</code>, parentheses, labels and constants:
+<code>buffer+4</code>, <code>(SIZE-1)*4</code>, <code>'a'-'A'</code>.</p>
+<p><strong>Named constants</strong>: <code>.eqv NAME, value</code> (also <code>.equ</code>, <code>.set NAME, value</code>):</p>
+<pre><code class="language-asm"># output: 40
+        .eqv  COUNT, 10
+        .text
+main:   li    $a0, COUNT*4
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p><code>%hi(label)</code> and <code>%lo(label)</code> give the two halves of an address for
+<code>lui</code> + <code>addiu</code> / <code>lw</code> — exactly what <code>la</code> expands into.</p>
+<h2 id="25-data">2.5 Data</h2>
+<table>
+<thead>
+<tr>
+<th>Directive</th>
+<th>Reserves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.word  v, v, ...</code></td>
+<td>32-bit words (aligned to 4)</td>
+</tr>
+<tr>
+<td><code>.half  v, ...</code></td>
+<td>16-bit halfwords (aligned to 2)</td>
+</tr>
+<tr>
+<td><code>.byte  v, ...</code></td>
+<td>bytes</td>
+</tr>
+<tr>
+<td><code>.float v, ...</code></td>
+<td>IEEE single-precision numbers (aligned to 4)</td>
+</tr>
+<tr>
+<td><code>.double v, ...</code></td>
+<td>IEEE double-precision numbers (aligned to 8)</td>
+</tr>
+<tr>
+<td><code>.ascii "text"</code></td>
+<td>the characters, no terminator</td>
+</tr>
+<tr>
+<td><code>.asciiz "text"</code></td>
+<td>the characters and a 0 byte (a C string)</td>
+</tr>
+<tr>
+<td><code>.space n</code></td>
+<td>n zero bytes</td>
+</tr>
+<tr>
+<td><code>.align n</code></td>
+<td>skip to the next multiple of 2ⁿ</td>
+</tr>
+</tbody>
+</table>
+<p><code>.word</code>, <code>.half</code>, <code>.float</code> and <code>.double</code> <strong>align themselves</strong>, and a
+label right before them moves with the data.  For example:</p>
+<pre><code class="language-asm">        .data
+count:  .word   3               # 0x10010000
+flags:  .byte   1, 2, 3         # 0x10010004 .. 0x10010006
+total:  .word   0               # 0x10010008 (one padding byte before it)
+name:   .asciiz &quot;MIPS&quot;          # 0x1001000c .. 0x10010010 (with the 0 byte)
+pi:     .float  3.14159         # 0x10010014 (aligned to 4)
+big:    .double 2.5             # 0x10010018 (aligned to 8)
+buffer: .space  16              # 0x10010020: 16 zero bytes
+</code></pre>
+<p>Strings may contain <code>\n</code>, <code>\t</code>, <code>\r</code>, <code>\0</code>, <code>\\</code>, <code>\"</code> and <code>\'</code>.</p>
+<p><strong>Byte order.</strong>  By default eMIPS is <strong>big-endian</strong>: the word
+<code>0x12345678</code> is stored as the bytes <code>12 34 56 78</code>.  Choose little-endian
+with <strong>Configure → Byte Order</strong> (GUI) or <code>--little</code> (terminal); the
+Memory pane shows the bytes as they are stored.</p>
+<h2 id="26-pseudo-instructions">2.6 Pseudo-instructions</h2>
+<p>Pseudo-instructions are conveniences: the assembler turns each one into
+one or more real instructions, exactly as GNU <code>as</code> does.  The
+Disassembly pane shows what each became.</p>
+<table>
+<thead>
+<tr>
+<th>You write</th>
+<th>The assembler writes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>move $t0, $t1</code></td>
+<td><code>or $t0, $t1, $zero</code></td>
+</tr>
+<tr>
+<td><code>li $t0, 5</code></td>
+<td><code>addiu $t0, $zero, 5</code></td>
+</tr>
+<tr>
+<td><code>li $t0, 0xffff</code></td>
+<td><code>ori $t0, $zero, 0xffff</code></td>
+</tr>
+<tr>
+<td><code>li $t0, 0x12345678</code></td>
+<td><code>lui $t0, 0x1234</code> + <code>ori $t0, $t0, 0x5678</code></td>
+</tr>
+<tr>
+<td><code>la $t0, label</code></td>
+<td><code>lui $t0, %hi(label)</code> + <code>addiu $t0, $t0, %lo(label)</code></td>
+</tr>
+<tr>
+<td><code>neg $t0, $t1</code> / <code>negu</code></td>
+<td><code>sub</code> / <code>subu $t0, $zero, $t1</code></td>
+</tr>
+<tr>
+<td><code>not $t0, $t1</code></td>
+<td><code>nor $t0, $t1, $zero</code></td>
+</tr>
+<tr>
+<td><code>beqz $t0, L</code> / <code>bnez</code></td>
+<td><code>beq</code> / <code>bne $t0, $zero, L</code></td>
+</tr>
+<tr>
+<td><code>blt $t0, $t1, L</code></td>
+<td><code>slt $at, $t0, $t1</code> + <code>bne $at, $zero, L</code></td>
+</tr>
+<tr>
+<td><code>bge</code>, <code>bgt</code>, <code>ble</code> (and <code>...u</code>)</td>
+<td><code>slt</code> / <code>sltu $at, ...</code> + <code>beq</code> / <code>bne</code></td>
+</tr>
+<tr>
+<td><code>lw $t0, label</code></td>
+<td><code>lui $t0, %hi(label)</code> + <code>lw $t0, %lo(label)($t0)</code></td>
+</tr>
+<tr>
+<td><code>sw $t0, label</code></td>
+<td><code>lui $at, %hi(label)</code> + <code>sw $t0, %lo(label)($at)</code></td>
+</tr>
+<tr>
+<td><code>lw $t0, 70000($t1)</code></td>
+<td><code>lui</code> + <code>addu</code> + <code>lw</code> (offset too large)</td>
+</tr>
+</tbody>
+</table>
+<p><code>nop</code> (= <code>sll $zero, $zero, 0</code>), <code>b</code> (= <code>beq $zero, $zero</code>) and <code>bal</code> are
+<em>real</em> instructions, not pseudo-instructions.</p>
+<p>Pseudo-instructions use <strong><code>$at</code></strong> as scratch — that is why your programs
+should not use <code>$at</code> themselves.  <code>.set noat</code> forbids it, and then any
+pseudo-instruction that needs it is an error.</p>
+<p><strong>Strict mode</strong> (Configure → Settings → Assembler, or <code>--strict</code>) turns
+pseudo-instructions off, so you write every machine instruction
+yourself.  Each pseudo-instruction then is an error that tells you what
+to write instead:</p>
+<pre><code class="language-text">line 1: li is a pseudo-instruction (strict mode); write: addiu rt, $zero, imm / ori rt, $zero, imm / lui rt, hi + ori rt, rt, lo
+</code></pre>
+<h2 id="27-branch-delay-slots">2.7 Branch delay slots</h2>
+<p>On a MIPS processor (before Release 6) <strong>the instruction after a branch
+or jump always executes</strong>, whether the branch is taken or not.  That
+instruction is the branch's <strong>delay slot</strong>.  It is not a quirk of the
+simulator: it is how the 5-stage pipeline works (the branch is decided
+in ID, when the next instruction has already been fetched).</p>
+<p>eMIPS has two ways to deal with it:</p>
+<ul>
+<li><strong><code>.set reorder</code></strong> (the default, as in GNU <code>as</code>): the assembler puts a
+  <code>nop</code> into every delay slot.  You write code as if branches took effect
+  immediately; the Disassembly shows the added <code>nop</code>s.</li>
+<li><strong><code>.set noreorder</code></strong>: you fill the delay slot yourself — the next
+  instruction you write <em>is</em> the delay slot.  This is what real MIPS
+  assembly programmers do, to make the slot useful:</li>
+</ul>
+<pre><code class="language-asm"># output: 50
+        .set  noreorder
+        .text
+main:   li    $t0, 0
+        li    $t1, 5
+loop:   addiu $t1, $t1, -1
+        bnez  $t1, loop
+        addiu $t0, $t0, 10      # the delay slot: runs on every round, 5 times
+        move  $a0, $t0
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>The <strong>branch-likely</strong> instructions (<code>beql</code>, <code>bnel</code>, ... — removed in
+Release 6) execute their delay slot <strong>only when the branch is taken</strong>.
+<code>jal</code> and the other links store the address <em>after</em> the delay slot
+(the branch address + 8) in <code>$ra</code>.</p>
+<p>You can switch between the two modes anywhere in a program, and choose
+the default in <strong>Configure → Settings → Assembler</strong> (or <code>--noreorder</code>).
+The example <strong>File → Examples → Branch delay slots</strong> shows both.</p>
+<h2 id="28-functions-and-the-stack">2.8 Functions and the stack</h2>
+<p><code>jal label</code> jumps to a function and saves the return address in <code>$ra</code>;
+<code>jr $ra</code> returns.  By convention arguments go in <code>$a0</code>–<code>$a3</code> and the
+result in <code>$v0</code>:</p>
+<pre><code class="language-asm"># output: 7
+        .text
+main:   li    $a0, 3
+        li    $a1, 4
+        jal   add2              # $ra = the return address
+        move  $a0, $v0          # the result
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+
+add2:   addu  $v0, $a0, $a1     # $v0 = $a0 + $a1
+        jr    $ra               # back to the caller
+</code></pre>
+<p>A function that calls another function must save <code>$ra</code> (and every <code>$s</code>
+register it changes) on the <strong>stack</strong> first and restore them before
+returning.  The stack grows <strong>down</strong>: reserve space by subtracting from
+<code>$sp</code>, release it by adding back.  <strong>File → Examples → Function calls
+and the stack</strong> (a recursive factorial) shows the full pattern:</p>
+<pre><code class="language-mips">fact:   addiu $sp, $sp, -8      # make room for two words
+        sw    $ra, 4($sp)       # save the return address
+        sw    $s0, 0($sp)       # save $s0, which we are about to change
+        ...                     # body (may call jal fact)
+        lw    $s0, 0($sp)       # restore
+        lw    $ra, 4($sp)
+        addiu $sp, $sp, 8       # release the room
+        jr    $ra
+</code></pre>
+<p>In the terminal debugger, <code>next</code> steps over a whole call and <code>finish</code>
+runs until the current function returns.</p>
+<h2 id="29-system-calls">2.9 System calls</h2>
+<p>A program asks the "operating system" for a service with <code>syscall</code>:
+the service number goes in <code>$v0</code>, the arguments in <code>$a0</code>–<code>$a3</code> (or
+<code>$f12</code>), and results come back in <code>$v0</code> (or <code>$f0</code>).  These are the
+services of MARS and SPIM:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>$v0</code></th>
+<th>Service</th>
+<th>Arguments → result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td>print_int</td>
+<td><code>$a0</code> = integer</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td>print_float</td>
+<td><code>$f12</code> = float</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>print_double</td>
+<td><code>$f12</code> = double</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>print_string</td>
+<td><code>$a0</code> = address of a 0-terminated string</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>read_int</td>
+<td>→ <code>$v0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td>read_float</td>
+<td>→ <code>$f0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">7</td>
+<td>read_double</td>
+<td>→ <code>$f0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td>read_string</td>
+<td><code>$a0</code> = buffer, <code>$a1</code> = its size</td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td>sbrk (allocate memory)</td>
+<td><code>$a0</code> = bytes → <code>$v0</code> = address</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>exit</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>print_char</td>
+<td><code>$a0</code> = the character</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>read_char</td>
+<td>→ <code>$v0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">17</td>
+<td>exit2 (with a code)</td>
+<td><code>$a0</code> = exit code</td>
+</tr>
+<tr>
+<td style="text-align: right;">34</td>
+<td>print_hex</td>
+<td><code>$a0</code> = integer</td>
+</tr>
+<tr>
+<td style="text-align: right;">35</td>
+<td>print_binary</td>
+<td><code>$a0</code> = integer</td>
+</tr>
+<tr>
+<td style="text-align: right;">36</td>
+<td>print_unsigned</td>
+<td><code>$a0</code> = integer</td>
+</tr>
+</tbody>
+</table>
+<p>Reading input: when the program executes a <code>read_...</code> service, the
+simulation <strong>waits</strong>: in the GUI the Console's input line lights up —
+type the value and press Enter; in the terminal, type it on the next
+line.  <code>read_string</code> behaves like C's <code>fgets</code>: it stores at most
+<code>$a1 − 1</code> characters, <strong>including the newline</strong> if it fits, then a 0
+byte:</p>
+<pre><code class="language-asm"># input: Ada
+# output: Your name? Hello, Ada\n
+        .data
+ask:    .asciiz &quot;Your name? &quot;
+hello:  .asciiz &quot;Hello, &quot;
+name:   .space  32
+        .text
+main:   la    $a0, ask
+        li    $v0, 4
+        syscall
+        la    $a0, name         # read_string(name, 32)
+        li    $a1, 32
+        li    $v0, 8
+        syscall
+        la    $a0, hello
+        li    $v0, 4
+        syscall
+        la    $a0, name         # &quot;Ada\n&quot; — the newline came with it
+        li    $v0, 4
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>A number <code>$v0</code> not in the table is not a service: the processor takes the
+real <strong>System Call exception</strong> (<a href="#211-exceptions-and-exception-handlers">2.11</a>).
+You can also switch all services off (<strong>Settings → Exceptions &amp; I/O</strong>,
+or <code>--no-syscalls</code>) and handle <code>syscall</code> in your own handler.</p>
+<h2 id="210-the-memory-mapped-console">2.10 The memory-mapped console</h2>
+<p>Besides system calls there is a simulated <strong>keyboard and display</strong>, as
+in MARS ("Keyboard and Display MMIO Simulator") and SPIM: four device
+registers at fixed memory addresses, read and written with ordinary
+<code>lw</code> / <code>sw</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Address</th>
+<th>Register</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0xffff0000</code></td>
+<td>receiver control</td>
+<td>bit 0 <em>Ready</em>: a key is waiting; bit 1 <em>Interrupt enable</em></td>
+</tr>
+<tr>
+<td><code>0xffff0004</code></td>
+<td>receiver data</td>
+<td>the key (reading it clears <em>Ready</em>)</td>
+</tr>
+<tr>
+<td><code>0xffff0008</code></td>
+<td>transmitter control</td>
+<td>bit 0 <em>Ready</em>: the display can take a character; bit 1 <em>Interrupt enable</em></td>
+</tr>
+<tr>
+<td><code>0xffff000c</code></td>
+<td>transmitter data</td>
+<td>write a character here to display it</td>
+</tr>
+</tbody>
+</table>
+<p>The program must <strong>poll</strong>: wait until <em>Ready</em> is 1, then read or write
+the data register.  The display stays busy for a few cycles after each
+character, and keys arrive one at a time:</p>
+<pre><code class="language-asm"># keys: hi\n
+# output: hi\n
+        .text
+main:   lui   $s0, 0xffff       # $s0 = 0xffff0000, the device base
+        li    $s1, 10           # '\n' ends the program
+wait_rx: lw   $t0, 0($s0)       # receiver ready?
+        andi  $t0, $t0, 1
+        beqz  $t0, wait_rx
+        lw    $t1, 4($s0)       # the key
+wait_tx: lw   $t0, 8($s0)       # display ready?
+        andi  $t0, $t0, 1
+        beqz  $t0, wait_tx
+        sw    $t1, 12($s0)      # show it
+        bne   $t1, $s1, wait_rx
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>Type the keys into the Console's <strong>MMIO keyboard</strong> field (GUI), with the
+<code>keys TEXT</code> debugger command, or with <code>--keys TEXT</code> on the command line.
+With the <em>Interrupt enable</em> bits set, the devices raise interrupts
+instead (receiver → hardware line 1 = <code>Cause.IP3</code>, transmitter → line 0 =
+<code>Cause.IP2</code>; see <a href="#212-interrupts-and-the-timer">2.12</a>).</p>
+<p>The device addresses are in kernel space: a program running in <strong>user
+mode</strong> cannot touch them (Settings → Memory &amp; boot).</p>
+<h2 id="211-exceptions-and-exception-handlers">2.11 Exceptions and exception handlers</h2>
+<p>When an instruction cannot complete — an arithmetic <strong>overflow</strong>
+(<code>add</code>, <code>addi</code>, <code>sub</code>), a misaligned or forbidden <strong>address</strong>, an
+<strong>unknown instruction</strong>, a <strong>trap</strong>, a <code>syscall</code> / <code>break</code> — the processor
+raises an <strong>exception</strong>.  Coprocessor 0 records what happened and the
+processor jumps to the <strong>exception handler</strong> at <code>0x80000180</code>:</p>
+<table>
+<thead>
+<tr>
+<th>CP0 register</th>
+<th>Number</th>
+<th>After an exception it holds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Status</td>
+<td><code>$12</code></td>
+<td>EXL = 1 (exception level: kernel mode, interrupts off)</td>
+</tr>
+<tr>
+<td>Cause</td>
+<td><code>$13</code></td>
+<td>ExcCode (bits 6–2): which exception; BD: it was in a delay slot</td>
+</tr>
+<tr>
+<td>EPC</td>
+<td><code>$14</code></td>
+<td>the address of the instruction that failed (its branch, if BD)</td>
+</tr>
+<tr>
+<td>BadVAddr</td>
+<td><code>$8</code></td>
+<td>the bad address (address errors)</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">ExcCode</th>
+<th>Name</th>
+<th>Raised by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0</td>
+<td>Int</td>
+<td>an interrupt (<a href="#212-interrupts-and-the-timer">2.12</a>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">4 / 5</td>
+<td>AdEL / AdES</td>
+<td>load or fetch / store at a bad address</td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td>Sys</td>
+<td><code>syscall</code> (when no service handles it)</td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td>Bp</td>
+<td><code>break</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>RI</td>
+<td>reserved (unknown) instruction</td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>CpU</td>
+<td>coprocessor unusable (e.g. FPU off, or <code>mfc0</code> in user mode)</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>Ov</td>
+<td>integer overflow</td>
+</tr>
+<tr>
+<td style="text-align: right;">13</td>
+<td>Tr</td>
+<td>trap (<code>teq</code>, <code>tge</code> ...)</td>
+</tr>
+<tr>
+<td style="text-align: right;">15</td>
+<td>FPE</td>
+<td>floating-point exception</td>
+</tr>
+</tbody>
+</table>
+<p>The handler is ordinary code in the <strong><code>.ktext</code></strong> segment.  It reads
+Cause / EPC with <code>mfc0</code>, does its work using <code>$k0</code> / <code>$k1</code> (and saves
+any other register it touches), sets EPC to where the program should
+continue and returns with <strong><code>eret</code></strong>:</p>
+<pre><code class="language-asm"># output: overflow caught\n5
+        .text
+main:   li    $t0, 0x7fffffff   # the largest positive int
+        li    $t1, 5
+        addi  $t1, $t0, 1       # signed overflow: exception, $t1 is not changed
+        move  $a0, $t1
+        li    $v0, 1            # prints 5
+        syscall
+        li    $v0, 10
+        syscall
+
+        .kdata
+saved:  .word 0, 0
+kmsg:   .asciiz &quot;overflow caught\n&quot;
+
+        .ktext 0x80000180       # the exception vector
+handler: la   $k0, saved        # the handler uses $v0 and $a0: save them
+        sw    $v0, 0($k0)
+        sw    $a0, 4($k0)
+        la    $a0, kmsg
+        li    $v0, 4
+        syscall
+        la    $k0, saved        # restore them
+        lw    $v0, 0($k0)
+        lw    $a0, 4($k0)
+        mfc0  $k0, $14          # EPC = the addi that failed
+        addiu $k0, $k0, 4       # continue after it
+        mtc0  $k0, $14
+        ehb                     # let the EPC write finish before eret reads it
+        eret
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li>
+<p><code>ehb</code> (<em>execution hazard barrier</em>, Release 2): a pipelined MIPS writes
+  CP0 registers late, and an <code>eret</code> right after <code>mtc0 $k0, $14</code> could
+  still read the old EPC — and return to the failing instruction again.
+  The instruction-level simulator does not need it; the MIPS 24K
+  pipeline model does, as the chip does
+  (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>).</p>
+</li>
+<li>
+<p>A real handler first checks <strong>which</strong> exception it got
+  (<code>mfc0 $k0, $13</code>, then <code>(Cause &gt;&gt; 2) &amp; 31</code>), because one handler serves
+  all of them.</p>
+</li>
+<li>EPC + 4 skips the failing instruction — but if Cause.BD is set, EPC
+  points at the branch before it; skipping is then more involved.</li>
+<li>An exception with <strong>no handler</strong> at the vector stops the simulation
+  with an explanation, e.g. <em>"the CPU took exception AdEL (Cause.ExcCode
+  4, EPC 0x00400000) and jumped to the exception vector 0x80000180, but
+  there is no handler there"</em>.  For debugging you can make every
+  exception stop the simulation instead: <strong>Settings → Exceptions &amp; I/O →
+  Stop the simulation</strong>, or <code>--exceptions stop</code>.</li>
+<li>Programs normally start in <strong>kernel mode</strong> (like MARS).  <strong>Settings →
+  Memory &amp; boot</strong> can start them in <strong>user mode</strong> — then <code>mfc0</code>, <code>mtc0</code>,
+  <code>eret</code> and kernel addresses raise exceptions, the operating-system view
+  — or in the <strong>hardware reset state</strong> (exceptions go to <code>0xbfc00380</code>,
+  FPU and interrupts off).</li>
+</ul>
+<h2 id="212-interrupts-and-the-timer">2.12 Interrupts and the timer</h2>
+<p>Interrupts are exceptions caused by something outside the instruction
+stream (ExcCode 0).  An interrupt is taken when:</p>
+<ul>
+<li><strong>Status.IE</strong> (bit 0) is 1, <strong>Status.EXL</strong> and <strong>ERL</strong> are 0, and</li>
+<li>its bit in <strong>Status.IM</strong> (bits 15–8) is 1, and its <strong>Cause.IP</strong> bit
+  (bits 15–8) is set.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Line</th>
+<th>Cause / Status bit</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IP0, IP1</td>
+<td>8, 9</td>
+<td>software (write Cause)</td>
+</tr>
+<tr>
+<td>IP2</td>
+<td>10</td>
+<td>MMIO display (transmitter ready, if enabled)</td>
+</tr>
+<tr>
+<td>IP3</td>
+<td>11</td>
+<td>MMIO keyboard (key ready, if enabled)</td>
+</tr>
+<tr>
+<td>IP7</td>
+<td>15</td>
+<td>the <strong>timer</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The <strong>timer</strong>: CP0 register <strong>Count</strong> (<code>$9</code>) counts up (by default every
+2 cycles); when it becomes equal to <strong>Compare</strong> (<code>$11</code>) the timer
+interrupt is raised.  Writing Compare clears it.  The handler typically
+sets the next Compare and returns with <code>eret</code> — EPC is the interrupted
+instruction, which then runs normally.</p>
+<p><strong>File → Examples → Interrupts: CP0 timer and exception handler</strong> is a
+complete program: it enables the timer (<code>Status = IM7 | IE</code>), counts
+three ticks in its handler and prints <code>timer interrupts: 3</code>.</p>
+<h2 id="213-floating-point">2.13 Floating point</h2>
+<p>The floating-point unit (coprocessor 1) has 32 registers <strong><code>$f0</code>–<code>$f31</code></strong>
+and follows IEEE 754 exactly (rounding, infinities, NaNs, the five
+exception flags in <strong>FCSR</strong>).</p>
+<ul>
+<li>A <strong>single</strong> (<code>.s</code>) uses one register.  A <strong>double</strong> (<code>.d</code>) uses an
+  <strong>even/odd pair</strong> before Release 6 — always name the even one (<code>$f0</code>,
+  <code>$f2</code> ...).</li>
+<li>Load / store with <strong><code>lwc1</code> / <code>swc1</code></strong> (single) and <strong><code>ldc1</code> / <code>sdc1</code></strong>
+  (double); move to / from integer registers with <code>mtc1</code> / <code>mfc1</code>.</li>
+<li>Arithmetic: <code>add.s</code>, <code>sub.s</code>, <code>mul.s</code>, <code>div.s</code>, <code>sqrt.s</code>, <code>abs.s</code>,
+  <code>neg.s</code>, <code>mov.s</code> (and the <code>.d</code> versions).</li>
+<li>Conversions: <code>cvt.s.w</code> (integer → single; the integer must be in an FP
+  register — <code>mtc1</code> it first), <code>cvt.w.s</code> (single → integer), <code>cvt.d.s</code>,
+  <code>cvt.s.d</code> ...</li>
+<li>Compare and branch: <code>c.eq.s</code>, <code>c.lt.s</code>, <code>c.le.s</code> set a condition
+  flag; <code>bc1t</code> / <code>bc1f</code> branch on it.</li>
+<li>System calls: print_float (2) / print_double (3) print <code>$f12</code>;
+  read_float (6) / read_double (7) return in <code>$f0</code>.</li>
+</ul>
+<pre><code class="language-asm"># output: 2.5 is bigger\n
+        .data
+a:      .float 2.5
+b:      .float 1.75
+bigger: .asciiz &quot; is bigger\n&quot;
+        .text
+main:   la    $t0, a
+        lwc1  $f0, 0($t0)       # $f0 = a
+        lwc1  $f2, 4($t0)       # $f2 = b
+        c.lt.s $f2, $f0         # condition = (b &lt; a)
+        bc1f  done              # false: nothing to say
+        mov.s $f12, $f0
+        li    $v0, 2            # print_float($f12)
+        syscall
+        la    $a0, bigger
+        li    $v0, 4
+        syscall
+done:   li    $v0, 10
+        syscall
+</code></pre>
+<p>The FPU is switched on when a program starts in kernel or user mode (as
+in MARS); in the hardware reset state it is off and any FPU instruction
+raises the CpU exception until the program sets <strong>Status.CU1</strong>.</p>
+<h2 id="214-mips32-releases-r1-to-r6">2.14 MIPS32 releases (R1 to R6)</h2>
+<p>MIPS32 has evolved through several releases.  eMIPS simulates each one;
+choose it in <strong>Configure → MIPS32 Release</strong> (GUI) or with <code>--release</code>
+(terminal).  The default is <strong>R5</strong>, the complete pre-R6 instruction set.</p>
+<table>
+<thead>
+<tr>
+<th>Release</th>
+<th>What it adds (for a student)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td>the original MIPS32</td>
+</tr>
+<tr>
+<td>R2</td>
+<td><code>ext</code> / <code>ins</code> (bit fields), <code>rotr</code>, <code>seb</code> / <code>seh</code>, <code>wsbh</code>, 64-bit FPU registers, <code>ehb</code></td>
+</tr>
+<tr>
+<td>R3</td>
+<td>EVA (kernel access to user memory) — microMIPS is not simulated</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>everything above (default)</td>
+</tr>
+<tr>
+<td>R6</td>
+<td>a cleaned-up architecture: compact branches, new multiply / divide, IEEE 754-2008 FPU; removes branch-likely, the old <code>mul</code> encoding, HI/LO-based <code>mult</code> / <code>div</code>, ...</td>
+</tr>
+</tbody>
+</table>
+<p>An instruction that does not exist in the chosen release is an assembly
+error: <code>beql does not exist in MIPS32 R6</code>.  The instruction reference
+(Tools menu) lists, for each instruction, the release that introduced it
+and the one that removed it.</p>
+<p><strong>Release 6 compact branches</strong> (<code>bc</code>, <code>balc</code>, <code>beqzc</code>, <code>bnezc</code>, <code>beqc</code>,
+<code>bltc</code> ...) have <strong>no delay slot</strong>: the next instruction runs only if the
+branch is not taken.  The instruction after a <em>conditional</em> compact
+branch is its <strong>forbidden slot</strong> — it may not be another branch or jump
+(under <code>.set reorder</code> the assembler inserts a <code>nop</code> when it would be).  The ordinary
+branches (<code>beq</code>, <code>bne</code>, <code>j</code>, <code>jal</code> ...) still have a delay slot in R6.</p>
+<pre><code class="language-asm"># release: R6
+# output: 250
+        .text
+main:   li    $t0, 0
+        li    $t1, 5
+loop:   addiu $t0, $t0, 10
+        addiu $t1, $t1, -1
+        bnezc $t1, loop         # compact: no delay slot
+        lsa   $t2, $t0, $t0, 2  # R6: $t2 = ($t0 &lt;&lt; 2) + $t0 = 5 * $t0
+        move  $a0, $t2
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>Release 6 also changes floating point to the IEEE 754-2008 rules (for
+example how NaNs are encoded; the number converter in the Tools menu
+shows both).</p>
+<h2 id="215-differences-from-mars-and-spim">2.15 Differences from MARS and SPIM</h2>
+<p>eMIPS behaves like a real MIPS processor and accepts GNU <code>as</code> syntax.
+Programs written for MARS usually run unchanged; these are the
+differences you may meet:</p>
+<table>
+<thead>
+<tr>
+<th>In MARS</th>
+<th>In eMIPS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no delay slots (by default)</td>
+<td><strong>delay slots always exist</strong>; the assembler fills them with <code>nop</code> (<code>.set reorder</code>), so MARS programs still run</td>
+</tr>
+<tr>
+<td><code>blt $t0, 5, L</code>, <code>mul $t0, $t1, 5</code> (immediate forms)</td>
+<td>not available — load the constant into a register first (<code>li $t1, 5</code>)</td>
+</tr>
+<tr>
+<td><code>rem</code>, <code>seq</code>, <code>sge</code>, <code>sne</code> ...</td>
+<td>not available — use <code>div</code> + <code>mfhi</code>, <code>slt</code> / <code>xor</code></td>
+</tr>
+<tr>
+<td><code>l.s</code>, <code>l.d</code>, <code>s.s</code>, <code>s.d</code>, <code>li.s</code></td>
+<td>use <code>lwc1</code>, <code>ldc1</code>, <code>swc1</code>, <code>sdc1</code> (<code>li.s</code>: load from <code>.float</code> data)</td>
+</tr>
+<tr>
+<td><code>.word 0:10</code> (repeat)</td>
+<td><code>.space 40</code> (zeroes) or list the values</td>
+</tr>
+<tr>
+<td><code>div $t0, $t1, $t2</code> (three operands)</td>
+<td><code>div $t1, $t2</code> + <code>mflo $t0</code> (<code>div $zero, $t1, $t2</code> is the GNU form of the 2-operand instruction)</td>
+</tr>
+<tr>
+<td>exceptions with no handler continue</td>
+<td>they jump to the vector like the hardware; without a handler the simulation stops and explains why</td>
+</tr>
+</tbody>
+</table>
+<h2 id="216-intel-hex-files">2.16 Intel HEX files</h2>
+<p>An Intel HEX file holds machine code and data as text records — what an
+assembler or compiler produces for loading into a real board.  eMIPS
+both writes and reads it:</p>
+<ul>
+<li><strong>Write</strong>: <strong>File → Export → Intel HEX…</strong> (GUI) or
+  <code>python3 -m emips asm prog.asm --hex prog.hex</code>.</li>
+<li><strong>Read</strong>: <strong>File → Open</strong> a <code>.hex</code> file, <code>python3 -m emips gui prog.hex</code>,
+  <code>python3 -m emips run prog.hex</code>, or just look at it with
+  <code>python3 -m emips dis prog.hex</code>.</li>
+</ul>
+<p>A loaded HEX image is shown as a <strong>read-only disassembly</strong> (address,
+word, instruction; code and data separated).  You can step, run and set
+breakpoints on its lines exactly as with source.  Execution starts at the
+file's start-address record (type 05) if it has one, otherwise at its
+lowest address.  The release and byte order you choose decide how the
+words are decoded.</p>
+<h2 id="217-common-assembly-errors">2.17 Common assembly errors</h2>
+<table>
+<thead>
+<tr>
+<th>Message</th>
+<th>What it means</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>unknown instruction 'lii'</code></td>
+<td>a typo, or an instruction eMIPS does not have (see 2.15)</td>
+</tr>
+<tr>
+<td><code>xxx does not exist in MIPS32 R6</code></td>
+<td>the instruction is not in the chosen release (2.14)</td>
+</tr>
+<tr>
+<td><code>immediate 70000 out of range -32768..32767</code></td>
+<td>the constant does not fit: use <code>li</code> into a register</td>
+</tr>
+<tr>
+<td><code>GPR expected, got '5'</code></td>
+<td>a register was expected — load the value with <code>li</code> first</td>
+</tr>
+<tr>
+<td><code>label 'loop' defined twice</code></td>
+<td>two labels with the same name</td>
+</tr>
+<tr>
+<td><code>undefined symbol nowhere</code></td>
+<td>a label is used but never defined (check the spelling — case matters)</td>
+</tr>
+<tr>
+<td><code>beq: branch target 0x00430d48 out of range</code></td>
+<td>the label is too far for a branch: branch over a <code>j</code> instead</td>
+</tr>
+<tr>
+<td><code>instruction not word-aligned</code></td>
+<td>data (<code>.byte</code>, <code>.ascii</code> ...) in <code>.text</code> left the next instruction at an address that is not a multiple of 4: put <code>.align 2</code> before it</td>
+</tr>
+<tr>
+<td><code>instruction in .data segment</code></td>
+<td>a <code>.text</code> is missing before the code</td>
+</tr>
+<tr>
+<td><code>blt needs $at, but .set noat</code></td>
+<td>a pseudo-instruction needs <code>$at</code> and you forbade it</td>
+</tr>
+<tr>
+<td><code>... is a pseudo-instruction (strict mode)</code></td>
+<td>strict mode is on: write the real instructions shown in the message</td>
+</tr>
+<tr>
+<td><code>rs must not be $ra</code> / <code>rd and rs must be different</code></td>
+<td>the manual forbids this operand combination (the result would be undefined)</td>
+</tr>
+</tbody>
+</table>
+<p>The line with the first error turns red in the editor and the full
+message is in the Messages pane.</p>
+<h2 id="218-programs-in-c">2.18 Programs in C</h2>
+<p>eMIPS runs <strong>ELF executables</strong> — what a C compiler and linker produce —
+as well as assembly: <code>run</code>, <code>pipe</code>, <code>debug</code>, <code>dis</code> and the GUI open
+them, and <code>python3 -m emips cc</code> builds them.  You need a C compiler for
+MIPS: <strong>clang</strong> (any clang can generate MIPS code) with <strong>ld.lld</strong> or a
+MIPS binutils (<code>binutils-mips-linux-gnu</code>), or a MIPS <strong>GCC</strong>
+(<code>gcc-mips-linux-gnu</code>, <code>mips-mti-elf-gcc</code>).</p>
+<p>There is no C library: a program talks to eMIPS through the system
+calls of <a href="#29-system-calls">2.9</a> and the console of
+<a href="#210-the-memory-mapped-console">2.10</a>, which <code>emips.h</code> wraps —
+<code>print_int</code>, <code>print_string</code>, <code>print_char</code>, <code>print_hex</code>, <code>print_float</code>,
+<code>read_int</code>, <code>read_char</code>, <code>read_string</code>, <code>sbrk</code>, <code>exit</code>, the MMIO
+registers (<code>MMIO_RX_CONTROL</code> ...) and <code>MFC0</code> / <code>MTC0</code> for kernel
+code.  <a href="labs/c_primes.c"><code>labs/c_primes.c</code></a> counts the primes below 100:</p>
+<pre><code class="language-c">#include &quot;emips.h&quot;
+
+#define N 100
+
+static char composite[N];
+
+int main(void)
+{
+    int count = 0;
+    for (int i = 2; i &lt; N; i++) {
+        if (composite[i])
+            continue;
+        count++;
+        for (int j = i * i; j &lt; N; j += i)
+            composite[j] = 1;
+    }
+    print_string(&quot;primes below 100: &quot;);
+    print_int(count);
+    print_char('\n');
+    return 0;
+}
+</code></pre>
+<p>Build it and run it (<code>run</code> also takes the <code>.c</code> itself and builds it
+first):</p>
+<pre><code class="language-text">$ python3 -m emips cc docs/guide/labs/c_primes.c -O 0
+wrote docs/guide/labs/c_primes.elf: run it with  python3 -m emips run docs/guide/labs/c_primes.elf
+</code></pre>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/c_primes.elf
+primes below 100: 25
+...
+</code></pre>
+<p>What <code>cc</code> puts around your code: <code>crt0.S</code> (sets <code>$gp</code> and <code>$sp</code>,
+clears <code>.bss</code>, calls <code>main</code> and ends the program with its return value,
+the <em>exit2</em> service), <code>libemips.c</code> (<code>memcpy</code>, <code>memset</code>, <code>memmove</code>,
+<code>memcmp</code>, <code>strlen</code> — compilers call them by themselves) and the linker
+script <code>emips.ld</code>: code at <code>0x00400000</code>, data at <code>0x10010000</code>, the stack
+below <code>0x7FFFF000</code> — the memory map of assembly programs.  The flags:
+<code>-march</code> from <code>--release</code> (R1 <code>mips32</code>, R2-R5 <code>mips32r2</code>, R6
+<code>mips32r6</code>), o32, hard float, no position-independent code
+(<code>-fno-pic -mno-abicalls</code>), <code>-G0</code>, <code>-g</code> for the line table, <code>-O1</code> (<code>-O
+0</code> keeps every statement, easier to follow).</p>
+<p>eMIPS reads the ELF's <strong>release</strong> (<code>EF_MIPS_ARCH</code>: MIPS32 → R1, Release
+2 → R5, Release 6 → R6) and <strong>byte order</strong> from its header, and the
+<strong>source line</strong> of every instruction from its DWARF line table: the
+debugger shows <code>c_primes.c:14: if (composite[i])</code> beside the PC, <code>break
+main</code> stops at a function, and the GUI's listing has each C line above
+its instructions.</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_primes.elf -c &quot;break main&quot; -c c
+(emips) break main
+breakpoint at 0x00400400  addiu $sp, $sp, -40              c_primes.c:11: {
+(emips) c
+breakpoint
+   0x00400038  nop
+=&gt; 0x00400400  addiu $sp, $sp, -40              c_primes.c:11: {
+</code></pre>
+<p>Debugging is at the level of C lines: <code>stepline</code> (<code>sl</code>) runs to the
+next C line — into a called function —, <code>nextline</code> (<code>nl</code>) over calls,
+<code>finish</code> back to the caller, <code>bt</code> lists the calls not returned yet,
+<code>break file.c:LINE</code> / <code>break FUNCTION</code> set breakpoints, <code>list</code> shows
+the C file.  The call stack is kept by watching the program: every
+<code>jal</code> / <code>jalr</code> / <code>bal</code> that is taken pushes a frame, every <code>jr $ra</code>
+pops one — it works for assembly programs too.
+(<a href="labs/c_recursion.c"><code>labs/c_recursion.c</code></a>: <code>fact</code> calls itself):</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_recursion.elf -c &quot;break 8&quot; -c c -c bt
+(emips) break 8
+breakpoint at 0x00400430  sw $at, 28($fp)                  c_recursion.c:8: return 1;
+(emips) c
+breakpoint
+...
+(emips) bt
+#0  0x00400430 in fact   c_recursion.c:8: return 1;
+#1  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
+#2  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
+#3  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
+#4  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
+#5  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
+#6  0x00400494 in main   c_recursion.c:14: print_int(fact(6));
+#7  0x00400034 in __start   crt0.S:21: 2:      jal     main
+</code></pre>
+<p>In the GUI the <strong>Source</strong> pane shows the C file at the current line
+(with breakpoints in its gutter) and the call stack; <strong>Step Line</strong> (F11),
+<strong>Next Line</strong> (Ctrl+F11) and <strong>Finish</strong> (Shift+F11) are in the Run
+menu (<a href="03-the-gui.html#the-source-pane-c-programs">Phase 3</a>).  The labs of
+<a href="05-understanding.html#lab-22--where-the-arguments-go">Phase 5</a> look at
+what the compiler made: the calling convention, the stack, the
+optimiser, <code>volatile</code>.</p>
+<p>Not there: a C library (<code>printf</code>, <code>malloc</code> — use <code>sbrk</code>), the 64-bit
+division helpers (<code>long long</code> <code>/</code> and <code>%</code>), position-independent or
+dynamically linked programs, and microMIPS / MIPS16e code (refused when
+loading).</p>
+<hr>
+<nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
+</main>
+</body>
+</html>
