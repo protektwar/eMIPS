@@ -69,11 +69,14 @@ def fetch_state(p: Pipeline24K) -> str:
         what, target, at = p.after_slot
         return ("fetching the delay slot, then waiting for the jump" if what == "wait" else
                 f"fetching the delay slot, then 0x{target:08x} (from cycle {at})")
+    m16 = " (MIPS16e: a 64-bit bundle every other cycle, recoded in IR / IK)" \
+        if p.fetch_isa else ""
     if p.fetch_at > t:
-        return f"waiting until cycle {p.fetch_at} (a miss or a redirect), then 0x{p.fetch_pc:08x}"
+        return (f"waiting until cycle {p.fetch_at} (a miss, a redirect"
+                f"{' or the other cycle' if m16 else ''}), then 0x{p.fetch_pc:08x}{m16}")
     if len(p.queue) > IB_ENTRIES + 2:
         return "the instruction buffer is full"
-    return f"fetching 0x{p.fetch_pc:08x}"
+    return f"fetching 0x{p.fetch_pc:08x}{m16}"
 
 
 # ------------------------------------------------------------------ the units

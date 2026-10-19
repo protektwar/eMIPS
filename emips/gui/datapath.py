@@ -552,7 +552,10 @@ class DatapathView(QtWidgets.QGraphicsView):
             self._light(["add_pcmux"], c)
         self.values["pc"].set(f"PC {d['pc']:08x}")
         word = _word(s, d)
-        if word is not None:
+        if d.get("compressed"):                 # MIPS16e / microMIPS: the encoding, recoded
+            raw = d["compressed"].split()[-1][2:]
+            self.values["word"].set(f"{raw} -> {word:08x}" if word is not None else raw)
+        elif word is not None:
             self.values["word"].set(f"{word:08x}")
 
     def _id(self, s, d, ev) -> None:

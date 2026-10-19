@@ -121,6 +121,10 @@ class Program:
     c_stmts: dict[tuple[str, int], list[int]] = field(default_factory=dict)
     #: ... (start, end, name) of its functions (STT_FUNC symbols)
     functions: list[tuple[int, int, str]] = field(default_factory=list)
+    #: MIPS16e code (emips.mips16): instruction address -> its size (2 / 4)
+    m16: dict[int, int] = field(default_factory=dict)
+    #: microMIPS code (emips.micromips): instruction address -> its size
+    mm: dict[int, int] = field(default_factory=dict)
 
     def word(self, addr: int) -> int:
         data = bytes(self.image.get(addr + i, 0) for i in range(4))
@@ -210,7 +214,15 @@ class Program:
                     "reset the TLB is not initialised: put this code in kseg0 / "
                     "kseg1, or start with the boot firmware)",
                     name=None, word=None, addr=addr) from None
-        machine.pc = self.entry
+        if self.entry & 1:                             # a MIPS16e / microMIPS entry point
+            want = "micromips" if self.mm else "mips16e"
+            if getattr(machine, "compressed", None) != want:
+                isa = "microMIPS" if self.mm else "MIPS16e"
+                raise ValueError(f"the program starts in {isa} code: the core needs "
+                                 f"{isa} (--compressed {want})")
+            machine._jump(self.entry)
+        else:
+            machine.pc = self.entry
 
     def to_ihex(self) -> str:
         """Intel HEX (types 04 / 00 / 05 / 01) of the image."""
@@ -240,14 +252,42 @@ class Program:
         rec(0x01, 0, b"")
         return "\n".join(lines) + "\n"
 
+    def half(self, addr: int) -> int:
+        data = bytes(self.image.get(addr + i, 0) for i in range(2))
+        return struct.unpack(">H" if self.endian == "big" else "<H", data)[0]
+
+    def m16_insn(self, addr: int):
+        """The MIPS16e instruction at ``addr`` (emips.mips16.M16)."""
+        from . import mips16
+        return mips16.decode(self.half(addr), lambda: self.half(addr + 2))
+
+    def mm_insn(self, addr: int):
+        """The microMIPS instruction at ``addr`` (emips.micromips.MM)."""
+        from . import micromips
+        return micromips.decode(self.half(addr), lambda: self.half(addr + 2),
+                                release=self.release)
+
     def listing(self, *, abi: bool = True) -> list[tuple[int, int, str, str]]:
-        """``(address, word, disassembly, source)`` for every instruction."""
+        """``(address, word, disassembly, source)`` for every instruction
+        (a MIPS16e one: its 16 / 32-bit encoding)."""
+        from . import mips16
         from .disasm import disassemble
         labels = self.labels()
         isa = ISA.for_release(self.release)
-        return [(a, self.word(a), disassemble(self.word(a), a, abi=abi, isa=isa,
-                                              symbols=labels), s.text.strip())
-                for a, s in sorted(self.source_map.items())]
+        out = []
+        for a, s in sorted(self.source_map.items()):
+            if a in self.m16:
+                i = self.m16_insn(a)
+                out.append((a, i.raw, mips16.text(i, a, abi=abi), s.text.strip()))
+            elif a in self.mm:
+                from . import micromips
+                i = self.mm_insn(a)
+                out.append((a, i.raw, micromips.text(i, a, abi=abi, release=self.release),
+                            s.text.strip()))
+            else:
+                out.append((a, self.word(a), disassemble(self.word(a), a, abi=abi, isa=isa,
+                                                          symbols=labels), s.text.strip()))
+        return out
 
 
 # ---------------------------------------------------------------- lexing
@@ -477,9 +517,30 @@ PSEUDO_HINTS = {
        for mn, (cmp, _swap, br) in _BRANCH_MACROS.items()},
 }
 
+#: GNU as's macros of the ALU instructions (gas/config/tc-mips.c,
+#: macro()): a constant in place of rt -> the immediate instruction when
+#: it fits, else the constant in $at (as ``li``) and the register form
+_ALU_IMMEDIATE = {"add": "addi", "addu": "addiu", "sub": "addi", "subu": "addiu",
+                  "and": "andi", "or": "ori", "xor": "xori", "nor": "ori",
+                  "slt": "slti", "sltu": "sltiu"}
+#: shifts by a register written with the immediate mnemonic
+_SHIFT_VARIABLE = {"sll": "sllv", "srl": "srlv", "sra": "srav", "rotr": "rotrv"}
+#: immediates GNU as also takes as a 16-bit pattern (0x8000-0xFFFF = negative)
+_SIGNED_IMMEDIATE = {"addi", "addiu", "slti", "sltiu"}
+#: ``op rd, rt`` = ``op rd, rd, rt`` (GNU as): register forms ...
+_SHORT_REGISTER = set(_ALU_IMMEDIATE) | set(_SHIFT_VARIABLE) | {"mul", "movn", "movz"}
+#: ... and immediate forms
+_SHORT_IMMEDIATE = set(_ALU_IMMEDIATE) | set(_SHIFT_VARIABLE) | {"mul", "addi", "addiu",
+                                                                   "andi", "ori", "xori",
+                                                                   "slti", "sltiu"}
+
 _DIRECTIVES_IGNORED = {".globl", ".global", ".ent", ".end", ".type", ".size",
                        ".extern", ".file", ".section", ".previous", ".frame",
                        ".mask", ".fmask", ".abicalls", ".option"}
+
+
+class _Relax(Exception):
+    """A MIPS16e statement needs its long form: lay the program out again."""
 
 
 @dataclass
@@ -495,6 +556,13 @@ class _Stmt:
     size: int = 0
     #: R6: a nop is put in this compact branch's forbidden slot
     forbidden_nop: bool = False
+    #: a MIPS16e statement (.set mips16)
+    m16: bool = False
+    #: a microMIPS statement (.set micromips)
+    mm: bool = False
+    #: microMIPS, noreorder: the size the previous branch's delay slot
+    #: demands of this statement's first instruction (0 = any)
+    slot: int = 0
 
 
 class Assembler:
@@ -521,9 +589,26 @@ class Assembler:
     # -- public -------------------------------------------------------------
 
     def assemble(self, source: str) -> Program:
+        #: MIPS16e statements (by line) too far for their short form
+        self._m16_long: set[int] = set()
+        for _ in range(64):                     # MIPS16e relaxation: sizes only grow
+            try:
+                return self._assemble_once(source)
+            except _Relax:
+                continue
+        raise AsmError(0, "MIPS16e branch relaxation does not converge")
+
+    def _assemble_once(self, source: str) -> Program:
         self.symbols: dict[str, int] = {}
         #: names defined by .eqv / .equ / .set NAME (not labels)
         self._consts: set[str] = set()
+        #: labels of MIPS16e / microMIPS code (their address, taken as data,
+        #: has bit 0 set)
+        self._m16_labels: set[str] = set()
+        self._mode16 = False
+        self._modemm = False
+        self._mm_enc = None
+        self._seen_m16 = self._seen_mm = False
         self.prog = Program(endian=self.endian, release=self.isa.release)
         stmts = self._pass1(source)
         for st in stmts:
@@ -531,10 +616,11 @@ class Assembler:
         self.prog.symbols = dict(self.symbols)
         for name in ("main", "__start"):
             if name in self.symbols:
-                self.prog.entry = self.symbols[name]
+                self.prog.entry = self.symbols[name] | (name in self._m16_labels)
                 break
         else:
-            self.prog.entry = self.bases["text"]
+            base = self.bases["text"]
+            self.prog.entry = base | (base in self.prog.mm or base in self.prog.m16)
         return self.prog
 
     # -- pass 1: layout -------------------------------------------------------
@@ -577,8 +663,35 @@ class Assembler:
                     continue
                 if seg in ("data", "kdata"):
                     raise AsmError(n, f"instruction in .{seg} segment", raw)
+                if self._modemm:                # microMIPS: halfwords, sizes 2 / 4
+                    if lc[seg] & 1:
+                        raise AsmError(n, "microMIPS instruction not halfword-aligned", raw)
+                    self._m16_labels.update(self._pending)
+                    st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok, mm=True)
+                    if prev is not None and prev.mm and not prev.reorder and \
+                            prev.addr + prev.size == lc[seg]:
+                        st.slot = self._mm_slot_need(prev)
+                    st.size = sum(i.size for i in self._mm_encode(st, final=False))
+                    stmts.append(st)
+                    lc[seg] += st.size
+                    self._pending = []
+                    prev = st
+                    continue
+                if self._mode16:                # MIPS16e: halfwords, sizes 2 / 4
+                    if lc[seg] & 1:
+                        raise AsmError(n, "MIPS16e instruction not halfword-aligned", raw)
+                    self._m16_labels.update(self._pending)
+                    st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok, m16=True)
+                    st.size = self._m16_size(st)
+                    stmts.append(st)
+                    lc[seg] += st.size
+                    self._pending = []
+                    prev = None
+                    continue
                 if lc[seg] & 3:
-                    raise AsmError(n, "instruction not word-aligned", raw)
+                    raise AsmError(n, "instruction not word-aligned" + (
+                        " (after MIPS16e / microMIPS code: .align 2)" if self._m16_labels
+                        else ""), raw)
                 st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok)
                 insns = self._expand(st)
                 if (prev is not None and prev.reorder and prev.seg == seg
@@ -629,6 +742,21 @@ class Assembler:
                 reorder = word == "reorder"
             elif word in ("at", "noat"):
                 at_ok = word == "at"
+            elif word in ("mips16", "nomips16"):
+                if word == "mips16" and self.isa.release == "R6":
+                    raise AsmError(n, "Release 6 has no MIPS16e", raw)
+                if word == "mips16" and self._seen_mm:
+                    raise AsmError(n, "MIPS16e after microMIPS code: no core has both", raw)
+                self._mode16 = word == "mips16"
+                self._seen_m16 |= self._mode16
+            elif word in ("micromips", "nomicromips"):
+                if word == "micromips" and self.isa.release in ("R1", "R2"):
+                    raise AsmError(n, "microMIPS32 starts with Release 3 (--release R3, "
+                                   "R5 or R6)", raw)
+                if word == "micromips" and self._seen_m16:
+                    raise AsmError(n, "microMIPS after MIPS16e code: no core has both", raw)
+                self._modemm = word == "micromips"
+                self._seen_mm |= self._modemm
             return seg, reorder, at_ok
         if d in (".eqv", ".equ"):
             if len(ops) != 2:
@@ -640,7 +768,12 @@ class Assembler:
             return seg, reorder, at_ok
         if d == ".align":                       # moves pending labels too
             a = 1 << self._const(ops[0], n)
-            lc[seg] += (-lc[seg]) % a
+            pad = (-lc[seg]) % a
+            if (self._mode16 or self._modemm) and seg in ("text", "ktext") and pad:
+                # MIPS16e / microMIPS code: GNU as fills with 16-bit NOPs
+                stmts.append(_Stmt(n, raw, seg, lc[seg], ".fill16", [], reorder, at_ok, pad,
+                                   mm=self._modemm))
+            lc[seg] += pad
             for name in self._pending:
                 self.symbols[name] = lc[seg]
         elif d == ".space":
@@ -761,6 +894,8 @@ class Assembler:
             if parse_gpr(ops[0]) != 0:
                 raise AsmError(st.line, f"{mn} rd form: first operand must be $zero", st.text)
             out = [(mn, ops[1:])]
+        elif (alu := self._alu_macro(st, need_at)) is not None:
+            out = alu
         elif mn in self._by_name:
             out = [(mn, ops)]
         elif mn in self._all:
@@ -773,6 +908,77 @@ class Assembler:
         if st.reorder and last in self._by_name and self._has_delay_slot(last):
             out.append(("nop", []))
         return out
+
+    def _alu_macro(self, st: _Stmt, need_at) -> list[tuple[str, list[str]]] | None:
+        """GNU as's forms of the ALU instructions, expanded exactly as it
+        does: ``op rd, rt`` = ``op rd, rd, rt``; a constant in place of a
+        register (``or rd, rs, 0x12345``: ``ori`` when it fits, else the
+        constant in ``$at``, ``sub`` / ``subu`` as an add of -imm, ``nor``
+        as ``ori`` + ``nor``, ``mul`` as ``mult`` + ``mflo``); ``sll rd, rt,
+        rs`` = ``sllv``; ``addiu rt, rs, 0xFFFF`` = -1; ``rotr`` by any
+        constant, modulo 32.  None: not one of them (the instruction as
+        written)."""
+        mn, ops = st.mnemonic, list(st.ops)
+        if mn not in self._by_name or not 2 <= len(ops) <= 3:
+            return None
+        if ops[-1].strip().startswith("$") and parse_gpr(ops[-1]) is None:
+            return None                         # a bad register: the plain error
+        short = len(ops) == 2
+        if short:
+            reg = parse_gpr(ops[1]) is not None
+            if mn not in (_SHORT_REGISTER if reg else _SHORT_IMMEDIATE):
+                return None
+            self._strict(st, f"{mn} {ops[0]}, {ops[0]}, {ops[1]}")
+            ops = [ops[0], ops[0], ops[1]]
+        rd, rs, third = ops
+        if parse_gpr(third) is not None:
+            if mn in _SHIFT_VARIABLE and _SHIFT_VARIABLE[mn] in self._by_name:
+                self._strict(st, f"{_SHIFT_VARIABLE[mn]} {rd}, {rs}, {third}")
+                return [(_SHIFT_VARIABLE[mn], ops)]
+            return [(mn, ops)] if short else None
+        if mn == "rotr" and self._is_constant(third) and \
+                not 0 <= self._value(third, st) <= 31:          # GNU as: modulo 32
+            v = self._value(third, st) & 31
+            self._strict(st, f"rotr {rd}, {rs}, {v}")
+            return [("rotr", [rd, rs, str(v)])]
+        if mn in _SIGNED_IMMEDIATE:
+            if self._is_constant(third) and 0x8000 <= self._value(third, st) <= 0xFFFF:
+                return [(mn, [rd, rs, str(_sx16(self._value(third, st)))])]
+            return [(mn, ops)] if short else None
+        if mn not in _ALU_IMMEDIATE and not (mn == "mul" and "mult" in self._by_name):
+            return [(mn, ops)] if short else None
+        if not self._is_constant(third):
+            raise AsmError(st.line, f"{mn}: the third operand must be a register or a "
+                           "constant", st.text)
+        v = _sx32(self._value(third, st))
+        imm = _ALU_IMMEDIATE.get(mn)
+        if mn in ("and", "or", "xor") and 0 <= v <= 0xFFFF:
+            self._strict(st, f"{imm} {rd}, {rs}, {v}")
+            return [(imm, [rd, rs, str(v)])]
+        if mn == "nor" and 0 <= v <= 0xFFFF:
+            self._strict(st, f"ori {rd}, {rs}, {v} + nor {rd}, {rd}, $zero")
+            return [("ori", [rd, rs, str(v)]), ("nor", [rd, rd, "$zero"])]
+        if mn in ("add", "addu", "slt", "sltu") and imm in self._by_name \
+                and -0x8000 <= v <= 0x7FFF:
+            self._strict(st, f"{imm} {rd}, {rs}, {v}")
+            return [(imm, [rd, rs, str(v)])]
+        if mn in ("sub", "subu") and imm in self._by_name and -0x8000 <= -v <= 0x7FFF:
+            self._strict(st, f"{imm} {rd}, {rs}, {-v}")
+            return [(imm, [rd, rs, str(-v)])]
+        self._strict(st, f"li $at, {third} + " +
+                     (f"mult {rs}, $at + mflo {rd}" if mn == "mul" else f"{mn} {rd}, {rs}, $at"))
+        need_at()
+        load = self._li(st, "$at", str(v & M32))
+        if mn == "mul":
+            return load + [("mult", [rs, "$at"]), ("mflo", [rd])]
+        return load + [(mn, [rd, rs, "$at"])]
+
+    def _strict(self, st: _Stmt, real: str) -> None:
+        """Strict mode: a GNU as macro is an error naming the real
+        instructions."""
+        if not self.pseudo:
+            raise AsmError(st.line, f"{st.mnemonic} with these operands is a "
+                           f"pseudo-instruction (strict mode); write: {real}", st.text)
 
     def _nops(self, st: _Stmt, count: int) -> None:
         if len(st.ops) != count:
@@ -798,6 +1004,8 @@ class Assembler:
         """``li`` / ``la``: a constant gets the shortest GNU ``as`` form; an
         address expression always ``lui %hi`` + ``addiu %lo``."""
         if not self._is_constant(expr):
+            if self._isa_bit(expr):              # MIPS16e code: bit 0 = the ISA mode
+                expr = f"({expr}) + 1"
             return [("lui", [rt, f"%hi({expr})"]),
                     ("addiu", [rt, rt, f"%lo({expr})"])]
         v = self._value(expr, st) & M32
@@ -851,6 +1059,12 @@ class Assembler:
         if st.mnemonic.startswith("."):
             self._emit_data(st)
             return
+        if st.m16:
+            self._emit16(st)
+            return
+        if st.mm:
+            self._emitmm(st)
+            return
         insns = self._expand(st)
         if st.forbidden_nop:
             insns = insns + [("nop", [])]
@@ -864,6 +1078,222 @@ class Assembler:
             self.prog.source_map[addr] = SourceLine(st.line, st.text)
             self._mark(st.seg, addr, 4)
 
+    # -- MIPS16e ------------------------------------------------------------------
+
+    def _m16_value(self, final: bool):
+        from .mips16 import Unresolved
+
+        def value(expr: str) -> int:
+            try:
+                return _eval(expr, self._lookup)
+            except _Unresolved:
+                if final:
+                    raise
+                raise Unresolved(expr) from None
+        return value
+
+    def _m16_encode(self, st: _Stmt, final: bool) -> list[list[int]]:
+        from . import mips16
+        try:
+            value = self._m16_value(final)
+            if st.mnemonic == "la":                 # a MIPS16e label: the ISA bit (GNU as)
+                plain = value
+                value = lambda e: plain(e) | self._isa_bit(e)     # noqa: E731
+            return mips16.encode(st.mnemonic, st.ops, st.addr, value,
+                                 reorder=st.reorder, long=st.line in self._m16_long)
+        except _Unresolved as exc:
+            raise AsmError(st.line, f"undefined symbol {exc}", st.text) from None
+        except mips16.AsmError16 as exc:
+            raise AsmError(st.line, str(exc), st.text) from None
+        except ValueError as exc:
+            raise AsmError(st.line, str(exc), st.text) from None
+
+    def _m16_size(self, st: _Stmt) -> int:
+        """Pass 1: the bytes of a MIPS16e statement (the short form while a
+        label is not known yet, unless relaxation made it long)."""
+        return sum(2 * len(i) for i in self._m16_encode(st, final=False))
+
+    def _emit16(self, st: _Stmt) -> None:
+        insns = self._m16_encode(st, final=True)
+        size = sum(2 * len(i) for i in insns)
+        if size != st.size:
+            if size > st.size and st.line not in self._m16_long:
+                self._m16_long.add(st.line)     # too far for the short form: again
+                raise _Relax
+            raise AsmError(st.line, "MIPS16e size changed between passes "
+                           "(use constants defined before use)", st.text)
+        addr = st.addr
+        for hws in insns:
+            for k, h in enumerate(hws):
+                self._put(addr + 2 * k, h, 2)
+            self.prog.source_map[addr] = SourceLine(st.line, st.text)
+            self.prog.m16[addr] = 2 * len(hws)
+            self._mark(st.seg, addr, 2 * len(hws))
+            addr += 2 * len(hws)
+
+    # -- microMIPS ----------------------------------------------------------------
+
+    #: written as is (no MIPS32 macro): branches and jumps (the reorder
+    #: rules below), the microMIPS-only instructions
+    _MM_DIRECT = {"b", "bc", "beqz", "bnez", "beq", "bne", "beqzc", "bnezc", "bgez", "bltz",
+                  "blez", "bgtz", "bgezal", "bltzal", "bgezals", "bltzals", "bal", "bals",
+                  "bc1f", "bc1t", "bc2f", "bc2t", "j", "jal", "jals", "jalx", "jr", "jr.hb",
+                  "jrs", "jrs.hb", "jalr", "jalr.hb", "jalrs", "jalrs.hb", "jrc", "jraddiusp",
+                  "lwp", "swp", "lwm", "swm", "lwxs", "movep", "addiupc",
+                  # Release 6
+                  "balc", "beqc", "bnec", "bltc", "bgec", "bltuc", "bgeuc", "bovc", "bnvc",
+                  "bgtc", "blec", "bgtuc", "bleuc", "bltzc", "blezc", "bgezc", "bgtzc",
+                  "beqzalc", "bnezalc", "bltzalc", "blezalc", "bgezalc", "bgtzalc", "bc1eqzc",
+                  "bc1nezc", "bc2eqzc", "bc2nezc", "jalrc", "jalrc.hb", "jrc.hb", "jic",
+                  "jialc", "jrcaddiusp", "lwpc"}
+    #: Release 6 also writes these as is
+    _MM_DIRECT_R6 = {"cache"}
+    #: delay slots of 32 bits (BD32) / 16 bits (BD16); the other branches
+    #: and jumps take either (MD00582 5.4 / 5.5)
+    _MM_SLOT32 = {"jal", "jalr", "jalr.hb", "jalx", "bgezal", "bltzal", "bal"}
+    _MM_SLOT16 = {"jals", "jalrs", "jalrs.hb", "bgezals", "bltzals", "bals"}
+    _MM_SLOT_ANY = {"b", "beqz", "bnez", "beq", "bne", "bgez", "bltz", "blez", "bgtz",
+                    "bc1f", "bc1t", "bc2f", "bc2t", "j", "jr", "jr.hb", "jrs", "jrs.hb"}
+
+    def _mm_expand(self, st: _Stmt) -> list[tuple[str, list[str], int]]:
+        """(mnemonic, operands, forced size) of a microMIPS statement:
+        GNU as's choices — the MIPS32 macros, and with ``.set reorder``
+        (eMIPS never moves an instruction into a delay slot) B / BEQZ /
+        BNEZ / JR as the compact BC / BEQZC / BNEZC / JRC, the other
+        branches and jumps followed by a NOP of their delay slot's size."""
+        mn, ops = st.mnemonic, list(st.ops)
+        if mn == "li" and len(ops) == 2 and self._is_constant(ops[1]):
+            v = self._value(ops[1], st)
+            if parse_gpr(ops[0]) in (16, 17, 2, 3, 4, 5, 6, 7) and -1 <= v <= 126 \
+                    and st.slot != 4:
+                return [("li16", ops, st.slot)]
+        if mn in self._MM_DIRECT or self.isa.release == "R6" and mn in self._MM_DIRECT_R6:
+            out = [(mn, ops)]
+        else:
+            reorder, st.reorder = st.reorder, False
+            pseudo = self.pseudo
+            if mn in ("move", "not"):           # real: MOVE16, NOT16
+                self.pseudo = True
+            try:
+                out = self._expand(st)
+            finally:
+                st.reorder, self.pseudo = reorder, pseudo
+        # GNU as builds its macros from 32-bit forms: an instruction that is
+        # not the statement itself (or MOVE / NOT / NEG(U), real here) is 32 bits
+        real = mn in ("move", "not", "neg", "negu") or len(out) == 1 and out[0][0] == mn \
+            and out[0][1] in (ops, ops[:1] + ops)
+        res = [(m, o, st.slot if k == 0 and (real or st.slot == 4) else 0 if real else 4)
+               for k, (m, o) in enumerate(out)]
+        if not real and st.slot == 2:
+            raise AsmError(st.line, f"{mn}: a macro in a 16-bit delay slot", st.text)
+        last, lops, _ = res[-1]
+        if st.reorder and self.isa.release != "R6":        # (Release 6: no delay slots)
+            zero = [r for r in lops[:2] if parse_gpr(r) == 0] if last in ("beq", "bne") else []
+            if last == "b":
+                res[-1] = ("bc", lops, res[-1][2])
+            elif last in ("beqz", "bnez"):
+                res[-1] = (last + "c", lops, res[-1][2])
+            elif zero and len(lops) == 3:
+                other = lops[1] if parse_gpr(lops[0]) == 0 else lops[0]
+                res[-1] = ("beqzc" if last == "beq" else "bnezc", [other, lops[2]], res[-1][2])
+            elif last == "jr":
+                res[-1] = ("jrc", lops, res[-1][2])
+            elif last in self._MM_SLOT32 or last in self._MM_SLOT16 or \
+                    last in self._MM_SLOT_ANY:
+                res.append(("nop", [], 4 if last in self._MM_SLOT32 else 2))
+        return res
+
+    def _mm_slot_need(self, prev: _Stmt) -> int:
+        """The size the delay slot after ``prev`` (noreorder) demands."""
+        if self.isa.release == "R6":
+            return 0
+        last = self._mm_expand(prev)[-1][0]
+        return 4 if last in self._MM_SLOT32 else 2 if last in self._MM_SLOT16 else 0
+
+    def _mm_label_dep(self, ops: list[str]) -> bool:
+        """An operand that uses a label (not a branch target): GNU as
+        leaves a relocation there, so the 32-bit form."""
+        for op in ops:
+            names = [t for t in _TOKEN.findall(op)
+                     if re.fullmatch(r"[A-Za-z_.][\w.$]*", t)]
+            if any(t not in self._consts for t in names):
+                return True
+        return False
+
+    def _mm_encode(self, st: _Stmt, final: bool) -> list:
+        from . import micromips as MM
+        if self._mm_enc is None or self._mm_enc.release != self.isa.release:
+            self._mm_enc = MM.Encoder(self.isa.release)
+        enc = self._mm_enc
+        value = self._cvalue(final, MM.Unresolved)
+        out, addr = [], st.addr
+        long = st.line in self._m16_long
+        for k, (mn, ops, force) in enumerate(self._mm_expand(st)):
+            branch = mn in self._MM_DIRECT and mn not in (
+                "lwp", "swp", "lwm", "swm", "lwxs", "movep") or mn in ("beq", "bne")
+            try:
+                if mn == "li16":
+                    insn = enc._raw("LI16", d=MM.GPR3.index(parse_gpr(ops[0])),
+                                    i=self._value(ops[1], st) & 0x7F)
+                elif not branch and self._mm_label_dep(ops):
+                    if not final:
+                        insn = MM.Insn(4, 0)
+                    else:
+                        insn = enc.encode(mn, ops, addr, value, self._mm_mips32(addr, st),
+                                          force=4)
+                        if force == 2:
+                            raise MM.AsmErrorMM(f"{mn}: the delay slot needs a 16-bit "
+                                                "instruction")
+                else:
+                    insn = enc.encode(mn, ops, addr, value, self._mm_mips32(addr, st),
+                                      force=force, long=long)
+            except _Unresolved as exc:
+                raise AsmError(st.line, f"undefined symbol {exc}", st.text) from None
+            except MM.AsmErrorMM as exc:
+                raise AsmError(st.line, str(exc), st.text) from None
+            except ValueError as exc:
+                raise AsmError(st.line, str(exc), st.text) from None
+            out.append(insn)
+            addr += insn.size
+        return out
+
+    def _mm_mips32(self, addr: int, st: _Stmt):
+        return lambda mn, ops: self._encode(mn, ops, addr, st)
+
+    def _cvalue(self, final: bool, unresolved):
+        def value(expr: str) -> int:
+            try:
+                return _eval(expr, self._lookup)
+            except _Unresolved:
+                if final:
+                    raise
+                raise unresolved(expr) from None
+        return value
+
+    def _emitmm(self, st: _Stmt) -> None:
+        insns = self._mm_encode(st, final=True)
+        size = sum(i.size for i in insns)
+        if size != st.size:
+            if size > st.size and st.line not in self._m16_long:
+                self._m16_long.add(st.line)     # a branch too far for the 16-bit form
+                raise _Relax
+            raise AsmError(st.line, "microMIPS size changed between passes "
+                           "(use constants defined before use)", st.text)
+        addr = st.addr
+        for insn in insns:
+            for k, h in enumerate(insn.halves):
+                self._put(addr + 2 * k, h, 2)
+            self.prog.source_map[addr] = SourceLine(st.line, st.text)
+            self.prog.mm[addr] = insn.size
+            self._mark(st.seg, addr, insn.size)
+            addr += insn.size
+
+    def _isa_bit(self, expr: str) -> int:
+        """1 for the address of MIPS16e code taken as data (``.word f`` /
+        ``la`` / ``li``): what the linker does for a MIPS16 symbol, so a
+        JALR / JR to it switches the ISA mode."""
+        return 1 if expr.strip() in self._m16_labels else 0
+
     def _put(self, addr: int, value: int, size: int) -> None:
         data = value.to_bytes(size, "big" if self.endian == "big" else "little")
         for i, b in enumerate(data):
@@ -875,13 +1305,18 @@ class Assembler:
 
     def _emit_data(self, st: _Stmt) -> None:
         d, addr = st.mnemonic, st.addr
-        if d == ".space":
+        if d == ".fill16":                      # MIPS16e / microMIPS alignment: NOPs
+            from .micromips import NOP16
+            from .mips16 import NOP
+            for k in range(0, st.size, 2):
+                self._put(addr + k, NOP16 if st.mm else NOP, 2)
+        elif d == ".space":
             for i in range(st.size):
                 self.prog.image[addr + i] = 0
         elif d in (".word", ".half", ".byte"):
             size = {".word": 4, ".half": 2, ".byte": 1}[d]
             for i, op in enumerate(st.ops):
-                v = self._value(op, st)
+                v = self._value(op, st) | (self._isa_bit(op) if size == 4 else 0)
                 if not -(1 << (8 * size - 1)) <= v < (1 << (8 * size)):
                     raise AsmError(st.line, f"value {v} does not fit {d}", st.text)
                 self._put(addr + i * size, v & ((1 << (8 * size)) - 1), size)

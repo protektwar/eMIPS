@@ -55,8 +55,15 @@ PRID = (15, 0)
 EBASE = (15, 1)
 CONFIG = (16, 0)
 CONFIG1 = (16, 1)
+#: Config1.CA: the MIPS16e ASE is implemented (Vol. IV-a 3.2)
+CFG1_CA = 1 << 2
 CONFIG2 = (16, 2)
 CONFIG3 = (16, 3)
+#: Config3.ISA (15:14): 0 MIPS32 only, 1 microMIPS32 only, 2 / 3 both
+#: (MIPS32 / microMIPS32 out of reset); Config3.ISAOnExc (16): the ISA of
+#: the handlers at EBase offsets (Vol. III Table 9.67)
+CFG3_ISA_SHIFT = 14
+CFG3_ISAONEXC = 1 << 16
 #: CMGCRBase (CP0 15.3, a CPS core: the Coherence Manager's GCR base);
 #: Config3.CMGCR says it is implemented
 CMGCRBASE = (15, 3)

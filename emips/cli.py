@@ -27,7 +27,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import BOOT_MODES, Options
+from .options import BOOT_MODES, COMPRESSED, Options
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
 from .syntax import parse_gpr
@@ -171,11 +171,7 @@ class Debugger(cmd.Cmd):
         if pc is None:
             return f"{marker} (pipeline empty)"
         src = s.source_line(pc, cpu)
-        try:
-            text = tools.decode_word(s.machine.code_word(pc), release=s.release, pc=pc,
-                                     abi=s.abi).text
-        except Exception:                                   # noqa: BLE001
-            text = "?"
+        text = s.instruction_text(pc, cpu)
         where = f"   line {src.line}: {src.text.strip()}" if src and s.kind == "asm" else ""
         c = s.source_position(pc)
         if c is not None:                                   # a compiled program: its C line
@@ -245,7 +241,8 @@ class Debugger(cmd.Cmd):
                 effects.append("taken" if v.branch.taken else "not taken")
             if v.exception:
                 effects.append(f"EXCEPTION {v.exception}")
-            self.say((f"   0x{v.pc:08x}  {v.text:<30}" + ("  ; " + ", ".join(effects)
+            self.say((f"   0x{v.pc:08x}  {(v.source_text or v.text):<30}"
+                      + ("  ; " + ", ".join(effects)
                                                            if effects else "")).rstrip())
         for e in exceptions or ():
             self.say(self._exception_line(e))
@@ -1500,7 +1497,8 @@ class Debugger(cmd.Cmd):
         icache|dcache|l2|l3 SIZE[:WAYS[:LINE]]|none | write-buffer on|off |
         mmu fixed|bat|tlb[:N]|ftlb[:N[:SxW]][+sc][+pw] | model 5-stage|24k |
         cores 1..4 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
-        disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off
+        disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off |
+        compressed auto|none|mips16e|micromips|micromips-only
         (changes reassemble or restart the program)"""
         parts = arg.split()
         if len(parts) != 2:
@@ -1549,6 +1547,12 @@ class Debugger(cmd.Cmd):
             o.cores = int(value)
         elif key == "shadow-sets" and value.isdigit() and 1 <= int(value) <= 16:
             o.shadow_sets = int(value)
+        elif key == "compressed" and value.lower() in COMPRESSED:
+            if value.lower() == "mips16e" and self.s.release == "R6":
+                raise CliError("Release 6 has no MIPS16e")
+            if value.lower().startswith("micromips") and self.s.release in ("R1", "R2"):
+                raise CliError("microMIPS32 starts with Release 3 (set release R3)")
+            o.compressed = value.lower()
         elif key == "mmu":
             from .mmu import make_mmu
             try:
@@ -1716,7 +1720,8 @@ def options_from_args(args) -> Options:
                    model=getattr(args, "model", None) or "5-stage",
                    cores=getattr(args, "cores", None) or 1,
                    iocu=getattr(args, "iocu", False),
-                   shadow_sets=getattr(args, "shadow_sets", None) or 4)
+                   shadow_sets=getattr(args, "shadow_sets", None) or 4,
+                   compressed=getattr(args, "compressed", None) or "auto")
 
 
 def apply_header(args) -> str | None:
@@ -1755,7 +1760,8 @@ def session_from_args(args) -> Session:
     apply_header(args)
     options = options_from_args(args)
     given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
-                            ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"))
+                            ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"),
+                            ("model", "model"), ("compressed", "compressed"))
              if getattr(args, a, None) not in (None, "kernel")}
     options, _notes = adjust(options, args.release or "R5", keep=given)
     bad = problems(options, args.release or "R5")

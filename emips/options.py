@@ -30,6 +30,10 @@ CACHE_INIT_MODES = ("random", "hardware")
 MAX_CORES = 4
 #: the most GPR sets (Vol. III: SRSCtl.HSS is 4 bits)
 MAX_SHADOW_SETS = 16
+#: the compressed instruction sets a core may have
+COMPRESSED = ("auto", "none", "mips16e", "micromips", "micromips-only")
+#: the instruction set C programs are compiled to (emips.cc)
+C_ISAS = ("mips32", "mips16e", "micromips")
 
 
 @dataclass
@@ -44,6 +48,9 @@ class Options:
     #: C programs: the compiler's optimisation level (-O0 / -O1 / -O2 / -O3 / -Os);
     #: -O0 by default: every C line keeps its own code (stepping by lines)
     c_optimize: str = "0"
+    #: C programs: "mips32", "mips16e" (cc --mips16) or "micromips" (cc
+    #: --micromips, Release 3 / 5); crt0 stays MIPS32
+    c_isa: str = "mips32"
     # processor
     #: Count increments every N cycles (CCRes: 1 or 2)
     count_rate: int = 2
@@ -60,6 +67,12 @@ class Options:
     #: GPR shadow sets (SRSCtl.HSS + 1; Release 2+): 1 = the normal GPRs
     #: only; the 24K builds 1, 2 or 4, the architecture allows up to 16
     shadow_sets: int = 4
+    #: the compressed instruction set the core has: "auto" = the core's
+    #: own — MIPS16e from Release 1 to 5, as the 24K (it always has it),
+    #: none in Release 6; "none"; "mips16e" (Config1.CA; emips.mips16);
+    #: "micromips" (microMIPS32 and MIPS32, Config3.ISA = 2, Release 3+;
+    #: emips.micromips); "micromips-only" (Config3.ISA = 1)
+    compressed: str = "auto"
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -155,6 +168,8 @@ class Options:
             self.boot = d.boot
         if self.c_optimize not in C_OPTIMIZE:
             self.c_optimize = d.c_optimize
+        if self.c_isa not in C_ISAS:
+            self.c_isa = d.c_isa
         if self.exceptions not in EXCEPTION_MODES:
             self.exceptions = d.exceptions
         if self.count_rate not in (1, 2):
@@ -167,6 +182,8 @@ class Options:
             self.cores = d.cores
         if not 1 <= self.shadow_sets <= MAX_SHADOW_SETS:
             self.shadow_sets = d.shadow_sets
+        if self.compressed not in COMPRESSED:
+            self.compressed = d.compressed
         for name, level in (("icache", 1), ("dcache", 1), ("l2", 2), ("l3", 3)):
             try:
                 Geometry.parse(getattr(self, name), level)
@@ -230,5 +247,6 @@ class Options:
 
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
-        return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize) != \
-            (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize)
+        return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
+                self.c_isa) != \
+            (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa)

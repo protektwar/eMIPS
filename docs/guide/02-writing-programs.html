@@ -50,6 +50,9 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#215-differences-from-mars-and-spim">2.15 Differences from MARS and SPIM</a></li>
 <li><a href="#216-intel-hex-files">2.16 Intel HEX files</a></li>
 <li><a href="#217-common-assembly-errors">2.17 Common assembly errors</a></li>
+<li><a href="#218-programs-in-c">2.18 Programs in C</a></li>
+<li><a href="#219-mips16e-16-bit-instructions">2.19 MIPS16e: 16-bit instructions</a></li>
+<li><a href="#220-micromips-16--and-32-bit-instructions">2.20 microMIPS: 16- and 32-bit instructions</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -427,8 +430,45 @@ Disassembly pane shows what each became.</p>
 <td><code>lw $t0, 70000($t1)</code></td>
 <td><code>lui</code> + <code>addu</code> + <code>lw</code> (offset too large)</td>
 </tr>
+<tr>
+<td><code>or $t0, $t1, 5</code> (<code>and</code>, <code>xor</code>)</td>
+<td><code>ori $t0, $t1, 5</code> (a constant that fits 0 … 0xffff)</td>
+</tr>
+<tr>
+<td><code>addu $t0, $t1, -5</code> (<code>add</code>, <code>slt</code>, <code>sltu</code>)</td>
+<td><code>addiu $t0, $t1, -5</code> (a constant that fits −32768 … 32767)</td>
+</tr>
+<tr>
+<td><code>subu $t0, $t1, 5</code> (<code>sub</code>)</td>
+<td><code>addiu $t0, $t1, -5</code></td>
+</tr>
+<tr>
+<td><code>or $t0, $t1, 0x12345</code> (any of them, a larger constant)</td>
+<td><code>lui $at, 0x1</code> + <code>ori $at, $at, 0x2345</code> + <code>or $t0, $t1, $at</code></td>
+</tr>
+<tr>
+<td><code>nor $t0, $t1, 5</code></td>
+<td><code>ori $t0, $t1, 5</code> + <code>nor $t0, $t0, $zero</code></td>
+</tr>
+<tr>
+<td><code>mul $t0, $t1, 5</code></td>
+<td><code>addiu $at, $zero, 5</code> + <code>mult $t1, $at</code> + <code>mflo $t0</code></td>
+</tr>
+<tr>
+<td><code>addu $t0, $t1</code> (two operands)</td>
+<td><code>addu $t0, $t0, $t1</code> (also <code>addiu $t0, 4</code>, <code>sll $t0, 2</code> ...)</td>
+</tr>
+<tr>
+<td><code>sll $t0, $t1, $t2</code> (<code>srl</code>, <code>sra</code>, <code>rotr</code>)</td>
+<td><code>sllv $t0, $t1, $t2</code></td>
+</tr>
 </tbody>
 </table>
+<p>The constant there must be a number or a <code>.eqv</code> name, not a label.
+<code>addiu</code>, <code>addi</code>, <code>slti</code> and <code>sltiu</code> also take 0x8000 …
+0xffff as the 16-bit pattern (<code>addiu $t0, $t1, 0xffff</code> adds −1), as
+GNU <code>as</code> does.  In Release 6 there is no <code>addi</code>: <code>add</code> and <code>sub</code>
+with a constant always load it into <code>$at</code>.</p>
 <p><code>nop</code> (= <code>sll $zero, $zero, 0</code>), <code>b</code> (= <code>beq $zero, $zero</code>) and <code>bal</code> are
 <em>real</em> instructions, not pseudo-instructions.</p>
 <p>Pseudo-instructions use <strong><code>$at</code></strong> as scratch — that is why your programs
@@ -1235,8 +1275,168 @@ what the compiler made: the calling convention, the stack, the
 optimiser, <code>volatile</code>.</p>
 <p>Not there: a C library (<code>printf</code>, <code>malloc</code> — use <code>sbrk</code>), the 64-bit
 division helpers (<code>long long</code> <code>/</code> and <code>%</code>), position-independent or
-dynamically linked programs, and microMIPS / MIPS16e code (refused when
-loading).</p>
+dynamically linked programs.  C for MIPS16e is in
+<a href="#219-mips16e-16-bit-instructions">2.19</a>; C for microMIPS is not there yet
+(an ELF with microMIPS code built elsewhere loads and runs).</p>
+<h2 id="219-mips16e-16-bit-instructions">2.19 MIPS16e: 16-bit instructions</h2>
+<p>MIPS16e is an <em>Application-Specific Extension</em> that gives most
+MIPS32 instructions a 16-bit encoding, for code that is smaller (the
+MIPS 24K has it).  The price is fewer choices: eight registers
+(<code>$s0</code>, <code>$s1</code>, <code>$v0</code>, <code>$v1</code>, <code>$a0</code>–<code>$a3</code>) plus <code>$sp</code>,
+<code>$ra</code> and the condition register T (<code>$t8</code>), mostly two-operand
+arithmetic, short immediates.  An <code>EXTEND</code> halfword in front gives an
+instruction its full 16-bit immediate (the assembler adds it when the
+value does not fit).  The processor runs one ISA at a time: the <strong>ISA
+mode</strong>.  <code>jalx</code> calls code of the other ISA, and a <code>jr</code> or <code>jalr</code>
+takes the mode from bit 0 of its register.  That is why <code>jal</code> / <code>jalr</code>
+in MIPS16e code set bit 0 of <code>$ra</code>, and a <code>jr $ra</code> returns to the
+right one.</p>
+<pre><code class="language-asm"># output: 120\n
+        .text
+main:   li      $a0, 5
+        jalx    fact                    # call MIPS16e code: JALX switches the ISA
+        move    $a0, $v0
+        li      $v0, 1
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        li      $v0, 10
+        syscall
+
+        .set mips16                     # 16-bit instructions from here on
+        .align  2                       # (a JAL target is word-aligned)
+fact:   save    $ra, $s0, 32            # push $ra and $s0, a 32-byte frame
+        move    $s0, $a0
+        li      $v0, 1
+        slti    $a0, 2                  # T ($t8) = n &lt; 2
+        btnez   done                    # branch on T, no delay slot
+        addiu   $a0, $s0, -1
+        jal     fact                    # n * fact(n - 1)
+        mult    $v0, $s0
+        mflo    $v0
+done:   restore $ra, $s0, 32            # pop them, free the frame
+        jr      $ra                     # bit 0 of $ra: back to MIPS16e or MIPS32
+</code></pre>
+<p>What is different from MIPS32 code:</p>
+<ul>
+<li><code>.set mips16</code> / <code>.set nomips16</code> switch the assembler; a MIPS32
+instruction after MIPS16e code must be word-aligned again (<code>.align 2</code>),
+and so must a <code>jal</code> target.</li>
+<li>Comparisons write T: <code>cmp</code> / <code>cmpi</code> (T = a xor b: zero if equal),
+<code>slt</code>, <code>slti</code> ...; <code>bteqz</code> / <code>btnez</code> test it.  <code>beqz</code> /
+<code>bnez</code> test a register.</li>
+<li>The branches have <strong>no delay slot</strong>.  <code>jal</code>, <code>jalx</code>,
+<code>jr</code> and <code>jalr</code> have one; with <code>.set reorder</code> (the default) the
+assembler turns <code>jr</code> / <code>jalr</code> into the compact <code>jrc</code> / <code>jalrc</code> and
+puts a <code>nop</code> after a <code>jal</code>.</li>
+<li><code>save</code> / <code>restore</code> push and pop <code>$ra</code>, <code>$s0</code>, <code>$s1</code> (with
+EXTEND also <code>$s2</code>–<code>$s8</code> and the argument registers) and move
+<code>$sp</code>: a function's prologue and epilogue in one instruction.</li>
+<li>PC-relative <code>lw rx, label</code> and <code>addiu rx, $pc, n</code> (<code>la</code>) reach
+data near the code.  The address of a MIPS16e label taken as data
+(<code>.word f</code>, <code>la $t9, f</code>) has bit 0 set, so a <code>jalr $t9</code> to it
+switches the mode.</li>
+</ul>
+<p>The core has MIPS16e, as a real 24K does (Config1.CA = 1), from
+Release 1 to 5; Release 6 has none.  <code>--compressed none</code> (or
+<code>set compressed none</code> in the debugger) gives a MIPS32 core without
+it: then <code>jalx</code> is a Reserved Instruction and a <code>jr</code> to an odd
+address an address error, where the 24K would switch to 16-bit code.  An exception in MIPS16e code saves EPC with bit 0 set, the
+handler runs in MIPS32 mode, and <code>eret</code> returns to MIPS16e.  The
+Disassembly pane and <code>asm</code> list the 16- and 32-bit encodings.  The
+instruction view shows the MIPS16e instruction and the MIPS32
+instruction it was <em>recoded</em> to: what the 24K's decoder does with it.
+C can be compiled for MIPS16e too: <code>python3 -m emips cc prog.c
+--mips16</code> (it needs a MIPS GCC, <code>gcc-mips-linux-gnu</code>).  The
+startup code and the system-call helpers of <code>emips.h</code> stay MIPS32,
+called with <code>jalx</code>; a function of yours that uses <code>MFC0</code> /
+<code>MTC0</code> needs <code>__attribute__((nomips16))</code>.  Both pipeline models
+run MIPS16e: the 5-stage one fetches 2 or 4 bytes per instruction, the
+24K adds its two MIPS16e fetch stages
+(<a href="05-understanding.html#a-real-pipeline-the-mips-24k">5.3</a>).  GDB sees <code>$pc</code> with
+bit 0 set in MIPS16e code (<a href="04-command-line.html#gdb-in-mips16e-and-micromips-code">4.12</a>).
+Labs 41, 42 and 46 compare the two ISAs.</p>
+<h2 id="220-micromips-16--and-32-bit-instructions">2.20 microMIPS: 16- and 32-bit instructions</h2>
+<p>microMIPS32 replaced MIPS16e from Release 3 on (the MIPS M14K and
+microAptiv have it).  It is not a small subset: <em>every</em> MIPS32
+instruction has a 32-bit microMIPS encoding, and the frequent ones also
+have a 16-bit one, so 16- and 32-bit instructions mix freely and nothing
+is given up.  The 16-bit forms reach eight registers (<code>$s0</code>,
+<code>$s1</code>, <code>$v0</code>, <code>$v1</code>, <code>$a0</code>–<code>$a3</code>), with exceptions such as
+<code>move</code>, <code>lw rt, off($sp)</code> or <code>jr</code>, which take any register.  The
+ISA mode works as for MIPS16e: <code>jalx</code> switches, bit 0 of a <code>jr</code>
+target says which ISA is there, and the links of microMIPS calls have
+bit 0 set.</p>
+<pre><code class="language-asm"># output: 120\n
+# release: R5
+        .set micromips                  # microMIPS from the first instruction
+        .text
+main:   li      $a0, 5                  # LI16: 16 bits
+        jal     fact                    # 32 bits, then a 32-bit delay slot
+        move    $a0, $v0                # MOVE16
+        li      $v0, 1
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        li      $v0, 10
+        syscall
+
+fact:   addiu   $sp, $sp, -16           # ADDIUSP: 16 bits
+        swm     $s0, $ra, 0($sp)        # SWM16: push $s0 and $ra in one instruction
+        move    $s0, $a0
+        li      $v0, 1
+        slti    $at, $a0, 2
+        bnez    $at, done               # BNEZC: compact, no delay slot
+        addiu   $a0, $s0, -1
+        jal     fact                    # n * fact(n - 1)
+        mul     $v0, $v0, $s0
+done:   lwm     $s0, $ra, 0($sp)        # LWM16: pop them
+        jraddiusp 16                    # return, $sp += 16: one 16-bit instruction
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><code>.set micromips</code> / <code>.set nomicromips</code> switch the assembler.  As
+GNU as, it picks the 16-bit form of an instruction whenever the operands
+fit (<code>addu $v0, $v1, $a0</code> is 16 bits, <code>addu $v0, $v1, $t0</code> 32), and
+the 32-bit form for an operand that names a label.  The listing
+(<code>python3 -m emips asm</code>) shows 4 hex digits for a 16-bit instruction.</li>
+<li>Branch and jump offsets count halfwords.  A delay slot can be 16 or 32
+bits; <code>jal</code>, <code>jalr</code>, <code>bgezal</code> and <code>jalx</code> need a 32-bit one,
+the "short" <code>jals</code>, <code>jalrs</code>, <code>bgezals</code> a 16-bit one — the link
+skips that size.  With <code>.set reorder</code> (the default) the assembler
+writes <code>b</code>, <code>beqz</code>, <code>bnez</code> and <code>jr</code> as the compact <code>bc</code>,
+<code>beqzc</code>, <code>bnezc</code>, <code>jrc</code> and puts a NOP of the right size after the
+others; with <code>.set noreorder</code> it makes the instruction you put in a
+slot that size, or says it cannot.</li>
+<li>New instructions: <code>lwm</code> / <code>swm</code> (the s-registers and <code>$ra</code> from /
+to consecutive words), <code>lwp</code> / <code>swp</code> (two registers),
+<code>movep</code> (two moves), <code>addiupc</code> (PC-relative), <code>lwxs</code> (scaled
+index), <code>jraddiusp</code> (return and free the frame).</li>
+<li>The core: a program with <code>.set micromips</code> code gets microMIPS
+(MIPS32 and microMIPS, Config3.ISA = 2), from Release 3 on;
+<code>--compressed micromips</code> asks for it, <code>--compressed
+micromips-only</code> is a core without MIPS32 (it starts in microMIPS, a
+<code>jr</code> to an even address is an address error).  An exception saves
+EPC with bit 0 set; the handler runs in the ISA Config3.ISAOnExc names
+(MIPS32 unless the program sets it), and <code>eret</code> goes back.</li>
+<li>Release 6 (<code>--release R6</code>) has its own microMIPS: the same
+instructions where MIPS32 R6 has them, other encodings, and <strong>no
+delay slots at all</strong> — every branch and jump is compact (<code>bc16</code>,
+<code>beqzc16</code>, <code>jrc16</code>, <code>jalrc16</code>, <code>balc</code>, <code>beqc</code> ...).  The
+same source assembles for both: <code>b</code> is <code>bc16</code> or <code>bc</code>,
+<code>jalr</code> becomes <code>jalrc</code>.</li>
+</ul>
+<p>The instruction view shows the microMIPS instruction and the MIPS32
+one it does the work of.  The 5-stage pipeline runs microMIPS (the M14K,
+a microMIPS core, has a five-stage pipeline); the 24K has no microMIPS,
+so a microMIPS program in 24K mode runs on the 5-stage model, with a
+note that says so.  C: <code>python3 -m emips cc prog.c --micromips</code>
+(Release 3 or 5, GCC or clang; Release 6 microMIPS C is refused, because
+no compiler builds it the way the manual defines it).  GDB sees
+<code>$pc</code> with bit 0 set (<a href="04-command-line.html#gdb-in-mips16e-and-micromips-code">4.12</a>).
+Labs 43, 44, 45 and 47 measure what microMIPS saves.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

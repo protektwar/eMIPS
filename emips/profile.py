@@ -33,7 +33,7 @@ HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\
 #: the options a profile owns (the machine): unnamed ones go to their defaults
 PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
-                  "shadow_sets", "boot")
+                  "shadow_sets", "boot", "compressed")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -57,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--cores", type=int)
     p.add_argument("--iocu", action="store_true")
     p.add_argument("--shadow-sets", type=int)
+    p.add_argument("--compressed")
     p.add_argument("--boot", choices=BOOT_MODES)
     p.add_argument("--pipeline", action="store_true")
     p.add_argument("--no-forwarding", action="store_true")
@@ -132,7 +133,7 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
         raise ValueError(f"eMIPS header: unknown {' '.join(rest)}")
     o: dict[str, Any] = {}
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
-                 "shadow_sets", "boot", "cache_init"):
+                 "shadow_sets", "boot", "cache_init", "compressed"):
         v = getattr(ns, name)
         if v is not None:
             o[name] = v.lower() if isinstance(v, str) and name != "boot" else v

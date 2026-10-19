@@ -6,7 +6,17 @@
 #ifndef EMIPS_H
 #define EMIPS_H
 
-static inline int emips_syscall1(int service, int a0)
+/* MIPS16e code (gcc -mips16, emips cc --mips16) has no SYSCALL, MFC0 or
+ * MTC0: the functions that use them are MIPS32 ones (nomips16), called
+ * with JALX.  A function of yours that uses MFC0 / MTC0 needs
+ * __attribute__((nomips16)) in a MIPS16e build too. */
+#ifdef __mips16
+#define EMIPS_MIPS32 static __attribute__((nomips16, noinline))
+#else
+#define EMIPS_MIPS32 static inline
+#endif
+
+EMIPS_MIPS32 int emips_syscall1(int service, int a0)
 {
     register int v0 __asm__("$2") = service;
     register int r4 __asm__("$4") = a0;
@@ -14,7 +24,7 @@ static inline int emips_syscall1(int service, int a0)
     return v0;
 }
 
-static inline int emips_syscall2(int service, int a0, int a1)
+EMIPS_MIPS32 int emips_syscall2(int service, int a0, int a1)
 {
     register int v0 __asm__("$2") = service;
     register int r4 __asm__("$4") = a0;
@@ -35,7 +45,7 @@ static inline void read_string(char *buf, int size) { emips_syscall2(8, (int)buf
 static inline void *sbrk(int bytes)          { return (void *)emips_syscall1(9, bytes); }
 static inline void exit(int code)            { emips_syscall1(17, code); for (;;) {} }
 
-static inline void print_float(float f)
+EMIPS_MIPS32 void print_float(float f)
 {
     __asm__ volatile ("mov.s $f12, %0\n\tli $v0, 2\n\tsyscall" : : "f"(f) : "$2", "$f12", "memory");
 }

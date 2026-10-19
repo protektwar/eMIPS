@@ -81,12 +81,14 @@ ECR_PRACC = 1 << 18
 ECR_PRRST = 1 << 16
 ECR_PROBEN = 1 << 15
 ECR_PROBTRAP = 1 << 14
+ECR_ISAONDEBUG = 1 << 13
 ECR_EJTAGBRK = 1 << 12
 ECR_DM = 1 << 3
 
 #: the Implementation register (24K Table 11.24): EJTAGver 3, DINTsup,
-#: ASIDsize 2 with a TLB (bits 22:21), no MIPS16e in eMIPS, NoDMA
+#: ASIDsize 2 with a TLB (bits 22:21), MIPS16e (bit 16) with the ASE, NoDMA
 IMPCODE_BASE = (3 << 29) | (1 << 24) | (1 << 14)
+IMPCODE_MIPS16 = 1 << 16
 #: the Device ID register: Version, PartNumber and ManufID are core inputs
 #: (EJ_Version / EJ_PartNumber / EJ_ManufID); eMIPS ties them to 0, bit 0 = 1
 DEVICE_ID = 0x00000001
@@ -133,6 +135,9 @@ class TAP:
         self.rocc = True
         self.per_rst = self.pr_rst = False
         self.prob_en = self.prob_trap = self.ejtagbrk = self.ejtagboot
+        #: ECR.ISAOnDebug as written (Table 4.9: reset 0; read-only 0
+        #: without microMIPS, 1 on a microMIPS-only core)
+        self.isa_on_debug = False
         self.pending: dict | None = None
         self.address = 0
         self.data = 0
@@ -239,12 +244,22 @@ class TAP:
             v |= ECR_PROBEN
         if self.prob_trap:
             v |= ECR_PROBTRAP
+        if m is not None and self.isa_on_debug_bit(m):
+            v |= ECR_ISAONDEBUG
         return v
+
+    def isa_on_debug_bit(self, m) -> bool:
+        """ECR.ISAOnDebug (MD00047 Table 4.9): the debug handler's ISA in
+        the probe's memory — 1 = microMIPS."""
+        if getattr(m, "compressed", None) != "micromips":
+            return False
+        return self.isa_on_debug or not m.mips32
 
     def impcode(self) -> int:
         m = self.m
         tlb = m is not None and getattr(m.mmu, "mt", 3) in (1, 4)
-        return IMPCODE_BASE | ((2 << 21) if tlb else 0)
+        m16 = m is not None and getattr(m, "compressed", None) == "mips16e"
+        return IMPCODE_BASE | ((2 << 21) if tlb else 0) | (IMPCODE_MIPS16 if m16 else 0)
 
     def pcsample(self) -> int:
         ej = self.m.ejtag if self.m is not None else None
@@ -306,6 +321,7 @@ class TAP:
         self.per_rst = bool(value & ECR_PERRST)
         self.prob_en = bool(value & ECR_PROBEN)
         self.prob_trap = bool(value & ECR_PROBTRAP)
+        self.isa_on_debug = bool(value & ECR_ISAONDEBUG)
         m = self.m
         if value & ECR_EJTAGBRK and m is not None and not m.debug_mode:
             self.ejtagbrk = True                # R/W1: a debug interrupt

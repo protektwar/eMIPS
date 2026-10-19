@@ -76,6 +76,8 @@ from .exceptions import (
 )
 from .cache import CACHED_CCA, CACHED_CCA_CPS, CCA_24K, CCA_UCA, COHERENT_CCA, CacheError, Caches
 from .isa import ISA, Decode, ISADecodeError
+from . import micromips as MM
+from . import mips16 as M16
 from .memory import PMemory
 from .mmu import CCA_UNCACHED, SUPPORTED_CCA, Translation, default_mmu
 
@@ -97,6 +99,9 @@ __all__ = [
 
 M32 = 0xFFFFFFFF
 M64 = 0xFFFFFFFFFFFFFFFF
+#: the full pre-R6 table: the MIPS32 expansions of MIPS16e instructions
+#: (SEB / SEH exist in MIPS16e on a Release 1 core too)
+_ISA_R5 = ISA.for_release("R5")
 
 #: Documented choices where the manual leaves behavior UNPREDICTABLE /
 #: implementation-dependent, or where the simulator is knowingly partial.
@@ -159,15 +164,96 @@ DEVIATIONS: dict[str, str] = {
                     "addresses (as assembled programs), .MIPS.abiflags and the "
                     "ELF's FP ABI are not checked (the FPU follows the release "
                     "and Status.FR); no C library, no dynamic linking.",
-    "JALX": "no MIPS16e / microMIPS (Config1.CA = 0, Config3.ISA = 0): "
-            "Reserved Instruction.",
+    "JALX": "without MIPS16e (Machine() alone, a Release 6 core, or "
+            "Options.compressed none: Config1.CA = 0) Reserved Instruction, and a "
+            "JR / JALR to an odd address faults on the fetch (AdEL); with it (the "
+            "Session's default from Release 1 to 5) see MIPS16e.",
+    "MIPS16e": "Vol. IV-a rev. 2.63 as the 24K's (MD00343 1.2.1.11: a recoder "
+               "turns MIPS16e into MIPS32): Machine(compressed=\"mips16e\"), "
+               "Options.compressed \"auto\" (the default: from Release 1 to 5, "
+               "as the 24K always has it; none in Release 6), \"none\" (a MIPS32 "
+               "core without it: a stray odd JR target is an address error), "
+               "\"mips16e\"; a program with MIPS16e code gets it anyway. Instructions with a "
+               "MIPS32 twin run as it (emips.mips16.expand: T = GPR 24, LI = ORI, "
+               "CMP = XOR, ZEB = ANDI ...), the others by M16.* executors. "
+               "Reserved: the MIPS64-only and reserved encodings, ASMACRO (no "
+               "implementation-defined macros), EXTEND before a non-extensible "
+               "instruction, an extended instruction whose fixed-zero fields are "
+               "not 0 (MIPS16e2 reuses them), SAVE / RESTORE aregs 1111 "
+               "(UNPREDICTABLE). An extended, branch or jump instruction in a jump "
+               "delay slot (UNPREDICTABLE) runs whole, as in MIPS32 code. SAVE / "
+               "RESTORE write sp last (a fault restarts them). The pipelines: the "
+               "5-stage one fetches one instruction (2 or 4 bytes) per IF, its "
+               "branches resolve in ID like MIPS32 ones (a taken compact branch "
+               "squashes the instruction fetched after it); the 24K adds IR / IK "
+               "(see \"24K pipeline\"); SAVE / RESTORE hold EX (the 24K: EX "
+               "after AG) one cycle per word they move (MD00343 1.2.1.11 calls "
+               "them macro instructions and gives no timing). The "
+               "assembler: GNU as syntax (binutils mips16-opc.c), the short form "
+               "when it fits else EXTEND, branches relaxed; .set reorder makes JR "
+               "/ JALR compact (JRC / JALRC) and puts a NOP in JAL / JALX's slot "
+               "(GNU as moves an earlier instruction there when it can); a "
+               "2-operand DIV / DIVU is the machine instruction (GNU as: its "
+               "divide macro; the disassembler prints div $zero, rx, ry); the "
+               "address of a MIPS16e label taken as data (.word, la, li) has bit 0 "
+               "set, as the linker does for a MIPS16 symbol.",
+    "microMIPS": "MD00582 rev. 5.04 (Release 3 / 5) and rev. 6.05 (Release 6): "
+                 "Machine(compressed=\"micromips\") = microMIPS32 and MIPS32 "
+                 "(Config3.ISA = 2: MIPS32 out of reset, ISAOnExc R/W, reset 0), "
+                 "\"micromips-only\" (Config3.ISA = 1, ISAOnExc 1 read-only, the core "
+                 "starts in microMIPS; a jump to an even address faults on the fetch, "
+                 "JALX is Reserved Instruction); Release 3+; Options.compressed the "
+                 "same, and a program with microMIPS code gets it. Recoded "
+                 "instructions run as their MIPS32 twin (emips.micromips.expand; "
+                 "Release 6's CACHE keeps a 12-bit offset: its twin is the Release 5 "
+                 "row), branches / jumps / LWP / SWP / LWM / SWM / LWXS / MOVEP / "
+                 "ADDIUPC / LWPC / JRADDIUSP by MM.* executors. The handlers' ISA mode: "
+                 "Config3.ISAOnExc for the vectors at EBase offsets, Config3.ISA bit 0 "
+                 "(the reset ISA) for the BEV ones, NMI and reset (Vol. III Table 9.67 "
+                 "says ISAOnExc applies to the EBase vectors; QEMU uses it for all); "
+                 "debug exceptions: ECR.ISAOnDebug in the probe's memory, else the reset "
+                 "ISA (MD00047 2.3.3). A delay slot of the wrong size for JAL / JALS ... "
+                 "(UNPREDICTABLE) runs whole; the link is still past the size the "
+                 "instruction names. UNPREDICTABLE, Reserved Instruction as QEMU: LWP "
+                 "/ SWP / LWM / SWM in a delay slot, LWP with rd = base or rd = 31. LWM "
+                 "loads every word before writing a register; SWM / SWP store in order "
+                 "(a fault after the first word leaves those written: the instruction "
+                 "restarts). Unicorn's QEMU departs (pinned to the manual in "
+                 "test_micromips.py): SWM stores 16 bits of each register, LWM / SWM "
+                 "check no alignment, microMIPS R6 ADDIUPC / LWPC / AUIPC / ALUIPC are "
+                 "Reserved Instruction, BOVC $zero, $zero writes a link. Release 6: no "
+                 "delay slots (no forbidden slots either), compact branches only; "
+                 "B*ZALC write the link before testing rt (6.05: rt = 31 compares the "
+                 "new link). The assembler: GNU as's choices (binutils "
+                 "micromips-opc.c order: the 16-bit form when the operands fit; "
+                 "macros from 32-bit forms; an operand with a label: the 32-bit form; "
+                 "noreorder: a 32-bit delay slot after JAL / JALR16 / BGEZAL / JALX, a "
+                 "16-bit one after JALS / JALRS / BGEZALS; reorder: B / BEQZ / BNEZ / "
+                 "JR become BC / BEQZC / BNEZC / JRC, the other branches get a NOP of "
+                 "their slot's size, nothing is moved into a slot); Release 6 (GNU as "
+                 "has none): the 16-bit compact form when the target / registers fit "
+                 "(relaxed like Release 5's), MIPS32 syntax for recoded instructions "
+                 "(lsa rd, rs, rt, sa where 6.05 writes LSA rt, rs, rd, sa). "
+                 "Release 6 compact branch offsets count halfwords (6.05's Operation: "
+                 "offset || 0, as QEMU; its Description says shifted left 2 bits, as "
+                 "LLVM 18 assembles them). The 5-stage pipeline runs microMIPS (the "
+                 "M14K's pipeline has five stages): one instruction (2 or 4 bytes) "
+                 "per IF, branches in ID, a delay slot of either size, LWM / SWM / "
+                 "LWP / SWP hold EX one cycle per word; the 24K has none (MD00343 "
+                 "1.2.1.11): Pipeline24K refuses a microMIPS core, Options / the CLI "
+                 "refuse the pair, a microMIPS program in 24K mode runs on the "
+                 "5-stage model (Session.program_notes says so). C: cc --micromips "
+                 "for Release 3 / 5 (crt0 MIPS32); Release 6 is refused (GNU as has "
+                 "no microMIPS R6, clang 18's la / li macros emit the MIPS32 LUI "
+                 "encoding there and its compact branches use the other offset "
+                 "scale).",
     "EJTAG": "Debug Mode as the 24K's EJTAG 3.20 (MD00343 ch. 11, MD00047 "
              "ch. 2 / 3): Debug.EJTAGver = 3, NoDCR = 0 (dseg present), "
              "CountDM R/W (reset 1), IBusEP / MCheckP read 0 (precise on the "
              "24K), no DebugVectorAddr / Debug2 (EJTAG 4 / 5). The TAP "
              "(emips.tap): IDCODE = 1 (the core's Version / PartNumber / "
-             "ManufID inputs tied to 0), IMPCODE MIPS16 = 0 (no MIPS16e in "
-             "eMIPS), the TCB's instructions 0x10-0x13 (MIPS Trace); PrRst / "
+             "ManufID inputs tied to 0), IMPCODE MIPS16 = 1 with MIPS16e "
+             "(MD00047 Table 4.4), the TCB's instructions 0x10-0x13 (MIPS Trace); PrRst / "
              "PerRst drive pins nothing is connected to (the bits read back); "
              "a dmseg access completes within its instruction / cycle (a "
              "real probe takes some hundred TCKs while the core waits) and "
@@ -688,7 +774,17 @@ DEVIATIONS: dict[str, str] = {
                     "fetch running ahead: what the fetch unit already holds was "
                     "fetched with the old state (up to 12 instructions, not "
                     "the table's 10); MTC0 SRSCtl.PSS -> RDPGPR / WRPGPR: 1; "
-                    "Watch, CorExtend hazards: no such hardware. The Machine and the 5-stage model have no "
+                    "Watch, CorExtend hazards: no such hardware. MIPS16e "
+                    "(2.1.3, 2.1.4, 2.2.5): IF reads a 64-bit bundle every "
+                    "other cycle, the instructions that start in it (one "
+                    "crossing its end is fetched whole); the recoder (IR, the "
+                    "cycle after IS, then IK) takes two 16-bit instructions a "
+                    "cycle, one when it or the next is extended / JAL(X) (Table "
+                    "2.1); prediction in IR as in IS (the BHT by VA 11:3 for "
+                    "BEQZ / BNEZ / BTEQZ / BTNEZ, B taken, JAL / JALX taken, JR "
+                    "$ra / JRC $ra by the return stack, JAL / JALX / JALR / "
+                    "JALRC push), the target fetched 3 cycles after the branch's "
+                    "IF; a taken branch's bundle-mates are not queued (IK). The Machine and the 5-stage model have no "
                     "hazards (CP0 writes are seen at once). The forwarding "
                     "option is the 5-stage model's: the 24K always has its "
                     "bypasses; no MIPS16e (IR / IK stages). Config7's 24K bits "
@@ -837,7 +933,12 @@ DEVIATIONS: dict[str, str] = {
                 "RI / CpU SIGILL, Ov / FPE SIGFPE). An assembly program gets a "
                 "written ELF (emips.elfwrite: labels as NOTYPE symbols, a DWARF 2 "
                 "line table, no frame information: GDB's backtrace in assembly is "
-                "its own heuristic).",
+                "its own heuristic; the labels of MIPS16e / microMIPS code get "
+                "STO_MIPS16 / STO_MICROMIPS and e_flags the ASE, as GNU ld writes "
+                "them). In 16-bit code $pc has bit 0 set (QEMU's stub, GDB's "
+                "mips-tdep.c is_compact_addr); a written $pc's bit 0 is the ISA mode "
+                "(an even one at compressed code of the program keeps the ISA); a "
+                "Z0 / Z1 address's bit 0 is dropped (kinds 2 / 3 / 5).",
 }
 
 # ---------------------------------------------------------------------------
@@ -1028,13 +1129,19 @@ class Machine:
     ``shadow_sets`` GPR sets, 1 (default: the normal GPRs only) to 16
                     (``SRSCtl.HSS + 1``; Release 2+, Vol. III 9.31; the 24K
                     builds 1, 2 or 4).  :attr:`regs` is the current set.
+    ``compressed``  ``None`` (default), ``"mips16e"``: the MIPS16e ASE
+                    (Config1.CA; Vol. IV-a, :mod:`emips.mips16`), or
+                    ``"micromips"``: microMIPS32 and MIPS32 (Config3.ISA =
+                    2, Release 3+; :mod:`emips.micromips`), or
+                    ``"micromips-only"`` (Config3.ISA = 1) — JALX and JR /
+                    JALR with bit 0 set switch :attr:`isa_mode`.
     """
 
     def __init__(self, isa: ISA | None = None, memory: PMemory | None = None,
                  pc: int = 0, *, endian: str = "big",
                  exceptions: str = "cp0", release: str | None = None,
                  mmu: Any = None, caches: Caches | None = None, cpu: int = 0,
-                 shadow_sets: int = 1) -> None:
+                 shadow_sets: int = 1, compressed: str | None = None) -> None:
         if endian not in ("big", "little"):
             raise ValueError(f"endian must be 'big' or 'little', not {endian!r}")
         if exceptions not in ("cp0", "raise"):
@@ -1057,6 +1164,33 @@ class Machine:
         self.pc = pc & M32
         if not 1 <= shadow_sets <= 16:
             raise ValueError(f"shadow_sets must be 1..16, not {shadow_sets}")
+        if compressed not in (None, "mips16e", "micromips", "micromips-only"):
+            raise ValueError("compressed must be None, 'mips16e', 'micromips' or "
+                             f"'micromips-only', not {compressed!r}")
+        if compressed == "mips16e" and self.release == "R6":
+            raise ValueError("Release 6 has no MIPS16e (Vol. II rev. 6: removed)")
+        if compressed in ("micromips", "micromips-only") and self.release in ("R1", "R2"):
+            raise ValueError("microMIPS32 starts with Release 3 (MD00582 3.1)")
+        #: the compressed instruction set the core implements: "mips16e"
+        #: (Config1.CA), "micromips" (Config3.ISA) or None
+        self.compressed = "micromips" if compressed == "micromips-only" else compressed
+        #: the MIPS32 encoding is implemented (not a microMIPS-only core)
+        self.mips32 = compressed != "micromips-only"
+        #: the ISA mode: 0 = MIPS32, 1 = MIPS16e / microMIPS (Vol. IV-a 3.7,
+        #: MD00582 3.5)
+        self.isa_mode = 0 if self.mips32 else 1
+        #: the microMIPS instruction being executed (its MM.* executor)
+        self._mm = None
+        #: the compressed instruction's own encoding (BadInstr), and the
+        #: branch's whose delay slot runs (BadInstrP)
+        self._insn_raw: int | None = None
+        self._slot_raw: int | None = None
+        #: the size of the branch / jump whose delay slot runs (EPC = it)
+        self._slot_back = 4
+        #: the MIPS16e instruction being executed (its M16.* executor)
+        self._m16 = None
+        #: the base address of a PC-relative MIPS16e instruction (Table 3.14)
+        self._m16_base = 0
         #: the GPR sets (Release 1: only the normal GPRs); ``regs`` is the
         #: current one (SRSCtl.CSS), set 0 = the normal GPRs
         self.shadow: list[list[int]] = [
@@ -1078,6 +1212,14 @@ class Machine:
             self.cp0.setdefault(key, {"name": name, "value": 0})
         for key, value in C.reset_values(self.big_endian, self.release).items():
             self.cp0[key]["value"] = value
+        if compressed == "mips16e":
+            self.cp0[C.CONFIG1]["value"] |= C.CFG1_CA
+        elif self.compressed == "micromips":    # Config3.ISA; ISAOnExc RW with both
+            if self.mips32:
+                self.cp0[C.CONFIG3]["value"] |= 2 << C.CFG3_ISA_SHIFT
+                self._wmask[C.CONFIG3] = self._wmask.get(C.CONFIG3, 0) | C.CFG3_ISAONEXC
+            else:
+                self.cp0[C.CONFIG3]["value"] |= (1 << C.CFG3_ISA_SHIFT) | C.CFG3_ISAONEXC
         #: SRSCtl.HSS: the highest shadow set (0 = the normal GPRs only)
         self.hss = len(self.shadow) - 1
         self.cp0[C.SRSCTL]["value"] = self.hss << C.SRS_HSS
@@ -1976,7 +2118,27 @@ class Machine:
         return (c is not None and (c.i is not None or c.l2 is not None)
                 and cca in self.cached_cca)
 
-    def fetch_word(self, addr: int) -> int:
+    def fetch_half(self, addr: int) -> int:
+        """Fetch the MIPS16e halfword at *addr* (Vol. IV-a 3.16: the
+        halfword an LH of that address would read, in either byte order):
+        the aligned word's fetch, needing only these two bytes."""
+        addr &= M32
+        off = addr & 2
+        word = self.fetch_word(addr & ~3, need=0x3 << off)
+        return word >> 16 if (off == 0) == self.big_endian else word & 0xFFFF
+
+    def code_half(self, addr: int) -> int:
+        """The halfword a fetch at *addr* would get now (views)."""
+        addr &= M32
+        try:
+            word = self.code_word(addr & ~3)
+        except FetchError:
+            hi, lo = self.read_byte(addr), self.read_byte(addr + 1)
+            return (hi << 8 | lo) if self.big_endian else (lo << 8 | hi)
+        off = addr & 2
+        return word >> 16 if (off == 0) == self.big_endian else word & 0xFFFF
+
+    def fetch_word(self, addr: int, need: int = 0xF) -> int:
         """Fetch the instruction word at virtual address *addr* (through the
         instruction cache when cacheable); **any** unwritten byte is a
         :class:`FetchError` (simulator halt).  While :attr:`tracing`, the
@@ -1986,15 +2148,15 @@ class Machine:
             stats = self.caches.i.stats             # the Im bit of MIPS Trace
             before = stats.misses
             try:
-                return self._fetch_word(addr) if not self.tracing else \
-                    self._fetch_watched(addr)
+                return self._fetch_word(addr, need) if not self.tracing else \
+                    self._fetch_watched(addr, need)
             finally:
                 self.fetch_missed = stats.misses != before
         if not self.tracing:
-            return self._fetch_word(addr)
-        return self._fetch_watched(addr)
+            return self._fetch_word(addr, need)
+        return self._fetch_watched(addr, need)
 
-    def _fetch_watched(self, addr: int) -> int:
+    def _fetch_watched(self, addr: int, need: int = 0xF) -> int:
         c = self.caches
         cw = c is not None and c.log is None
         mmu = self.mmu if hasattr(self.mmu, "watch") and self.mmu.log is None else None
@@ -2003,14 +2165,16 @@ class Machine:
         if mmu is not None:
             mmu.watch()
         try:
-            return self._fetch_word(addr)
+            return self._fetch_word(addr, need)
         finally:
             if cw:
                 self.fetch_accesses = c.taken()
             if mmu is not None:
                 self.fetch_tlb = mmu.taken()
 
-    def _fetch_word(self, addr: int) -> int:
+    def _fetch_word(self, addr: int, need: int = 0xF) -> int:
+        """``need``: the bytes that must hold code (bit k = byte k of the
+        word; a MIPS16e halfword needs two)."""
         addr &= M32
         if self._dm and EJ.in_dseg(addr):       # a fetch in dseg: always dseg
             return self.ejtag.fetch(addr)
@@ -2023,8 +2187,8 @@ class Machine:
                 raise self._cache_arch(err) from None
             except BusError:                    # IBE: precise (MD00343 5.8.13)
                 raise _Arch(C.IBE, info={"why": "instruction fetch bus error"}) from None
-            if known != 0xF:
-                i = next(k for k in range(4) if not known >> k & 1)
+            if known & need != need:
+                i = next(k for k in range(4) if need >> k & 1 and not known >> k & 1)
                 raise self._no_code(addr, i, pas[0] + i)
             return int.from_bytes(data, "big" if self.big_endian else "little")
         if c is not None:                       # write buffer before the read
@@ -2038,7 +2202,9 @@ class Machine:
         raw = [mem.get(format(pa, "x")) for pa in pas]
         for i, (pa, byte) in enumerate(zip(pas, raw)):
             if byte is None:
-                raise self._no_code(addr, i, pa)
+                if need >> i & 1:
+                    raise self._no_code(addr, i, pa)
+                raw[i] = "00"
         for dev in self.devices:
             if dev.covers(pas[0]):
                 return dev.load(self, pas[0], 4)
@@ -2305,19 +2471,30 @@ class Machine:
             if self.pdt.active:
                 self._trace_cycle(False, asleep=True)
             return None
+        size = 4
         try:
             if self._ihw:
                 self.instruction_checks(pc)
-            if pc & 3 or not self.address_ok(pc):
-                raise _Arch(C.ADEL, badvaddr=pc)
-            word = self.fetch_word(pc)
-            try:
-                dec = self.isa.decode(word)
-            except ISADecodeError as exc:
-                if self.exceptions == "raise":
-                    raise
-                raise _Arch(C.RI) from exc
+            self._insn_raw = None
+            if self.isa_mode and self.compressed == "micromips":
+                size, word, dec = self._fetch_mm(pc)
+            elif self.isa_mode:                     # MIPS16e: 16 / 32-bit instructions
+                size, word, dec = self._fetch16(pc)
+                self._m16_base = (pc - self._slot_back) & M32 if in_slot else pc
+            else:
+                if pc & 3 or not self.address_ok(pc) or not self.mips32:
+                    raise _Arch(C.ADEL, badvaddr=pc)
+                word = self.fetch_word(pc)
+                try:
+                    dec = self.isa.decode(word)
+                except ISADecodeError as exc:
+                    if self.exceptions == "raise":
+                        raise
+                    raise _Arch(C.RI) from exc
+                self._m16 = self._mm = None
             self.r6_slot_check(dec, in_slot, forbidden)
+            if in_slot and dec.name in _MM_NO_SLOT:
+                raise _Arch(C.RI)               # UNPREDICTABLE in a delay slot: QEMU's RI
             result = self._traced(pc, word, dec, in_slot)
             if self.last_events is not None:    # completed: count it
                 self.perf.retire(*self.last_events)
@@ -2347,19 +2524,160 @@ class Machine:
             self.ejtag.sample(pc)
         if self.pdt.active or self.pdt_packet is not None:   # MIPS Trace
             self._trace_cycle(True)
-        if self._redirect is not None:              # ERET: no delay slot
-            self.pc = self._redirect & M32
+        if self._redirect is not None:              # ERET, a compact jump: no delay slot
+            self._jump(self._redirect)
         elif result == NULLIFY:
             self.pc = (pc + 8) & M32
         elif result is not None or has_delay_slot(dec.entry):
             # taken: the slot runs, then the target; not taken: the slot is
-            # still a delay slot (BD on a fault there), then PC + 8
+            # still a delay slot (BD on a fault there), then PC + 8 — or,
+            # microMIPS, the instruction after the slot (16 or 32 bits): None
             self.slot_armed = True
-            self.slot_target = (result if result is not None else pc + 8) & M32
-            self.pc = (pc + 4) & M32
+            self.slot_target = result & M32 if result is not None else \
+                None if self.isa_mode else (pc + 8) & M32
+            self._slot_back = size
+            self._slot_raw = self._insn_raw
+            self.pc = (pc + size) & M32
+        elif in_slot and outer_target is not None:
+            self._jump(outer_target)
         else:
-            self.pc = (outer_target if in_slot else pc + 4) & M32
+            self.pc = (pc + size) & M32
         return dec
+
+    def _jump(self, target: int) -> None:
+        """Go to ``target``.  With MIPS16e its bit 0 is the ISA mode there
+        (Vol. IV-a 3.7.4: JR / JALR / JRC / JALRC load it, JALX inverts it,
+        the MIPS16e branches keep 1; ERET / DERET: EPC / DEPC bit 0); bit 0
+        of the PC is 0.  Without, the address as is (an odd one faults on
+        the fetch)."""
+        target &= M32
+        if self.compressed is not None:
+            self.isa_mode = target & 1
+            target &= ~1
+        self.pc = target
+
+    def _fetch16(self, pc: int) -> tuple[int, int, Decode]:
+        """MIPS16e: fetch and decode the instruction at ``pc`` (2 or 4
+        bytes); return (size, the word the executor gets, its Decode) — the
+        MIPS32 expansion where there is one (emips.mips16.expand), else the
+        ``M16.*`` entry with the raw encoding."""
+        if not self.address_ok(pc):
+            raise _Arch(C.ADEL, badvaddr=pc)
+        h = self.fetch_half(pc)
+
+        def second() -> int:
+            if not self.address_ok(pc + 2):
+                raise _Arch(C.ADEL, badvaddr=(pc + 2) & M32)
+            return self._second_half(pc + 2)
+        try:
+            i = M16.decode(h, second)
+        except ISADecodeError as exc:
+            if self.exceptions == "raise":
+                raise
+            raise _Arch(C.RI) from exc
+        self._m16 = i
+        self._insn_raw = i.raw
+        word = M16.expand(i)
+        if word is None:
+            return i.size, i.raw, Decode(i.raw, M16.ENTRIES[i.form])
+        return i.size, word, _ISA_R5.decode(word)
+
+    def _fetch_mm(self, pc: int) -> tuple[int, int, Decode]:
+        """microMIPS: fetch and decode the instruction at ``pc`` (2 or 4
+        bytes); return (size, the word the executor gets, its Decode) — the
+        MIPS32 twin where there is one (emips.micromips.expand), else the
+        ``MM.*`` entry with the raw encoding."""
+        if not self.address_ok(pc):
+            raise _Arch(C.ADEL, badvaddr=pc)
+        h = self.fetch_half(pc)
+
+        def second() -> int:
+            if not self.address_ok(pc + 2):
+                raise _Arch(C.ADEL, badvaddr=(pc + 2) & M32)
+            return self._second_half(pc + 2)
+        try:
+            i = MM.decode(h, second, release=self.release)
+            word = MM.expand(i)
+            dec = Decode(i.raw, MM.ENTRIES[i.form]) if word is None else \
+                self._twin_isa(i).decode(word)
+        except ISADecodeError as exc:
+            if self.exceptions == "raise":
+                raise
+            raise _Arch(C.RI) from exc
+        self._mm = i
+        self._insn_raw = i.raw
+        return i.size, (i.raw if word is None else word), dec
+
+    def _second_half(self, addr: int) -> int:
+        """The second halfword of a 32-bit compressed instruction: its
+        fetch's cache accesses / translations join the first's (views)."""
+        acc, tlb, missed = self.fetch_accesses, self.fetch_tlb, self.fetch_missed
+        h = self.fetch_half(addr)
+        if self.fetch_accesses is not acc:
+            self.fetch_accesses = acc + self.fetch_accesses
+        if self.fetch_tlb is not tlb:
+            self.fetch_tlb = tlb + self.fetch_tlb
+        self.fetch_missed = self.fetch_missed or missed
+        return h
+
+    def fetch_compressed(self, pc: int) -> tuple[int, int, Decode, Any]:
+        """The pipelines' fetch in MIPS16e / microMIPS mode: (size, the
+        word the executor gets, its Decode, the compressed instruction)
+        — as :meth:`step` fetches (raises :class:`_Arch`, or
+        :class:`ISADecodeError` with ``exceptions="raise"``)."""
+        if self.compressed == "micromips":
+            size, word, dec = self._fetch_mm(pc)
+            return size, word, dec, self._mm
+        size, word, dec = self._fetch16(pc)
+        return size, word, dec, self._m16
+
+    def enter(self, pc: int, isa: int, insn: Any, in_slot: bool, back: int,
+              slot_raw: int | None) -> None:
+        """The pipelines, before an instruction executes or takes its
+        exception: the per-instruction state :meth:`step` keeps — the ISA
+        mode it runs in, its compressed form (None: MIPS32), the size of
+        the branch whose delay slot it is (EPC, the MIPS16e PC-relative
+        base) and that branch's compressed encoding (BadInstrP)."""
+        self.isa_mode = isa
+        mm = self.compressed == "micromips"
+        self._mm = insn if mm else None
+        self._m16 = None if mm else insn
+        self._insn_raw = insn.raw if insn is not None else None
+        self._slot_back = back
+        self._slot_raw = slot_raw
+        self._m16_base = (pc - back) & M32 if in_slot else pc
+
+    def _twin_isa(self, i) -> ISA:
+        """The table a microMIPS instruction's MIPS32 twin decodes with:
+        the core's (a Release 6 row with a wider field than MIPS32 R6 has
+        twins to the Release 5 row of the same operation)."""
+        return _ISA_R5 if getattr(i.row, "r5_twin", False) else self.isa
+
+    def _handler_isa(self, ebase_relative: bool) -> int:
+        """The ISA mode a handler starts in: MIPS32 with MIPS16e (Vol.
+        IV-a 3.7.3); microMIPS: Config3.ISAOnExc for the vectors at EBase
+        offsets, else (BEV = 1, NMI, reset) the reset ISA, Config3.ISA bit
+        0 (Vol. III Table 9.67; MD00582 3.2; MD00047 2.3.3)."""
+        if self.compressed != "micromips":
+            return 0
+        cfg3 = self.cp0[C.CONFIG3]["value"]
+        return (cfg3 >> 16) & 1 if ebase_relative else (cfg3 >> C.CFG3_ISA_SHIFT) & 1
+
+    def _debug_isa(self) -> int:
+        """The ISA mode of the debug handler (MD00047 2.3.3): in the probe's
+        memory (ProbTrap) ECR.ISAOnDebug, else the reset ISA."""
+        if self.compressed != "micromips":
+            return 0
+        if self.ejtag.prob_trap:
+            return int(self.ejtag.tap.isa_on_debug_bit(self))
+        return self._handler_isa(False)
+
+    def _restart_pc(self, pc: int, in_slot: bool) -> int:
+        """EPC / ErrorEPC / DEPC: the instruction, or in a delay slot the
+        branch (``_slot_back`` bytes before), with the ISA mode in bit 0
+        (Vol. III 9.30, Vol. IV-a 3.7.3)."""
+        base = (pc - self._slot_back) if in_slot else pc
+        return (base | self.isa_mode) & M32
 
     # -- execution unit interface (used by step() and emips.pipeline) ---------
 
@@ -2372,6 +2690,8 @@ class Machine:
         architectural exception, before any state change."""
         self.pc = pc & M32
         self._redirect = None
+        if in_slot and dec.name in _MM_NO_SLOT:
+            raise _Arch(C.RI)                   # (as step)
         return self._traced(pc, word, dec, in_slot, sources)
 
     def _traced(self, pc: int, word: int, dec: Decode, in_slot: bool,
@@ -2532,8 +2852,9 @@ class Machine:
             return
         cause = self.cp0[C.CAUSE]["value"]
         offset = None
+        epc = self._restart_pc(pc, in_slot)
+        self.isa_mode = self._handler_isa(not status & C.ST_BEV)
         if not status & C.ST_EXL:
-            epc = (pc - 4) & M32 if in_slot else pc
             self._cp0_set(C.EPC, epc)
             cause = cause | C.CA_BD if in_slot else cause & ~C.CA_BD
             # Vol. III 6.2.3: the vector of a vectored interrupt, the new set
@@ -2596,8 +2917,12 @@ class Machine:
         word (a fetch fault) they are UNPREDICTABLE: left unchanged."""
         if not self.has_bad_instr or exc.code in self._NO_BADINSTR or word is None:
             return
-        self._cp0_set(C.BADINSTR, word)
+        compressed = self._insn_raw is not None     # its own encoding (9.25)
+        self._cp0_set(C.BADINSTR, self._insn_raw if compressed else word)
         if in_slot:
+            if compressed and self._slot_raw is not None:
+                self._cp0_set(C.BADINSTRP, self._slot_raw)
+                return
             try:
                 self._cp0_set(C.BADINSTRP, self.code_word((pc - 4) & M32))
             except FetchError:
@@ -2612,7 +2937,8 @@ class Machine:
         interrupt / single step requests are cleared; nothing else
         changes (Status, Cause, EPC, SRSCtl stay)."""
         cell = self.cp0[C.DEBUG]
-        depc = (pc - 4) & M32 if in_slot else pc
+        depc = self._restart_pc(pc, in_slot)
+        self.isa_mode = self._debug_isa()
         dbg = cell["value"] & ~(EJ.DBD | EJ.CAUSE_BITS | EJ.DOZE | EJ.HALT)
         dbg |= EJ.EXC_BIT[exc.code] | self.ddb_impr | EJ.IEXI | EJ.DM
         self.ddb_impr = 0
@@ -2640,7 +2966,8 @@ class Machine:
         dexc = (EJ.DEXC_BP if code == C.DBP else EJ.DEXC_CACHEERR if code == C.CACHE_ERROR
                 else code & 0x1F)
         cell = self.cp0[C.DEBUG]
-        depc = (pc - 4) & M32 if in_slot else pc
+        depc = self._restart_pc(pc, in_slot)
+        self.isa_mode = self._debug_isa()
         dbg = cell["value"] & ~(EJ.DBD | EJ.CAUSE_BITS | (0x1F << EJ.DEXC_SHIFT))
         dbg |= (dexc << EJ.DEXC_SHIFT) | EJ.IEXI
         if in_slot:
@@ -2659,7 +2986,8 @@ class Machine:
         not touched."""
         self.nmi_pending = False
         self.waiting = False
-        epc = (pc - 4) & M32 if in_slot else pc
+        epc = self._restart_pc(pc, in_slot)
+        self.isa_mode = self._handler_isa(False)
         self._cp0_set(C.ERROREPC, epc)
         status = self.status & ~(C.ST_SR | (1 << 21))
         self._cp0_set(C.STATUS, status | C.ST_BEV | C.ST_ERL | C.ST_NMI)
@@ -2679,7 +3007,8 @@ class Machine:
         errctl = self.cp0_read(*C.ERRCTL)
         errctl = (errctl | (1 << 20)) if errctl & (1 << 19) else (errctl | (1 << 19)) & ~(1 << 20)
         self._cp0_set(C.ERRCTL, errctl)
-        epc = (pc - 4) & M32 if in_slot else pc
+        epc = self._restart_pc(pc, in_slot)
+        self.isa_mode = self._handler_isa(not status & C.ST_BEV)
         self._cp0_set(C.ERROREPC, epc)
         self._cp0_set(C.STATUS, status | C.ST_ERL)
         self.pc = C.cache_error_vector(status, self.cp0[C.EBASE]["value"], self.release,
@@ -3151,7 +3480,12 @@ _e_jalr_hb = _e_jalr
 
 
 def _e_jalx(m: _M, w: int) -> int | None:
-    raise _Arch(C.RI)     # no MIPS16e / microMIPS (see DEVIATIONS)
+    """JALX (Vol. IV-a "JALX target, MIPS32 with MIPS16e"): JAL to the
+    other ISA.  Without MIPS16e / microMIPS: Reserved Instruction."""
+    if m.compressed is None:
+        raise _Arch(C.RI)
+    m.write_reg(31, m.pc + 8)
+    return _j_target(m.pc, w) | 1
 
 
 # -- Loads / stores ---------------------------------------------------------
@@ -4304,6 +4638,377 @@ _HINT_EXECUTORS: dict[str, Executor] = {
     "PREFX": _h_prefx, "SYNC": _h_sync,
 }
 
+# -- MIPS16e (emips.mips16): the instructions without a MIPS32 twin ---------
+# (the others run as their MIPS32 expansion).  m._m16 is the instruction,
+# m.pc its address, m._m16_base the base of a PC-relative one (Table 3.14).
+
+
+def _e16_addiupc(m: _M, w: int) -> int | None:
+    f = m._m16.f
+    m.write_reg(f["rx"], ((m._m16_base & ~3) + f["imm"]) & M32)
+    return None
+
+
+def _e16_lwpc(m: _M, w: int) -> int | None:
+    f = m._m16.f
+    addr = ((m._m16_base & ~3) + f["imm"]) & M32
+    m.write_reg(f["rx"], m.load(m.data_address(addr, 4, store=False), 4, "pcload"))
+    return None
+
+
+def _e16_branch(cond: Callable[[_M, dict], bool]) -> Executor:
+    """B / BEQZ / BNEZ / BTEQZ / BTNEZ: no delay slot (Vol. IV-a 3.13)."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._m16
+        if cond(m, i.f):
+            m._redirect = M16.branch_target(i, m.pc) | 1
+        return None
+    return run
+
+
+def _e16_jr(reg: int | None) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        return m.read_reg(m._m16.f["rx"] if reg is None else reg)
+    return run
+
+
+def _e16_jalr(m: _M, w: int) -> int | None:
+    target = m.read_reg(m._m16.f["rx"])
+    m.write_reg(31, (m.pc + 4) | 1)             # past the jump and its delay slot
+    return target
+
+
+def _e16_jrc(reg: int | None) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        m._redirect = m.read_reg(m._m16.f["rx"] if reg is None else reg)
+        return None
+    return run
+
+
+def _e16_jalrc(m: _M, w: int) -> int | None:
+    target = m.read_reg(m._m16.f["rx"])
+    m.write_reg(31, (m.pc + 2) | 1)
+    m._redirect = target
+    return None
+
+
+def _e16_jal(exchange: bool) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        m.write_reg(31, (m.pc + 6) | 1)         # past the 32-bit jump and its slot
+        target = M16.jump_target(m._m16, m.pc)
+        return target if exchange else target | 1
+    return run
+
+
+def _m16_frame_regs(f: dict, statics: int) -> list[int]:
+    """SAVE / RESTORE's registers from the frame's top down: ra, the extra
+    s-registers (GPR 30 highest), s1, s0, the statics GPR 7 down."""
+    return ([31] if f["ra"] else []) + list(reversed(M16.XSREGS[:f["xsregs"]])) + \
+        ([17] if f["s1"] else []) + ([16] if f["s0"] else []) + [7 - k for k in range(statics)]
+
+
+def _e16_save(m: _M, w: int) -> int | None:
+    """SAVE (Vol. IV-a): the incoming arguments into the caller's area,
+    then the registers below sp, then sp -= the frame.  sp changes last:
+    a fault restarts the instruction from the start."""
+    f = m._m16.f
+    sp = m.read_reg(29)
+    args, statics = M16.args_statics(f["aregs"])
+
+    def put(addr: int, reg: int) -> None:
+        m.store(m.data_address(addr & M32, 4, store=True), m.read_reg(reg), 4)
+    for k in range(args):
+        put(sp + 4 * k, 4 + k)
+    at = sp
+    for reg in _m16_frame_regs(f, statics):
+        at -= 4
+        put(at, reg)
+    m.write_reg(29, (sp - f["frame"]) & M32)
+    return None
+
+
+def _e16_restore(m: _M, w: int) -> int | None:
+    """RESTORE: the same registers from the frame's top down, then sp +=
+    the frame (the arguments stay in the caller's area)."""
+    f = m._m16.f
+    top = (m.read_reg(29) + f["frame"]) & M32
+    _args, statics = M16.args_statics(f["aregs"])
+    at = top
+    for reg in _m16_frame_regs(f, statics):
+        at -= 4
+        m.write_reg(reg, m.load(m.data_address(at & M32, 4, store=False), 4))
+    m.write_reg(29, top)
+    return None
+
+
+_M16_EXECUTORS: dict[str, Executor] = {
+    "M16.ADDIUPC": _e16_addiupc, "M16.LWPC": _e16_lwpc,
+    "M16.B": _e16_branch(lambda m, f: True),
+    "M16.BEQZ": _e16_branch(lambda m, f: m.read_reg(f["rx"]) == 0),
+    "M16.BNEZ": _e16_branch(lambda m, f: m.read_reg(f["rx"]) != 0),
+    "M16.BTEQZ": _e16_branch(lambda m, f: m.read_reg(24) == 0),
+    "M16.BTNEZ": _e16_branch(lambda m, f: m.read_reg(24) != 0),
+    "M16.JR": _e16_jr(None), "M16.JRRA": _e16_jr(31), "M16.JALR": _e16_jalr,
+    "M16.JRC": _e16_jrc(None), "M16.JRCRA": _e16_jrc(31), "M16.JALRC": _e16_jalrc,
+    "M16.JAL": _e16_jal(False), "M16.JALX": _e16_jal(True),
+    "M16.SAVE": _e16_save, "M16.RESTORE": _e16_restore,
+}
+
+
+# -- microMIPS (emips.micromips): the instructions without a MIPS32 twin ----
+# (the others run as their MIPS32 twin).  m._mm is the instruction, m.pc
+# its address.  Branch / jump targets keep bit 0 = 1 (microMIPS), the
+# links carry it too (MD00582 3.5); offsets count halfwords.
+
+
+def _emm_branch(cond: Callable[[_M, dict], bool], *, linked: bool = False) -> Executor:
+    """BEQ / BNE / B*Z / B*ZAL(S) / BC1F ... / B16 / BEQZ16 / BNEZ16: a
+    delay slot of either size, the link past it (5.4 / 5.5)."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        taken = cond(m, i.f)
+        if linked:
+            m.write_reg(31, MM.link(i, m.pc))
+        return MM.branch_target(i, m.pc) | 1 if taken else None
+    return run
+
+
+def _emm_compact(cond: Callable[[_M, dict], bool]) -> Executor:
+    """BEQZC / BNEZC: no delay slot."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        if cond(m, i.f):
+            m._redirect = MM.branch_target(i, m.pc) | 1
+        return None
+    return run
+
+
+def _emm_jalr(m: _M, w: int) -> int | None:
+    """JALR / JALRS (.HB) rt, rs; JR = JALR $0 (the link to $0 vanishes)."""
+    f = m._mm.f
+    target = m.read_reg(f["s"])
+    m.write_reg(f["t"], MM.link(m._mm, m.pc))
+    return target
+
+
+def _emm_jr16(link: bool) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        target = m.read_reg(m._mm.f["s"])
+        if link:
+            m.write_reg(31, MM.link(m._mm, m.pc))
+        return target
+    return run
+
+
+def _emm_jrc(m: _M, w: int) -> int | None:
+    m._redirect = m.read_reg(m._mm.f["s"])
+    return None
+
+
+def _emm_jraddiusp(m: _M, w: int) -> int | None:
+    """JRADDIUSP: PC = $ra, $sp += the immediate; no delay slot."""
+    m._redirect = m.read_reg(31)
+    m.write_reg(29, (m.read_reg(29) + m._mm.f["i"]) & M32)
+    return None
+
+
+def _emm_jump(link: bool, exchange: bool = False) -> Executor:
+    """J / JAL / JALS (stay in microMIPS) / JALX (to MIPS32)."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        if exchange and not m.mips32:
+            raise _Arch(C.RI)                   # MD00582 JALX: no MIPS32 to go to
+        if link:
+            m.write_reg(31, MM.link(i, m.pc))
+        target = MM.jump_target(i, m.pc)
+        return target if exchange else target | 1
+    return run
+
+
+def _emm_addiupc(m: _M, w: int) -> int | None:
+    """ADDIUPC rs: the instruction's address with bits 1:0 cleared + the
+    immediate (also in a delay slot, unlike MIPS16e; 5.4)."""
+    f = m._mm.f
+    m.write_reg(f["t"], ((m.pc & ~3) + f["i"]) & M32)
+    return None
+
+
+def _emm_lwxs(m: _M, w: int) -> int | None:
+    """LWXS rd, index(base): base + index * 4."""
+    f = m._mm.f
+    addr = (m.read_reg(f["b"]) + (m.read_reg(f["t"]) << 2)) & M32
+    m.write_reg(f["d"], m.load(m.data_address(addr, 4, store=False), 4))
+    return None
+
+
+def _emm_words(m: _M, regs: list[int], base: int, store: bool) -> None:
+    """LWM / SWM / LWP / SWP: consecutive aligned words (5.4; the address
+    must be word-aligned, even in Release 6).  Loads read every word
+    before writing a register (a fault leaves the registers as they
+    were); stores go in order (a fault after the first leaves the first
+    ones written: the instruction restarts and writes them again)."""
+    m.data_address(base, 4, store=store, atomic=True)
+    if store:
+        for k, reg in enumerate(regs):
+            m.store(m.data_address((base + 4 * k) & M32, 4, store=True), m.read_reg(reg), 4)
+        return
+    vals = [m.load(m.data_address((base + 4 * k) & M32, 4, store=False), 4)
+            for k in range(len(regs))]
+    for reg, v in zip(regs, vals):
+        m.write_reg(reg, v)
+
+
+def _emm_pair(store: bool) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        f = m._mm.f
+        if f["t"] == 31 or not store and f["t"] == f["b"]:
+            raise _Arch(C.RI)                   # UNPREDICTABLE: QEMU's RI (DEVIATIONS)
+        _emm_words(m, [f["t"], f["t"] + 1], (m.read_reg(f["b"]) + f["o"]) & M32, store)
+        return None
+    return run
+
+
+def _emm_multiple(store: bool) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        base = 29 if i.form in ("LWM16", "SWM16") else i.f["b"]
+        _emm_words(m, MM.reglist(i), (m.read_reg(base) + i.f["o"]) & M32, store)
+        return None
+    return run
+
+
+def _emm_movep(m: _M, w: int) -> int | None:
+    """MOVEP rd, re, rs, rt: both sources read first."""
+    f = m._mm.f
+    rd, re = MM.MOVEP_DEST[f["e"]]
+    a, b = m.read_reg(f["s"]), m.read_reg(f["t"])
+    m.write_reg(rd, a)
+    m.write_reg(re, b)
+    return None
+
+
+# -- microMIPS Release 6 (MD00582 6.05): compact branches and jumps only;
+# the target is the instruction after the branch + the offset (halfwords),
+# the link that address with bit 0 set (QEMU's mips32r6 agrees).
+
+def _emm6(cond: Callable[[_M, dict], bool], *, link: bool = False) -> Executor:
+    """The link first, then the condition (6.05 B*ZALC: with rt = 31 the
+    new link is compared)."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        if link:
+            m.write_reg(31, (m.pc + i.size) | 1)
+        taken = cond(m, i.f)
+        if taken:
+            m._redirect = MM.branch_target(i, m.pc) | 1
+        return None
+    return run
+
+
+def _emm6_jump(link: str | None, offset: bool = False) -> Executor:
+    """JRC16 / JALRC16 / JALRC (.HB) / JIC / JIALC: to GPR (+ the offset),
+    its bit 0 the ISA mode; ``link`` the field of the link register."""
+    def run(m: _M, w: int) -> int | None:
+        i = m._mm
+        f = i.f
+        target = m.read_reg(f["t"] if offset else f["s"])
+        if offset:
+            target = (target + f["i"]) & M32
+        if link is not None:
+            m.write_reg(31 if link == "ra" else f[link], (m.pc + i.size) | 1)
+        m._redirect = target
+        return None
+    return run
+
+
+def _emm6_bc1(nonzero: bool) -> Executor:
+    def run(m: _M, w: int) -> int | None:
+        if not m.status & C.ST_CU1:
+            raise _Arch(C.CPU, ce=1)
+        i = m._mm
+        if bool(m.fpr[i.f["T"]] & 1) == nonzero:
+            m._redirect = MM.branch_target(i, m.pc) | 1
+        return None
+    return run
+
+
+def _emm6_lwpc(m: _M, w: int) -> int | None:
+    """LWPC rt: the word at (PC with bits 1:0 cleared) + the offset."""
+    f = m._mm.f
+    addr = ((m.pc & ~3) + f["o"]) & M32
+    m.write_reg(f["t"], m.load(m.data_address(addr, 4, store=False), 4, "pcload"))
+    return None
+
+
+def _sg(m: _M, f: dict, k: str) -> int:
+    return _s32(m.read_reg(f[k]))
+
+
+_MM6_EXECUTORS: dict[str, Executor] = {
+    "MM.BC16": _emm6(lambda m, f: True), "MM.BC": _emm6(lambda m, f: True),
+    "MM.BALC": _emm6(lambda m, f: True, link=True),
+    "MM.BEQZC16": _emm6(lambda m, f: m.read_reg(f["s"]) == 0),
+    "MM.BNEZC16": _emm6(lambda m, f: m.read_reg(f["s"]) != 0),
+    "MM.BEQC": _emm6(lambda m, f: m.read_reg(f["s"]) == m.read_reg(f["t"])),
+    "MM.BNEC": _emm6(lambda m, f: m.read_reg(f["s"]) != m.read_reg(f["t"])),
+    "MM.BLTC": _emm6(lambda m, f: _sg(m, f, "s") < _sg(m, f, "t")),
+    "MM.BGEC": _emm6(lambda m, f: _sg(m, f, "s") >= _sg(m, f, "t")),
+    "MM.BLTUC": _emm6(lambda m, f: m.read_reg(f["s"]) < m.read_reg(f["t"])),
+    "MM.BGEUC": _emm6(lambda m, f: m.read_reg(f["s"]) >= m.read_reg(f["t"])),
+    "MM.BOVC": _emm6(lambda m, f: _ovf(m.read_reg(f["s"]), m.read_reg(f["t"]))),
+    "MM.BNVC": _emm6(lambda m, f: not _ovf(m.read_reg(f["s"]), m.read_reg(f["t"]))),
+    "MM.BLTZC": _emm6(lambda m, f: _sg(m, f, "t") < 0),
+    "MM.BLEZC": _emm6(lambda m, f: _sg(m, f, "t") <= 0),
+    "MM.BGEZC": _emm6(lambda m, f: _sg(m, f, "t") >= 0),
+    "MM.BGTZC": _emm6(lambda m, f: _sg(m, f, "t") > 0),
+    "MM.BEQZALC": _emm6(lambda m, f: m.read_reg(f["t"]) == 0, link=True),
+    "MM.BNEZALC": _emm6(lambda m, f: m.read_reg(f["t"]) != 0, link=True),
+    "MM.BLTZALC": _emm6(lambda m, f: _sg(m, f, "t") < 0, link=True),
+    "MM.BLEZALC": _emm6(lambda m, f: _sg(m, f, "t") <= 0, link=True),
+    "MM.BGEZALC": _emm6(lambda m, f: _sg(m, f, "t") >= 0, link=True),
+    "MM.BGTZALC": _emm6(lambda m, f: _sg(m, f, "t") > 0, link=True),
+    "MM.BC1EQZC": _emm6_bc1(False), "MM.BC1NEZC": _emm6_bc1(True),
+    "MM.JRC16": _emm6_jump(None), "MM.JALRC16": _emm6_jump("ra"),
+    "MM.JALRC": _emm6_jump("t"), "MM.JALRC.HB": _emm6_jump("t"),
+    "MM.JIC": _emm6_jump(None, offset=True), "MM.JIALC": _emm6_jump("ra", offset=True),
+    "MM.JRCADDIUSP": _emm_jraddiusp, "MM.LWPC": _emm6_lwpc,
+}
+
+#: UNPREDICTABLE in a delay slot (MD00582 5.4): Reserved Instruction, as QEMU
+_MM_NO_SLOT = frozenset({"MM.LWP", "MM.SWP", "MM.LWM16", "MM.SWM16", "MM.LWM32", "MM.SWM32"})
+
+
+_MM_EXECUTORS: dict[str, Executor] = {
+    "MM.B16": _emm_branch(lambda m, f: True),
+    "MM.BEQZ16": _emm_branch(lambda m, f: m.read_reg(f["s"]) == 0),
+    "MM.BNEZ16": _emm_branch(lambda m, f: m.read_reg(f["s"]) != 0),
+    "MM.BEQ": _emm_branch(lambda m, f: m.read_reg(f["s"]) == m.read_reg(f["t"])),
+    "MM.BNE": _emm_branch(lambda m, f: m.read_reg(f["s"]) != m.read_reg(f["t"])),
+    "MM.BLTZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1),
+    "MM.BGEZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0),
+    "MM.BLEZ": _emm_branch(lambda m, f: _s32(m.read_reg(f["s"])) <= 0),
+    "MM.BGTZ": _emm_branch(lambda m, f: _s32(m.read_reg(f["s"])) > 0),
+    "MM.BLTZAL": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1, linked=True),
+    "MM.BGEZAL": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0, linked=True),
+    "MM.BLTZALS": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1, linked=True),
+    "MM.BGEZALS": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0, linked=True),
+    "MM.BC1F": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 0),
+    "MM.BC1T": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 1),
+    "MM.BEQZC": _emm_compact(lambda m, f: m.read_reg(f["s"]) == 0),
+    "MM.BNEZC": _emm_compact(lambda m, f: m.read_reg(f["s"]) != 0),
+    "MM.JALR": _emm_jalr, "MM.JALR.HB": _emm_jalr, "MM.JALRS": _emm_jalr,
+    "MM.JALRS.HB": _emm_jalr,
+    "MM.JR16": _emm_jr16(False), "MM.JALR16": _emm_jr16(True), "MM.JALRS16": _emm_jr16(True),
+    "MM.JRC": _emm_jrc, "MM.JRADDIUSP": _emm_jraddiusp,
+    "MM.J": _emm_jump(False), "MM.JAL": _emm_jump(True), "MM.JALS": _emm_jump(True),
+    "MM.JALX": _emm_jump(True, exchange=True),
+    "MM.ADDIUPC": _emm_addiupc, "MM.LWXS": _emm_lwxs, "MM.MOVEP": _emm_movep,
+    "MM.LWP": _emm_pair(False), "MM.SWP": _emm_pair(True),
+    "MM.LWM16": _emm_multiple(False), "MM.SWM16": _emm_multiple(True),
+    "MM.LWM32": _emm_multiple(False), "MM.SWM32": _emm_multiple(True),
+    **_MM6_EXECUTORS,
+}
+
 _EXECUTORS: dict[str, Executor] = {
     "ADD": _e_add, "ADDI": _e_addi, "ADDIU": _e_addiu, "ADDU": _e_addu,
     "AND": _e_and, "ANDI": _e_andi,
@@ -4345,9 +5050,13 @@ _EXECUTORS: dict[str, Executor] = {
     "WAIT": _e_wait, "WRPGPR": _e_wrpgpr, "WSBH": _e_wsbh, "XOR": _e_xor, "XORI": _e_xori,
 }
 
+_EXECUTORS.update(_M16_EXECUTORS)
+_EXECUTORS.update(_MM_EXECUTORS)
 _EXECUTORS.update(_fpu_executors())
 _EXECUTORS.update(_r6_executors())
 _EXECUTORS.update(_r6_fpu())
 
 #: Row names with an executor (dispatched by name, never by ``funct``).
-EXEC_NAMES: frozenset[str] = frozenset(_EXECUTORS)
+#: the MIPS32 rows with an executor (MIPS16e's own M16.* executors are not rows)
+EXEC_NAMES: frozenset[str] = frozenset(n for n in _EXECUTORS
+                                      if not n.startswith(("M16.", "MM.")))

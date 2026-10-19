@@ -77,9 +77,12 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
 
 
 def _cmd_asm(args) -> None:
+    from .cli import apply_header
+    apply_header(args)                  # (the program's # eMIPS: release, endian ...)
     prog = _assemble(args.file, args.endian, args.release, args)
     for addr, word, text, src in prog.listing(abi=not args.numeric):
-        print(f"{addr:08x}  {word:08x}  {text:32} # {src}")
+        enc = f"{word:04x}    " if (prog.m16.get(addr) or prog.mm.get(addr)) == 2 else f"{word:08x}"
+        print(f"{addr:08x}  {enc}  {text:32} # {src}")
     if args.hex:
         Path(args.hex).write_text(prog.to_ihex())
 
@@ -88,8 +91,9 @@ def _cmd_cc(args) -> None:
     from .cc import BuildError, build
     out = args.output or str(Path(args.sources[0]).with_suffix(".elf"))
     try:
-        log = build(args.sources, out, release=args.release, endian=args.endian,
-                    optimize=f"-O{args.opt}")
+        release = args.release or ("R5" if args.micromips else "R2")
+        log = build(args.sources, out, release=release, endian=args.endian,
+                    optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips)
     except BuildError as exc:
         sys.exit(str(exc))
     if args.verbose:
@@ -125,6 +129,8 @@ def _session(args):
     errors: list[str] = []
     if not load_file(s, args.file, errors.append):
         sys.exit(errors[0] if errors else f"cannot load {args.file}")
+    for note in s.program_notes:                # what the program's code made change
+        print(f"note: {note}", file=sys.stderr)
     s.type_keys(_keys(args))
     s.stop_at_end = True
     return s
@@ -418,6 +424,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="start in .set noreorder (fill delay slots yourself)")
         if name == "asm":
             p.add_argument("--hex", help="write Intel HEX here")
+            p.add_argument("--no-header", action="store_true",
+                           help="ignore the program's '# eMIPS: ...' settings line")
             p.add_argument("--board", metavar="SPEC", type=_board, default=None,
                            help="assemble for this board's memory layout (malta: "
                                 "the segments in kseg0 SDRAM)")
@@ -498,6 +506,15 @@ def build_parser() -> argparse.ArgumentParser:
                            default=None, metavar="N",
                            help="GPR shadow sets, 1-16 (SRSCtl.HSS + 1; default 4, "
                                 "as a 24K built with 4)")
+            p.add_argument("--compressed", default=None,
+                           choices=["auto", "none", "mips16e", "micromips", "micromips-only"],
+                           help="the core's 16 / 32-bit ISA: auto (default) = MIPS16e from "
+                                "Release 1 to 5, as the 24K, none in Release 6; none = a "
+                                "MIPS32 core without one (JALX is Reserved, a JR to an odd "
+                                "address an address error); mips16e (Config1.CA); "
+                                "micromips = microMIPS32 and MIPS32 (Config3.ISA = 2, "
+                                "Release 3+); micromips-only (Config3.ISA = 1); a program "
+                                "with MIPS16e / microMIPS code gets it anyway")
         if name in ("run", "debug", "gdb"):
             p.add_argument("--pipeline", action="store_true",
                            help="pipeline mode (--model): a step is a clock cycle"
@@ -543,12 +560,17 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("sources", nargs="+", help="C (.c) or assembly (.S) files")
     c.add_argument("-o", "--output", help="the ELF to write (default: the first "
                                           "source's name .elf)")
-    c.add_argument("--release", choices=RELEASES, default="R2",
-                   help="MIPS32 release to build for (default R2)")
+    c.add_argument("--release", choices=RELEASES, default=None,
+                   help="MIPS32 release to build for (default R2; R5 with --micromips)")
     c.add_argument("--little", dest="endian", action="store_const", const="little",
                    default="big", help="little-endian")
     c.add_argument("-O", dest="opt", choices=["0", "1", "2", "3", "s"], default="1",
                    help="optimisation level (default 1)")
+    c.add_argument("--mips16", action="store_true",
+                   help="compile the C as MIPS16e (16-bit instructions; needs a MIPS GCC)")
+    c.add_argument("--micromips", action="store_true",
+                   help="compile the C as microMIPS (16- and 32-bit instructions; Release 3 "
+                        "or 5)")
     c.add_argument("-v", "--verbose", action="store_true", help="print the commands")
     c.set_defaults(fn=_cmd_cc)
     g = sub.add_parser("gui", help="graphical debugger / datapath view")

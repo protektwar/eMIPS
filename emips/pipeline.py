@@ -115,10 +115,14 @@ class Info:
     compact: bool = False        # R6 compact: no delay slot
 
 
-def analyze(dec: Decode, latency: dict[str, int] = LATENCY) -> Info:
-    """Registers read / written and timing class of a decoded row."""
+def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) -> Info:
+    """Registers read / written and timing class of a decoded row (a
+    MIPS16e / microMIPS instruction without a MIPS32 twin: ``insn``, its
+    compressed form)."""
     e = dec.entry
     name, fam = e["name"], e["family"]
+    if e.get("isa") in ("mips16e", "micromips"):
+        return _analyze_compressed(dec, insn)
     w = dec.word
     f5 = lambda lsb: (w >> lsb) & 31                     # noqa: E731
     reads: set = set()
@@ -210,10 +214,113 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY) -> Info:
                 fam in ("branch_compact", "jump_compact"))
 
 
+#: the registers the MIPS16e / microMIPS instructions without a MIPS32
+#: twin read and write (their executors in emips.sim): form -> (reads,
+#: writes) as instruction fields ("rx", "s" ...) or GPR numbers
+_M16_REGS: dict[str, tuple[tuple, tuple]] = {
+    "ADDIUPC": ((), ("rx",)), "LWPC": ((), ("rx",)), "B": ((), ()),
+    "BEQZ": (("rx",), ()), "BNEZ": (("rx",), ()), "BTEQZ": ((24,), ()), "BTNEZ": ((24,), ()),
+    "JR": (("rx",), ()), "JRC": (("rx",), ()), "JRRA": ((31,), ()), "JRCRA": ((31,), ()),
+    "JALR": (("rx",), (31,)), "JALRC": (("rx",), (31,)), "JAL": ((), (31,)),
+    "JALX": ((), (31,)),
+}
+_MM_REGS: dict[str, tuple[tuple, tuple]] = {
+    **dict.fromkeys(("B16", "J", "BC16", "BC", "BC2F", "BC2T", "BC2EQZC", "BC2NEZC"), ((), ())),
+    **dict.fromkeys(("BEQZ16", "BNEZ16", "BLTZ", "BGEZ", "BLEZ", "BGTZ", "BEQZC", "BNEZC",
+                     "BEQZC16", "BNEZC16", "JR16", "JRC", "JRC16"), (("s",), ())),
+    **dict.fromkeys(("BEQ", "BNE", "BEQC", "BNEC", "BLTC", "BGEC", "BLTUC", "BGEUC", "BOVC",
+                     "BNVC"), (("s", "t"), ())),
+    **dict.fromkeys(("BLTZAL", "BGEZAL", "BLTZALS", "BGEZALS", "JALR16", "JALRS16",
+                     "JALRC16"), (("s",), (31,))),
+    **dict.fromkeys(("BLTZC", "BLEZC", "BGEZC", "BGTZC", "JIC"), (("t",), ())),
+    **dict.fromkeys(("BEQZALC", "BNEZALC", "BLTZALC", "BLEZALC", "BGEZALC", "BGTZALC",
+                     "JIALC"), (("t",), (31,))),
+    **dict.fromkeys(("JALR", "JALR.HB", "JALRS", "JALRS.HB", "JALRC", "JALRC.HB"),
+                    (("s",), ("t",))),
+    **dict.fromkeys(("JRADDIUSP", "JRCADDIUSP"), ((31, 29), (29,))),
+    **dict.fromkeys(("JAL", "JALS", "JALX", "BALC"), ((), (31,))),
+    "ADDIUPC": ((), ("t",)), "LWPC": ((), ("t",)), "LWXS": (("b", "t"), ("d",)),
+    "MOVEP": (("s", "t"), ()), "LWP": (("b",), ()), "SWP": (("b",), ()),
+    "LWM16": ((29,), ()), "SWM16": ((29,), ()), "LWM32": (("b",), ()), "SWM32": (("b",), ()),
+    "BC1F": ((), ()), "BC1T": ((), ()), "BC1EQZC": ((), ()), "BC1NEZC": ((), ()),
+}
+_COMPRESSED_LOADS = {"M16.LWPC", "M16.RESTORE", "MM.LWPC", "MM.LWXS", "MM.LWP", "MM.LWM16",
+                     "MM.LWM32"}
+
+
+def compressed_words(dec: Decode, insn: Any) -> list[int]:
+    """The registers a multiple load / store moves, in memory order
+    (MIPS16e SAVE / RESTORE, microMIPS LWP / SWP / LWM / SWM): one word
+    each."""
+    from .mips16 import args_statics
+    from .micromips import reglist
+    from .sim import _m16_frame_regs
+    form = dec.name.split(".", 1)[1]
+    f = insn.f
+    if dec.name in ("M16.SAVE", "M16.RESTORE"):
+        args, statics = args_statics(f["aregs"])
+        regs = _m16_frame_regs(f, statics)
+        return ([4 + k for k in range(args)] if form == "SAVE" else []) + regs
+    if form in ("LWP", "SWP"):
+        return [f["t"], f["t"] + 1]
+    if form in ("LWM16", "SWM16", "LWM32", "SWM32"):
+        return reglist(insn)
+    return []
+
+
+def _analyze_compressed(dec: Decode, insn: Any) -> Info:
+    """:func:`analyze` for the MIPS16e / microMIPS forms with their own
+    executor.  A multiple load / store moves one word per cycle (the
+    32-bit data path): it holds EX that long."""
+    from .micromips import MOVEP_DEST
+    name, fam = dec.name, dec.entry["family"]
+    form = name.split(".", 1)[1]
+    f = insn.f if insn is not None else {}
+    table = _M16_REGS if name.startswith("M16.") else _MM_REGS
+    reads: set = set()
+    writes: set = set()
+    r, w = table.get(form, ((), ()))
+    for k in r:
+        reads.add(("r", f[k] if isinstance(k, str) else k))
+    for k in w:
+        writes.add(("r", f[k] if isinstance(k, str) else k))
+    words = compressed_words(dec, insn) if insn is not None else []
+    if name in ("M16.SAVE", "MM.SWP", "MM.SWM16", "MM.SWM32"):
+        reads |= {("r", n) for n in words}
+    elif words:
+        writes |= {("r", n) for n in words}
+    if name in ("M16.SAVE", "M16.RESTORE"):
+        reads.add(("r", 29))
+        writes.add(("r", 29))
+    if name == "MM.MOVEP":
+        writes |= {("r", n) for n in MOVEP_DEST[f["e"]]}
+    if name in ("MM.BC1F", "MM.BC1T"):
+        reads.add("fcc")
+    if name in ("MM.BC1EQZC", "MM.BC1NEZC"):
+        reads.add(("f", f["T"]))
+    writes.discard(("r", 0))
+    reads.discard(("r", 0))
+    control = ("branch" if fam in ("branch", "branch_fpu", "branch_compact")
+               else "jump" if fam in ("jump", "jump_compact") else "")
+    return Info(frozenset(reads) if control else frozenset(),
+                frozenset() if control else frozenset(reads), frozenset(writes),
+                "MEM" if name in _COMPRESSED_LOADS else "EX", max(len(words), 1), 0,
+                control, fam in ("branch_compact", "jump_compact"))
+
+
 def control_signals(dec: Decode, info: Info) -> dict[str, Any]:
     """The textbook main-control signals for the instruction in ID."""
     e = dec.entry
     fam, name = e["family"], e["name"]
+    if e.get("isa") in ("mips16e", "micromips"):     # no MIPS32 twin: from what it does
+        gprs = sorted(r[1] for r in info.writes if isinstance(r, tuple) and r[0] == "r")
+        return {
+            "RegDst": "$ra" if gprs == [31] else ", ".join(f"${n}" for n in gprs) or "-",
+            "ALUSrc": "imm", "MemtoReg": info.ready == "MEM", "RegWrite": bool(gprs),
+            "MemRead": info.ready == "MEM", "MemWrite": fam == "store",
+            "Branch": info.control == "branch", "Jump": info.control == "jump",
+            "ALUOp": e["mnemonic"],
+        }
     spec = [kind_of(k)[0] for k in operand_spec(e)]
     gpr_write = any(r[0] == "r" for r in info.writes if isinstance(r, tuple))
     load = info.ready == "MEM"
@@ -269,6 +376,21 @@ class Slot:
     #: a branch the debugger stops at: not executed in ID, so it reaches
     #: EX with everything older done (refetched when the run goes on)
     held: bool = False
+    #: MIPS16e / microMIPS: the ISA mode it was fetched in, its size, its
+    #: compressed form (None: MIPS32), the size and compressed encoding
+    #: of the branch whose delay slot it is; a reserved encoding found
+    #: with exceptions="raise" (raised in EX)
+    isa: int = 0
+    size: int = 4
+    insn: Any = None
+    back: int = 4
+    slot_raw: int | None = None
+    decode_error: ISADecodeError | None = None
+
+    @property
+    def addr(self) -> int:
+        """Its address with the ISA mode in bit 0 (a jump there)."""
+        return self.pc | self.isa
 
 
 @dataclass
@@ -284,6 +406,21 @@ class StageView:
     mem_wait: int = 0
     #: the translations of its fetch (tracing; see Slot.fetch_tlb)
     fetch_tlb: list = field(default_factory=list)
+    #: the MIPS32 word the datapath runs (MIPS16e / microMIPS: the recoded
+    #: twin, None for a form without one); its compressed encoding
+    #: ("MIPS16e 16-bit 0x6c05"; "" in MIPS32)
+    word: int | None = None
+    compressed: str = ""
+
+
+def stage_word(slot) -> tuple[int | None, str]:
+    """(the MIPS32 word, the compressed encoding text) of a slot."""
+    if slot.insn is None:
+        return slot.word, ""
+    isa = "microMIPS" if type(slot.insn).__name__ == "MM" else "MIPS16e"
+    twin = slot.dec is not None and "isa" not in slot.dec.entry
+    return (slot.word if twin else None,
+            f"{isa} {8 * slot.size}-bit 0x{slot.insn.raw:0{2 * slot.size}x}")
 
 
 @dataclass
@@ -303,7 +440,7 @@ def _view(slot: Slot | None, control: bool = False) -> StageView | None:
         return None
     ctl = control_signals(slot.dec, slot.info) if control and slot.dec else None
     return StageView(slot.seq, slot.pc, slot.text, ctl, slot.fetch_cache,
-                     slot.fetch_wait, slot.mem_wait, slot.fetch_tlb)
+                     slot.fetch_wait, slot.mem_wait, slot.fetch_tlb, *stage_word(slot))
 
 
 #: the performance counter event of a memory wait (timing / micro-TLB kind)
@@ -333,6 +470,54 @@ def _rname(r: Res) -> str:
         from .syntax import gpr_name
         return gpr_name(r[1]) if r[0] == "r" else f"$f{r[1]}"
     return r.upper() if r != "fcc" else "FCC"
+
+
+def fetch_compressed(p, m: Machine, pc: int) -> Slot:
+    """Fetch the MIPS16e / microMIPS instruction at ``pc`` into a
+    :class:`Slot` (``p``: a pipeline with ``fetch_pc`` / ``_seq`` /
+    ``latency``): 2 or 4 bytes, the MIPS32 twin it runs as or its own
+    ``M16.*`` / ``MM.*`` entry; a fault on either halfword or a reserved
+    encoding rides the slot to EX."""
+    from .trace import _compressed_text
+    p._seq += 1
+    try:
+        size, word, dec, insn = m.fetch_compressed(pc)
+    except FetchError as exc:
+        p.fetch_pc = (pc + 2) & M32
+        return Slot(p._seq, pc, None, None, "(no code here)", None, fetch_error=exc,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2)
+    except ISADecodeError as exc:               # exceptions="raise": raised in EX
+        p.fetch_pc = (pc + 2) & M32
+        return Slot(p._seq, pc, None, None, f".half 0x{exc.word & 0xFFFF:04x}"
+                    if isinstance(getattr(exc, "word", None), int) else "(reserved)", None,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2,
+                    decode_error=exc)
+    except _Arch as exc:                        # AdEL / TLB / Cache Error / RI
+        p.fetch_pc = (pc + 2) & M32
+        what = ("reserved instruction" if exc.code == C.RI else
+                "TLB refill" if exc.info.get("refill") else
+                "cache error" if exc.code == C.CACHE_ERROR else
+                C.EXC_NAMES.get(exc.code, str(exc.code)))
+        return Slot(p._seq, pc, None, None, f"(fetch: {what})", None, fetch_exc=exc,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2)
+    p.fetch_pc = (pc + size) & M32
+    return Slot(p._seq, pc, word, dec, _compressed_text(m, insn, pc),
+                analyze(dec, getattr(p, "latency", LATENCY), insn), fetch_cache=m.fetch_accesses,
+                fetch_tlb=m.fetch_tlb, imiss=m.fetch_missed, isa=1, size=size, insn=insn)
+
+
+def enter(m: Machine, s: Slot) -> None:
+    """Give the Machine the state of the instruction about to execute or
+    take its exception (its ISA mode, compressed form, delay slot)."""
+    if m.compressed is not None:
+        m.enter(s.pc, s.isa, s.insn, s.in_slot, s.back, s.slot_raw)
+
+
+def mark_slot(branch: Slot, nxt: Slot) -> None:
+    """``nxt`` is the delay slot of ``branch``."""
+    nxt.in_slot = True
+    nxt.back = branch.size
+    nxt.slot_raw = branch.insn.raw if branch.insn is not None else None
 
 
 class Pipeline:
@@ -370,6 +555,8 @@ class Pipeline:
         self._fetch_notes: list[str] = []
         self.stage: dict[str, Slot | None] = {s: None for s in STAGES}
         self.fetch_pc = machine.pc
+        #: the ISA mode of the next fetch (MIPS16e / microMIPS: 1)
+        self.fetch_isa = machine.isa_mode
         self.cycles = 0
         self.retired = 0
         self.mdu_busy = 0
@@ -397,10 +584,24 @@ class Pipeline:
         self._fetch_notes += [f"fetch 0x{slot.pc:08x}: {n}" for n in notes]
         return slot
 
+    def _goto(self, target: int) -> None:
+        """Fetch from ``target`` next: with MIPS16e / microMIPS its bit 0
+        is the ISA mode there (as :meth:`emips.sim.Machine._jump`)."""
+        target &= M32
+        if self.m.compressed is not None:
+            self.fetch_isa = target & 1
+            target &= ~1
+        self.fetch_pc = target
+
     def _fetch_slot(self) -> Slot:
         m, pc = self.m, self.fetch_pc
+        if self.fetch_isa:
+            return fetch_compressed(self, m, pc)
         self.fetch_pc = (pc + 4) & M32
         self._seq += 1
+        if not m.mips32:                        # microMIPS only: no MIPS32 mode
+            return Slot(self._seq, pc, None, None, "(fetch: address error)",
+                        None, fetch_exc=_Arch(C.ADEL, badvaddr=pc))
         if pc & 3 or not m.address_ok(pc):
             return Slot(self._seq, pc, None, None, "(fetch: address error)",
                         None, fetch_exc=_Arch(C.ADEL, badvaddr=pc))
@@ -535,7 +736,7 @@ class Pipeline:
                 raise ex.fetch_error
             elif ex.held:                                # the debugger stopped here: go on
                 self._pass = ex.pc
-                flush_to = ex.pc
+                flush_to = ex.addr
                 ev.append(f"{ex.text}: held for the debugger, fetched again "
                           "(it executes in ID)")
             else:
@@ -545,6 +746,8 @@ class Pipeline:
                     exc = ex.fetch_exc or ex.pending
                     if exc is not None:
                         raise exc
+                    if ex.decode_error is not None:
+                        raise ex.decode_error
                     if ex.dec is None:
                         if m.exceptions == "raise":
                             m.isa.decode(ex.word)        # raises ISADecodeError
@@ -555,6 +758,7 @@ class Pipeline:
                         m.last_view = None
                         try:
                             m.fetch_missed = ex.imiss
+                            enter(m, ex)
                             m.execute(ex.pc, ex.word, ex.dec, in_slot=ex.in_slot,
                                       sources=srcs)
                             ex.perf, m.last_events = m.last_events, None
@@ -628,6 +832,7 @@ class Pipeline:
                         m.instruction_checks(ids.pc)
                     m.r6_slot_check(ids.dec, ids.in_slot, ids.forbidden)
                     m.fetch_missed = ids.imiss
+                    enter(m, ids)
                     res = m.execute(ids.pc, ids.word, ids.dec,
                                     in_slot=ids.in_slot, sources=srcs)
                     ids.perf, m.last_events = m.last_events, None
@@ -657,7 +862,7 @@ class Pipeline:
                     m._forbidden = False
                     res = None
                 elif nxt is not None:
-                    nxt.in_slot = True
+                    mark_slot(ids, nxt)
                 if ids.info.compact:
                     pass
                 elif res == NULLIFY:
@@ -679,7 +884,7 @@ class Pipeline:
         if flush_to is not None:
             st["MEM"] = ex if (ex is not None and ex.executed) else None
             st["EX"] = st["ID"] = st["IF"] = None
-            self.fetch_pc = flush_to
+            self._goto(flush_to)
             st["IF"] = self._fetch() if self.fetching else None
         elif ex_holds:
             st["MEM"] = None
@@ -698,7 +903,7 @@ class Pipeline:
                 else:
                     st["ID"] = None if nullify else st["IF"]
                 if branch_target is not None:
-                    self.fetch_pc = branch_target
+                    self._goto(branch_target)
                 if not if_wait or nullify:
                     st["IF"] = self._fetch() if self.fetching else None
         if m.perf.armed:
@@ -780,11 +985,12 @@ class Pipeline:
 
     def _exception(self, s: Slot, exc: _Arch, ev: list[str]) -> int:
         m = self.m
+        enter(m, s)
         m.take_exception(exc, s.pc, s.word, s.dec, s.in_slot)
         name = C.EXC_NAMES.get(exc.code, str(exc.code))
         ev.append(f"exception {name} at 0x{s.pc:08x} ({s.text}): flush "
                   f"IF/ID/EX, fetch the handler at 0x{m.pc:08x}")
-        return m.pc
+        return m.pc | m.isa_mode if m.compressed is not None else m.pc
 
     def _note_forwarding(self, s: Slot, needs, stage: str,
                          ev: list[str]) -> dict:

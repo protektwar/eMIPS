@@ -858,6 +858,10 @@ other change restarts it.</p>
 <td>big-endian (default) or little-endian</td>
 </tr>
 <tr>
+<td>Compressed instructions</td>
+<td>automatic (default: MIPS16e from Release 1 to 5, as the 24K has it, none in Release 6), none, MIPS16e, microMIPS with MIPS32, or microMIPS only (<a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a> / <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program's own <code>.set mips16</code> / <code>.set micromips</code> code gets its ISA anyway.  microMIPS needs Release 3+ and the 5-stage model (the 24K has no microMIPS)</td>
+</tr>
+<tr>
 <td>Pipeline model</td>
 <td>the textbook <strong>5-stage</strong> pipeline (default) or the <strong>MIPS 24K</strong>'s 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>); the Datapath pane, the chart and the other panes follow both</td>
 </tr>
@@ -912,6 +916,16 @@ other change restarts it.</p>
 <td>Assemble automatically when the source changed</td>
 <td>on</td>
 <td>Step / Run assemble first</td>
+</tr>
+<tr>
+<td>C programs: optimisation</td>
+<td>-O0</td>
+<td>the compiler's optimisation level for Build</td>
+</tr>
+<tr>
+<td>C programs: instructions</td>
+<td>MIPS32</td>
+<td>MIPS32, MIPS16e (<code>cc --mips16</code>, a MIPS GCC) or microMIPS (<code>cc --micromips</code>, Release 3 / 5); the startup code stays MIPS32</td>
 </tr>
 </tbody>
 </table>

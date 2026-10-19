@@ -176,7 +176,11 @@ def details(s) -> tuple[dict, dict]:
 
 
 def word_of(s, d: dict) -> int | None:
-    """The instruction word of a stage (from its view, else memory)."""
+    """The instruction word of a stage (from its view, else memory);
+    MIPS16e / microMIPS: the MIPS32 word it is recoded to (None: a form
+    without one)."""
+    if d.get("compressed"):
+        return d.get("word")
     v = d.get("view")
     if v is not None:
         return v.word

@@ -221,8 +221,13 @@ output — the test suite re-runs them.</p>
 <td>GPR shadow sets, 1–16 (default 4, a 24K's most; Release 2+): what SRSCtl.HSS says, the sets an exception / vectored interrupt switches to (<a href="05-understanding.html#vectored-interrupts-and-shadow-register-sets">Phase 5, 5.10</a>)</td>
 </tr>
 <tr>
-<td><code>--no-header</code></td>
+<td><code>--compressed auto|none|mips16e|micromips|micromips-only</code></td>
 <td>run, pipe, debug, gdb</td>
+<td>the core's compressed ISA: <code>auto</code> (default) = MIPS16e from Release 1 to 5, as the 24K, none in Release 6; <code>none</code> = a MIPS32 core without one (<code>jalx</code> is Reserved, a <code>jr</code> to an odd address an address error); <code>mips16e</code> (Config1.CA, <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a>); <code>micromips</code> = microMIPS32 and MIPS32, Release 3+ (Config3.ISA = 2); <code>micromips-only</code> = no MIPS32 (Config3.ISA = 1; <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program with MIPS16e / microMIPS code gets it anyway</td>
+</tr>
+<tr>
+<td><code>--no-header</code></td>
+<td>asm, run, pipe, debug, gdb</td>
 <td>ignore the program's <code># eMIPS:</code> line (without it, that line supplies the flags you do not give: <a href="features.html#a-programs-own-settings">What's in eMIPS</a>); a combination of flags that does not go together is refused with the reason</td>
 </tr>
 <tr>
@@ -984,12 +989,17 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--little] [-O 0|1|2|3|s] [-v]
+                    [--little] [-O 0|1|2|3|s] [--mips16 | --micromips] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
 ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
 memory map (<a href="02-writing-programs.html#218-programs-in-c">Phase 2, 2.18</a>).
-<code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
+<code>--mips16</code> compiles the C as MIPS16e (16-bit instructions,
+<a href="02-writing-programs.html#219-mips16e-16-bit-instructions">2.19</a>; it needs a MIPS
+GCC), <code>--micromips</code> as microMIPS
+(<a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>; Release 3
+or 5, the default with it is R5).  In both, crt0 stays MIPS32 and the
+linker turns the calls between the two ISAs into <code>jalx</code>.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
 <code>.c</code> file too (built for the session's release and byte order) and every
 command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
 disassembly with each C line above its instructions.</p>
@@ -1150,6 +1160,16 @@ unexecuted, the program stops there, and when it goes on the branch is
 fetched again.  That costs a few cycles at each stop, as a debug
 exception does; <code>monitor chart</code> shows it.  A watchpoint holds its
 load or store for one cycle.  Writing <code>$pc</code> flushes the pipeline.</p>
+<h3 id="gdb-in-mips16e-and-micromips-code">GDB in MIPS16e and microMIPS code</h3>
+<p>In 16-bit code the stub gives <code>$pc</code> with bit 0 set, as a real
+target does: that bit is how GDB knows which ISA to disassemble and to
+step.  The ELF the stub hands an assembly program to GDB marks the
+labels of MIPS16e / microMIPS code (STO_MIPS16 / STO_MICROMIPS) and says
+which ISA the program uses in its header, as GNU ld does, so
+<code>break</code>, <code>x/i $pc</code>, <code>stepi</code>, <code>next</code> and <code>bt</code> work in
+both.  A breakpoint there is at the odd address
+(<code>Breakpoint 1 at 0x400083</code>); writing an odd <code>$pc</code> switches the
+core to the 16-bit ISA.</p>
 <h3 id="gdb-and-the-window">GDB and the window</h3>
 <p><strong>Run → GDB Server</strong> does the same for the program in the editor
 (port 1234; the key <code>gdb_port</code> of the settings file changes it).

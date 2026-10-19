@@ -121,7 +121,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.set_values(release, endian, forwarding, options)
         self._constraining = False
         for box in (self.release, self.board, self.mmu, self.model, self.icache, self.dcache,
-                    self.l2, self.l3):
+                    self.l2, self.l3, self.compressed, self.c_isa):
             box.currentIndexChanged.connect(self._constrain)
         for box in (self.icache, self.dcache, self.l2, self.l3):
             box.editTextChanged.connect(self._constrain)
@@ -152,6 +152,19 @@ class SettingsDialog(QtWidgets.QDialog):
         self.endian.addItem(tr("Big-endian"), "big")
         self.endian.addItem(tr("Little-endian"), "little")
         form.addRow(tr("Byte order"), self.endian)
+        self.compressed = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: MIPS16e in Release 1-5, none in Release 6")),
+                          ("none", tr("None: MIPS32 only")),
+                          ("mips16e", tr("MIPS16e (16-bit instructions)")),
+                          ("micromips", tr("microMIPS and MIPS32 (Release 3+)")),
+                          ("micromips-only", tr("microMIPS only, no MIPS32 mode "
+                                                "(Release 3+)"))):
+            self.compressed.addItem(text, key)
+        form.addRow(tr("Compressed instructions"), self.compressed)
+        form.addRow("", _note(tr("Automatic is the 24K's choice; a program with .set mips16 "
+                                 "/ .set micromips code gets that ISA anyway.  microMIPS "
+                                 "needs Release 3+ and runs on the 5-stage model (the 24K "
+                                 "has none).")))
         self.model = QtWidgets.QComboBox()
         self.model.addItem(tr("5-stage (textbook)"), "5-stage")
         self.model.addItem(tr("MIPS 24K (8 stages, branch prediction)"), "24k")
@@ -290,6 +303,15 @@ class SettingsDialog(QtWidgets.QDialog):
                             ("3", tr("-O3: aggressive")), ("s", tr("-Os: small code"))):
             self.c_optimize.addItem(text, level)
         row.addWidget(self.c_optimize, 1)
+        lay.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel(tr("C programs: instructions")))
+        self.c_isa = QtWidgets.QComboBox()
+        for key, text in (("mips32", tr("MIPS32 (default)")),
+                          ("mips16e", tr("MIPS16e (needs a MIPS GCC)")),
+                          ("micromips", tr("microMIPS (Release 3 / 5)"))):
+            self.c_isa.addItem(text, key)
+        row.addWidget(self.c_isa, 1)
         lay.addLayout(row)
         lay.addWidget(_note(tr("Build (Ctrl+B) compiles a C program with clang or a MIPS "
                                "GCC for the selected release; -O0 keeps the code close "
@@ -473,6 +495,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.endian.setCurrentIndex(0 if endian == "big" else 1)
         self.forwarding.setChecked(forwarding)
         self.model.setCurrentIndex(max(0, self.model.findData(o.model)))
+        self.compressed.setCurrentIndex(max(0, self.compressed.findData(o.compressed)))
+        self.c_isa.setCurrentIndex(max(0, self.c_isa.findData(o.c_isa)))
         self.cores.setValue(o.cores)
         self.iocu.setChecked(o.iocu)
         self.shadow_sets.setValue(o.shadow_sets)
@@ -541,7 +565,8 @@ class SettingsDialog(QtWidgets.QDialog):
             model=self.model.currentData(), cores=self.cores.value(),
             iocu=self.iocu.isChecked(),
             shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
-            disks=self._disks_spec(), c_optimize=self.c_optimize.currentData())
+            disks=self._disks_spec(), c_optimize=self.c_optimize.currentData(),
+            compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 
@@ -593,15 +618,20 @@ class SettingsDialog(QtWidgets.QDialog):
                 for b in self.boot.buttons():
                     b.setChecked(b.property("key") == fixed.boot)
                 self._set_cache(self.l3, fixed.l3)
+                for box, value in ((self.compressed, fixed.compressed),
+                                   (self.c_isa, fixed.c_isa), (self.model, fixed.model)):
+                    box.setCurrentIndex(max(0, box.findData(value)))
             if note:
                 self.compat_note.setText(
                     tr("Adjusted to go with the rest: {notes}").format(notes="; ".join(notes))
                     if notes else "")
-            model = self.mmu.model()
-            for i in range(self.mmu.count()):
-                why = forbidden("mmu", self.mmu.itemData(i), fixed, release)
-                model.item(i).setEnabled(why is None)
-                self.mmu.setItemData(i, why or "", QtCore.Qt.ItemDataRole.ToolTipRole)
+            for box, field in ((self.mmu, "mmu"), (self.compressed, "compressed"),
+                               (self.c_isa, "c_isa"), (self.model, "model")):
+                model = box.model()
+                for i in range(box.count()):
+                    why = forbidden(field, box.itemData(i), fixed, release)
+                    model.item(i).setEnabled(why is None)
+                    box.setItemData(i, why or "", QtCore.Qt.ItemDataRole.ToolTipRole)
             for spin, field, top in ((self.cores, "cores", MAX_CORES),
                                      (self.shadow_sets, "shadow_sets", 16)):
                 why = forbidden(field, 2, fixed, release)

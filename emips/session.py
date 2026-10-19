@@ -19,7 +19,7 @@ source lines (highlighting, breakpoints).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,12 @@ CORE_STACK = 0x10000
 #: address); the compact R6 ones return to PC + 4 (no delay slot)
 _COMPACT_CALLS = {"BALC", "JIALC", "BEQZALC", "BNEZALC", "BLEZALC", "BGEZALC",
                   "BGTZALC", "BLTZALC"}
+#: MIPS16e's calls (emips.mips16: JAL, JALX, JALR, JALRC)
+_M16_CALLS = {"M16.JAL", "M16.JALX", "M16.JALR", "M16.JALRC"}
+#: microMIPS's calls (emips.micromips; JALR / JALRS with rt = 0 are jumps)
+_MM_CALLS = {"MM.JAL", "MM.JALS", "MM.JALX", "MM.JALR16", "MM.JALRS16", "MM.BGEZAL",
+             "MM.BLTZAL", "MM.BGEZALS", "MM.BLTZALS"}
+_MM_JALR = {"MM.JALR", "MM.JALR.HB", "MM.JALRS", "MM.JALRS.HB"}
 _CALLS = {"JAL", "JALR", "JALR.HB", "JALX", "BAL",
           "BGEZAL", "BLTZAL", "BGEZALL", "BLTZALL"}
 
@@ -186,8 +192,10 @@ class Session:
         self._media: dict[str, tuple[bytes, int]] = {}
         #: why a disk of the ``disks`` option is not there (a missing file ...)
         self.disk_notes: list[str] = []
-        #: what reset adjusted to make the settings go together (emips.compat)
+        #: what reset adjusted to make the settings go together (emips.compat);
+        #: program_notes: what the program's own code made change
         self.adjusted: list[str] = []
+        self.program_notes: list[str] = []
         self._pokes: list[tuple] = []
         #: EJTAG: each core's TAP (fresh at every reset: power-up), the
         #: probe on them (configuration: kept across resets) and whether
@@ -335,8 +343,10 @@ class Session:
         src.write_text(text, encoding="utf-8")
         out = src.with_suffix(".elf")
         try:
+            isa = self.options.c_isa
             self.c_build = build([src], out, release=self.release, endian=self.endian,
-                                 optimize=optimize)
+                                 optimize=optimize, mips16=isa == "mips16e",
+                                 micromips=isa == "micromips")
         except BuildError as exc:
             text_ = str(exc).replace(str(src), src.name)
             lines = text_.splitlines()
@@ -400,9 +410,12 @@ class Session:
                  "instructions"]
         lines += [f"# note: {n}" for n in img.notes]
         last = None
-        for start, stop in img.code_ranges():
-            lines.append("")
-            for a in range(start & ~3, stop, 4):
+        from . import micromips, mips16
+        for start, stop, code_isa in img.isa_ranges():
+            if lines[-1] != "":
+                lines.append("")
+            a = start & ~3 if code_isa == "mips32" else start & ~1
+            while a < stop:
                 if a in labels:
                     lines += ([] if lines[-1] == "" else [""]) + [f"{labels[a]}:"]
                     last = None
@@ -411,10 +424,32 @@ class Session:
                     f, n = where
                     lines.append(f"# {Path(f).name}:{n}  {texts.line(f, n)}".rstrip())
                     last = where
-                w = prog.word(a)
-                text_ = f"{a:08x}  {w:08x}  {disassemble(w, a, isa=isa, abi=self.abi)}"
+                if code_isa == "mips16e":           # MIPS16e: 2 / 4 bytes
+                    try:
+                        i = prog.m16_insn(a)
+                        size, enc, txt = i.size, i.raw, mips16.text(i, a, abi=self.abi)
+                    except (ISADecodeError, ValueError):
+                        size, enc, txt = 2, prog.half(a), "(no MIPS16e instruction)"
+                    prog.m16[a] = size
+                    text_ = f"{a:08x}  {enc:0{2 * size}x}{'    ' if size == 2 else ''}  {txt}"
+                elif code_isa == "micromips":       # microMIPS: 2 / 4 bytes
+                    try:
+                        i = prog.mm_insn(a)
+                        size, enc = i.size, i.raw
+                        txt = micromips.text(i, a, abi=self.abi, release=img.release)
+                    except (ISADecodeError, ValueError):
+                        size, enc = micromips.size_of(prog.half(a)), prog.half(a)
+                        txt = "(no microMIPS instruction)"
+                        if size == 4:
+                            enc = (enc << 16) | prog.half(a + 2)
+                    prog.mm[a] = size
+                    text_ = f"{a:08x}  {enc:0{2 * size}x}{'    ' if size == 2 else ''}  {txt}"
+                else:
+                    size, w = 4, prog.word(a)
+                    text_ = f"{a:08x}  {w:08x}  {disassemble(w, a, isa=isa, abi=self.abi)}"
                 lines.append(text_)
                 prog.source_map[a] = SourceLine(len(lines), text_)
+                a += size
         data_sections = [(n, a, sz) for n, a, sz, x in img.sections if not x]
         if data_sections:
             lines += ["", "# data"] + [f"# {n:<12} 0x{a:08x}  {sz} bytes"
@@ -465,6 +500,14 @@ class Session:
         are powered down until the program starts them with the CPC)."""
         from .compat import adjust
         self.options, self.adjusted = adjust(self.options, self.release)
+        self.program_notes = []
+        if self.options.model == "24k" and (self.compressed_isa() or "").startswith("micromips"):
+            from .compat import RULES
+            rule = next(r for r in RULES if r.field == "model")
+            self.options = replace(self.options, model="5-stage")
+            self.program_notes = [f"model 24k -> 5-stage: the program has microMIPS code; "
+                                  f"{rule.why}"]
+            self.adjusted += self.program_notes
         o = self.options
         self.output = ""
         self.console = MmioConsole(on_output=self._emit, tx_delay=o.tx_delay,
@@ -567,7 +610,7 @@ class Session:
         m = Machine(memory=mem, endian=self.endian, release=self.release,
                     exceptions="raise" if o.exceptions == "stop" else "cp0",
                     caches=caches, mmu=o.make_mmu(), cpu=cpu,
-                    shadow_sets=o.shadow_sets)
+                    shadow_sets=o.shadow_sets, compressed=self.compressed_isa())
         m.tracing = True
         m.ccres = o.count_rate
         m.agent_watch = self.watchpoints
@@ -589,6 +632,65 @@ class Session:
         if self.probe is not None:              # the probe sees Rocc: it takes the TAP
             self.probe.connect(tap)
         return m
+
+    def is_mips16e(self, pc: int, cpu: int | None = None) -> bool:
+        """Is the code at ``pc`` MIPS16e: the program's, or the core is in
+        MIPS16e mode and that is its PC."""
+        return self.compressed_at(pc, cpu) == "mips16e"
+
+    def compressed_at(self, pc: int, cpu: int | None = None) -> str | None:
+        """"mips16e" / "micromips" when the code at ``pc`` is: the
+        program's, or the core is in that mode and ``pc`` is its PC."""
+        prog = self.program
+        if prog is not None and (prog.m16 or prog.mm):
+            a = self.program_address(pc, cpu)
+            if a is not None and a in prog.m16:
+                return "mips16e"
+            if a is not None and a in prog.mm:
+                return "micromips"
+        m = self.machines[self.cpu if cpu is None else cpu] if self.machines else None
+        if m is not None and m.isa_mode == 1 and m.pc == pc:
+            return m.compressed
+        return None
+
+    def instruction_text(self, pc: int, cpu: int | None = None) -> str:
+        """The disassembly of the instruction at ``pc`` (MIPS16e /
+        microMIPS where the code is; "?" where there is none)."""
+        from . import micromips, mips16
+        from .tools import decode_word
+        m = self.machines[self.cpu if cpu is None else cpu] if self.machines else None
+        if m is None:
+            return "?"
+        try:
+            isa = self.compressed_at(pc, cpu)
+            if isa == "mips16e":
+                i = mips16.decode(m.code_half(pc), lambda: m.code_half(pc + 2))
+                return mips16.text(i, pc, abi=self.abi)
+            if isa == "micromips":
+                i = micromips.decode(m.code_half(pc), lambda: m.code_half(pc + 2),
+                                     release=self.release)
+                return micromips.text(i, pc, abi=self.abi, release=self.release)
+            return decode_word(m.code_word(pc), release=self.release, pc=pc, abi=self.abi).text
+        except Exception:                                   # noqa: BLE001
+            return "?"
+
+    def compressed_isa(self) -> str | None:
+        """The core's compressed instruction set: Options.compressed
+        ("auto": MIPS16e from Release 1 to 5, as the 24K; none in Release
+        6; "micromips" / "micromips-only": microMIPS32, Release 3+), and
+        what the program's code needs anyway: microMIPS for .set micromips
+        / STO_MICROMIPS code, MIPS16e for MIPS16e code."""
+        c = self.options.compressed
+        prog = getattr(self, "program", None)
+        if prog is not None and prog.mm and c != "micromips-only":
+            return "micromips"
+        if c in ("micromips", "micromips-only"):
+            return c
+        if self.release == "R6":
+            return None
+        if c in ("mips16e", "auto"):
+            return "mips16e"
+        return "mips16e" if prog is not None and prog.m16 else None
 
     def _make_pipeline(self, m: Machine):
         if self.mode != "pipeline":
@@ -959,6 +1061,18 @@ class Session:
 
     def _return_address(self, pc: int) -> int | None:
         m = self.machine
+        if self.compressed_at(pc) == "micromips":
+            from . import micromips
+            try:
+                i = micromips.decode(m.code_half(pc), lambda: m.code_half(pc + 2),
+                                     release=self.release)
+            except (SimException, ISADecodeError):
+                return None
+            calls = {n[3:] for n in _MM_CALLS} | {"JALR", "JALR.HB", "JALRS", "JALRS.HB"}
+            if i.form in calls and not (i.form.startswith("JALR") and i.f.get("t") == 0
+                                        and i.size == 4):
+                return micromips.link(i, pc) & ~1
+            return None
         try:
             dec = m.isa.decode(m.code_word(pc))
         except (SimException, ISADecodeError):
@@ -980,6 +1094,28 @@ class Session:
         def hook(pc: int, dec, word: int, result, cpu=cpu) -> None:
             name = dec.name
             stack = self.calls[cpu]
+            if name in _M16_CALLS:                  # MIPS16e: $ra says where it returns
+                target = result if result is not None else m._redirect
+                if target is not None:
+                    stack.append(Frame(pc, target & ~1 & M32, m.read_reg(31) & ~1,
+                                       m.read_reg(29)))
+                return
+            if name in ("M16.JRRA", "M16.JRCRA"):
+                if stack:
+                    stack.pop()
+                return
+            if name.startswith("MM."):              # microMIPS (link: past the slot)
+                f = m._mm.f if m._mm is not None else {}
+                target = result if result is not None else m._redirect
+                call = name in _MM_CALLS or name in _MM_JALR and f.get("t") not in (0, None)
+                if call and target is not None:
+                    stack.append(Frame(pc, target & ~1 & M32, m.read_reg(31) & ~1,
+                                       m.read_reg(29)))
+                elif stack and (name in ("MM.JR16", "MM.JRC") and f.get("s") == 31
+                                or name == "MM.JRADDIUSP"
+                                or name in _MM_JALR and f.get("t") == 0 and f.get("s") == 31):
+                    stack.pop()
+                return
             if name in _CALLS or name in _COMPACT_CALLS:
                 if result is not None and result >= 0:         # taken
                     ret = (pc + (4 if name in _COMPACT_CALLS else 8)) & M32
@@ -1013,7 +1149,9 @@ class Session:
         if self.program.c_stmts:
             key = self.program.c_lines.get(a)
             return key is not None and a in self.program.c_stmts.get(key, ())
-        prev = self.program.source_map.get((a - 4) & M32)
+        m16 = self.program.m16 or self.program.mm
+        back = 2 if m16.get((a - 2) & M32) == 2 else 4      # MIPS16e / microMIPS: 2 or 4
+        prev = self.program.source_map.get((a - back) & M32)
         here = self.program.source_map.get(a)
         return here is not None and (prev is None or prev.line != here.line)
 
@@ -1233,7 +1371,10 @@ class Session:
         and fetching starts at ``pc`` (a flush; the counts go on)."""
         cpu = self.cpu if cpu is None else cpu
         m = self.machines[cpu]
-        m.pc = pc & 0xFFFFFFFF
+        if m.compressed is not None:            # bit 0: the ISA mode there (GDB)
+            m._jump(pc | (1 if not pc & 1 and self.compressed_at(pc & ~1, cpu) else 0))
+        else:
+            m.pc = pc & 0xFFFFFFFF
         m.slot_armed, m.slot_target, m._forbidden = False, None, False
         old = self.pipelines[cpu]
         if old is not None:
@@ -2164,7 +2305,8 @@ class Session:
                            "control": None, "view": None}
                 continue
             out[st] = {"text": sv.text, "pc": sv.pc, "seq": sv.seq,
-                       "control": sv.control, "view": self.views.get(sv.seq)}
+                       "control": sv.control, "view": self.views.get(sv.seq),
+                       "word": sv.word, "compressed": sv.compressed}
             if st == "IF":                      # the caches it went through
                 out[st]["cache"], out[st]["wait"] = sv.fetch_cache, sv.fetch_wait
                 out[st]["tlb"] = sv.fetch_tlb

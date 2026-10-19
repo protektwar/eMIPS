@@ -51,6 +51,31 @@ class Rule:
 
 
 RULES = (
+    Rule("compressed", "release", lambda o, r: o.compressed == "mips16e" and r == "R6",
+         lambda o: setattr(o, "compressed", "auto"),
+         "Release 6 has no MIPS16e (it was removed; microMIPS R6 is its 16-bit ISA)"),
+    Rule("compressed", "release",
+         lambda o, r: o.compressed.startswith("micromips") and not at_least(r, "R3"),
+         lambda o: setattr(o, "compressed", "auto"),
+         "microMIPS32 starts with Release 3 (MD00582 3.1)"),
+    Rule("c_isa", "release", lambda o, r: o.c_isa == "mips16e" and r == "R6",
+         lambda o: setattr(o, "c_isa", "mips32"),
+         "Release 6 has no MIPS16e"),
+    Rule("c_isa", "release", lambda o, r: o.c_isa == "micromips" and r not in ("R3", "R5"),
+         lambda o: setattr(o, "c_isa", "mips32"),
+         "microMIPS C needs Release 3 or 5: microMIPS starts with Release 3 (MD00582 3.1), "
+         "and no compiler builds Release 6 microMIPS as the manual defines it (emips.cc)"),
+    Rule("compressed", "c_isa", lambda o, r: o.c_isa == "micromips" and o.compressed in (
+        "none", "mips16e", "micromips-only"), lambda o: setattr(o, "compressed", "auto"),
+         "microMIPS C needs a core with microMIPS and MIPS32 (crt0 is MIPS32; auto: the "
+         "program's code decides)"),
+    Rule("compressed", "c_isa", lambda o, r: o.c_isa == "mips16e" and o.compressed in (
+        "none", "micromips", "micromips-only"), lambda o: setattr(o, "compressed", "auto"),
+         "MIPS16e C needs a core with MIPS16e"),
+    Rule("model", "compressed", lambda o, r: o.model == "24k" and o.compressed.startswith("micromips"),
+         lambda o: setattr(o, "model", "5-stage"),
+         "the 24K has no microMIPS (MD00343 1.2.1.11: MIPS16e); the microMIPS cores (M14K, "
+         "microAptiv) have 5-stage pipelines"),
     Rule("shadow_sets", "release", lambda o, r: o.shadow_sets > 1 and not at_least(r, "R2"),
          lambda o: setattr(o, "shadow_sets", 1),
          "shadow register sets exist from Release 2 (SRSCtl / SRSMap); Release 1 has the "

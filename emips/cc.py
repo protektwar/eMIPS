@@ -80,11 +80,33 @@ def cflags(release: str = "R2", optimize: str = "-O1") -> list[str]:
 
 def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           endian: str = "big", optimize: str = "-O1", extra: list[str] | None = None,
-          toolchain: Toolchain | None = None) -> str:
+          toolchain: Toolchain | None = None, mips16: bool = False,
+          micromips: bool = False) -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
-    :class:`BuildError`."""
+    :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
+    crt0 stays MIPS32, the linker turns calls between the ISAs into JALX;
+    a MIPS GCC: clang's MIPS16 back end does not work).  ``micromips``:
+    the C files as microMIPS (``-mmicromips``, Release 3 / 5, GCC or
+    clang; crt0 MIPS32, JALX as for MIPS16e)."""
+    if mips16 and micromips:
+        raise BuildError("MIPS16e or microMIPS: a core has one of them")
+    if micromips and release in ("R1", "R2"):
+        raise BuildError("microMIPS32 starts with Release 3 (MD00582 3.1): build with "
+                         "--release R3 or R5")
+    if micromips and release == "R6":
+        raise BuildError("microMIPS Release 6 C: no compiler agrees with the manual — GNU as "
+                         "has no microMIPS R6, clang 18 shifts the compact branch offsets "
+                         "(BEQC ...) by 2 where MD00582 6.05's pseudocode and QEMU shift "
+                         "them by 1, and its la / li put MIPS32 LUI encodings in microMIPS "
+                         "code; write microMIPS R6 in assembly (.set micromips)")
     tc = toolchain or find_toolchain(endian)
+    if mips16:
+        if release == "R6":
+            raise BuildError("Release 6 has no MIPS16e")
+        if tc.kind != "gcc":
+            raise BuildError("MIPS16e C needs a MIPS GCC (clang's MIPS16 back end does not "
+                             "work): install gcc-mips-linux-gnu")
     flags = cflags(release, optimize) + list(extra or [])
     log = []
     with tempfile.TemporaryDirectory(prefix="emips-cc-") as tmp:
@@ -94,7 +116,9 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
                                + f"_{len(objs)}.o")
             if src.name == "crt0.S":
                 obj = Path(tmp) / "crt0.o"           # the linker script names it
-            cmd = tc.cc + flags + ["-c", str(src), "-o", str(obj)]
+            isa = ((["-mips16"] if mips16 else ["-mmicromips"] if micromips else [])
+                   if src.suffix == ".c" else [])
+            cmd = tc.cc + flags + isa + ["-c", str(src), "-o", str(obj)]
             _run(cmd, log)
             objs.append(str(obj))
         # -n: no page alignment of the segments in the file (bare metal)

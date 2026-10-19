@@ -22,7 +22,9 @@ choice open, it says which one it made.
   (control signals, forwarding, stalls, the ALU down to its gates), the
   pipeline chart, every instruction's bit fields, operands and addresses.
 - **Every MIPS32 release, R1 to R6** — the integer instruction set, the
-  IEEE 754 FPU, Release 6 compact branches; big and little endian.
+  IEEE 754 FPU, Release 6 compact branches; big and little endian; the
+  compressed instruction sets MIPS16e and microMIPS (Releases 3 to 6), in
+  the assembler, the pipelines, C and GDB.
 - **The privileged architecture** — CP0, exceptions, interrupts
   (compatibility, vectored, EIC), shadow register sets, kernel /
   supervisor / user mode, the timer.
@@ -140,7 +142,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 40 labs
+computer architecture behind every number on the screen (with 47 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

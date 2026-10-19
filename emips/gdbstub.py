@@ -248,7 +248,7 @@ class GdbStub:
             m.cp0_write(8, 0, value)
         elif n == 36:
             m.cp0_write(13, 0, value)
-        elif n == 37:                            # a jump (pipeline: a flush)
+        elif n == 37:                            # a jump (pipeline: a flush); bit 0 = the ISA
             self.s.set_pc(value & M32)
         elif 38 <= n <= 69:
             k = n - 38
@@ -261,15 +261,21 @@ class GdbStub:
     def _pc(self) -> int:
         """The next instruction to execute: instruction mode the Machine's
         PC; pipeline mode the one about to execute (everything older has
-        executed, it has not: the precise point GDB stops at)."""
-        s = self.s
+        executed, it has not: the precise point GDB stops at).  In MIPS16e
+        / microMIPS code bit 0 is set (the ISA mode, as QEMU's stub and
+        GDB's mips-tdep.c: is_compact_addr)."""
+        s, m = self.s, self.m
         if s.pipeline is None:
-            return self.m.pc & M32
+            return (m.pc | m.isa_mode) & M32
         pc = s._stop_pc()
+        nxt = s.pipeline.next_slot()
         if pc is None:
-            nxt = s.pipeline.next_slot()
-            pc = nxt.pc if nxt is not None else self.m.pc
-        return pc & M32
+            pc = nxt.pc if nxt is not None else m.pc
+        if nxt is not None and nxt.pc == pc:
+            isa = nxt.isa
+        else:
+            isa = 1 if s.compressed_at(pc) else 0
+        return (pc | isa) & M32
 
     def _hex(self, value: int, size: int) -> str:
         order = "big" if self.m.big_endian else "little"
@@ -467,6 +473,7 @@ class GdbStub:
             kind, addr, length = (rest.split(";")[0].split(",") + ["", ""])[:3]
             a = int(addr, 16)
             if kind in ("0", "1"):               # software / hardware breakpoint
+                a &= ~1                          # (kinds 2 / 3 / 5: MIPS16e / microMIPS)
                 (self.s.breakpoints.add if c == "Z" else self.s.breakpoints.discard)(a)
                 return "OK"
             if kind in ("2", "3", "4"):          # write / read / access watchpoint

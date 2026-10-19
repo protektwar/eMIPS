@@ -714,9 +714,11 @@ class DisassemblyView(QtWidgets.QTableWidget):
             self._rows = [a for a, *_ in rows]
             c_lines = s.c_text.splitlines() if s.c_text is not None else None
             last = None
+            prog = s.program
             for r, (a, w, text, line) in enumerate(rows):
                 _set(self, r, 0, f"0x{a:08x}")
-                _set(self, r, 1, f"{w:08x}")
+                size = (prog.m16.get(a) or prog.mm.get(a) or 4) if prog is not None else 4
+                _set(self, r, 1, f"{w:0{2 * size}x}")
                 _set(self, r, 2, text)
                 if line is None:
                     _set(self, r, 3, "")
@@ -824,10 +826,15 @@ class InstrPanel(QtWidgets.QTextBrowser):
                                                 "instruction.")) + "</i>")
             return
         e = html.escape
-        parts = [f"<h3><tt>0x{v.pc:08x}: {e(v.text)}</tt></h3>",
-                 f"<p>{v.format}-format word <tt>0x{v.word:08x}</tt>"
-                 + (" — <b>delay slot</b>" if v.in_delay_slot else "") + "</p>",
-                 fields_html(v.fields)]
+        slot = " — <b>delay slot</b>" if v.in_delay_slot else ""
+        own = v.format in ("MIPS16e", "microMIPS")      # no MIPS32 twin
+        parts = [f"<h3><tt>0x{v.pc:08x}: {e(v.source_text or v.text)}</tt></h3>"]
+        if v.compressed:
+            parts.append(f"<p>{e(v.compressed)}{slot if own else ''}</p>")
+        if not own:
+            parts.append(f"<p>{v.format}-format word <tt>0x{v.word:08x}</tt>"
+                         + (f" (<tt>{e(v.text)}</tt>)" if v.compressed else "") + slot + "</p>")
+        parts.append(fields_html(v.fields))
         if v.alu:
             a = v.alu
             parts.append("<h4>ALU</h4><p>" + e(a.op) + "<br>"

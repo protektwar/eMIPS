@@ -65,13 +65,17 @@ from .disasm import disassemble
 from .exceptions import FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .pipeline import (_HAZARD_EVENTS, _MEM_EVENTS, CycleTrace, Info, StageView,
-                       _pop_run, _rname, analyze)
+                       _pop_run, _rname, analyze, enter, fetch_compressed, mark_slot,
+                       stage_word)
 from .sim import NULLIFY, Machine, _Arch
 from .syntax import kind_of, operand_spec
 from .timing import MEMORY_TIMING
 
 M32 = 0xFFFFFFFF
 STAGES = ("IF", "IS", "IT", "RF", "AG", "EX", "MS", "ER", "WB")
+#: with MIPS16e code: "Three additional stages are conditionally added to
+#: the fetch pipeline after the IS stage" (2.1): IR, IK (and IT)
+STAGES16 = ("IF", "IS", "IR", "IK", "IT", "RF", "AG", "EX", "MS", "ER", "WB")
 BACK = ("RF", "AG", "EX", "MS", "ER", "WB")
 #: the instruction buffer (MD00343 1.2.1.5: "8-entry instruction buffer")
 IB_ENTRIES = 8
@@ -255,12 +259,16 @@ def timing24(dec: Decode, info: Info) -> Timing24:
     name, fam = e["name"], e["family"]
     w = dec.word
     base: set = set()
-    for item in operand_spec(e):
-        kind = kind_of(item)[0]
-        if kind in ("mem", "mem9"):
-            base.add(("r", (w >> 21) & 31))
-        elif kind == "idx":
-            base |= {("r", (w >> 21) & 31), ("r", (w >> 16) & 31)}
+    if e.get("isa") in ("mips16e", "micromips"):     # no MIPS32 twin: SP is the base
+        if name in ("M16.SAVE", "M16.RESTORE"):
+            base.add(("r", 29))
+    else:
+        for item in operand_spec(e):
+            kind = kind_of(item)[0]
+            if kind in ("mem", "mem9"):
+                base.add(("r", (w >> 21) & 31))
+            elif kind == "idx":
+                base |= {("r", (w >> 21) & 31), ("r", (w >> 16) & 31)}
     base.discard(("r", 0))
     reads = info.reads_ex | info.reads_id
     at_ag = frozenset(base & reads)
@@ -325,12 +333,34 @@ class Slot24:
     mispredicted: bool = False
     #: the stage of every cycle (the chart)
     timeline: dict = field(default_factory=dict)
+    #: MIPS16e (as emips.pipeline.Slot): the ISA mode, size, compressed
+    #: form, the delay slot's branch; its recode cycle (IR)
+    isa: int = 0
+    size: int = 4
+    insn: Any = None
+    back: int = 4
+    slot_raw: int | None = None
+    decode_error: ISADecodeError | None = None
+    recode: int = 0
+
+    @property
+    def addr(self) -> int:
+        return self.pc | self.isa
+
+    @property
+    def fall(self) -> int:
+        """The address after it (and its delay slot: 16 bits in MIPS16e)
+        with the ISA mode."""
+        if self.compact:
+            return (self.pc + self.size) & M32 | self.isa
+        return (self.pc + self.size + (2 if self.isa else 4)) & M32 | self.isa
 
 
 def _sv(s: Slot24 | None) -> StageView | None:
     if s is None:
         return None
-    return StageView(s.seq, s.pc, s.text, None, s.fetch_cache, 0, s.mem_wait, s.fetch_tlb)
+    return StageView(s.seq, s.pc, s.text, None, s.fetch_cache, 0, s.mem_wait, s.fetch_tlb,
+                     *stage_word(s))
 
 
 # ------------------------------------------------------------------ the pipeline
@@ -352,6 +382,10 @@ class Pipeline24K:
     def __init__(self, machine: Machine, *, trace: bool = True,
                  memory: dict[str, int] | None = None, nonblocking: bool = False,
                  **_ignored: Any) -> None:
+        if machine.compressed == "micromips":
+            raise ValueError("the 24K has no microMIPS (MD00343 1.2.1.11: MIPS16e); the "
+                             "microMIPS cores (M14K, microAptiv) have a 5-stage pipeline: "
+                             "use the 5-stage model")
         self.m = machine
         machine.tracing = trace
         self.timing = machine.caches.timing if machine.caches is not None else None
@@ -372,8 +406,13 @@ class Pipeline24K:
         self.stalls: dict[str, int] = {}
         self.history: list[CycleTrace] = []
         self._seq = 0
-        #: the fetch unit
+        #: the fetch unit (fetch_isa: the ISA mode there, MIPS16e = 1)
         self.fetch_pc = machine.pc
+        self.fetch_isa = machine.isa_mode
+        #: MIPS16e: the first cycle the recoder (IR) is free
+        self.recode_free = 0
+        #: SAVE / RESTORE in EX until this cycle (one word per cycle)
+        self.macro_until = 0
         self.fetching = True               # False: drain (exit, end of program)
         self.fetch_at = 1                  # first cycle the next fetch may happen
         self.blocked = False               # waiting for a jump to execute (or a fault)
@@ -428,20 +467,22 @@ class Pipeline24K:
     def _predict(self, s: Slot24) -> tuple[str, int | None]:
         """``(how, next PC after the CTI and its delay slot)``; next =
         None: not predicted (the fetch waits for the jump to execute)."""
+        if s.insn is not None:
+            return self._predict16(s)
         name = s.dec.name
         w = s.word
         cfg7 = self.m.cp0_read(*CONFIG7)
         size = 4 if s.compact else 8
         fall = (s.pc + size) & M32
         rs, rt, rd = (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31
-        link = name in ("JAL", "BGEZAL", "BAL", "BALC", "JIALC") or (
+        link = name in ("JAL", "JALX", "BGEZAL", "BAL", "BALC", "JIALC") or (
             name in ("JALR", "JALR.HB") and rd == 31)
         if link:
             self._rps_push(fall)
         if cfg7 & CFG7_BP:
             return "fetch waits (Config7.BP)", None
-        if name in ("J", "JAL"):
-            return "jump", ((s.pc + 4) & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
+        if name in ("J", "JAL", "JALX"):          # (JALX: to MIPS16e)
+            return "jump", ((s.pc + 4) & 0xF0000000) | ((w & 0x3FFFFFF) << 2) | (name == "JALX")
         if name in ("JR", "JR.HB", "JALR", "JALR.HB", "JIC", "JIALC"):
             ret = rs == 31 and (name in ("JR",) or (name == "JALR" and rd == 0))
             if ret and not cfg7 & CFG7_RPS:
@@ -460,6 +501,46 @@ class Pipeline24K:
         taken = self.bht[i] >= 2
         return ("BHT taken", target) if taken else ("BHT not taken", fall)
 
+    def _predict16(self, s: Slot24) -> tuple[str, int | None]:
+        """MIPS16e (2.1.3: predicted in IR): the branches (compact) by the
+        BHT, B statically, JAL / JALX taken, JR $ra / JRC $ra by the
+        return stack (JAL / JALX / JALR / JALRC push), the other jumps
+        through a register not predicted.  Addresses carry the ISA mode."""
+        from . import mips16 as M16
+        name = s.dec.name[4:]
+        cfg7 = self.m.cp0_read(*CONFIG7)
+        fall = s.fall
+        if name in ("JAL", "JALX", "JALR", "JALRC"):
+            self._rps_push(fall)
+        if cfg7 & CFG7_BP:
+            return "fetch waits (Config7.BP)", None
+        if name in ("JAL", "JALX"):
+            target = M16.jump_target(s.insn, s.pc)
+            return "jump", target if name == "JALX" else target | 1
+        if name in ("JRRA", "JRCRA"):
+            if not cfg7 & CFG7_RPS:
+                s.rps = True
+                return "return stack", self._rps_pop()
+            return "fetch waits (jump register)", None
+        if name in ("JR", "JALR", "JRC", "JALRC"):
+            return "fetch waits (jump register)", None
+        target = M16.branch_target(s.insn, s.pc) | 1
+        if name == "B":
+            return "static taken", target
+        if cfg7 & CFG7_BHT:
+            return "static taken (Config7.BHT)", target
+        i = self._bht_index(s.pc)
+        self.bht_used.add(i)
+        return ("BHT taken", target) if self.bht[i] >= 2 else ("BHT not taken", fall)
+
+    def _go(self, target: int) -> None:
+        """Fetch from ``target`` next (bit 0: the ISA mode, with MIPS16e)."""
+        target &= M32
+        if self.m.compressed is not None:
+            self.fetch_isa = target & 1
+            target &= ~1
+        self.fetch_pc = target
+
     def _bht_update(self, pc: int, taken: bool) -> None:
         i = self._bht_index(pc)
         self.bht[i] = min(self.bht[i] + 1, 3) if taken else max(self.bht[i] - 1, 0)
@@ -470,19 +551,24 @@ class Pipeline24K:
         """IF at cycle ``t``: one bundle along the predicted path.  After a
         branch or jump its delay slot is still fetched (in this bundle or
         the next), then :attr:`after_slot` applies: the predicted target
-        from cycle ``fetched + 3`` on, or a wait for the jump to execute."""
+        from cycle ``fetched + 3`` on, or a wait for the jump to execute.
+        MIPS16e (2.2.5): the instructions that start in the 64-bit bundle
+        (one crossing its end is fetched whole), a bundle every other
+        cycle, recoded in IR / IK (:meth:`_recode`)."""
+        isa = self.fetch_isa
         if (not self.fetching or self.blocked or t < self.fetch_at
-                or len(self.queue) > FRONT_ENTRIES - 2):
+                or len(self.queue) > FRONT_ENTRIES - (4 if isa else 2)):
             return []
         pc = self.fetch_pc
-        words = 2 if pc % 8 == 0 else 1
+        end = (pc & ~7) + 8
         out: list[Slot24] = []
         stopped = False
-        for k in range(words):
-            a = (pc + 4 * k) & M32
+        a = pc
+        while a < end and self.fetch_isa == isa:
             s = self._fetch_one(a, t)
             out.append(s)
-            self.fetch_pc = (a + 4) & M32
+            a = (a + s.size) & M32
+            self.fetch_pc = a
             if "kill" in self.next_marks:             # a nullified delay slot
                 s.timeline[t] = "IF"
             else:
@@ -490,7 +576,8 @@ class Pipeline24K:
             if "forbidden" in self.next_marks:
                 s.forbidden = True
             self.next_marks = set()
-            if s.fetch_exc is not None or s.fetch_error is not None:
+            if s.fetch_exc is not None or s.fetch_error is not None \
+                    or s.decode_error is not None:
                 self.blocked, stopped = True, True    # nothing to fetch past it
                 break
             if self.after_slot is not None:           # s is the awaited delay slot
@@ -499,7 +586,8 @@ class Pipeline24K:
                 if what == "wait":
                     self.blocked = True
                 else:
-                    self.fetch_pc, self.fetch_at = target, max(at, t + 1)
+                    self._go(target)
+                    self.fetch_at = max(at, t + 1)
                 stopped = True
                 break
             if not s.cti:
@@ -507,35 +595,58 @@ class Pipeline24K:
             how, nxt = self._predict(s)
             s.pred, s.pred_next = how, nxt
             self.last_prediction = (s.pc, s.text, how, nxt)
-            fall = (s.pc + (4 if s.compact else 8)) & M32
-            if nxt == fall:
+            if nxt == s.fall:
                 continue                              # predicted not taken
             if s.compact:                             # no delay slot
                 if nxt is None:
                     self.blocked = True
                 else:
-                    self.fetch_pc, self.fetch_at = nxt, t + TARGET_DELAY
+                    self._go(nxt)
+                    self.fetch_at = t + TARGET_DELAY
                 stopped = True
                 break
             self.after_slot = ("wait", 0, 0) if nxt is None else \
                 ("target", nxt, t + TARGET_DELAY)
+        if isa:
+            self._recode(out, t)
         wait = sum(n for s in out for _, n in s.fetch_runs)
         if any(k == "I-miss" for s in out for k, _ in s.fetch_runs):
             self.ifu_miss_until = t + wait
         if not stopped or wait:
-            self.fetch_at = max(self.fetch_at, t + 1 + wait)
+            # MIPS16e: "the processor fetches every other cycle" (2.2.5)
+            self.fetch_at = max(self.fetch_at, t + (2 if isa else 1) + wait)
         if out:
             self.last_fetched = out[-1]
         return out
 
+    def _recode(self, out: list[Slot24], t: int) -> None:
+        """MIPS16e: the recoder takes 32 bits a cycle (Table 2.1): two
+        16-bit instructions, or one when it is extended / JAL(X) or the
+        next one is; IR is the cycle after IS, then IK, then RF."""
+        cycle = max(t + 2, self.recode_free)
+        wait = 0
+        i = 0
+        while i < len(out):
+            pair = out[i].size == 2 and i + 1 < len(out) and out[i + 1].size == 2
+            group = out[i:i + 2] if pair else out[i:i + 1]
+            for s in group:
+                wait += sum(n for _, n in s.fetch_runs)
+                s.recode = cycle + wait
+                s.avail = s.recode + 2
+            cycle += 1
+            i += len(group)
+        self.recode_free = cycle + wait
+
     def _fetch_one(self, a: int, t: int) -> Slot24:
         m = self.m
+        if self.fetch_isa:
+            return self._fetch16(a, t)
         self._seq += 1
         seq = self._seq
         exc = err = None
         word = dec = None
         text = ""
-        if a & 3 or not m.address_ok(a):
+        if a & 3 or not m.address_ok(a) or not m.mips32:
             exc, text = _Arch(C.ADEL, badvaddr=a), "(fetch: address error)"
         else:
             try:
@@ -575,11 +686,39 @@ class Pipeline24K:
                    compact=compact, fetch_exc=exc, fetch_error=err,
                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, fetch_runs=runs,
                    imiss=m.fetch_missed and word is not None)
+        self._link(s)
+        return s
+
+    def _link(self, s: Slot24) -> None:
         last = self.last_fetched
         if last is not None and last.cti and not last.compact:
-            s.in_slot = True
+            mark_slot(last, s)
         self.last_fetched = s
         self.slots.append(s)
+
+    def _fetch16(self, a: int, t: int) -> Slot24:
+        """One MIPS16e instruction (2 or 4 bytes) of the bundle; its
+        recode cycle is set by :meth:`_recode`."""
+        m = self.m
+        p = fetch_compressed(self, m, a)
+        runs: list = []
+        if self.utlb is not None:
+            wait, notes = self.utlb.take()
+            if wait:
+                runs.append(("utlb", wait))
+            self._fetch_notes += [f"fetch 0x{a:08x}: {n}" for n in notes]
+        if self.timing is not None:
+            _, _, notes = self.timing.take()
+            runs += self.timing.taken_runs
+            self._fetch_notes += [f"fetch 0x{a:08x}: {n}" for n in notes]
+        info = p.info
+        s = Slot24(p.seq, a, p.word, p.dec, p.text, info,
+                   timing24(p.dec, info) if p.dec is not None else None, t, t + 4,
+                   cti=info.control if info else "", compact=info.compact if info else False,
+                   fetch_exc=p.fetch_exc, fetch_error=p.fetch_error, fetch_cache=p.fetch_cache,
+                   fetch_tlb=p.fetch_tlb, fetch_runs=runs, imiss=p.imiss, isa=1, size=p.size,
+                   insn=p.insn, decode_error=p.decode_error)
+        self._link(s)
         return s
 
     # -- readiness ---------------------------------------------------------------------
@@ -592,6 +731,8 @@ class Pipeline24K:
         that ``s`` writes (Table 2.5: destination GPR dependency)."""
         if s.dec is None or s.t24 is None:
             return None
+        if self.macro_until > t:
+            return ("macro", "SAVE / RESTORE moves one word per cycle")
         name, writes = s.dec.name, s.t24.writes
         if name == "EHB" and any(t < h.ex + 3 for h in self.hazards):
             return ("ehb", "EHB waits until the CP0 writes before it are done")
@@ -767,6 +908,7 @@ class Pipeline24K:
         er = st["ER"]
         if er is not None and er.exc is not None:
             m.wake()
+            enter(m, er)
             m.take_exception(er.exc, er.pc, er.word, er.dec, er.in_slot)
             name = C.EXC_NAMES.get(er.exc.code, str(er.exc.code))
             ev.append(f"exception {name} at 0x{er.pc:08x} ({er.text}) in ER: kill the "
@@ -775,7 +917,7 @@ class Pipeline24K:
             st["ER"] = None
             self._flush_after(er.seq - 1)
             self.last_fetched = None
-            self._redirect(m.pc, t + 1)
+            self._redirect(m.pc | m.isa_mode if m.compressed is not None else m.pc, t + 1)
 
         # AG -> EX: operands, interlocks, a pending exception older than it
         entered = None
@@ -827,7 +969,11 @@ class Pipeline24K:
             if s is not None:
                 s.timeline[t] = name
         for s in self.queue:
-            if t < s.avail - 1:
+            if s.isa:                                # MIPS16e: IR / IK (2.1.3, 2.1.4)
+                s.timeline[t] = ("IF" if t == s.fetched else "IS" if t < s.recode else
+                                 "IR" if t == s.recode else "IK" if t == s.recode + 1
+                                 else "IT")
+            elif t < s.avail - 1:
                 s.timeline[t] = "IF"
             elif t == s.avail - 1:
                 s.timeline[t] = "IS"
@@ -836,9 +982,9 @@ class Pipeline24K:
         trace.stages = {n: _sv(st[n]) for n in BACK}
         front = [s for s in self.queue]
         trace.stages["IF"] = _sv(fetched[0]) if fetched else None
-        trace.stages["IS"] = _sv(next((s for s in front if s.timeline.get(t) == "IS"), None))
-        trace.stages["IT"] = _sv(next((s for s in front if s.timeline.get(t) == "IT"), None))
-        trace.stages = {n: trace.stages.get(n) for n in STAGES}
+        for n in ("IS", "IR", "IK", "IT"):
+            trace.stages[n] = _sv(next((s for s in front if s.timeline.get(t) == n), None))
+        trace.stages = {n: trace.stages.get(n) for n in STAGES16}
         if stall is None and st["RF"] is None and self.fetching:
             stall = ("fetch", "the fetch unit has no instruction for RF")
         if stall is not None:
@@ -936,6 +1082,8 @@ class Pipeline24K:
         if s.fetch_exc is not None:
             s.exc = s.fetch_exc
             return
+        if s.decode_error is not None:
+            raise s.decode_error
         if s.dec is None:
             if m.exceptions == "raise":
                 m.isa.decode(s.word)                     # raises ISADecodeError
@@ -956,6 +1104,7 @@ class Pipeline24K:
         try:
             m.r6_slot_check(s.dec, s.in_slot, s.forbidden)
             m.fetch_missed = s.imiss
+            enter(m, s)
             res = m.execute(s.pc, s.word, s.dec, in_slot=s.in_slot)
             s.pdt, m.pdt_packet = m.pdt_packet, None
         except WatchpointHit as w:              # before the access: nothing happened
@@ -993,6 +1142,8 @@ class Pipeline24K:
             self.mul_starts = [c for c in self.mul_starts if c > t - MUL_RATE[1]] + [t]
         if s.t24.kind == "fpu" and name not in _FP_STORES:
             self.fpu_free = t + fp_repeat(name)
+        if s.info.ex_cycles > 1 and s.insn is not None:   # SAVE / RESTORE: a word a cycle
+            self.macro_until = t + s.info.ex_cycles
         if name in _TLB_WRITES:
             self.tlb_until = t + 3
         elif name == "TLBR":
@@ -1026,7 +1177,7 @@ class Pipeline24K:
             if m._redirect is not None:
                 taken, actual = True, m._redirect & M32
             else:
-                taken, actual = False, (s.pc + 4) & M32
+                taken, actual = False, s.fall
                 if m._forbidden:
                     self._mark(s.seq + 1, "forbidden")
             m._redirect = None
@@ -1037,7 +1188,7 @@ class Pipeline24K:
             ev.append(f"{s.text}: not taken, the delay slot is killed")
         else:
             taken = res is not None
-            actual = (res if taken else s.pc + 8) & M32
+            actual = res & M32 if taken else s.fall
         if s.pred.startswith("BHT") or s.pred.endswith("(Config7.BHT)"):
             self._bht_update(s.pc, taken)
         word = "taken" if taken else "not taken"
@@ -1112,7 +1263,8 @@ class Pipeline24K:
             self.after_slot = ("target", target & M32, at)
             self.fetch_at = self.cycles + 1
         else:
-            self.fetch_pc, self.fetch_at = target & M32, at
+            self._go(target)
+            self.fetch_at = at
 
     def _memory_time(self, s: Slot24, ev: list[str]) -> None:
         """What the access costs: a wait in MS that holds the pipeline

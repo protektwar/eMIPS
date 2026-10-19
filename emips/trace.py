@@ -34,7 +34,7 @@ from typing import Any
 
 from . import cp0 as C
 from .disasm import disassemble
-from .isa import Decode
+from .isa import ISA, Decode
 from .mmu import cca_name, segment
 from .syntax import KINDS, gpr_name, kind_of, operand_spec
 
@@ -119,6 +119,11 @@ class InstrView:
     #: or BAT MMU
     fetch_tlb: list = field(default_factory=list)
     tlb: list = field(default_factory=list)
+    #: MIPS16e: the 16-bit instruction (what the fields of a recoded one
+    #: show is its MIPS32 expansion, emips.mips16.expand)
+    compressed: str = ""
+    #: ... its text alone (what a listing shows at that address)
+    source_text: str = ""
     _before: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -280,14 +285,55 @@ _SIZES = {"LB": 1, "LBU": 1, "SB": 1, "LH": 2, "LHU": 2, "SH": 2, "LW": 4,
 
 # ------------------------------------------------------------- begin/finish
 
+def _compressed_text(m, i, pc: int) -> str:
+    """The disassembly of the MIPS16e / microMIPS instruction ``i``."""
+    if m.compressed == "micromips":
+        from . import micromips
+        return micromips.text(i, pc, release=m.release)
+    from . import mips16
+    return mips16.text(i, pc)
+
+
+def _compressed(m, pc: int) -> tuple[str, str, int, int] | None:
+    """(the ISA's name, the text, the encoding, its size) of the MIPS16e /
+    microMIPS instruction ``m`` runs, or None in MIPS32 mode."""
+    if not getattr(m, "isa_mode", 0):
+        return None
+    if m.compressed == "micromips":
+        i = m._mm
+        if i is None:
+            return None
+        from . import micromips
+        return "microMIPS", micromips.text(i, pc, release=m.release), i.raw, i.size
+    i = getattr(m, "_m16", None)
+    if i is None:
+        return None
+    from . import mips16
+    return "MIPS16e", mips16.text(i, pc), i.raw, i.size
+
+
 def begin(m, pc: int, word: int, dec: Decode, in_slot: bool = False,
           sources: dict | None = None) -> InstrView:
     """Build the pre-execution part of the view (fields, operands,
     address) and snapshot the state; call :func:`finish` afterwards."""
     name, fam = dec.name, dec.entry["family"]
-    v = InstrView(pc, word, disassemble(word, pc, isa=m.isa), name,
+    c = _compressed(m, pc)
+    if dec.entry.get("isa") in ("mips16e", "micromips"):    # no MIPS32 twin: its own view
+        label, text, raw, size = c
+        v = InstrView(pc, word, text, name, label, [], in_slot)
+        v.compressed = f"{label} {text} (0x{raw:0{2 * size}x})"
+        v.source_text = v.text
+        v._before = _snapshot(m)
+        m._mem_log = []
+        return v
+    isa = m.isa if c is None else _twin_isa(m)
+    v = InstrView(pc, word, disassemble(word, pc, isa=isa), name,
                   instruction_format(word),
                   decode_fields(dec), in_slot)
+    if c is not None:
+        label, text, raw, size = c
+        v.compressed = f"{label} {text} (0x{raw:0{2 * size}x}), recoded as this MIPS32 instruction"
+        v.source_text = text
     rs, rt, rd, sa = (word >> 21) & 31, (word >> 16) & 31, (word >> 11) & 31, (word >> 6) & 31
     imm = word & 0xFFFF
     if name in _ALU_OPS:
@@ -365,7 +411,8 @@ def finish(m, v: InstrView, *, result: int | None = None,
             v.address.cached, v.address.how = xlat.cacheable, xlat.how
     if v.alu is not None and v.alu.result is None and exception is None:
         from .pipeline import analyze
-        dests = analyze(m.isa.decode(v.word)).writes
+        isa = _twin_isa(m) if v.compressed else m.isa
+        dests = analyze(isa.decode(v.word)).writes
         gpr = [r for r in dests if isinstance(r, tuple) and r[0] == "r"]
         if gpr:
             v.alu.result = m.read_reg(gpr[0][1])
@@ -374,13 +421,30 @@ def finish(m, v: InstrView, *, result: int | None = None,
         if v.alu.result is not None:
             v.alu.zero = v.alu.result == 0
     _branch_view(m, v, result)
+    b = v.branch
+    if b is not None and b.target is not None and m.compressed is not None:
+        b.target &= ~1                  # (bit 0: the ISA mode there, not an address bit)
     v._before = ()
     return v
 
 
+def _twin_isa(m):
+    """The table the compressed instruction's MIPS32 twin decodes with."""
+    if m.compressed == "micromips" and m._mm is not None:
+        return m._twin_isa(m._mm)
+    return ISA.for_release("R5")                    # (MIPS16e SEB on R1 too)
+
+
 def _branch_view(m, v: InstrView, result: int | None) -> None:
     from .sim import NULLIFY
-    e = m.isa.get(v.name)
+    if v.format == "MIPS16e":
+        from .mips16 import ENTRIES
+        e = ENTRIES[v.name[4:]]
+    elif v.format == "microMIPS":
+        from .micromips import ENTRIES
+        e = ENTRIES[v.name[3:]]
+    else:
+        e = m.isa.get(v.name)
     if e["family"] not in ("branch", "branch_fpu", "jump", "branch_compact",
                            "jump_compact") or v.exception:
         return
@@ -394,6 +458,18 @@ def _branch_view(m, v: InstrView, result: int | None) -> None:
     link = next((new for k, old, new in v.reg_writes if k == "$ra"), None)
     if e["family"] == "jump":
         v.branch = BranchView("always (jump)", True, result, link=link)
+        return
+    if v.format == "microMIPS":
+        f, form = m._mm.f, m._mm.form
+        r = lambda k: gpr_name(f[k])            # noqa: E731
+        text = {"BEQ": lambda: f"{r('s')} == {r('t')}", "BNE": lambda: f"{r('s')} != {r('t')}",
+                "BEQZ16": lambda: f"{r('s')} == 0", "BNEZ16": lambda: f"{r('s')} != 0",
+                "BGEZ": lambda: f"{r('s')} >= 0", "BGEZAL": lambda: f"{r('s')} >= 0",
+                "BGEZALS": lambda: f"{r('s')} >= 0", "BLTZ": lambda: f"{r('s')} < 0",
+                "BLTZAL": lambda: f"{r('s')} < 0", "BLTZALS": lambda: f"{r('s')} < 0",
+                "BGTZ": lambda: f"{r('s')} > 0", "BLEZ": lambda: f"{r('s')} <= 0",
+                "B16": lambda: "always"}.get(form, lambda: "FPU condition code")()
+        v.branch = BranchView(text, result is not None, result, link=link)
         return
     rs, rt = (w >> 21) & 31, (w >> 16) & 31
     name = v.name
@@ -461,6 +537,8 @@ def format_view(v: InstrView) -> str:
     """Multi-line, human-readable rendering of a view."""
     lines = [f"0x{v.pc:08x}: {v.text}" + ("   [delay slot]" if v.in_delay_slot else "")
              + f"   ({v.format}-format, 0x{v.word:08x})"]
+    if v.compressed:
+        lines.append(f"  {v.compressed}")
     lines.append("  decode: " + " | ".join(
         f"{f.name}[{f.msb}:{f.lsb}]={f.bits} {f.meaning}" if f.msb != f.lsb
         else f"{f.name}[{f.msb}]={f.bits} {f.meaning}" for f in v.fields))

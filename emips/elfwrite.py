@@ -142,8 +142,11 @@ def write_elf(program, *, source: Path | None = None) -> bytes:
         shndx = next((k + 1 for k, (_, lo, data, _x) in enumerate(secs)
                       if lo <= value < lo + len(data)), 0xFFF1)       # SHN_ABS
         stt = 0                                    # STT_NOTYPE, as GNU as does
+        # a label of MIPS16e / microMIPS code: STO_MIPS16 / STO_MICROMIPS (GDB
+        # and objdump take the ISA from it; the value stays even, as GNU ld's)
+        other = 0xF0 if value in program.m16 else 0x80 if value in program.mm else 0
         syms.append(struct.pack(f"{e}IIIBBH", strtab.add(name), value & 0xFFFFFFFF, 0,
-                                (1 << 4) | stt, 0, shndx))           # STB_GLOBAL
+                                (1 << 4) | stt, other, shndx))      # STB_GLOBAL
     symtab = b"".join(syms)
     lines = {a: sl.line for a, sl in program.source_map.items()}
     src = source or Path("program.asm")
@@ -169,6 +172,10 @@ def write_elf(program, *, source: Path | None = None) -> bytes:
     shoff = off
     nsec = 1 + len(secs) + 6
     flags = ARCH_FLAGS.get(program.release, ARCH_R2) | 0x1000   # EF_MIPS_ABI_O32 (ABI2 0)
+    if program.m16:
+        flags |= 0x04000000                      # EF_MIPS_ARCH_ASE_M16
+    if program.mm:
+        flags |= 0x02000000                      # EF_MIPS_ARCH_ASE_MICROMIPS
     ident = b"\x7fELF" + bytes([1, 2 if order == "big" else 1, 1, 0]) + bytes(8)
     out = bytearray(ident)
     out += struct.pack(f"{e}HHIIIIIHHHHHH", ET_EXEC, EM_MIPS, 1, program.entry & 0xFFFFFFFF,

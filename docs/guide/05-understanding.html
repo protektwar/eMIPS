@@ -372,6 +372,15 @@ Processor → Pipeline model, <code>set model 24k</code> in the debugger) uses i
   cycle later still, <code>mul</code> / <code>mflo</code> four.</li>
 <li><strong>Exceptions are taken in ER</strong>, two stages after EX: the younger
   instructions behind it never ran.</li>
+<li><strong>MIPS16e code</strong> (2.19) goes through two more fetch stages: <strong>IR</strong>
+  recodes it into MIPS32 instructions and <strong>IK</strong> kills what a branch
+  predicted taken in IR makes useless, so an instruction reaches RF two
+  cycles later than in MIPS32 code (<code>IF IS IR IK RF ...</code> in the chart).
+  The fetch reads a 64-bit bundle every other cycle (up to four
+  instructions); the recoder takes 32 bits a cycle — two 16-bit
+  instructions, or one when an EXTEND or a <code>jal</code> is in the window.
+  The 24K has no microMIPS: a microMIPS program runs on the 5-stage model
+  (the microMIPS cores, such as the M14K, have five stages).</li>
 </ul>
 <p><code>load_use.asm</code> on it (compare with the 5-stage chart in 5.4):</p>
 <pre><code class="language-console">$ python3 -m emips pipe docs/guide/labs/load_use.asm --model 24k
@@ -2256,7 +2265,7 @@ Debug 0x42118002: single step off (SSt), Count runs in Debug Mode (CountDM), imp
 DEPC 0x00400000   DESAVE 0x00000000   debug vector 0xbfc00480
 DCR 0x200303da: interrupts enabled (IntE), NMI enabled (NMIE), probe none (ProbEn = 0)
 no hardware breakpoints (4 instruction, 2 data in drseg) nor watch registers (4 pairs) set
-TAP: Test-Logic-Reset, IR IDCODE (0x01), 0 TCK; IDCODE 0x00000001, IMPCODE 0x61004000
+TAP: Test-Logic-Reset, IR IDCODE (0x01), 0 TCK; IDCODE 0x00000001, IMPCODE 0x61014000
 ECR 0x80000008: Rocc, DM
 probe: none (dmseg accesses wait forever; probe on)
 PC sampling every 4096 cycles (DCR.PCR): last sample 0x00000000 (read)
@@ -2374,7 +2383,7 @@ DR (IDCODE, 32 bits): out 0x00000001, in 0x0
 (emips) tap ir impcode
 IR &lt;- 0x03 (IMPCODE); out 0b00001
 (emips) tap dr 0
-DR (IMPCODE, 32 bits): out 0x61004000, in 0x0
+DR (IMPCODE, 32 bits): out 0x61014000, in 0x0
 (emips) tap ir bypass
 IR &lt;- 0x1f (BYPASS); out 0b00001
 (emips) tap dr 0b1011 4
@@ -3568,6 +3577,151 @@ the program registered for IRQ 14.  The first read is the monitor's
 line 76).  The flush had emptied the cache, so that load missed and read
 the line from memory, now with the sector in it: the D-cache line
 <code>0x00200020</code> holds <code>52 65 61 64</code> ... "Read".</p>
+</details>
+<h3 id="lab-41--smaller-code">Lab 41 — Smaller code</h3>
+<p><a href="labs/mips16_sum.asm"><code>labs/mips16_sum.asm</code></a> has the same function twice:
+<code>sum32</code> in MIPS32, <code>sum16</code> in MIPS16e
+(<a href="02-writing-programs.html#219-mips16e-16-bit-instructions">2.19</a>).  Both print 39.
+How many bytes is each (<code>python3 -m emips asm</code>)?  How many instructions
+does each execute (the debugger: <code>break sum16</code>, then step)?  Why is
+the MIPS16e loop not just the MIPS32 loop in half the bytes?</p>
+<details>
+<summary>Answer</summary>
+<p><code>sum32</code> is 36 bytes (nine words, two of them the delay-slot
+<code>nop</code>s), <code>sum16</code> 14 bytes (seven halfwords): less than half.  It
+executes 52 instructions to <code>sum32</code>'s 63: the MIPS16e branch has no
+delay slot and the return is the compact <code>jrc</code>, so no <code>nop</code>s.  The
+instructions are not simply shorter, though: two operands
+(<code>addiu $a0, 4</code> changes <code>$a0</code> itself), eight registers (the loaded
+word goes to <code>$v1</code>, not a free <code>$t0</code>), immediates of 4 or 8 bits
+(a larger one needs EXTEND: 4 bytes again).  A bigger function runs out
+of registers and needs more instructions to shuffle them, which is why
+compilers mix the two ISAs: MIPS16e where size matters, MIPS32 where
+speed does.</p>
+</details>
+<h3 id="lab-42--c-in-16-bits">Lab 42 — C in 16 bits</h3>
+<p><a href="labs/c_mips16.c"><code>labs/c_mips16.c</code></a> built twice, the same <code>-O 1</code>:
+as MIPS32 (<code>c_mips16_32.elf</code>) and with <code>cc --mips16</code>
+(<code>c_mips16_16.elf</code>).  Both print 80955297.  Compare <code>checksum</code> in
+the two listings (<code>dis</code>): its size, and the instructions of its
+loop.  Run both: who executes more instructions, and where do the extra
+ones come from?  What is <code>emips_syscall1</code> doing in the MIPS16e
+build?</p>
+<details>
+<summary>Answer</summary>
+<p><code>checksum</code> is 64 bytes of MIPS32 and 26 of MIPS16e.  The loops are
+the same seven instructions (<code>andi $v1, $v1, 0xff</code> becomes <code>zeb
+$v1</code>, the branch has no delay slot, so GCC's MIPS32 trick of
+putting the next <code>sll</code> in the slot is not needed), and they execute
+almost the same number: 189 and 187.  The whole MIPS16e program
+executes more (224 to 219): MIPS16e has no <code>syscall</code> instruction, so
+<code>emips.h</code>'s helper <code>emips_syscall1</code> is a MIPS32 function there
+(<code>nomips16</code>, not inlined) that <code>main</code> calls with <code>jalx</code> and that
+returns with <code>jr $ra</code> into MIPS16e: a call, a return and the argument
+moves for each print, where the MIPS32 build inlines the
+<code>syscall</code>.  Smaller code, not faster code: what the ISA is for.</p>
+</details>
+<h3 id="lab-43--micromips-loses-nothing">Lab 43 — microMIPS loses nothing</h3>
+<p><a href="labs/micromips_sum.asm"><code>labs/micromips_sum.asm</code></a> is Lab 41 with
+microMIPS instead of MIPS16e: <code>sum32</code> in MIPS32, <code>summm</code> the same source after
+<code>.set micromips</code> (<a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>).
+Both print 39.  How many bytes is each, and which of <code>summm</code>'s instructions
+are 16 bits?  How many instructions does each execute?  What did microMIPS
+not make you change, that MIPS16e did?</p>
+<details>
+<summary>Answer</summary>
+<p><code>sum32</code> is 36 bytes, <code>summm</code> 20: <code>move</code>, the two <code>addiu</code>s and
+the <code>jrc</code> are 16 bits; <code>lw $t0</code> and <code>addu ... $t0</code> stay 32 bits
+because <code>$t0</code> is not one of the 16-bit forms' eight registers, and
+the branch is the 32-bit compact <code>bnezc</code> (<code>.set reorder</code>: no
+delay slot to fill).  It executes 52 instructions to <code>sum32</code>'s 63, like
+the MIPS16e version.  But nothing was rewritten: the same three-operand
+instructions, any register, full immediates — the assembler only picks
+the shorter encoding where one exists.  microMIPS has a 32-bit form of
+every MIPS32 instruction, so a compiler never has to give up speed for
+size, which is why it replaced MIPS16e.</p>
+</details>
+<h3 id="lab-44--release-6-has-no-delay-slots">Lab 44 — Release 6 has no delay slots</h3>
+<p><a href="labs/micromips_r6.asm"><code>labs/micromips_r6.asm</code></a> is one microMIPS
+source with a call, a loop and an <code>if</code>; its header asks for Release 6.
+List it twice: <code>python3 -m emips asm labs/micromips_r6.asm</code> and with
+<code>--release R5</code>.  Which instructions changed, and how many bytes does
+each build take?  Run both: how many instructions?</p>
+<details>
+<summary>Answer</summary>
+<p>Release 5: 60 bytes, 87 instructions; Release 6: 52 bytes, 86.  The
+arithmetic, loads and <code>la</code> are encoded alike.  The control transfers
+are not: <code>bal</code> is <code>bgezal $zero</code> plus a 32-bit <code>nop</code> in Release 5
+(a 32-bit delay slot), the compact <code>balc</code> in Release 6 — the one
+instruction fewer; <code>beqz $v1</code> and <code>bne $a1, $zero</code> are the 32-bit
+compact <code>beqzc</code> / <code>bnezc</code> in Release 5 but fit the 16-bit
+<code>beqzc16</code> / <code>bnezc16</code> of Release 6; <code>jr $ra</code> is a 16-bit
+<code>jrc</code> in both, with another encoding.  Release 6 microMIPS has no
+delay slot anywhere, so its encodings did not have to keep room for the
+old branches.</p>
+</details>
+<h3 id="lab-45--c-in-micromips">Lab 45 — C in microMIPS</h3>
+<p>Lab 42's <a href="labs/c_mips16.c"><code>labs/c_mips16.c</code></a> a third time, with
+<code>cc --micromips</code> (Release 5): <code>c_mips16_mm.elf</code>.  It prints the same
+80955297.  How many bytes is <code>checksum</code> now, against the MIPS32 and
+MIPS16e builds?  How many instructions does the program execute?  Where
+did <code>emips_syscall1</code> go?</p>
+<details>
+<summary>Answer</summary>
+<p><code>checksum</code> is 34 bytes of microMIPS against 64 of MIPS32 and 26 of
+MIPS16e; most of its instructions are 16 bits (<code>sll16</code>, <code>addu16</code>,
+<code>andi16</code>, <code>bnez16</code>), and the two <code>lb</code>s are 32 bits because <code>lb</code>
+has no 16-bit form.  The program executes 216 instructions, fewer than
+both other builds (219 and 224).  <code>emips_syscall1</code> is gone: microMIPS
+has <code>syscall</code> (and <code>mfc0</code>, <code>mtc0</code>, every MIPS32 instruction), so
+<code>emips.h</code>'s helpers are inlined as in the MIPS32 build, with no
+<code>jalx</code> to MIPS32 and back.  <code>main</code> even ends with <code>jraddiusp 24</code>:
+return and free the frame in one 16-bit instruction.  Almost MIPS16e's
+size, MIPS32's speed: why compilers use microMIPS for small cores.</p>
+</details>
+<h3 id="lab-46--16-bit-code-on-the-24k">Lab 46 — 16-bit code on the 24K</h3>
+<p>Run Lab 41's <a href="labs/mips16_sum.asm"><code>labs/mips16_sum.asm</code></a> on both pipelines:
+<code>python3 -m emips pipe labs/mips16_sum.asm</code> and with <code>--model 24k</code>.
+In each, how many cycles does one iteration of <code>loop32</code> take, and of
+<code>loop16</code>?  On the 24K, what happens in the first iteration of each
+loop, and why does it cost the MIPS16e loop more?</p>
+<details>
+<summary>Answer</summary>
+<p>5-stage: 8 cycles per iteration for both.  <code>loop32</code> runs six
+instructions (the delay slot's <code>nop</code>) with a load-use and a
+branch-after-ALU stall; <code>loop16</code> runs five, but its compact
+<code>bnez</code> resolves in ID after the next instruction was fetched: that
+one is squashed, the cycle the delay slot used.  24K: 7 for
+<code>loop32</code> and 6 for <code>loop16</code> — the branch is predicted at fetch, so
+nothing is squashed, and the recoder keeps up (two 16-bit instructions
+a cycle).  The first iteration is mispredicted (the BHT starts at
+"weakly not taken"): 11 cycles for <code>loop32</code>, 13 for <code>loop16</code>, because
+the refetched MIPS16e instructions go through IR and IK again — two
+more stages between the fetch and RF.  A longer front end makes every
+misprediction dearer.</p>
+</details>
+<h3 id="lab-47--compact-branches-in-the-pipeline">Lab 47 — Compact branches in the pipeline</h3>
+<p><a href="labs/micromips_r6.asm"><code>labs/micromips_r6.asm</code></a> on the 5-stage pipeline, as
+in Lab 44: <code>python3 -m emips pipe labs/micromips_r6.asm</code> (Release 6) and
+with <code>--release R5</code>.  Release 6 executes one instruction fewer: which
+one, and how many cycles does each build take?  Why does the missing
+delay slot not save a cycle here?</p>
+<details>
+<summary>Answer</summary>
+<p>137 cycles each (86 and 87 instructions).  The loop is the same in
+both: under <code>.set reorder</code> the Release 5 assembler already writes
+<code>beqz</code>, <code>bne</code> and <code>jr</code> as the compact <code>beqzc</code>, <code>bnezc</code> and
+<code>jrc</code>.  The difference is the call: Release 5's <code>bal</code> is <code>bgezal</code>
+with a 32-bit <code>nop</code> in its delay slot (the extra instruction),
+Release 6's is the compact <code>balc</code>.  The 5-stage pipeline decides a
+branch in ID, when the next instruction is already in IF: the delay
+slot's <code>nop</code> executes in that cycle, and after a taken
+<code>balc</code> the fetched instruction is squashed — one cycle either way.
+A compact branch saves a cycle only when it is not taken (the
+<code>beqzc</code> in the loop, for the words that are not bigger), where a
+delay slot's <code>nop</code> would have been pure waste.  Release 6 gains code
+size and a simpler rule for compilers; a pipeline that predicts
+branches at fetch, such as the 24K, also gains the cycle.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

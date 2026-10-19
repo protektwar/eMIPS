@@ -40,8 +40,8 @@ the fill-store buffer and load queue occupancy, the IFU fill buffer
 come from the 24K pipeline model (``--model 24k``); the read latency
 events from the memory timing (a pipeline with caches).  Not modelled
 (count nothing): replay traps, FSB index conflicts, IFU fill-buffer-full
-refetches.  MIPS16e, CorExtend, CP2 and the scratchpads never happen on
-this core.  eMIPS choices (``sim.DEVIATIONS`` "performance counters"):
+refetches.  CorExtend, CP2 and the scratchpads never happen on this
+core.  eMIPS choices (``sim.DEVIATIONS`` "performance counters"):
 counters and control fields reset to 0 (UNDEFINED: nothing counts until
 software sets a mode bit); an event not marked *mode* counts in every mode
 once any of U / S / K / EXL is set.
@@ -113,7 +113,8 @@ def _events() -> tuple[dict[int, Event], dict[int, Event]]:
         14: (("integer", "Integer instructions completed", True, I),
              ("fpu", "FPU instructions completed", True, I)),
         15: (("load", "Loads completed", True, I), ("store", "Stores completed", True, I)),
-        16: (("j", "J/JAL completed", True, I), ("", "MIPS16 instructions completed", True, X)),
+        16: (("j", "J/JAL completed", True, I), ("mips16", "MIPS16 instructions completed",
+                                                True, I)),
         17: (("nop", "No-ops completed", True, I),
              ("muldiv", "Integer multiply/divide completed", True, I)),
         18: (("stall", "Stall cycles", False, "the pipeline"),
@@ -284,6 +285,23 @@ def _static(dec) -> tuple[str, ...]:
     name, fam = e["name"], e["family"]
     w = dec.word
     out = ["instructions"]
+    if e.get("isa") in ("mips16e", "micromips"):    # no MIPS32 twin (emips.mips16 / micromips)
+        out.append("integer")
+        if fam in ("branch", "branch_fpu", "branch_compact"):
+            out.append("branch")
+        form = name.split(".", 1)[1]
+        if form in ("JRRA", "JRCRA"):
+            out.append("jr31")
+        elif form in ("JR", "JALR", "JRC", "JALRC", "JR16", "JRC16", "JALR16", "JALRS16",
+                      "JALRC16", "JALRS", "JALR.HB", "JALRS.HB", "JALRC.HB"):
+            out.append("jr")
+        if form in ("JAL", "JALX", "JALS", "J"):
+            out.append("j")
+        if fam == "load":
+            out.append("load")
+        if fam == "store":
+            out.append("store")
+        return tuple(out)
     fpu = fam in FPU_FAMILIES or name in _FP_MEM
     out.append("fpu" if fpu else "integer")
     if fam in ("branch", "branch_fpu", "branch_compact") or name.startswith("BC2"):
@@ -426,10 +444,14 @@ class Counters:
     def classify(self, dec, word: int) -> tuple[str, ...]:
         """The completion events of the instruction just executed (with its
         dynamic ones: SC failed, PREF, uncached accesses)."""
-        st = self._static.get(word)
+        key = word if "isa" not in dec.entry else (word, dec.name)
+        st = self._static.get(key)
         if st is None:
-            st = self._static[word] = _static(dec)
+            st = self._static[key] = _static(dec)
         extra = self.pending
+        m = self.m
+        if m.isa_mode and m.compressed == "mips16e":    # (the twins: by mode, not word)
+            extra = extra + ["mips16"]
         if "sc" in st and self.m.read_reg((word >> 16) & 31) == 0:
             extra = extra + ["sc_fail"]
         self.pending = []

@@ -18,8 +18,9 @@ order; every ``PT_LOAD`` segment — ``p_filesz`` bytes from the file, the
 rest of ``p_memsz`` zeros (``.bss``) — at its virtual address (the
 loader puts each byte where the MMU maps it, as for assembled programs);
 ``e_entry``.  Relocatable objects (``ET_REL``: link them first), shared
-objects, 64-bit files and the compressed ISAs (microMIPS, MIPS16e: M17)
-are refused with the reason.
+objects and 64-bit files are refused with the reason; MIPS16e and
+microMIPS code is listed and run in its ISA mode (``Symbol.isa``,
+:meth:`ElfImage.isa_ranges`).
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ EF_MIPS_PIC, EF_MIPS_CPIC = 0x2, 0x4
 EF_MIPS_NAN2008 = 0x400
 EF_MIPS_MICROMIPS = 0x02000000
 EF_MIPS_M16 = 0x04000000
+#: st_other: the symbol is MIPS16e / microMIPS code
+STO_MIPS16, STO_MICROMIPS = 0xF0, 0x80
 EF_MIPS_ARCH = 0xF0000000
 #: EF_MIPS_ARCH -> eMIPS release (MIPS32 Release 2 binaries run on the
 #: full pre-R6 set, R5: every later release keeps their instructions)
@@ -58,6 +61,8 @@ class Symbol:
     value: int
     size: int
     kind: str                       # "func", "object" or "other"
+    #: the code's ISA (st_other: STO_MIPS16 0xF0, STO_MICROMIPS 0x80)
+    isa: str = "mips32"
 
 
 @dataclass
@@ -97,6 +102,40 @@ class ElfImage:
         return ARCH_NAMES.get(self.flags & EF_MIPS_ARCH,
                               f"EF_MIPS_ARCH 0x{(self.flags >> 28) & 0xF:x}")
 
+    @property
+    def mips16(self) -> bool:
+        return bool(self.flags & EF_MIPS_M16)
+
+    @property
+    def micromips(self) -> bool:
+        return bool(self.flags & EF_MIPS_MICROMIPS)
+
+    def isa_ranges(self) -> list[tuple[int, int, str]]:
+        """``(start, end, isa)`` of the code: each executable range split
+        at its symbols, a region taking the ISA of the symbol it starts at
+        (what objdump does: STO_MIPS16 / STO_MICROMIPS mark 16-bit code)."""
+        out = []
+        # (at one address a MIPS16e / microMIPS symbol beats a MIPS32 one:
+        # the linker's _ftext / __start next to the code's own)
+        syms = sorted(((s.value, s.isa) for s in self.symbols),
+                      key=lambda v: (v[0], v[1] != "mips32"))
+        for start, stop in self.code_ranges():
+            marks = [(a, isa) for a, isa in syms if start <= a < stop]
+            cur, isa = start, "mips32"
+            for a, s_isa in marks:
+                if a > cur:
+                    out.append((cur, a, isa))
+                cur, isa = a, s_isa
+            if stop > cur:
+                out.append((cur, stop, isa))
+        merged: list[tuple[int, int, str]] = []
+        for r in out:
+            if merged and merged[-1][2] == r[2] and merged[-1][1] == r[0]:
+                merged[-1] = (merged[-1][0], r[1], r[2])
+            else:
+                merged.append(r)
+        return merged
+
     def code_ranges(self) -> list[tuple[int, int]]:
         """``(start, end)`` of the code: the executable sections (else the
         executable segments)."""
@@ -125,15 +164,17 @@ class ElfImage:
 
     def source_lines(self) -> dict[int, tuple[str, int]]:
         """Instruction address -> ``(file, line)``: the line-table row in
-        force at every 4-byte address of the code it covers."""
+        force at every 4-byte address of the code it covers (every 2-byte
+        one with MIPS16e / microMIPS code)."""
         out: dict[int, tuple[str, int]] = {}
         rows = self.lines
+        step = 2 if self.mips16 or self.micromips else 4
         for k, r in enumerate(rows):
             if r.end or k + 1 >= len(rows):
                 continue
             nxt = rows[k + 1]
-            stop = nxt.address if nxt.address > r.address else r.address + 4
-            for a in range(r.address, stop, 4):
+            stop = nxt.address if nxt.address > r.address else r.address + step
+            for a in range(r.address, stop, step):
                 out[a] = (r.file, r.line)
         return out
 
@@ -165,16 +206,17 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
                 3: "a shared object / position-independent executable"}.get(
             e_type, f"ELF type {e_type}")
         raise ElfError(f"{kind} — eMIPS loads executables (ET_EXEC)")
-    if e_flags & EF_MIPS_MICROMIPS:
-        raise ElfError("microMIPS code (EF_MIPS_ARCH_ASE_MICROMIPS): not supported yet")
-    if e_flags & EF_MIPS_M16:
-        raise ElfError("MIPS16e code (EF_MIPS_ARCH_ASE_M16): not supported yet")
     arch = e_flags & EF_MIPS_ARCH
     if arch in (0x60000000, 0x80000000, 0xA0000000, 0x00000000 + 0x30000000,
                 0x40000000):
         raise ElfError(f"{ARCH_NAMES.get(arch, 'a MIPS III / IV / 64-bit')} code: "
                        "eMIPS runs MIPS32")
     img = ElfImage(path, endian, e_entry, e_flags)
+    if e_flags & EF_MIPS_M16:
+        img.notes.append("MIPS16e code (EF_MIPS_ARCH_ASE_M16): the core gets MIPS16e")
+    if e_flags & EF_MIPS_MICROMIPS:
+        img.notes.append("microMIPS code (EF_MIPS_ARCH_ASE_MICROMIPS): the core gets "
+                         "microMIPS")
     if e_flags & (EF_MIPS_PIC | EF_MIPS_CPIC):
         img.notes.append("position-independent (abicalls) code: it expects $gp / $t9 "
                          "set up by a dynamic loader — build with -mno-abicalls -fno-pic")
@@ -233,12 +275,14 @@ def _cstr(data: bytes, at: int) -> str:
 def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab) -> list[Symbol]:
     out = []
     for k in range(size // (entsize or 16)):
-        name, value, sz, info, _other, shndx = struct.unpack_from(
+        name, value, sz, info, other, shndx = struct.unpack_from(
             end + "IIIBBH", data, off + k * (entsize or 16))
         kind = {STT_FUNC: "func", STT_OBJECT: "object"}.get(info & 0xF, "other")
         if not name or shndx == 0 or (info & 0xF) in (3, 4):   # SECTION, FILE
             continue
-        out.append(Symbol(_cstr(data, strtab[4] + name), value, sz, kind))
+        isa = {STO_MIPS16: "mips16e", STO_MICROMIPS: "micromips"}.get(other & 0xF0, "mips32")
+        out.append(Symbol(_cstr(data, strtab[4] + name), value & ~1 if isa != "mips32"
+                          else value, sz, kind, isa))
     return out
 
 
@@ -335,7 +379,8 @@ def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes) -> list
     def emit(endseq: bool = False) -> None:
         f = st["file"]
         name = filenames[f] if 0 <= f < len(filenames) else f"file{f}"
-        rows.append(LineRow(st["address"], name, st["line"], st["is_stmt"], endseq))
+        # (MIPS16e / microMIPS code: GCC puts the ISA bit in bit 0 of the address)
+        rows.append(LineRow(st["address"] & ~1, name, st["line"], st["is_stmt"], endseq))
 
     while i < len(u):
         op = u[i]
