@@ -78,6 +78,7 @@ from __future__ import annotations
 import random
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .timing import CACHEOP_COST, Timing
 
@@ -570,6 +571,10 @@ class Cache:
         self.tag_shift = min(12, self.index_bit)
         self.pairs = _pairs(g.ways)
         self.plru = False
+        self._touch_masks: list[tuple[int, int]] | None = None
+        #: an MT processor's way exclusion (MVPControl.CPA, VPEOpt): a
+        #: function -> the ways the refilling VPE may not allocate, or None
+        self.excluded: Callable[[], int] | None = None
         self.lines = [[Line(g.line) for _ in range(g.ways)] for _ in range(g.sets)]
         #: way-select RAM: the LRU bits of each set
         self.ws = [0] * g.sets
@@ -625,8 +630,21 @@ class Cache:
         return bool(bit) == (a == i)
 
     def touch(self, s: int, way: int) -> None:
-        """Make ``way`` the most recently used of its set."""
-        ws = self.ws[s]
+        """Make ``way`` the most recently used of its set (the bits it sets
+        and clears are remembered per way: :meth:`_touch_slow`)."""
+        masks = self._touch_masks
+        if masks is None:                   # (built on first use: SecondaryCache sets plru)
+            every = (1 << 64) - 1
+            masks = self._touch_masks = [
+                (self._touch_slow(0, w, 0), every & ~self._touch_slow(0, w, every))
+                for w in range(self.ways)]
+        on, off = masks[way]
+        self.ws[s] = (self.ws[s] | on) & ~off
+
+    def _touch_slow(self, s: int, way: int, ws: int | None = None) -> int:
+        """The WS bits of set ``s`` (or ``ws``) with ``way`` made the most
+        recently used."""
+        ws = self.ws[s] if ws is None else ws
         if self.plru:
             for node, d in _tree_path(way):
                 ws = ws | (1 << node) if d else ws & ~(1 << node)
@@ -636,7 +654,7 @@ class Cache:
                     ws |= 1 << b
                 elif j == way:
                     ws &= ~(1 << b)
-        self.ws[s] = ws
+        return ws
 
     def make_lru(self, s: int, way: int) -> None:
         ws = self.ws[s]
@@ -665,6 +683,10 @@ class Cache:
         first.  The pseudo-LRU tree is walked towards its older side,
         unless only the other side has a candidate."""
         ways = range(1 if exclude_way0 and self.ways > 1 else 0, self.ways)
+        if self.excluded is not None:           # an MT VPE's VPEOpt.IWX / DWX
+            ex = self.excluded()
+            if ex:
+                ways = [w for w in ways if not ex >> w & 1] or list(ways)
         cand = [w for w in ways if not (self.lines[s][w].valid and self.lines[s][w].lock)]
         if not cand:
             cand = list(ways)
@@ -1536,15 +1558,17 @@ class Caches:
 
     def watch(self) -> None:
         """Start recording every access (see :meth:`taken`)."""
-        self.log = []
-        for c in self.all:
-            c.log = self.log
+        self.log = log = []
+        for c in (self.i, self.d, self.l2, self.l3):     # (self.all, without the list)
+            if c is not None:
+                c.log = log
 
     def taken(self) -> list[CacheAccess]:
         """Stop recording; the accesses recorded since :meth:`watch`."""
         log, self.log = self.log or [], None
-        for c in self.all:
-            c.log = None
+        for c in (self.i, self.d, self.l2, self.l3):
+            if c is not None:
+                c.log = None
         return log
 
     def reset_stats(self) -> None:

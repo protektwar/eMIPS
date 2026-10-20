@@ -1,0 +1,5 @@
+# Lab 12 — Measure it yourself: the checks of the changed program (counter 0
+# counts data cache accesses, counter 1 load misses), with the 1 KB cache
+# (Run → Check, or python3 -m emips check docs/guide/labs/perf_count.asm)
+eMIPS: --dcache 1K:1:16
+check: output is "1024 256"    (1024 data cache accesses, 256 load misses: 25 %)

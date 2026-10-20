@@ -122,6 +122,37 @@ KINDS: dict[str, Kind] = {k.name: k for k in [
     _k("code16", (0, 16)),         # SIGRIE code
     _k("mem11", (0, 11), (11, 5)),  # COP2 R6 loads/stores: offset11(base)
     _k("sel6", (6, 3)),            # R6 RDHWR select
+    # the DSP Module (MD00374)
+    _k("ac", (11, 2)),             # accumulator $ac0..$ac3 in bits 12..11
+    _k("ac21", (21, 2)),           # MFHI / MFLO: the accumulator in bits 22..21
+    _k("dsa3", (21, 3)),           # .QB shift amount 0..7
+    _k("dsa4", (21, 4)),           # .PH shift amount 0..15
+    _k("dsa5", (21, 5)),           # .W shift amount 0..31 (EXTR: the shift)
+    _k("dsize", (21, 5)),          # EXTP / EXTPDP: the size 0..31
+    _k("shilo", (20, 6)),          # SHILO: signed shift -32..31
+    _k("rmask", (16, 10)),         # RDDSP mask (bits 5..0 used)
+    _k("wmask", (11, 10)),         # WRDSP mask (bits 5..0 used)
+    _k("dimm10", (16, 10)),        # REPL.PH: signed 10-bit immediate
+    _k("dimm8", (16, 8)),          # REPL.QB: 8-bit immediate
+    _k("dsa", (11, 5)),            # APPEND / PREPEND / PRECR_SRA: sa in 15..11
+    _k("bp2", (11, 2)),            # BALIGN byte position
+    # the MT Module (MD00378): MFTR / MTTR
+    _k("trt", (16, 5)),            # MFTR: the target register number in rt ($2)
+    _k("trd", (11, 5)),            # MTTR: the target register number in rd ($2)
+    _k("u1", (5, 1)),              # u: 0 = CP0, 1 = the register files
+    _k("h1", (4, 1)),              # h: the high half of a 64-bit register
+    _k("rx", (6, 5)),              # rx: COP2 register number bits (GNU as: 0)
+    # MIPS64 (PLAN M22): the doubleword bit fields (MIPS64 Vol. II DEXT ...
+    # DINSU: pos / size -> lsb and msbd / msb, each row its own ranges)
+    _k("pos_dext", (6, 5), (11, 5)),   # DEXT:  lsb = pos, msbd = size - 1
+    _k("pos_dextm", (6, 5), (11, 5)),  # DEXTM: lsb = pos, msbd = size - 33
+    _k("pos_dextu", (6, 5), (11, 5)),  # DEXTU: lsb = pos - 32, msbd = size - 1
+    _k("pos_dins", (6, 5), (11, 5)),   # DINS:  lsb = pos, msb = pos + size - 1
+    _k("pos_dinsm", (6, 5), (11, 5)),  # DINSM: lsb = pos, msb = pos + size - 33
+    _k("pos_dinsu", (6, 5), (11, 5)),  # DINSU: lsb = pos - 32, msb = pos + size - 33
+    _k("bp3", (6, 3)),             # DALIGN byte position 0..7
+    _k("pc18", (0, 18)),           # LDPC: an address, (PC & ~7) + offset * 8
+    _k("rs2"),                     # DAHI / DATI: rs again (the manual's "DAHI rs, rs")
 ]}
 
 
@@ -214,9 +245,113 @@ _R6: dict[str, tuple[str, ...]] = {
 }
 
 
+#: the MIPS64 rows (PLAN M22, MIPS64 Vol. II): like their MIPS32
+#: counterparts; DEXTM / DEXTU / DINSM / DINSU print as dext / dins with the
+#: field's real pos and size (the manual: "always specify the DEXT
+#: mnemonic"; binutils prints them so)
+_MIPS64: dict[str, tuple[str, ...]] = {
+    **{n: ("rd", "rt", "sa") for n in ("DSLL", "DSLL32", "DSRL", "DSRL32", "DSRA",
+                                       "DSRA32", "DROTR", "DROTR32")},
+    **{n: ("rd", "rt", "rs") for n in ("DSLLV", "DSRLV", "DSRAV", "DROTRV")},
+    "DSBH": ("rd", "rt"), "DSHD": ("rd", "rt"), "DBITSWAP": ("rd", "rt"),
+    "DCLO": ("rd", "rs"), "DCLZ": ("rd", "rs"),          # rt = rd (manual)
+    "DCLO@R6": ("rd", "rs"), "DCLZ@R6": ("rd", "rs"),
+    "DMULT": ("rs", "rt"), "DMULTU": ("rs", "rt"), "DDIV": ("rs", "rt"),
+    "DDIVU": ("rs", "rt"),
+    "DEXT": ("rt", "rs", "pos_dext"), "DEXTM": ("rt", "rs", "pos_dextm"),
+    "DEXTU": ("rt", "rs", "pos_dextu"), "DINS": ("rt", "rs", "pos_dins"),
+    "DINSM": ("rt", "rs", "pos_dinsm"), "DINSU": ("rt", "rs", "pos_dinsu"),
+    "DMFC0": ("rt", "c0rd", "[sel]"), "DMTC0": ("rt", "c0rd", "[sel]"),
+    "DMFC1": ("rt", "fs"), "DMTC1": ("rt", "fs"),
+    "DMFC2": ("rt", "impl16"), "DMTC2": ("rt", "impl16"),
+    "DALIGN": ("rd", "rs", "rt", "bp3"), "DAUI": ("rt", "rs", "uimm"),
+    "DAHI": ("rs", "rs2", "uimm"), "DATI": ("rs", "rs2", "uimm"),
+    "DLSA": ("rd", "rs", "rt", "sa2"),
+    "LDPC": ("rsd", "pc18"), "LWUPC": ("rsd", "pc19"),
+    "LLD@R6": ("rt", "mem9"), "SCD@R6": ("rt", "mem9"),
+}
+
+
+def _dsp_specs() -> dict[str, tuple[str, ...]]:
+    """The DSP Module rows' operands, in the manual's (and GNU as') order."""
+    spec: dict[str, tuple[str, ...]] = {}
+
+    def put(kinds: tuple[str, ...], names: str) -> None:
+        for n in names.split():
+            spec[n] = kinds
+
+    put(("rd", "rs", "rt"), """
+        ADDQ.PH ADDQ_S.PH ADDQ_S.W ADDQH.PH ADDQH_R.PH ADDQH.W ADDQH_R.W ADDSC
+        ADDU.QB ADDU_S.QB ADDU.PH ADDU_S.PH ADDUH.QB ADDUH_R.QB ADDWC
+        SUBQ.PH SUBQ_S.PH SUBQ_S.W SUBQH.PH SUBQH_R.PH SUBQH.W SUBQH_R.W
+        SUBU.QB SUBU_S.QB SUBU.PH SUBU_S.PH SUBUH.QB SUBUH_R.QB MODSUB
+        CMPGU.EQ.QB CMPGU.LT.QB CMPGU.LE.QB CMPGDU.EQ.QB CMPGDU.LT.QB CMPGDU.LE.QB
+        PICK.QB PICK.PH PACKRL.PH PRECRQ.QB.PH PRECR.QB.PH PRECRQ.PH.W
+        PRECRQ_RS.PH.W PRECRQU_S.QB.PH
+        MULEU_S.PH.QBL MULEU_S.PH.QBR MULQ_RS.PH MULEQ_S.W.PHL MULEQ_S.W.PHR
+        MULQ_S.PH MUL.PH MUL_S.PH MULQ_S.W MULQ_RS.W""")
+    put(("rd", "rt"), """
+        ABSQ_S.QB ABSQ_S.PH ABSQ_S.W BITREV REPLV.QB REPLV.PH
+        PRECEQ.W.PHL PRECEQ.W.PHR PRECEQU.PH.QBL PRECEQU.PH.QBR PRECEQU.PH.QBLA
+        PRECEQU.PH.QBRA PRECEU.PH.QBL PRECEU.PH.QBR PRECEU.PH.QBLA PRECEU.PH.QBRA""")
+    put(("rs", "rt"), """
+        CMPU.EQ.QB CMPU.LT.QB CMPU.LE.QB CMP.EQ.PH CMP.LT.PH CMP.LE.PH""")
+    put(("rd", "rt", "rs"), """
+        SHLLV.QB SHRLV.QB SHRAV.QB SHRAV_R.QB SHLLV.PH SHRAV.PH SHLLV_S.PH
+        SHRAV_R.PH SHRLV.PH SHLLV_S.W SHRAV_R.W""")
+    put(("rd", "rt", "dsa3"), "SHLL.QB SHRL.QB SHRA.QB SHRA_R.QB")
+    put(("rd", "rt", "dsa4"), "SHLL.PH SHLL_S.PH SHRA.PH SHRA_R.PH SHRL.PH")
+    put(("rd", "rt", "dsa5"), "SHLL_S.W SHRA_R.W")
+    put(("ac", "rs", "rt"), """
+        DPA.W.PH DPS.W.PH MULSA.W.PH DPAU.H.QBL DPAQ_S.W.PH DPSQ_S.W.PH
+        MULSAQ_S.W.PH DPAU.H.QBR DPAX.W.PH DPSX.W.PH DPSU.H.QBL DPAQ_SA.L.W
+        DPSQ_SA.L.W DPSU.H.QBR MAQ_SA.W.PHL MAQ_SA.W.PHR MAQ_S.W.PHL MAQ_S.W.PHR
+        DPAQX_S.W.PH DPSQX_S.W.PH DPAQX_SA.W.PH DPSQX_SA.W.PH
+        MULT@DSP MULTU@DSP MADD@DSP MADDU@DSP MSUB@DSP MSUBU@DSP""")
+    put(("rt", "ac", "dsa5"), "EXTR.W EXTR_R.W EXTR_RS.W EXTR_S.H")
+    put(("rt", "ac", "dsize"), "EXTP EXTPDP")
+    put(("rt", "ac", "rs"), """
+        EXTRV.W EXTRV_R.W EXTRV_RS.W EXTRV_S.H EXTPV EXTPDPV""")
+    put(("ac", "shilo"), "SHILO")
+    put(("ac", "rs"), "SHILOV")
+    put(("rs", "ac"), "MTHLIP MTHI@DSP MTLO@DSP")
+    put(("rd", "ac21"), "MFHI@DSP MFLO@DSP")
+    put(("rt", "rs"), "INSV")
+    put(("rd", "rs"), "RADDU.W.QB")
+    put(("rd", "idx"), "LWX LHX LBUX")
+    put(("rt", "rs", "dsa"), "APPEND PREPEND PRECR_SRA.PH.W PRECR_SRA_R.PH.W")
+    put(("rt", "rs", "bp2"), "BALIGN")
+    put(("rd", "dimm10"), "REPL.PH")
+    put(("rd", "dimm8"), "REPL.QB")
+    put(("rd", "[rmask]"), "RDDSP")
+    put(("rs", "[wmask]"), "WRDSP")
+    put(("br",), "BPOSGE32 BPOSGE32C")
+    return spec
+
+
+#: the DSP Module rows' operand kinds (PLAN M18)
+DSP_SPECS: dict[str, tuple[str, ...]] = _dsp_specs()
+
+#: the MT Module rows' operand kinds (PLAN M19; binutils' MT32 syntax:
+#: ``mftr rd, rt, u, sel, h`` / ``mttr rt, rd, u, sel, h``, the target
+#: register as a number; rx, which GNU as leaves 0, as an optional last)
+MT_SPECS: dict[str, tuple[str, ...]] = {
+    "DMT": ("[rt]",), "EMT": ("[rt]",), "DVPE": ("[rt]",), "EVPE": ("[rt]",),
+    "FORK": ("rd", "rs", "rt"), "YIELD": ("[rd]", "rs"),
+    "MFTR": ("rd", "trt", "u1", "sel", "h1", "[rx]"),
+    "MTTR": ("rt", "trd", "u1", "sel", "h1", "[rx]"),
+}
+
+
 def operand_spec(entry: dict) -> tuple[str, ...]:
     """Operand kinds of a row (``[kind]`` = optional)."""
     name, fam = entry["name"], entry["family"]
+    if entry.get("ase") == "mt":
+        return MT_SPECS[name]
+    if entry.get("ase"):
+        return DSP_SPECS[name]
+    if entry.get("arch") == "mips64" and name in _MIPS64:
+        return _MIPS64[name]
     if name in _EXPLICIT:
         return _EXPLICIT[name]
     if name in _R6:
@@ -254,6 +389,11 @@ def operand_spec(entry: dict) -> tuple[str, ...]:
     raise KeyError(f"no assembly syntax for {name}")
 
 
+#: the value an omitted optional operand stands for (others: 0): GNU as
+#: encodes ``rddsp rd`` / ``wrdsp rs`` with every mask bit set
+DEFAULTS: dict[str, int] = {"rmask": 0x3FF, "wmask": 0x3FF}
+
+
 def kind_of(spec_item: str) -> tuple[str, bool]:
     """``'[rd]'`` -> (``'rd'``, optional=True)."""
     if spec_item.startswith("["):
@@ -264,7 +404,7 @@ def kind_of(spec_item: str) -> tuple[str, bool]:
 #: Rows whose manual syntax ties two fields together (``CLO rd, rs`` has
 #: ``rt = rd``): encoder copies, coverage treats the field as covered.
 TIED_FIELDS: dict[str, tuple[tuple[int, int], ...]] = {
-    "CLO": ((16, 5),), "CLZ": ((16, 5),),
+    "CLO": ((16, 5),), "CLZ": ((16, 5),), "DCLO": ((16, 5),), "DCLZ": ((16, 5),),
     # R6: the register is in both rs and rt (rs == rt selects the row)
     **{n: ((21, 5),) for n in ("BGEZALC", "BLTZALC", "BGEZC", "BLTZC")},
 }

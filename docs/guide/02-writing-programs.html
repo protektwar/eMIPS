@@ -53,6 +53,8 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#218-programs-in-c">2.18 Programs in C</a></li>
 <li><a href="#219-mips16e-16-bit-instructions">2.19 MIPS16e: 16-bit instructions</a></li>
 <li><a href="#220-micromips-16--and-32-bit-instructions">2.20 microMIPS: 16- and 32-bit instructions</a></li>
+<li><a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21 The DSP Module: SIMD and fixed-point arithmetic</a></li>
+<li><a href="#222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -1415,7 +1417,9 @@ to consecutive words), <code>lwp</code> / <code>swp</code> (two registers),
 <code>movep</code> (two moves), <code>addiupc</code> (PC-relative), <code>lwxs</code> (scaled
 index), <code>jraddiusp</code> (return and free the frame).</li>
 <li>The core: a program with <code>.set micromips</code> code gets microMIPS
-(MIPS32 and microMIPS, Config3.ISA = 2), from Release 3 on;
+(MIPS32 and microMIPS, Config3.ISA = 2), from Release 2 on (the
+microMIPS manual describes Release 3, but the M14K and the microAptiv are
+Release 2 cores with microMIPS: <code>--core m14k</code>);
 <code>--compressed micromips</code> asks for it, <code>--compressed
 micromips-only</code> is a core without MIPS32 (it starts in microMIPS, a
 <code>jr</code> to an even address is an address error).  An exception saves
@@ -1437,6 +1441,216 @@ note that says so.  C: <code>python3 -m emips cc prog.c --micromips</code>
 no compiler builds it the way the manual defines it).  GDB sees
 <code>$pc</code> with bit 0 set (<a href="04-command-line.html#gdb-in-mips16e-and-micromips-code">4.12</a>).
 Labs 43, 44, 45 and 47 measure what microMIPS saves.</p>
+<h2 id="221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21 The DSP Module: SIMD and fixed-point arithmetic</h2>
+<p>The <strong>DSP Module</strong> (the DSP ASE; MIPS's Volume IV-e) adds about 150
+instructions for signal and media processing: the MIPS 24KE, 34K, 74K,
+1004K, interAptiv and microAptiv have it, the 24K does not.  Three ideas
+carry it:</p>
+<ul>
+<li><strong>SIMD in a GPR.</strong>  A register holds four bytes (<code>.QB</code>, "quad
+byte") or two halfwords (<code>.PH</code>, "pair halfword"), and one instruction
+works on all of them: <code>addu.qb</code> adds four pairs of bytes, each on
+its own — a carry never crosses into the next byte.</li>
+<li><strong>Saturation.</strong>  The <code>_S</code> forms clamp a result that does not fit
+to the largest or smallest value instead of wrapping around:
+<code>0xf0 + 0x30</code> is <code>0xff</code> with <code>addu_s.qb</code>, not <code>0x20</code>.  A
+brightened pixel stays white; an audio sample that overflows stays at
+full scale instead of jumping to the other sign.  Every overflow (with
+saturation or not) sets a sticky bit of DSPControl's <em>ouflag</em> field.</li>
+<li><strong>Fixed-point fractions.</strong>  A Q15 halfword is a number from -1 to
+just under 1 in steps of 2<sup>-15</sup> (0x4000 = 0.5, 0x8000 = -1.0);
+Q31 is the same in 32 bits.  The <code>Q</code> instructions multiply fractions
+(<code>mulq_rs.ph</code>: Q15 x Q15, rounded back to Q15), saturating the one
+product that cannot be represented, -1 x -1.</li>
+</ul>
+<p>The module also has three more accumulators, <code>$ac1</code>–<code>$ac3</code>
+(<code>$ac0</code> is HI / LO), for multiply-accumulate loops — <code>dpaq_s.w.ph</code>
+adds the products of both halfword pairs into one in a single
+instruction — and <code>extr</code> / <code>extp</code> instructions that take a scaled,
+rounded or saturated part of an accumulator back to a GPR.</p>
+<pre><code class="language-asm"># output: 0x40b0202f\n0x40b0ffff\n0x00100000\n0x3000e000\n0x00001000\n
+        .data
+pixels: .word   0x1080f0ff              # four 8-bit pixels: 0x10 0x80 0xf0 0xff
+xs:     .half   0x4000, 0x2000          # Q15:  0.5, 0.25
+ys:     .half   0x6000, 0x8000          # Q15: 0.75, -1.0
+        .text
+main:   lw      $t0, pixels
+        repl.qb $t1, 0x30               # 0x30 in all four bytes
+        addu.qb $a0, $t0, $t1           # + 0x30, each byte wraps around
+        jal     hex
+        addu_s.qb $a0, $t0, $t1         # + 0x30, each byte saturates at 0xff
+        jal     hex
+        rddsp   $a0, 0x08               # ouflag: bit 20 = an add overflowed
+        jal     hex
+        lw      $t2, xs
+        lw      $t3, ys
+        mulq_rs.ph $a0, $t2, $t3        # 0.5 x 0.75, 0.25 x -1.0 (Q15, rounded)
+        jal     hex
+        mult    $ac1, $zero, $zero      # clear accumulator 1
+        dpaq_s.w.ph $ac1, $t2, $t3      # ac1 += 0.5 x 0.75 + 0.25 x -1.0 (Q31)
+        extr_r.w $a0, $ac1, 16          # back to Q15 (rounded)
+        jal     hex
+        li      $v0, 10
+        syscall
+
+hex:    li      $v0, 34                 # print $a0 in hex, then a newline
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        jr      $ra
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><strong>The core.</strong>  A program with DSP instructions gets the DSP Module
+(Revision 2) — the 24K, eMIPS's generic core, has none.  <code>--dsp
+dsp</code> / <code>dspr2</code> / <code>none</code> chooses (Settings → Processor → DSP
+Module), and the real cores bring their own (the 1004K Revision 1, the
+interAptiv and microAptiv Revision 2, <a href="06-reference.html#611-real-mips-cores">6.11</a>).  It needs
+Release 2 or later; on Release 6 it is Revision 3 (the same instructions
+and <code>bposge32c</code>, a compact branch).  Software finds it in Config3
+(DSPP, DSP2P), and enables it with <strong>Status.MX</strong>: with MX = 0 every
+DSP instruction raises the <em>DSP State Disabled</em> exception (code 26), so
+an operating system can save the DSP registers only for the programs that
+use them (Lab 52).  The boot firmware sets MX, as it sets CU1 for the FPU.</li>
+<li><strong>The names.</strong>  <code>.QB</code> / <code>.PH</code> / <code>.W</code> the element size, <code>U</code>
+unsigned, <code>Q</code> fractional, <code>_S</code> saturating, <code>_R</code> rounding,
+<code>H</code> halving (<code>addqh.ph</code>: (a + b) / 2, which never overflows),
+<code>L</code> / <code>R</code> the left or right element(s) of a register (whatever the
+byte order).</li>
+<li><strong>DSPControl</strong> (<code>rddsp</code> / <code>wrdsp</code> with a field mask) holds
+ouflag, the compare results that <code>pick.qb</code> / <code>pick.ph</code> select by
+(<code>cmpu.lt.qb</code> then <code>pick.qb</code> is a branch-free minimum of four
+bytes), the carry of <code>addsc</code> / <code>addwc</code> (64-bit adds), and the
+position and size of <code>extp</code>, <code>insv</code> and <code>bposge32</code> (a loop over
+the bits of an accumulator).</li>
+<li>The base accumulator instructions name one: <code>mult $ac1, $t0, $t1</code>,
+<code>mfhi $t2, $ac1</code>, <code>mtlo $t3, $ac2</code>.</li>
+<li><code>lwx</code> / <code>lhx</code> / <code>lbux</code> load from base + index (<code>lwx $t0,
+$t1($t2)</code>): an array element without an address calculation.</li>
+<li>The assembler takes DSP instructions anywhere (as GNU as with
+<code>-mdspr2</code>); <code>.set nodsp</code> refuses them, <code>.set dsp</code> allows
+Revision 1 only.  In microMIPS code (<code>.set micromips</code>) they have
+32-bit encodings.</li>
+</ul>
+<p>The debugger's <code>dsp</code> and the register pane's <strong>DSP</strong> tab show
+DSPControl field by field and the four accumulators; the instruction
+view shows what each instruction changed in them.  C uses the module
+through GCC's builtins (<code>python3 -m emips cc --dspr2</code>,
+<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>, Lab 51).  Labs 49-52 brighten an
+image, filter a signal, compare with C, and handle the exception.</p>
+<h2 id="222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</h2>
+<p>The <strong>MT Module</strong> (the MT ASE; MIPS's Volume IV-f) lets one core run
+several instruction streams at once.  Each stream is a <strong>thread
+context</strong> (TC): its own PC, GPRs, HI / LO and a few CP0 fields.  The
+TCs share everything else — the pipeline, the caches, the TLB — and the
+core issues an instruction of one of them every cycle; when one has to
+wait (a cache miss), another issues.  TCs are grouped into <strong>VPEs</strong>
+(virtual processing elements): a VPE has its own CP0, so to an operating
+system each VPE is a processor of its own.  The MIPS 34K has up to 2
+VPEs and 9 TCs, the 1004K 2 VPEs of one TC each in every core, the
+interAptiv up to 9 TCs a core.</p>
+<p>After reset one TC runs: TC 0 of VPE 0.  A program turns
+multithreading on with <code>emt</code> (VPEControl.TE: more than one TC of
+this VPE may issue) and <code>evpe</code> (MVPControl.EVP: the other VPEs run
+too), and starts a thread with <strong><code>fork rd, rs, rt</code></strong>: a free TC
+starts at the address in <code>rs</code>, with <code>rt</code>'s value in its own
+<code>rd</code>.  <code>yield $zero</code> ends the thread that executes it and frees
+its TC.  Here two threads add the two halves of an array:</p>
+<pre><code class="language-asm"># output: 55
+        .data
+nums:   .word   1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+half:   .word   0                       # the worker's sum
+done:   .word   0
+        .text
+main:   li      $t0, 1
+        mtc0    $t0, $1, 1              # VPEControl.TargTC = 1
+        li      $t1, 0x8000
+        mttc0   $t1, $2, 1              # TC 1: TCStatus.DA = 1 (FORK may take it)
+        mttc0   $zero, $2, 4            # TC 1: TCHalt = 0
+        mfc0    $t1, $2, 1
+        ori     $t1, $t1, 0x8000
+        mtc0    $t1, $2, 1              # this TC: DA too (it may YIELD away)
+        emt                             # VPEControl.TE: more than one TC issues
+        evpe                            # MVPControl.EVP: the VPEs run
+        la      $a0, nums + 20          # the second half for the new thread
+        la      $t2, worker
+        fork    $a0, $t2, $a0           # TC 1 starts at worker with its $a0
+        la      $a0, nums               # the first half here
+        jal     sum5
+        move    $s0, $v0
+wait:   lw      $t3, done               # wait for the worker
+        beqz    $t3, wait
+        lw      $t4, half
+        addu    $a0, $s0, $t4
+        li      $v0, 1
+        syscall
+        li      $v0, 10
+        syscall
+
+worker: jal     sum5
+        sw      $v0, half
+        li      $t0, 1
+        sw      $t0, done
+        yield   $zero                   # end this thread: TC 1 is free again
+
+sum5:   li      $v0, 0                  # $v0 = the sum of 5 words at $a0
+        li      $t9, 5
+1:      lw      $t8, 0($a0)
+        addu    $v0, $v0, $t8
+        addiu   $a0, $a0, 4
+        addiu   $t9, $t9, -1
+        bnez    $t9, 1b
+        jr      $ra
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><strong>The core.</strong>  A program with MT instructions gets the MT Module
+(2 VPEs, 5 TCs, as a 34K); <code>--mt VPES:TCS</code> (1–2 VPEs, up to 9
+TCs) or <code>--mt none</code> chooses (Settings → Processor → MT Module), and
+the real cores bring their own (<code>--core 34kf</code>, <code>1004kc</code>,
+<code>interaptiv</code>, <a href="06-reference.html#611-real-mips-cores">6.11</a>).  Releases 2 to 5:
+Release 6 removed the MT Module.  Software finds it in Config3.MT and
+MVPConf0 (how many VPEs and TCs).</li>
+<li><strong>Another TC's registers.</strong>  <code>mftr</code> / <code>mttr</code> read and write
+the registers of the TC that VPEControl.TargTC names; the assembler has
+GNU as's names for them: <code>mftc0</code> / <code>mttc0</code> (a CP0 register as that
+TC sees it), <code>mftgpr</code> / <code>mttgpr</code> (its GPRs), <code>mftlo</code>,
+<code>mfthi</code>, <code>mftc1</code> ...  The per-TC registers are in CP0 register 2:
+TCStatus (select 1: A = activated, DA = FORK may use it), TCBind (2),
+TCRestart (3: where it starts), TCHalt (4), TCContext (5); the per-VPE
+ones in register 1: VPEControl (1: TargTC, TE, EXCPT), VPEConf0 (2:
+VPA = the VPE may run, MVP = it may configure the others); MVPControl
+(register 0, select 1: EVP) is the core's.  Starting a TC by hand, as an operating system
+does: TargTC, then its TCRestart, TCStatus.A and TCHalt = 0.</li>
+<li><strong>Stopping.</strong>  <code>dmt</code> / <code>dvpe</code> stop the other TCs (of this
+VPE / of every VPE) and return the register as it was, so a kernel can
+restore it; <code>wait</code> stops only its own TC; <code>yield rs</code> with a
+positive <code>rs</code> waits for the YIELD qualifier inputs (pins from outside
+the core) it names.  An exception stops the other TCs of its VPE until
+<code>eret</code> (the VPE runs only that TC: VPEConf0.XTC).</li>
+<li><strong>The Thread exception</strong> (code 25) when a thread instruction cannot
+do what it asks; VPEControl.EXCPT says why: 0 underflow (<code>yield
+$zero</code> by the last TC that may be freed), 1 overflow (<code>fork</code> found
+no free TC), 2 an invalid YIELD qualifier, 3 gating storage, 4 / 5 the
+YIELD / gating-storage scheduler intercepts.</li>
+<li><strong>Privileged.</strong>  Every MT instruction except <code>fork</code> and
+<code>yield</code> needs kernel mode (CU0).  The assembler takes them anywhere
+(as GNU as with <code>-mmt</code>); <code>.set nomt</code> refuses them.  In microMIPS
+code (<code>.set micromips</code>) they have 32-bit encodings.</li>
+<li><strong>Gating storage.</strong>  The 34K's <strong>ITC</strong> is memory whose loads and
+stores wait: a load from an empty FIFO cell stops its thread until
+another thread stores — no polling (Lab 56).</li>
+</ul>
+<p>The debugger's <code>mt</code> lists the VPEs and every TC (its state, PC,
+what it waits for), <code>tc N</code> shows one TC's registers, and the
+window's <strong>MT</strong> pane shows the same
+(<a href="03-the-gui.html#threads-the-mt-pane">3.8</a>); GDB sees each TC as a
+thread (<a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>).  How the hardware chooses
+which thread issues, and what that buys, is in
+<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5</a>; Labs 53-57 fork
+threads, hide cache misses, share the cycles out, pass data through the
+ITC and run two VPEs.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

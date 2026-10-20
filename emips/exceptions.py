@@ -226,3 +226,17 @@ class WatchpointHit(SimException):
                          addr=addr)
         self.watch = watch
         self.store = store
+
+
+class Blocked(Exception):
+    """The instruction cannot complete yet and has had no effect (the MT
+    Module: a YIELD waiting for its qualifier inputs, a load / store to
+    gating storage that would block — MD00378 9.1): ``Machine.step``
+    keeps the PC and the delay-slot state, so it issues again, as itself,
+    when it can complete.  ``kind``: ``"yield"`` (``wait`` = the qualifier
+    bits) or ``"gs"`` (``wait`` = the gating storage access)."""
+
+    def __init__(self, kind: str, wait) -> None:
+        super().__init__(f"blocked on {kind}")
+        self.kind = kind
+        self.wait = wait

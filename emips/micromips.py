@@ -35,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .isa import ISADecodeError
+from .isa import ISA, ISADecodeError
 
 M32 = 0xFFFFFFFF
 
@@ -780,6 +780,210 @@ R6_ROWS: list[Row] = _R6_16 + _R6_32 + _fpu_rows_r6()
 R6 = _Table(R6_ROWS)
 
 
+# ------------------------------------------------------------ the DSP Module
+#
+# MD00764 rev. 3.01 (the DSP Module for microMIPS32; pre-Release 6 only: it
+# gives no Release 6 encoding), generated from binutils micromips-opc.c's
+# D32 / D33 entries: each row's twin is its MIPS32 DSP row (emips.dsp), the
+# fields matched by operand position (tests/test_micromips.py checks them
+# against objdump and GNU as).  BPOSGE32 has its own executor (a microMIPS
+# branch: the offset in halfwords).
+
+_DSP32 = [
+    _R("ABSQ_S.PH", "000000 ddddd ttttt 0001000100111100", "01111100000 ttttt ddddd 01001010010"),
+    _R("ABSQ_S.QB", "000000 ddddd ttttt 0000000100111100", "01111100000 ttttt ddddd 00001010010"),
+    _R("ABSQ_S.W", "000000 ddddd ttttt 0010000100111100", "01111100000 ttttt ddddd 10001010010"),
+    _R("ADDQ.PH", "000000 ttttt sssss ddddd 00000001101", "011111 sssss ttttt ddddd 01010010000"),
+    _R("ADDQH.PH", "000000 ttttt sssss ddddd 00001001101", "011111 sssss ttttt ddddd 01000011000"),
+    _R("ADDQH.W", "000000 ttttt sssss ddddd 00010001101", "011111 sssss ttttt ddddd 10000011000"),
+    _R("ADDQH_R.PH", "000000 ttttt sssss ddddd 10001001101", "011111 sssss ttttt ddddd 01010011000"),
+    _R("ADDQH_R.W", "000000 ttttt sssss ddddd 10010001101", "011111 sssss ttttt ddddd 10010011000"),
+    _R("ADDQ_S.PH", "000000 ttttt sssss ddddd 10000001101", "011111 sssss ttttt ddddd 01110010000"),
+    _R("ADDQ_S.W", "000000 ttttt sssss ddddd 01100000101", "011111 sssss ttttt ddddd 10110010000"),
+    _R("ADDSC", "000000 ttttt sssss ddddd 01110000101", "011111 sssss ttttt ddddd 10000010000"),
+    _R("ADDU.PH", "000000 ttttt sssss ddddd 00100001101", "011111 sssss ttttt ddddd 01000010000"),
+    _R("ADDU.QB", "000000 ttttt sssss ddddd 00011001101", "011111 sssss ttttt ddddd 00000010000"),
+    _R("ADDUH.QB", "000000 ttttt sssss ddddd 00101001101", "011111 sssss ttttt ddddd 00000011000"),
+    _R("ADDUH_R.QB", "000000 ttttt sssss ddddd 10101001101", "011111 sssss ttttt ddddd 00010011000"),
+    _R("ADDU_S.PH", "000000 ttttt sssss ddddd 10100001101", "011111 sssss ttttt ddddd 01100010000"),
+    _R("ADDU_S.QB", "000000 ttttt sssss ddddd 10011001101", "011111 sssss ttttt ddddd 00100010000"),
+    _R("ADDWC", "000000 ttttt sssss ddddd 01111000101", "011111 sssss ttttt ddddd 10001010000"),
+    _R("APPEND", "000000 ttttt sssss aaaaa 01000010101", "011111 sssss ttttt aaaaa 00000110001"),
+    _R("BALIGN", "000000 ttttt sssss kk 00100010111100", "011111 sssss ttttt 000 kk 10000110001"),
+    _R("BITREV", "000000 ddddd ttttt 0011000100111100", "01111100000 ttttt ddddd 11011010010"),
+    _R("BPOSGE32", "0100001101100000 oooooooooooooooo", None, "o=sx,x2"),
+    _R("CMP.EQ.PH", "000000 ttttt sssss 0000000000000101", "011111 sssss ttttt 0000001000010001"),
+    _R("CMP.LE.PH", "000000 ttttt sssss 0000000010000101", "011111 sssss ttttt 0000001010010001"),
+    _R("CMP.LT.PH", "000000 ttttt sssss 0000000001000101", "011111 sssss ttttt 0000001001010001"),
+    _R("CMPGDU.EQ.QB", "000000 ttttt sssss ddddd 00110000101", "011111 sssss ttttt ddddd 11000010001"),
+    _R("CMPGDU.LE.QB", "000000 ttttt sssss ddddd 01000000101", "011111 sssss ttttt ddddd 11010010001"),
+    _R("CMPGDU.LT.QB", "000000 ttttt sssss ddddd 00111000101", "011111 sssss ttttt ddddd 11001010001"),
+    _R("CMPGU.EQ.QB", "000000 ttttt sssss ddddd 00011000101", "011111 sssss ttttt ddddd 00100010001"),
+    _R("CMPGU.LE.QB", "000000 ttttt sssss ddddd 00101000101", "011111 sssss ttttt ddddd 00110010001"),
+    _R("CMPGU.LT.QB", "000000 ttttt sssss ddddd 00100000101", "011111 sssss ttttt ddddd 00101010001"),
+    _R("CMPU.EQ.QB", "000000 ttttt sssss 0000001001000101", "011111 sssss ttttt 0000000000010001"),
+    _R("CMPU.LE.QB", "000000 ttttt sssss 0000001011000101", "011111 sssss ttttt 0000000010010001"),
+    _R("CMPU.LT.QB", "000000 ttttt sssss 0000001010000101", "011111 sssss ttttt 0000000001010001"),
+    _R("DPA.W.PH", "000000 ttttt sssss AA 00000010111100", "011111 sssss ttttt 000 AA 00000110000"),
+    _R("DPAQX_S.W.PH", "000000 ttttt sssss AA 10001010111100", "011111 sssss ttttt 000 AA 11000110000"),
+    _R("DPAQX_SA.W.PH", "000000 ttttt sssss AA 11001010111100", "011111 sssss ttttt 000 AA 11010110000"),
+    _R("DPAQ_S.W.PH", "000000 ttttt sssss AA 00001010111100", "011111 sssss ttttt 000 AA 00100110000"),
+    _R("DPAQ_SA.L.W", "000000 ttttt sssss AA 01001010111100", "011111 sssss ttttt 000 AA 01100110000"),
+    _R("DPAU.H.QBL", "000000 ttttt sssss AA 10000010111100", "011111 sssss ttttt 000 AA 00011110000"),
+    _R("DPAU.H.QBR", "000000 ttttt sssss AA 11000010111100", "011111 sssss ttttt 000 AA 00111110000"),
+    _R("DPAX.W.PH", "000000 ttttt sssss AA 01000010111100", "011111 sssss ttttt 000 AA 01000110000"),
+    _R("DPS.W.PH", "000000 ttttt sssss AA 00010010111100", "011111 sssss ttttt 000 AA 00001110000"),
+    _R("DPSQX_S.W.PH", "000000 ttttt sssss AA 10011010111100", "011111 sssss ttttt 000 AA 11001110000"),
+    _R("DPSQX_SA.W.PH", "000000 ttttt sssss AA 11011010111100", "011111 sssss ttttt 000 AA 11011110000"),
+    _R("DPSQ_S.W.PH", "000000 ttttt sssss AA 00011010111100", "011111 sssss ttttt 000 AA 00101110000"),
+    _R("DPSQ_SA.L.W", "000000 ttttt sssss AA 01011010111100", "011111 sssss ttttt 000 AA 01101110000"),
+    _R("DPSU.H.QBL", "000000 ttttt sssss AA 10010010111100", "011111 sssss ttttt 000 AA 01011110000"),
+    _R("DPSU.H.QBR", "000000 ttttt sssss AA 11010010111100", "011111 sssss ttttt 000 AA 01111110000"),
+    _R("DPSX.W.PH", "000000 ttttt sssss AA 01010010111100", "011111 sssss ttttt 000 AA 01001110000"),
+    _R("EXTP", "000000 ttttt ZZZZZ AA 10011001111100", "011111 ZZZZZ ttttt 000 AA 00010111000"),
+    _R("EXTPDP", "000000 ttttt ZZZZZ AA 11011001111100", "011111 ZZZZZ ttttt 000 AA 01010111000"),
+    _R("EXTPDPV", "000000 ttttt sssss AA 11100010111100", "011111 sssss ttttt 000 AA 01011111000"),
+    _R("EXTPV", "000000 ttttt sssss AA 10100010111100", "011111 sssss ttttt 000 AA 00011111000"),
+    _R("EXTR.W", "000000 ttttt fffff AA 00111001111100", "011111 fffff ttttt 000 AA 00000111000"),
+    _R("EXTRV.W", "000000 ttttt sssss AA 00111010111100", "011111 sssss ttttt 000 AA 00001111000"),
+    _R("EXTRV_R.W", "000000 ttttt sssss AA 01111010111100", "011111 sssss ttttt 000 AA 00101111000"),
+    _R("EXTRV_RS.W", "000000 ttttt sssss AA 10111010111100", "011111 sssss ttttt 000 AA 00111111000"),
+    _R("EXTRV_S.H", "000000 ttttt sssss AA 11111010111100", "011111 sssss ttttt 000 AA 01111111000"),
+    _R("EXTR_R.W", "000000 ttttt fffff AA 01111001111100", "011111 fffff ttttt 000 AA 00100111000"),
+    _R("EXTR_RS.W", "000000 ttttt fffff AA 10111001111100", "011111 fffff ttttt 000 AA 00110111000"),
+    _R("EXTR_S.H", "000000 ttttt fffff AA 11111001111100", "011111 fffff ttttt 000 AA 01110111000"),
+    _R("INSV", "000000 ttttt sssss 0100000100111100", "011111 sssss ttttt 0000000000001100"),
+    _R("LBUX", "000000 xxxxx bbbbb ddddd 01000100101", "011111 bbbbb xxxxx ddddd 00110001010"),
+    _R("LHX", "000000 xxxxx bbbbb ddddd 00101100101", "011111 bbbbb xxxxx ddddd 00100001010"),
+    _R("LWX", "000000 xxxxx bbbbb ddddd 00110100101", "011111 bbbbb xxxxx ddddd 00000001010"),
+    _R("MADD@DSP", "000000 ttttt sssss AA 00101010111100", "011100 sssss ttttt 000 AA 00000000000"),
+    _R("MADDU@DSP", "000000 ttttt sssss AA 01101010111100", "011100 sssss ttttt 000 AA 00000000001"),
+    _R("MAQ_S.W.PHL", "000000 ttttt sssss AA 01101001111100", "011111 sssss ttttt 000 AA 10100110000"),
+    _R("MAQ_S.W.PHR", "000000 ttttt sssss AA 00101001111100", "011111 sssss ttttt 000 AA 10110110000"),
+    _R("MAQ_SA.W.PHL", "000000 ttttt sssss AA 11101001111100", "011111 sssss ttttt 000 AA 10000110000"),
+    _R("MAQ_SA.W.PHR", "000000 ttttt sssss AA 10101001111100", "011111 sssss ttttt 000 AA 10010110000"),
+    _R("MFHI@DSP", "00000000000 ddddd AA 00000001111100", "000000000 AA 00000 ddddd 00000010000"),
+    _R("MFLO@DSP", "00000000000 ddddd AA 01000001111100", "000000000 AA 00000 ddddd 00000010010"),
+    _R("MODSUB", "000000 ttttt sssss ddddd 01010010101", "011111 sssss ttttt ddddd 10010010000"),
+    _R("MSUB@DSP", "000000 ttttt sssss AA 10101010111100", "011100 sssss ttttt 000 AA 00000000100"),
+    _R("MSUBU@DSP", "000000 ttttt sssss AA 11101010111100", "011100 sssss ttttt 000 AA 00000000101"),
+    _R("MTHI@DSP", "00000000000 sssss AA 10000001111100", "000000 sssss 00000000 AA 00000010001"),
+    _R("MTHLIP", "00000000000 sssss AA 00001001111100", "011111 sssss 00000000 AA 11111111000"),
+    _R("MTLO@DSP", "00000000000 sssss AA 11000001111100", "000000 sssss 00000000 AA 00000010011"),
+    _R("MUL.PH", "000000 ttttt sssss ddddd 00000101101", "011111 sssss ttttt ddddd 01100011000"),
+    _R("MULEQ_S.W.PHL", "000000 ttttt sssss ddddd 00000100101", "011111 sssss ttttt ddddd 11100010000"),
+    _R("MULEQ_S.W.PHR", "000000 ttttt sssss ddddd 00001100101", "011111 sssss ttttt ddddd 11101010000"),
+    _R("MULEU_S.PH.QBL", "000000 ttttt sssss ddddd 00010010101", "011111 sssss ttttt ddddd 00110010000"),
+    _R("MULEU_S.PH.QBR", "000000 ttttt sssss ddddd 00011010101", "011111 sssss ttttt ddddd 00111010000"),
+    _R("MULQ_RS.PH", "000000 ttttt sssss ddddd 00100010101", "011111 sssss ttttt ddddd 11111010000"),
+    _R("MULQ_RS.W", "000000 ttttt sssss ddddd 00110010101", "011111 sssss ttttt ddddd 10111011000"),
+    _R("MULQ_S.PH", "000000 ttttt sssss ddddd 00101010101", "011111 sssss ttttt ddddd 11110010000"),
+    _R("MULQ_S.W", "000000 ttttt sssss ddddd 00111010101", "011111 sssss ttttt ddddd 10110011000"),
+    _R("MULSA.W.PH", "000000 ttttt sssss AA 10110010111100", "011111 sssss ttttt 000 AA 00010110000"),
+    _R("MULSAQ_S.W.PH", "000000 ttttt sssss AA 11110010111100", "011111 sssss ttttt 000 AA 00110110000"),
+    _R("MULT@DSP", "000000 ttttt sssss AA 00110010111100", "000000 sssss ttttt 000 AA 00000011000"),
+    _R("MULTU@DSP", "000000 ttttt sssss AA 01110010111100", "000000 sssss ttttt 000 AA 00000011001"),
+    _R("MUL_S.PH", "000000 ttttt sssss ddddd 10000101101", "011111 sssss ttttt ddddd 01110011000"),
+    _R("PACKRL.PH", "000000 ttttt sssss ddddd 00110101101", "011111 sssss ttttt ddddd 01110010001"),
+    _R("PICK.PH", "000000 ttttt sssss ddddd 01000101101", "011111 sssss ttttt ddddd 01011010001"),
+    _R("PICK.QB", "000000 ttttt sssss ddddd 00111101101", "011111 sssss ttttt ddddd 00011010001"),
+    _R("PRECEQ.W.PHL", "000000 ddddd ttttt 0101000100111100", "01111100000 ttttt ddddd 01100010010"),
+    _R("PRECEQ.W.PHR", "000000 ddddd ttttt 0110000100111100", "01111100000 ttttt ddddd 01101010010"),
+    _R("PRECEQU.PH.QBL", "000000 ddddd ttttt 0111000100111100", "01111100000 ttttt ddddd 00100010010"),
+    _R("PRECEQU.PH.QBLA", "000000 ddddd ttttt 0111001100111100", "01111100000 ttttt ddddd 00110010010"),
+    _R("PRECEQU.PH.QBR", "000000 ddddd ttttt 1001000100111100", "01111100000 ttttt ddddd 00101010010"),
+    _R("PRECEQU.PH.QBRA", "000000 ddddd ttttt 1001001100111100", "01111100000 ttttt ddddd 00111010010"),
+    _R("PRECEU.PH.QBL", "000000 ddddd ttttt 1011000100111100", "01111100000 ttttt ddddd 11100010010"),
+    _R("PRECEU.PH.QBLA", "000000 ddddd ttttt 1011001100111100", "01111100000 ttttt ddddd 11110010010"),
+    _R("PRECEU.PH.QBR", "000000 ddddd ttttt 1101000100111100", "01111100000 ttttt ddddd 11101010010"),
+    _R("PRECEU.PH.QBRA", "000000 ddddd ttttt 1101001100111100", "01111100000 ttttt ddddd 11111010010"),
+    _R("PRECR.QB.PH", "000000 ttttt sssss ddddd 00001101101", "011111 sssss ttttt ddddd 01101010001"),
+    _R("PRECRQ.PH.W", "000000 ttttt sssss ddddd 00011101101", "011111 sssss ttttt ddddd 10100010001"),
+    _R("PRECRQ.QB.PH", "000000 ttttt sssss ddddd 00010101101", "011111 sssss ttttt ddddd 01100010001"),
+    _R("PRECRQU_S.QB.PH", "000000 ttttt sssss ddddd 00101101101", "011111 sssss ttttt ddddd 01111010001"),
+    _R("PRECRQ_RS.PH.W", "000000 ttttt sssss ddddd 00100101101", "011111 sssss ttttt ddddd 10101010001"),
+    _R("PRECR_SRA.PH.W", "000000 ttttt sssss aaaaa 01111001101", "011111 sssss ttttt aaaaa 11110010001"),
+    _R("PRECR_SRA_R.PH.W", "000000 ttttt sssss aaaaa 11111001101", "011111 sssss ttttt aaaaa 11111010001"),
+    _R("PREPEND", "000000 ttttt sssss aaaaa 01001010101", "011111 sssss ttttt aaaaa 00001110001"),
+    _R("RADDU.W.QB", "000000 ddddd sssss 1111000100111100", "011111 sssss 00000 ddddd 10100010000"),
+    _R("RDDSP", "000000 ddddd 0 mmmmmm 00011001111100", "011111 mmmmmmmmmm ddddd 10010111000"),
+    _R("REPL.PH", "000000 iiiiiiiiii ddddd 00000111101", "011111 iiiiiiiiii ddddd 01010010010"),
+    _R("REPL.QB", "000000 ddddd iiiiiiii 0010111111100", "01111100 iiiiiiii ddddd 00010010010"),
+    _R("REPLV.PH", "000000 ddddd ttttt 0000001100111100", "01111100000 ttttt ddddd 01011010010"),
+    _R("REPLV.QB", "000000 ddddd ttttt 0001001100111100", "01111100000 ttttt ddddd 00011010010"),
+    _R("SHILO", "0000000000 ffffff AA 00000000011101", "011111 ffffff 0000000 AA 11010111000"),
+    _R("SHILOV", "00000000000 sssss AA 01001001111100", "011111 sssss 00000000 AA 11011111000"),
+    _R("SHLL.PH", "000000 ddddd ttttt ffff 001110110101", "0111110 ffff ttttt ddddd 01000010011"),
+    _R("SHLL.QB", "000000 ddddd ttttt fff 0100001111100", "01111100 fff ttttt ddddd 00000010011"),
+    _R("SHLLV.PH", "000000 ttttt sssss ddddd 01110001101", "011111 sssss ttttt ddddd 01010010011"),
+    _R("SHLLV.QB", "000000 ttttt sssss ddddd 01110010101", "011111 sssss ttttt ddddd 00010010011"),
+    _R("SHLLV_S.PH", "000000 ttttt sssss ddddd 11110001101", "011111 sssss ttttt ddddd 01110010011"),
+    _R("SHLLV_S.W", "000000 ttttt sssss ddddd 01111010101", "011111 sssss ttttt ddddd 10110010011"),
+    _R("SHLL_S.PH", "000000 ddddd ttttt ffff 101110110101", "0111110 ffff ttttt ddddd 01100010011"),
+    _R("SHLL_S.W", "000000 ddddd ttttt fffff 01111110101", "011111 fffff ttttt ddddd 10100010011"),
+    _R("SHRA.PH", "000000 ddddd ttttt ffff 001100110101", "0111110 ffff ttttt ddddd 01001010011"),
+    _R("SHRA.QB", "000000 ddddd ttttt fff 0000111111100", "01111100 fff ttttt ddddd 00100010011"),
+    _R("SHRAV.PH", "000000 ttttt sssss ddddd 00110001101", "011111 sssss ttttt ddddd 01011010011"),
+    _R("SHRAV.QB", "000000 ttttt sssss ddddd 00111001101", "011111 sssss ttttt ddddd 00110010011"),
+    _R("SHRAV_R.PH", "000000 ttttt sssss ddddd 10110001101", "011111 sssss ttttt ddddd 01111010011"),
+    _R("SHRAV_R.QB", "000000 ttttt sssss ddddd 10111001101", "011111 sssss ttttt ddddd 00111010011"),
+    _R("SHRAV_R.W", "000000 ttttt sssss ddddd 01011010101", "011111 sssss ttttt ddddd 10111010011"),
+    _R("SHRA_R.PH", "000000 ddddd ttttt ffff 011100110101", "0111110 ffff ttttt ddddd 01101010011"),
+    _R("SHRA_R.QB", "000000 ddddd ttttt fff 1000111111100", "01111100 fff ttttt ddddd 00101010011"),
+    _R("SHRA_R.W", "000000 ddddd ttttt fffff 01011110101", "011111 fffff ttttt ddddd 10101010011"),
+    _R("SHRL.PH", "000000 ddddd ttttt ffff 001111111100", "0111110 ffff ttttt ddddd 11001010011"),
+    _R("SHRL.QB", "000000 ddddd ttttt fff 1100001111100", "01111100 fff ttttt ddddd 00001010011"),
+    _R("SHRLV.PH", "000000 ttttt sssss ddddd 01100010101", "011111 sssss ttttt ddddd 11011010011"),
+    _R("SHRLV.QB", "000000 ttttt sssss ddddd 01101010101", "011111 sssss ttttt ddddd 00011010011"),
+    _R("SUBQ.PH", "000000 ttttt sssss ddddd 01000001101", "011111 sssss ttttt ddddd 01011010000"),
+    _R("SUBQH.PH", "000000 ttttt sssss ddddd 01001001101", "011111 sssss ttttt ddddd 01001011000"),
+    _R("SUBQH.W", "000000 ttttt sssss ddddd 01010001101", "011111 sssss ttttt ddddd 10001011000"),
+    _R("SUBQH_R.PH", "000000 ttttt sssss ddddd 11001001101", "011111 sssss ttttt ddddd 01011011000"),
+    _R("SUBQH_R.W", "000000 ttttt sssss ddddd 11010001101", "011111 sssss ttttt ddddd 10011011000"),
+    _R("SUBQ_S.PH", "000000 ttttt sssss ddddd 11000001101", "011111 sssss ttttt ddddd 01111010000"),
+    _R("SUBQ_S.W", "000000 ttttt sssss ddddd 01101000101", "011111 sssss ttttt ddddd 10111010000"),
+    _R("SUBU.PH", "000000 ttttt sssss ddddd 01100001101", "011111 sssss ttttt ddddd 01001010000"),
+    _R("SUBU.QB", "000000 ttttt sssss ddddd 01011001101", "011111 sssss ttttt ddddd 00001010000"),
+    _R("SUBUH.QB", "000000 ttttt sssss ddddd 01101001101", "011111 sssss ttttt ddddd 00001011000"),
+    _R("SUBUH_R.QB", "000000 ttttt sssss ddddd 11101001101", "011111 sssss ttttt ddddd 00011011000"),
+    _R("SUBU_S.PH", "000000 ttttt sssss ddddd 11100001101", "011111 sssss ttttt ddddd 01101010000"),
+    _R("SUBU_S.QB", "000000 ttttt sssss ddddd 11011001101", "011111 sssss ttttt ddddd 00101010000"),
+    _R("WRDSP", "000000 sssss 0 mmmmmm 01011001111100", "011111 sssss mmmmmmmmmm 10011111000"),
+]
+DSP = _Table(_DSP32)
+#: the DSP Module level each form needs (emips.isa.ISA.DSP_LEVEL)
+DSP_LEVEL = {r.form: 1 if r.form == "BPOSGE32" else
+             ISA.DSP_LEVEL[ISA.for_release("R5", 2).get(r.form)["ase"]] for r in _DSP32}
+# ------------------------------------------------------------ the MT Module
+#
+# MD00768 rev. 1.12 (Vol. IV-f for microMIPS32) ch. 5: POOL32Axf for DMT /
+# EMT / DVPE / EVPE / YIELD, POOL32A minors for FORK / MFTR / MTTR.  The
+# 32-bit rows' rt is bits 25:21, rs 20:16 as everywhere in microMIPS:
+# YIELD rs, rt writes rs (the MIPS32 rd), MFTR rs, rt writes rs, MTTR rt,
+# rs writes the target's rs (the MIPS32 rd).  The FORK diagram labels
+# bits 6:0 with a 6-bit field (100111): bit 6 = 0 (bits 10:6 = 0).  No
+# binutils / QEMU knows these encodings: they are pinned to the manual.
+
+_MT32 = [
+    _R("DMT", "000000 ttttt 00000 0000010101 111100", "01000001011 ttttt 0000101111000001"),
+    _R("DVPE", "000000 ttttt 00000 0001010101 111100", "01000001011 ttttt 0000000000000001"),
+    _R("EMT", "000000 ttttt 00000 0010010101 111100", "01000001011 ttttt 0000101111100001"),
+    _R("EVPE", "000000 ttttt 00000 0011010101 111100", "01000001011 ttttt 0000000000100001"),
+    _R("FORK", "000000 ttttt sssss ddddd 00000 100111", "011111 sssss ttttt ddddd 00000 001000"),
+    _R("YIELD", "000000 ttttt sssss 00 00100110 111100", "011111 ttttt 00000 sssss 00000 001001"),
+    _R("MFTR", "000000 ttttt sssss xxxxx u h 00 lll 1110",
+       "01000001000 ttttt sssss xxxxx u h 0 lll"),
+    _R("MTTR", "000000 ttttt sssss xxxxx u h 00 lll 0110",
+       "01000001100 ttttt sssss xxxxx u h 0 lll"),
+]
+MT = _Table(_MT32)
+#: the MT Module's forms (decoded only by a core with it)
+MT_FORMS = frozenset(r.form for r in _MT32)
+#: the assembler's pre-Release 6 forms (the DSP / MT Modules' included:
+#: the MIPS32 assembler checks .set dsp / mt; decode keeps them apart)
+PRE_ASM = _Table(PRE_ROWS + _DSP32 + _MT32)
+
+
 @dataclass(frozen=True)
 class MM:
     """A decoded microMIPS instruction: ``form`` (:class:`Row` name),
@@ -802,10 +1006,13 @@ class MMDecodeError(ISADecodeError):
         self.why = why
 
 
-def decode(h: int, second: Callable[[], int] | None = None, *, release: str = "R5") -> MM:
+def decode(h: int, second: Callable[[], int] | None = None, *, release: str = "R5",
+           dsp: int = 0, mt: bool = False) -> MM:
     """Decode the instruction whose first halfword is ``h``; ``second()``
     gives the next halfword for a 32-bit one.  An encoding that is no
-    instruction of this release raises :class:`ISADecodeError`."""
+    instruction of this release raises :class:`ISADecodeError`.  ``dsp``:
+    the DSP Module level whose encodings decode (MD00764: Releases 2-5);
+    ``mt``: the MT Module's (MD00768: Releases 2-5)."""
     h &= 0xFFFF
     size = size_of(h)
     if size == 4:
@@ -816,6 +1023,12 @@ def decode(h: int, second: Callable[[], int] | None = None, *, release: str = "R
         raw = h
     table = R6 if release == "R6" else PRE
     row = table.match(raw, size)
+    if row is None and dsp and release != "R6" and size == 4:
+        row = DSP.match(raw, size)
+        if row is not None and DSP_LEVEL[row.form] > dsp:
+            row = None
+    if row is None and mt and release != "R6" and size == 4:
+        row = MT.match(raw, size)
     if row is None:
         raise MMDecodeError(f"0x{raw:0{size * 2}x}: reserved or not in microMIPS32"
                             f"{' R6' if release == 'R6' else ''}", raw)
@@ -861,13 +1074,15 @@ _FAMILY = {
     "LWPC": "load",
     "ADDIUPC": "imm", "LWXS": "load", "LWP": "load", "LWM16": "load", "LWM32": "load",
     "SWP": "store", "SWM16": "store", "SWM32": "store", "MOVEP": "alu",
+    "BPOSGE32": "branch",                           # the DSP Module (MD00764)
 }
 #: the short-slot jumps / branches (a 16-bit delay slot: link = PC + size + 2)
 SHORT_SLOT = {"JALS", "JALRS", "JALRS.HB", "JALRS16", "BLTZALS", "BGEZALS"}
 ENTRIES = {form: {"name": f"MM.{form}", "mnemonic": form.lower(), "family": fam,
                   "status": "core", "pic32": False, "isa": "micromips",
-                  "decode": {"lead": True}, "releases": ["R3", "R5", "R6"]}
+                  "decode": {"lead": True}, "releases": ["R2", "R3", "R5", "R6"]}
            for form, fam in _FAMILY.items()}
+ENTRIES["BPOSGE32"].update(ase="dsp", releases=["R2", "R3", "R5"])   # Status.MX
 
 
 def link(i: MM, pc: int) -> int:
@@ -941,8 +1156,13 @@ def text(i: MM, pc: int, *, abi: bool = True, release: str = "R5") -> str:
         tw = expand(i)
         if tw is None:
             return _special_text(i, pc, r)
-        out = disassemble(tw, pc, abi=abi, style="gas",
+        out = disassemble(tw, pc, abi=abi, style="gas", dsp=2 if i.form in DSP_LEVEL else 0,
+                          mt=i.form in MT_FORMS,
                           release="R6" if release == "R6" and not i.row.r5_twin else "R5")
+        if i.form.endswith("@DSP") and "$ac" not in out:     # ac0: still the DSP form
+            mn, _, ops = out.partition(" ")
+            out = (f"{mn} $ac0, {ops}" if mn in ("mult", "multu", "madd", "maddu", "msub",
+                                                 "msubu") else f"{out}, $ac0")
         if i.form.startswith(("MOVF", "MOVT")) and "$fcc" not in out:
             out += ", $fcc0"                    # (binutils: the cc is not optional here)
         return out
@@ -1004,6 +1224,8 @@ def _special_text(i: MM, pc: int, r) -> str:
         return f"{form.lower()} $f{f['T']}, {t}"
     if form in ("BC2EQZC", "BC2NEZC"):
         return f"{form.lower()} ${f['T']}, {t}"
+    if form == "BPOSGE32":
+        return f"bposge32 {t}"
     if form in ("BC1F", "BC1T", "BC2F", "BC2T"):
         cc = f"$fcc{f['c']}, " if form.startswith("BC1") and f["c"] else \
             (f"$cc{f['c']}, " if f["c"] else "")
@@ -1208,7 +1430,7 @@ class Encoder:
 
     def __init__(self, release: str = "R5") -> None:
         self.release = release
-        self.table = R6 if release == "R6" else PRE
+        self.table = R6 if release == "R6" else PRE_ASM
         self._enc = _Encoder(self.table)
 
     def _raw(self, form: str, **fields) -> Insn:
@@ -1229,6 +1451,8 @@ class Encoder:
         ``value(expr)`` raises :class:`Unresolved` for a label not known
         yet; ``mips32(mn, ops)`` = the MIPS32 encoding."""
         short_ok = force != 4 and not long
+        if mn in ("rddsp", "wrdsp") and len(ops) == 1:
+            ops = ops + ["0x3f"]                # (microMIPS: the 6 mask bits, GNU as)
         special = self._special(mn, ops, pc, value, short_ok)
         if special is not None:
             insn = special
@@ -1246,10 +1470,15 @@ class Encoder:
             if insn is None:
                 from .isa import ISA, ISADecodeError
                 try:
-                    name = ISA.for_release(self.release).decode(word).name
+                    name = ISA.for_release(self.release, 2, self.release != "R6") \
+                        .decode(word).name
                 except ISADecodeError:
                     name = ""
                 name = _ALIAS_ROWS.get(name, name)
+                base = mn.split("@")[0].upper()
+                if f"{base}@DSP" in DSP_LEVEL and any(
+                        o.strip().lower().startswith("$ac") for o in ops):
+                    name = f"{base}@DSP"         # (also $ac0: its own encoding here)
                 if self.release == "R6":
                     name = {"LUI": "AUI"}.get(name, name)
                 entry = self._enc.by_twin32.get(name) or self._enc.by_twin32.get(
@@ -1305,6 +1534,9 @@ class Encoder:
         if mn == "bc":
             need(1)
             return self._branch(None, "BEQZC", {}, ops[0], pc, value, False)
+        if mn == "bposge32":                    # the DSP Module (MD00764)
+            need(1)
+            return self._branch(None, "BPOSGE32", {}, ops[0], pc, value, False)
         if mn in ("beqz", "bnez"):
             need(2)
             rs = _gpr(ops[0])

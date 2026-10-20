@@ -1,0 +1,423 @@
+"""Core presets: real MIPS cores as their manuals let them be built (Qt-free).
+
+A preset names one licensed core — the 24Kf, the M14K, the P5600 ... —
+and says what each setting may be on it: the release it implements
+(Config.AR / the manual), its compressed ISA, whether it has an FPU, the
+MMUs, cache shapes, core counts, shadow sets and pipeline model its
+build options offer.  :func:`apply` sets the release and every one of
+those settings to the preset's own build (a choice inside the options:
+the documents give no defaults), and the core's PRId.  After that the
+settings stay editable within the core's options; a value outside them
+makes the machine a generic eMIPS core again (``Options.core = ""``,
+PRId 0) — the rule is in :mod:`emips.compat`.
+
+What a core has that eMIPS does not model (the 34K / 1004K /
+interAptiv pipelines' thread stage, the P5600's out-of-order pipeline ...) is listed
+in :attr:`Core.missing`, and every preset keeps the 24K's
+implementation-specific registers (Config7, the EJTAG 3.20 DCR, four
+instruction / two data breakpoints): ``sim.DEVIATIONS["core presets"]``.
+
+Sources (``docs``: the core's datasheet and Software User's Manual):
+the 24K MD00346 / MD00354 / MD00343, the 34K MD00418 / MD00534, the 1004K
+MD00584 / MD00622, the
+interAptiv MD00903 / MD00904, the P5600 MD01024 / MD01025, the M14K
+MD00666 / MD00668, the M14Kc MD00672 / MD00674, the microAptiv UC
+MD00931 / MD00934, the microAptiv UP MD00942, the 4K MD00016.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Any
+
+from .cache import Geometry
+
+#: MIPS Technologies' Company ID (PRId 23:16; every manual here: 1)
+COMPANY_MIPS = 1
+#: the settings a preset decides (Options fields) and the release
+FIELDS = ("release", "compressed", "fpu", "dsp", "mt", "mmu", "icache", "dcache", "l2", "l3",
+          "cores", "shadow_sets", "model")
+
+
+def _pow2(n: int) -> bool:
+    return n > 0 and not n & (n - 1)
+
+
+@dataclass(frozen=True)
+class CacheChoice:
+    """The shapes a cache may be built with: ``sizes`` (KB, 0 = no cache)
+    with ``ways`` ways, plus the ``direct`` sizes built direct-mapped; or,
+    with ``way_kb`` (the smallest and largest way, KB, a power of two),
+    any number of ``ways`` of such ways up to ``max_kb``."""
+    sizes: tuple[int, ...] = ()
+    ways: tuple[int, ...] = (4,)
+    lines: tuple[int, ...] = (32,)
+    direct: tuple[int, ...] = ()
+    way_kb: tuple[int, int] | None = None
+    max_kb: int = 0
+
+    def allows(self, spec: str, level: int = 1) -> bool:
+        try:
+            g = Geometry.parse(spec, level)
+        except ValueError:
+            return False
+        if g is None:
+            return 0 in self.sizes or 0 in self.direct
+        if g.line not in self.lines:
+            return False
+        kb, rest = divmod(g.size, 1024)
+        if rest:
+            return False
+        if self.way_kb is not None:
+            way, low, high = g.size // g.ways, self.way_kb[0] * 1024, self.way_kb[1] * 1024
+            return (g.ways in self.ways and _pow2(way) and low <= way <= high
+                    and kb <= self.max_kb)
+        if g.ways == 1 and kb in self.direct:
+            return True
+        return g.ways in self.ways and kb in self.sizes and kb > 0
+
+    def text(self) -> str:
+        if self.sizes == (0,) and self.way_kb is None and not self.direct:
+            return "no cache"
+        if self.way_kb is not None:
+            ways = "/".join(map(str, self.ways))
+            return (f"0-{self.max_kb} KB, {ways}-way, {'/'.join(map(str, self.lines))}-byte "
+                    f"lines")
+        sizes = "/".join(map(str, self.sizes)).replace("0/", "none/", 1) \
+            if self.sizes[:1] == (0,) else "/".join(map(str, self.sizes))
+        out = (f"{sizes} KB, {'/'.join(map(str, self.ways))}-way, "
+               f"{'/'.join(map(str, self.lines))}-byte lines")
+        if self.direct:
+            out += f" (or {'/'.join(map(str, self.direct))} KB direct-mapped)"
+        return out
+
+
+#: no cache at all (an SRAM interface: the M14K, the microAptiv UC)
+NO_CACHE = CacheChoice(sizes=(0,))
+
+
+def mmu_key(spec: str) -> str:
+    """An MMU spec in one spelling: ``fixed``, ``bat``, ``tlb:N``,
+    ``ftlb:N:SxW``, then ``+sc`` / ``+pw`` in that order."""
+    text = (spec or "fixed").strip().lower().replace(" ", "")
+    base, *flags = text.split("+")
+    kind, _, rest = base.partition(":")
+    parts = rest.split(":") if rest else []
+    if kind == "tlb":
+        base = f"tlb:{parts[0] if parts and parts[0] else 32}"
+    elif kind == "ftlb":
+        n = parts[0] if parts and parts[0] else "64"
+        base = f"ftlb:{n}:{parts[1] if len(parts) > 1 else '128x4'}"
+    return base + "".join(f"+{f}" for f in ("sc", "pw") if f in flags)
+
+
+@dataclass(frozen=True)
+class Core:
+    #: the preset's name (``--core``)
+    name: str
+    #: what the user sees
+    title: str
+    release: str
+    #: PRId Processor ID (15:8)
+    processor_id: int
+    compressed: tuple[str, ...]
+    fpu: tuple[bool, ...]
+    #: the DSP Module it may have: "none", "dsp" (Revision 1), "dspr2"
+    dsp: tuple[str, ...]
+    #: the MT Module it may have: "none" or "VPES:TCS" (emips.mt.parse_spec)
+    mt: tuple[str, ...]
+    #: the MMU specs it may have (:func:`mmu_key` spelling)
+    mmu: tuple[str, ...]
+    icache: CacheChoice
+    dcache: CacheChoice
+    #: None: no L2 cache
+    l2: CacheChoice | None
+    cores: tuple[int, ...]
+    shadow_sets: tuple[int, ...]
+    model: tuple[str, ...]
+    #: the preset's own build (Options fields), inside the choices above
+    build: dict[str, Any]
+    #: where the choices come from
+    source: str
+    #: what the core has that eMIPS does not model
+    missing: tuple[str, ...] = ()
+    #: what eMIPS models differently on this core
+    notes: tuple[str, ...] = field(default=())
+
+    @property
+    def prid(self) -> int:
+        """PRId: Company ID 1 (MIPS Technologies), the Processor ID,
+        Revision 0 (the revision is the silicon's: QEMU's models use 0)."""
+        return (COMPANY_MIPS << 16) | (self.processor_id << 8)
+
+    def allows(self, name: str, value) -> bool:
+        """May this core be built with ``name`` = ``value``?"""
+        if name == "release":
+            return value == self.release
+        if name in ("icache", "dcache"):
+            return getattr(self, name).allows(value, 1)
+        if name == "l2":
+            if self.l2 is None:
+                return _parses(value, 2) and Geometry.parse(value, 2) is None
+            return self.l2.allows(value, 2)
+        if name == "l3":
+            return _parses(value, 3) and Geometry.parse(value, 3) is None
+        if name == "mmu":
+            try:
+                return mmu_key(value) in self.mmu
+            except (ValueError, IndexError):
+                return False
+        return value in getattr(self, name)
+
+    def choices(self, name: str) -> str:
+        """The options of ``name`` on this core, for a message."""
+        if name == "release":
+            return f"Release {self.release[1:]}"
+        if name in ("icache", "dcache"):
+            return getattr(self, name).text()
+        if name == "l2":
+            return "no L2" if self.l2 is None else self.l2.text()
+        if name == "l3":
+            return "no L3"
+        if name == "fpu":
+            return {(True,): "an FPU", (False,): "no FPU"}.get(self.fpu, "an FPU or none")
+        if name == "dsp":
+            return " or ".join({"none": "no DSP Module", "dsp": "the DSP Module (Revision 1)",
+                                "dspr2": "the DSP Module Revision 2"}[d] for d in self.dsp)
+        if name == "mt":
+            if self.mt == ("none",):
+                return "no MT Module"
+            vpes = sorted({int(x.split(":")[0]) for x in self.mt if x != "none"})
+            tcs = sorted({int(x.split(":")[1]) for x in self.mt if x != "none"})
+            one = all(int(a) == int(b) for a, b in (x.split(":") for x in self.mt if x != "none"))
+            return ("the MT Module: " + "/".join(map(str, vpes)) + " VPE(s), "
+                    + ("one TC per VPE" if one else f"{tcs[0]}-{tcs[-1]} TCs"))
+        if name == "mmu":
+            return ", ".join(self.mmu)
+        return ", ".join(str(v) for v in getattr(self, name))
+
+
+def _parses(spec: str, level: int) -> bool:
+    try:
+        Geometry.parse(spec, level)
+    except ValueError:
+        return False
+    return True
+
+
+# -- the cores ---------------------------------------------------------------
+
+_L1_24K = CacheChoice(sizes=(0, 8, 16, 32, 64))
+_L2_SOCIT = CacheChoice(sizes=(0, 128, 256, 512, 1024, 2048, 4096, 8192), ways=(8,),
+                        lines=(32, 64))
+_TLB_24K = ("tlb:16", "tlb:32", "tlb:64", "fixed")
+_MCU_L1 = CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(16,), way_kb=(1, 16), max_kb=64)
+_24K_MISSING = ("CorExtend (UDI)",)
+#: the 34K's MT build options (MD00534 1.1: 1 or 2 VPEs, 1-9 TCs)
+_MT_SPECS = tuple(f"{v}:{t}" for v in (1, 2) for t in range(v, 10))
+_CPS_NOTE = ("eMIPS builds a CPS (the CM, CPC, GIC) only with 2 or more cores, and at "
+             "most 4",)
+
+
+def _24k(name: str, title: str, fpu: bool) -> Core:
+    return Core(
+        name, title, "R2", 0x93, ("mips16e",), (fpu,), ("none",), ("none",), _TLB_24K, _L1_24K,
+        _L1_24K, _L2_SOCIT, (1,), (1, 2, 4), ("24k",),
+        build=dict(compressed="mips16e", fpu=fpu, dsp="none", mt="none", mmu="tlb:32",
+                   icache="32K:4:32", dcache="32K:4:32", l2="none", l3="none", cores=1,
+                   shadow_sets=4, model="24k", write_buffer=True),
+        source="MD00346 / MD00354 (24K datasheets: caches 0/8/16/32/64 KB 4-way, JTLB "
+               "16/32/64 or FMT, 1/2/4 shadow sets, the 8-stage pipeline), MD00343 "
+               "Table 6.26 (PRId 0x93), Table 6.18 (CU1 without the FPU), Table 6.32 "
+               "(Config3.DSPP = 0: the DSP ASE is the 24KE's)",
+        missing=_24K_MISSING)
+
+
+def _34k(name: str, title: str, fpu: bool) -> Core:
+    return Core(
+        name, title, "R2", 0x95, ("mips16e", "none"), (fpu,), ("dsp",), _MT_SPECS, _TLB_24K,
+        CacheChoice(sizes=(0, 8, 16, 32, 64), direct=(1, 2, 4, 8, 16)),
+        CacheChoice(sizes=(0, 8, 16, 32, 64), direct=(1, 2, 4, 8, 16)),
+        _L2_SOCIT, (1,), (1,), ("24k",),
+        build=dict(compressed="mips16e", fpu=fpu, dsp="dsp", mt="2:5", mmu="tlb:32",
+                   icache="32K:4:32", dcache="32K:4:32", l2="none", l3="none", cores=1,
+                   shadow_sets=1, model="24k", write_buffer=True),
+        source="MD00418 (34Kc datasheet: 1-2 VPEs, 1-9 TCs, caches 0/8/16/32/64 KB 4-way "
+               "or direct-mapped 1-16 KB, JTLB 16/32/64 per VPE or FMT, MIPS16e optional), "
+               "MD00534 Table 7.39 (PRId 0x95), 4.2 (the DSP ASE always present, "
+               "Config3.DSPP; no DSP2P: Revision 1), 6.4 (no dedicated shadow sets: TCs "
+               "through SRSConf0), ch. 3 (the 34Kf's FPU), ch. 12 (the ITC), ch. 13 (the "
+               "policy managers)",
+        missing=("CorExtend (UDI)", "the scratchpad RAMs"),
+        notes=("pipeline mode: the 34K's pipeline (MD00534 ch. 2: the 24K's with the "
+               "thread-select stage IT, per-TC instruction buffers, the dispatch scheduler)",))
+
+
+def _1004k(name: str, title: str, fpu: bool) -> Core:
+    return Core(
+        name, title, "R2", 0x99, ("mips16e", "none"), (fpu,), ("dsp", "none"), ("1:1", "2:2"),
+        _TLB_24K,
+        CacheChoice(sizes=(8, 16, 32, 64), direct=(0, 1, 2, 4, 8, 16)),
+        CacheChoice(sizes=(4, 8, 16, 32, 64), direct=(0, 1, 2, 4, 8, 16)),
+        _L2_SOCIT, (1, 2, 3, 4), (1, 2, 3, 4), ("24k",),
+        build=dict(compressed="mips16e", fpu=fpu, dsp="dsp", mt="2:2", mmu="tlb:32",
+                   icache="32K:4:32", dcache="32K:4:32", l2="256K:8:32", l3="none", cores=2,
+                   shadow_sets=1, model="24k", write_buffer=True),
+        source="MD00584 (1004K datasheet: 1-4 coherent CPUs, caches, JTLB 16/32/64 or "
+               "FMT per VPE, MIPS16e optional, the 1004Kf's FPU, the DSP ASE optional), "
+               "MD00622 1.1 (the MT ASE: 1 or 2 VPEs, one TC per VPE, a multi-core ITC), "
+               "Table 7.40 (PRId 0x99), 6.4 (no dedicated shadow sets: a free TC's "
+               "registers through SRSConf0), 4.2 / Table 7.48 (the DSP ASE: Config3.DSPP, "
+               "no DSP2P — Revision 1)",
+        missing=("CorExtend (UDI)",),
+        notes=("pipeline mode: the 34K's pipeline (MD00622 2.1: the same 8-9 stages, IT "
+               "bypassed with one TC)",) + _CPS_NOTE)
+
+
+CORES: dict[str, Core] = {c.name: c for c in (
+    Core("4kc", "MIPS 4Kc", "R1", 0x80, ("none",), (False,), ("none",), ("none",), ("tlb:16",),
+         CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(16,), way_kb=(1, 4), max_kb=16),
+         CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(16,), way_kb=(1, 4), max_kb=16),
+         None, (1,), (1,), ("5-stage",),
+         build=dict(compressed="none", fpu=False, dsp="none", mt="none", mmu="tlb:16",
+                    icache="16K:4:16", dcache="16K:4:16", l2="none", l3="none", cores=1,
+                    shadow_sets=1, model="5-stage"),
+         source="MD00016 (4K SUM: Release 1, PRId 0x80 (5.2.14), a 16-entry JTLB, caches "
+                "0-16 KB 1-4 way 16-byte lines (Table 7-2), the 5-stage I E M A W "
+                "pipeline, no FPU / MIPS16e)",
+         notes=("the micro-TLBs are the 24K's 4 / 8 entries (the 4Kc's ITLB has 3)",
+                "EJTAG 3.20 (the 4Kc has EJTAG 2.6)")),
+    _24k("24kc", "MIPS 24Kc", fpu=False),
+    _24k("24kf", "MIPS 24Kf", fpu=True),
+    _34k("34kc", "MIPS 34Kc", fpu=False),
+    _34k("34kf", "MIPS 34Kf", fpu=True),
+    _1004k("1004kc", "MIPS 1004Kc", fpu=False),
+    _1004k("1004kf", "MIPS 1004Kf", fpu=True),
+    Core("interaptiv", "MIPS interAptiv", "R3", 0xA1, ("mips16e", "none"), (True, False),
+         ("dspr2", "none"), _MT_SPECS,
+         tuple(f"tlb:{n}+sc" for n in (16, 32, 48, 64)),
+         CacheChoice(sizes=(4, 8, 16, 32, 64)), CacheChoice(sizes=(4, 8, 16, 32, 64)),
+         CacheChoice(sizes=(0, 128, 256, 512, 1024, 2048, 4096, 8192), ways=(8,),
+                     lines=(32, 64)),
+         (1, 2, 3, 4), (1, 2, 3, 4), ("24k",),
+         build=dict(compressed="mips16e", fpu=True, dsp="dspr2", mt="2:5", mmu="tlb:32+sc",
+                    icache="32K:4:32", dcache="32K:4:32", l2="256K:8:32", l3="none", cores=2,
+                    shadow_sets=1, model="24k", write_buffer=True),
+         source="MD00903 (interAptiv datasheet: Release 3, 1-4 cores, L1 4-64 KB 4-way "
+                "32-byte lines, the CM2's 8-way L2 of 0/128 KB-8 MB, EVA, the DSP ASE "
+                "optional), MD00904 Table 2.10 (PRId 0xA1), the JTLB 16/32/48/64 per VPE, "
+                "SegCtl0-2 (2.2.3), 15.3 (the DSP ASE Revision 2: DSPP, DSP2P), 1.1 (the "
+                "MT ASE: 1 or 2 VPEs and 1-9 TCs a core), ch. 9 (the GIC's VPs)",
+         missing=("MIPS16e2", "the MPU", "the CM2's per-TC priorities (GCR_Cx_TCID_n)"),
+         notes=("pipeline mode: the 34K's pipeline (MD00903: an 8/9-stage pipeline, the "
+                "dispatch scheduler of MD00904 ch. 10)",) + _CPS_NOTE),
+    Core("p5600", "MIPS P5600", "R5", 0xA8, ("none",), (True, False), ("none",), ("none",),
+         ("ftlb:64:128x4+sc", "ftlb:64:128x4+sc+pw", "tlb:64+sc", "tlb:64+sc+pw"),
+         CacheChoice(sizes=(32, 64)), CacheChoice(sizes=(32, 64)),
+         CacheChoice(sizes=(512, 1024, 2048, 4096, 8192), ways=(8,), lines=(32, 64)),
+         (1, 2, 3, 4), (1,), ("5-stage", "24k"),
+         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:64:128x4+sc",
+                    icache="32K:4:32",
+                    dcache="32K:4:32", l2="512K:8:32", l3="none", cores=2, shadow_sets=1,
+                    model="5-stage"),
+         source="MD01024 (P5600 datasheet: up to 6 cores, L1 32 / 64 KB 4-way, the 8-way "
+                "L2 of 512 KB-8 MB, VTLB 64 + FTLB 512 4-way), MD01025 1.1.2 (Release 5), "
+                "Table 2.11 (PRId 0xA8), Table 2.3 (MT 1 / 4), Table 2.6 (SC = 1, no "
+                "MIPS16e / microMIPS), Table 2.68 (one GPR set)",
+         missing=("the out-of-order superscalar pipeline (no model: the 5-stage or the "
+                  "24K's)", "MSA (M24)", "the virtualization ASE (VZ)", "XPA",
+                  "the FPU's IEEE 754-2008 mode"),
+         notes=_CPS_NOTE),
+    Core("m14k", "MIPS M14K", "R2", 0x9B, ("micromips", "micromips-only", "none"), (False,),
+         ("none",), ("none",), ("fixed",), NO_CACHE, NO_CACHE, None, (1,), (1, 2, 4, 8, 16), ("5-stage",),
+         build=dict(compressed="micromips", fpu=False, dsp="none", mt="none", mmu="fixed",
+                    icache="none",
+                    dcache="none", l2="none", l3="none", cores=1, shadow_sets=4,
+                    model="5-stage"),
+         source="MD00666 (M14K datasheet: microMIPS / MIPS32 build options (Table 4), the "
+                "5-stage I E M A W pipeline, SRAM interfaces), MD00668 Table 5.26 (AR = "
+                "Release 2, MT = FMT), Table 5.23 (PRId 0x9B), Table 5.12 (1/2/4/8/16 "
+                "shadow sets), Table 5.10 (no FPU: CU1 reads 0)",
+         missing=("the MCU ASE (IACK, more interrupt inputs)", "the MPU",
+                  "the SRAM interface timing (eMIPS: ideal memory)")),
+    Core("m14kc", "MIPS M14Kc", "R2", 0x9C, ("micromips", "micromips-only", "none"),
+         (False,), ("none",), ("none",), ("fixed", "tlb:16", "tlb:32"), _MCU_L1, _MCU_L1, None, (1,),
+         (1, 2, 4, 8, 16), ("5-stage",),
+         build=dict(compressed="micromips", fpu=False, dsp="none", mt="none", mmu="tlb:16",
+                    icache="16K:4:16", dcache="16K:4:16", l2="none", l3="none", cores=1,
+                    shadow_sets=4, model="5-stage"),
+         source="MD00672 (M14Kc datasheet Table 5: caches 0-64 KB 1-4 way 16-byte lines, "
+                "FMT or a 16 / 32-entry TLB, microMIPS options), MD00674 (PRId 0x9C, AR = "
+                "Release 2, FP = 0)",
+         missing=("the MCU ASE", "the scratchpad RAMs")),
+    Core("microaptiv-uc", "MIPS microAptiv UC", "R2", 0x9D,
+         ("micromips", "micromips-only", "none"), (False, True), ("dspr2", "none"), ("none",),
+         ("fixed",), NO_CACHE,
+         NO_CACHE, None, (1,), (1, 2, 4, 8, 16), ("5-stage",),
+         build=dict(compressed="micromips", fpu=False, dsp="dspr2", mt="none", mmu="fixed",
+                    icache="none", dcache="none", l2="none", l3="none", cores=1,
+                    shadow_sets=4, model="5-stage"),
+         source="MD00931 (microAptiv UC datasheet Table 7: microMIPS options, FMT, the "
+                "UCF's FPU, the DSP Module Revision 2 optional), MD00934 (PRId 0x9D, AR = "
+                "Release 2, Config1.FP preset)",
+         missing=("the MCU ASE", "the MPU",
+                  "the SRAM interface timing (eMIPS: ideal memory)")),
+    Core("microaptiv-up", "MIPS microAptiv UP", "R2", 0x9E,
+         ("micromips", "micromips-only", "none"), (False,), ("dspr2", "none"), ("none",),
+         ("fixed", "tlb:16", "tlb:32"),
+         _MCU_L1, _MCU_L1, None, (1,), (1, 2, 4, 8, 16), ("5-stage",),
+         build=dict(compressed="micromips", fpu=False, dsp="dspr2", mt="none", mmu="tlb:16",
+                    icache="16K:4:16", dcache="16K:4:16", l2="none", l3="none", cores=1,
+                    shadow_sets=4, model="5-stage"),
+         source="MD00942 (microAptiv UP SUM: PRId 0x9E, AR = Release 2, FMT or a 16 / "
+                "32-entry TLB, caches 0-64 KB 1-4 way 16-byte lines, FP = 0, the DSP "
+                "Module Revision 2 build-time configurable: 3.2)",
+         missing=("the MCU ASE",)),
+)}
+
+#: the generic eMIPS core's name (no preset): any setting, PRId 0
+GENERIC = ""
+
+
+def get(name: str | None) -> Core | None:
+    return CORES.get((name or "").lower()) if name else None
+
+
+def conflict(o, release: str, name: str) -> str | None:
+    """Why setting ``name`` (an Options field or "release") is not one
+    the chosen core can be built with (None: it is, or no core)."""
+    core = get(getattr(o, "core", ""))
+    if core is None:
+        return None
+    value = release if name == "release" else getattr(o, name)
+    if core.allows(name, value):
+        return None
+    shown = {"fpu": "an FPU" if value else "no FPU"}.get(name, str(value))
+    label = {"shadow_sets": "shadow sets", "l2": "L2", "l3": "L3",
+             "release": "release"}.get(name, name)
+    return (f"the {core.title} is built with {label}: {core.choices(name)} "
+            f"(not {shown}; {core.source.split(' (')[0]})")
+
+
+def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
+    """``o`` with core ``name``'s build (the fields not in ``keep``) and
+    ``core`` set: (the options, the core's release).  ``name`` "" or
+    "generic": the generic core (the settings stay)."""
+    if not name or name.lower() == "generic":
+        return replace(o, core=GENERIC), None
+    core = get(name)
+    if core is None:
+        raise ValueError(f"unknown core {name!r} ({', '.join(CORES)})")
+    changes = {k: v for k, v in core.build.items() if k not in keep}
+    return replace(o, core=core.name, **changes), core.release
+
+
+def describe(core: Core) -> list[str]:
+    """The core's settings, for the CLI / GUI."""
+    out = [f"{core.title}: MIPS32 Release {core.release[1:]}, PRId 0x{core.prid:08x}"]
+    for name in FIELDS[1:]:
+        out.append(f"  {name.replace('_', ' ')}: {core.choices(name)}")
+    out += [f"  not modelled: {m}" for m in core.missing]
+    out += [f"  note: {n}" for n in core.notes]
+    out.append(f"  source: {core.source}")
+    return out

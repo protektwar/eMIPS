@@ -20,6 +20,7 @@ R5 ``mips32r2``, R6 ``mips32r6``).
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,10 @@ C_DIR = Path(__file__).parent / "c"
 MARCH = {"R1": "mips32", "R2": "mips32r2", "R3": "mips32r2", "R5": "mips32r2",
          "R6": "mips32r6"}
 GCC_PREFIXES = ("mips-mti-elf", "mips-img-elf", "mips-elf", "mips-linux-gnu")
+
+
+#: a link error naming a soft-float routine (__addsf3, __fixdfsi, __ltsf2 ...)
+_SOFT_FP = re.compile(r"undefined reference to `__\w*[sd]f\w*'")
 
 
 class BuildError(RuntimeError):
@@ -72,8 +77,9 @@ def find_toolchain(endian: str = "big") -> Toolchain:
                      "(e.g. gcc-mips-linux-gnu)")
 
 
-def cflags(release: str = "R2", optimize: str = "-O1") -> list[str]:
-    return [f"-march={MARCH.get(release, 'mips32r2')}", "-mabi=32", "-mhard-float",
+def cflags(release: str = "R2", optimize: str = "-O1", fpu: bool = True) -> list[str]:
+    return [f"-march={MARCH.get(release, 'mips32r2')}", "-mabi=32",
+            "-mhard-float" if fpu else "-msoft-float",
             "-fno-pic", "-mno-abicalls", "-G0", "-ffreestanding", "-fno-common",
             "-nostdlib", "-g", optimize, "-Wall", f"-I{C_DIR}"]
 
@@ -81,25 +87,33 @@ def cflags(release: str = "R2", optimize: str = "-O1") -> list[str]:
 def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           endian: str = "big", optimize: str = "-O1", extra: list[str] | None = None,
           toolchain: Toolchain | None = None, mips16: bool = False,
-          micromips: bool = False) -> str:
+          micromips: bool = False, fpu: bool = True, dsp: int = 0) -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
     :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
     crt0 stays MIPS32, the linker turns calls between the ISAs into JALX;
     a MIPS GCC: clang's MIPS16 back end does not work).  ``micromips``:
-    the C files as microMIPS (``-mmicromips``, Release 3 / 5, GCC or
-    clang; crt0 MIPS32, JALX as for MIPS16e)."""
+    the C files as microMIPS (``-mmicromips``, Release 2 / 3 / 5, GCC or
+    clang; crt0 MIPS32, JALX as for MIPS16e).  ``fpu=False``: a core
+    without an FPU (the 24Kc, the M14K): ``-msoft-float``, the float
+    arithmetic from a MIPS GCC's libgcc.  ``dsp``: the C files may use the
+    DSP Module (1: ``-mdsp``, 2: ``-mdspr2`` — the builtins
+    ``__builtin_mips_*`` and the vector types; the ELF's .MIPS.abiflags
+    say so, and a core gets it)."""
     if mips16 and micromips:
         raise BuildError("MIPS16e or microMIPS: a core has one of them")
-    if micromips and release in ("R1", "R2"):
-        raise BuildError("microMIPS32 starts with Release 3 (MD00582 3.1): build with "
-                         "--release R3 or R5")
+    if micromips and release == "R1":
+        raise BuildError("microMIPS needs Release 2 or later (the M14K is a Release 2 core "
+                         "with microMIPS): build with --release R2, R3 or R5")
     if micromips and release == "R6":
         raise BuildError("microMIPS Release 6 C: no compiler agrees with the manual — GNU as "
                          "has no microMIPS R6, clang 18 shifts the compact branch offsets "
                          "(BEQC ...) by 2 where MD00582 6.05's pseudocode and QEMU shift "
                          "them by 1, and its la / li put MIPS32 LUI encodings in microMIPS "
                          "code; write microMIPS R6 in assembly (.set micromips)")
+    if dsp and release in ("R1", "R6"):
+        raise BuildError("DSP C needs Release 2, 3 or 5: the DSP Module needs Release 2+, "
+                         "and the compilers have no -mdspr3 for Release 6")
     tc = toolchain or find_toolchain(endian)
     if mips16:
         if release == "R6":
@@ -107,7 +121,7 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
         if tc.kind != "gcc":
             raise BuildError("MIPS16e C needs a MIPS GCC (clang's MIPS16 back end does not "
                              "work): install gcc-mips-linux-gnu")
-    flags = cflags(release, optimize) + list(extra or [])
+    flags = cflags(release, optimize, fpu) + list(extra or [])
     log = []
     with tempfile.TemporaryDirectory(prefix="emips-cc-") as tmp:
         objs = []
@@ -117,6 +131,7 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
             if src.name == "crt0.S":
                 obj = Path(tmp) / "crt0.o"           # the linker script names it
             isa = ((["-mips16"] if mips16 else ["-mmicromips"] if micromips else [])
+                   + ([] if not dsp else ["-mdsp"] if dsp == 1 else ["-mdspr2"])
                    if src.suffix == ".c" else [])
             cmd = tc.cc + flags + isa + ["-c", str(src), "-o", str(obj)]
             _run(cmd, log)
@@ -124,8 +139,44 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
         # -n: no page alignment of the segments in the file (bare metal)
         cmd = tc.ld + ["-EL" if endian == "little" else "-EB", "-n",
                        "-T", str(C_DIR / "emips.ld"), "-o", str(output)] + objs
-        _run(cmd, log)
+        lib = None if fpu else soft_libgcc(endian)
+        if lib is not None:                 # the soft-float routines (__addsf3 ...)
+            cmd.append(lib)
+        try:
+            _run(cmd, log)
+        except BuildError as exc:
+            if not fpu and lib is None and _SOFT_FP.search(str(exc)):
+                raise BuildError(f"{exc}\n(float arithmetic on a core without an FPU "
+                                 "calls the soft-float routines __addsf3 ...: they come "
+                                 "from a MIPS GCC with a soft-float libgcc, e.g. "
+                                 "mips-mti-elf-gcc; Debian's mips-linux-gnu has a "
+                                 "hard-float one only)") from None
+            raise
     return "\n".join(log)
+
+
+def soft_libgcc(endian: str = "big") -> str | None:
+    """A MIPS GCC's soft-float libgcc.a (o32: __addsf3 ... in integer
+    code), or None — a hard-float libgcc implements them with the FPU's
+    instructions (Debian's mips-linux-gnu has only that one)."""
+    for prefix in GCC_PREFIXES:
+        p = prefix.replace("mips-", "mipsel-", 1) if endian == "little" else prefix
+        gcc = shutil.which(f"{p}-gcc") or (shutil.which(f"{prefix}-gcc")
+                                            if endian == "little" else None)
+        if not gcc:
+            continue
+        try:
+            flags = [gcc, "-mabi=32", "-msoft-float"] + (["-EL"] if endian == "little" else [])
+            d = subprocess.run(flags + ["-print-multi-directory"], capture_output=True,
+                               text=True, timeout=30)
+            r = subprocess.run(flags + ["-print-libgcc-file-name"],
+                               capture_output=True, text=True, timeout=30)
+        except OSError:
+            continue
+        path = r.stdout.strip()
+        if ("soft" in d.stdout and r.returncode == 0 and Path(path).is_file()):
+            return path
+    return None
 
 
 def _run(cmd: list[str], log: list[str]) -> None:

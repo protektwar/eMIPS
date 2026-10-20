@@ -2035,6 +2035,164 @@ interrupts: external interrupt controller (EIC), vector spacing 128 bytes
    next: vector 2 -&gt; 0x80000300 (not taken now)
 GPR shadow sets 0-3: current (CSS) 3, previous (PSS) 0, exceptions (ESS) 0
 </code></pre>
+<h3 id="threads-in-one-core-the-mt-module">Threads in one core: the MT Module</h3>
+<p>A load that misses every cache waits about 60 cycles for memory, and an
+in-order pipeline waits with it.  The <strong>MT Module</strong>
+(<a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>) gives the core
+something else to do: several <strong>thread contexts</strong> (TCs), each a
+complete instruction stream, share one pipeline, and every cycle the core
+issues an instruction from one of them.  When one waits, the others go
+on.  This is <em>fine-grained</em> multithreading — the MIPS 34K, 1004K and
+interAptiv switch threads from one cycle to the next, at no cost — not a
+second core: there is still one pipeline, one set of caches.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>has its own</th>
+<th>shares</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TC</strong> (thread context)</td>
+<td>PC, the 32 GPRs, HI / LO and the DSP accumulators, TCStatus (and the per-TC parts of Status: CU0–3, MX, KSU; EntryHi.ASID), UserLocal</td>
+<td>everything else with its VPE</td>
+</tr>
+<tr>
+<td><strong>VPE</strong> (virtual processing element)</td>
+<td>CP0: Status, Cause, EPC, EBase (CPUNum = the VPE's number), Count / Compare, the TLB registers — so its exceptions and interrupts; to software a processor</td>
+<td>the pipeline, the caches, the FPU, the ITC (and with MVPControl.STLB the TLB) with the other VPE</td>
+</tr>
+<tr>
+<td><strong>core</strong></td>
+<td>the pipeline, the caches, the TLBs, the FPU, the ITC</td>
+<td>memory and the CPS's blocks with the other cores</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Who issues.</strong>  Every cycle the <strong>dispatch scheduler</strong> chooses among the
+TCs that can issue — activated (TCStatus.A), not halted (TCHalt), their
+VPE enabled, and not stopped for one of the reasons below.  Which one, is
+the <strong>policy manager</strong>'s business, a block MIPS lets the chip designer
+replace; the 34K manual describes three (<code>--mt-pm</code>, Settings →
+Processor → MT policy manager):</p>
+<ul>
+<li><strong>Round-robin</strong> (<code>rr</code>, the default): in turn.</li>
+<li><strong>Weighted round-robin</strong> (<code>wrr</code>): each TC is in one of four groups
+  (TCSchedule.GRP, 0–3).  With VPESchedule.GPO = 1 (the reset value) the
+  priorities are fixed — group 3 always wins, a lower group gets only the
+  cycles when no higher one can issue.  With GPO = 0 the priorities rotate
+  through 15 orders (the 34K manual's Table 13.5): when every group has
+  work, group 3 issues in 8 of every 15 rotations, group 2 in 4, group 1
+  in 2, group 0 in 1.  TCSchedule.STP stops a TC altogether.</li>
+<li><strong>WRR2</strong> (<code>wrr2</code>): the same, plus two throttles per TC that move it
+  to another group while a queue of the core is nearly full (the write
+  buffer, the fill-store buffer, the load data queue, or the system
+  input PM_sys_avail — the MT pane and <code>mt sys N</code> set it).</li>
+</ul>
+<p><strong>What stops a TC</strong> (TCStatus.RNST says which, the MT pane and the
+debugger's <code>mt</code> show it):</p>
+<table>
+<thead>
+<tr>
+<th>it</th>
+<th>stops until</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wait</code></td>
+<td>an interrupt signal arrives — even one this TC cannot take (the 34K's Config7.WII); only this TC waits</td>
+</tr>
+<tr>
+<td><code>yield rs</code>, <code>rs</code> &gt; 0</td>
+<td>one of the YIELD qualifier inputs <code>rs</code> names is set (16 pins from outside the core — the MT pane, <code>mt yq</code>, or on a CPS the GIC's MAP_TO_YQ)</td>
+</tr>
+<tr>
+<td>a load / store of gating storage (the ITC)</td>
+<td>the cell lets it complete (a FIFO not empty / not full); it is then issued again</td>
+</tr>
+<tr>
+<td>an exception, ERL, Debug Mode or VPEControl.TE = 0 in its VPE</td>
+<td>the VPE leaves that state: meanwhile only VPEConf0.XTC (the TC that took the exception) issues there</td>
+</tr>
+<tr>
+<td><code>dvpe</code> (MVPControl.EVP = 0) / <code>dmt</code></td>
+<td><code>evpe</code> / <code>emt</code>: only the TC that disabled the others runs</td>
+</tr>
+<tr>
+<td>TCHalt = 1, TCStatus.A = 0</td>
+<td>software (another TC, through <code>mttc0</code>) restarts it; <code>fork</code> takes a free TC (A = 0, DA = 1)</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/mt_fifo.asm
+(emips) until get
+   0x004000ac  addiu $t3, $t3, -1              ; $t3 = 0x00000013
+=&gt; 0x0040007c  lw $t2, 16($s6)                  line 40: get:    lw      $t2, SYNC($s6)          # waits while the cell is empty
+(emips) step 3
+   0x004000b4  nop
+=&gt; 0x004000ac  addiu $t3, $t3, -1               line 53: 1:      addiu   $t3, $t3, -1
+(emips) mt
+  MT Module: 1 VPE(s), 2 TC(s); MVPControl 0x00000001 (EVP 1, VPC 0)
+  VPE 0: VPA 1 MVP 1 TE 1 TargTC 1 EXCPT 0 YQMask 0x0000
+  YIELD qualifier inputs 0x0000; idle cycles 0
+  Policy manager: basic round-robin (every TC at one priority)
+    TC0 VPE 0  blocked (gating storage) pc 0x0040007c  issued 32     DA DT waits: load from ITC cell 0 (E/F synchronized view)
+  &gt; TC1 VPE 0  running                  pc 0x004000ac  issued 5      DA DT
+</code></pre>
+<p>TC 0 wants a number from an empty FIFO cell: it issues nothing until TC
+1 stores one, and every cycle meanwhile is TC 1's (Lab 56).</p>
+<p><strong>The 34K pipeline.</strong>  In pipeline mode the MT Module runs on the
+34K's pipeline: the 24K's stages (<a href="#a-real-pipeline-the-mips-24k">above</a>)
+with <strong>IT</strong>, the thread-select stage, in front of RF.</p>
+<ul>
+<li>Every TC has its own fetch state and an 8-entry <strong>instruction
+  buffer</strong>.  Each cycle the fetch unit fetches for one TC that can
+  (runnable, its buffer not full, not waiting for a jump), in turn; a TC
+  whose fetch misses the instruction cache waits, the others fetch.</li>
+<li>In IT the dispatch scheduler chooses, by the policy manager, among the
+  TCs <em>that have an instruction in their buffer</em>.  A TC that cannot fill
+  its share — a tight loop of taken branches fetches only two
+  instructions every three cycles — leaves the cycle to another, whatever
+  its priority (Lab 55).</li>
+<li>The <strong>skid buffer</strong>: an instruction that needs the data of a load that
+  missed does not hold the pipeline.  It and its TC's younger
+  instructions go back to the TC's instruction buffer (<code>&lt;&lt;</code> in the
+  chart) and dispatch again when the data is there; the other TCs issue
+  meanwhile.  So do the instructions of a TC that stops (a blocked ITC
+  access or <code>yield</code>, <code>wait</code>, an exception in its VPE, TCHalt).
+  This is what hides the misses (Lab 54).</li>
+<li>Shared: the back end, the multiply / divide unit, the FPU, the
+  load / store unit, the branch history table.  The 4-entry return
+  prediction stack is used only while one TC runs: with several, a
+  <code>jr $ra</code> waits for EX.</li>
+<li>With more than one TC IT costs a cycle: an instruction is in RF three
+  cycles after its fetch at the earliest, and a misprediction costs five
+  cycles instead of four.  "In a single TC configuration, this stage is
+  bypassed": with one TC (<code>--mt 1:1</code>) the 34K runs exactly as the
+  24K model.</li>
+</ul>
+<p>The core's two VPEs run on the one pipeline; each has its own CP0, so
+its own CP0 hazards.  Not modelled: the 34K's performance counter
+events and the replays of a long multiply or divide.</p>
+<p><strong>The configuration state.</strong>  With MVPControl.VPC = 1 a master VPE
+(VPEConf0.MVP) configures the rest, as a boot loader does: MVPControl.STLB
+makes the two VPEs share one TLB, VPEOpt with MVPControl.CPA keeps
+chosen cache ways out of a VPE's refills, VPEConf1.NCP1 moves the FPU
+from VPE 0 to VPE 1 (the 34K has one FPU), TCBind.CurVPE moves a TC from
+one VPE to the other.</p>
+<p><strong>More cores.</strong>  The 1004K and interAptiv are multi-core systems of MT
+cores (<code>--core 1004kc</code>, or <code>--cores 2 --mt 2:2</code>): each core has its
+own MT Module, and every VPE is a processor of the CPS — a <strong>VP</strong>,
+numbered core × VPEs + VPE, which is its EBase.CPUNum and its number in
+the GIC.  The CPC powers a core up with all its VPEs; one ITC serves the
+whole CPS; a GIC source mapped with MAP_TO_YQ drives a core's YIELD
+qualifier inputs instead of an interrupt pin, so a thread can
+<code>yield</code> until a device needs it.  The toolbar's selector, <code>cpu</code>
+and the System pane list the VPs ("VP 3 (core 1)"), <code>mt</code> lists every
+core's MT Module.</p>
 <h2 id="510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</h2>
 <p>An <strong>exception</strong> stops the normal flow when an instruction cannot
 complete (or a <code>syscall</code> / <code>break</code> / trap asks for the kernel).  The MIPS
@@ -2601,7 +2759,15 @@ apart into sign, exponent and fraction.  See <a href="#lab-6--01--02--03">Lab 6<
 <h2 id="512-labs">5.12 Labs</h2>
 <p>Each lab gives a task, a way to check your answer with eMIPS, and the
 answer (click to open it — try first!).  The lab programs are in
-<code>docs/guide/labs/</code>.</p>
+<code>docs/guide/labs/</code>.  The labs that ask you to write or change a
+program — 3, 4, 12, 15, 20 and 21 — also come with <strong>checks</strong>, a file
+next to the program (<code>lab4_misaligned.check</code> for
+<code>lab4_misaligned.asm</code>): <strong>Run → Check</strong> (F8) or
+<code>python3 -m emips check docs/guide/labs/PROGRAM.asm</code> runs your version
+and says which of the things the lab asks for it already does
+(<a href="03-the-gui.html#checking-your-program-the-checks-pane">3.3</a>,
+<a href="04-command-line.html#414-check--does-the-program-do-what-it-should">4.14</a>).
+File → Labs marks them <em>(checks)</em>.</p>
 <h3 id="lab-1--decode-by-hand">Lab 1 — Decode by hand</h3>
 <p>Decode these words from the sum example into instructions, field by
 field (the formats are in <a href="#51-how-an-instruction-is-encoded">5.1</a>):
@@ -2682,6 +2848,7 @@ stall cycles: branch 8, load-use 8
 <p>Make it faster <strong>without changing what it computes</strong>: reorder the loop
 so that nothing waits, and make the branch delay slot do useful work
 (<code>.set noreorder</code>).  How many cycles can you reach?</p>
+<p><strong>Checks</strong>: <code>docs/guide/labs/lab3_sum.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/lab3_sum.asm</code>.</p>
 <details>
 <summary>Answer</summary>
 <p>Move the two independent <code>addiu</code>s between the load and its use, and put
@@ -2722,6 +2889,7 @@ prints <code>bad address</code> followed by the bad address (in hex), skips the
 instruction and finishes.</p>
 <p>Hints: BadVAddr is CP0 register 8; print_hex is service 34; save the
 registers your handler changes; EPC is register 14.</p>
+<p><strong>Checks</strong>: <code>docs/guide/labs/lab4_misaligned.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/lab4_misaligned.asm</code>.</p>
 <details>
 <summary>Answer</summary>
 <pre><code class="language-asm"># output: bad address 0x10010002
@@ -2939,6 +3107,7 @@ simply be made writable (D = 1) at its next TLB Modified exception.</p>
 Then change the program so counter 1 counts <strong>data cache accesses</strong>
 (event 10 of counter 0 — which counter must it use now?) and compute
 the miss rate.</p>
+<p><strong>Checks</strong>: <code>docs/guide/labs/perf_count.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/perf_count.asm</code> (the changed program, with the 1 KB cache).</p>
 <details>
 <summary>Answer</summary>
 <p>The array is 2 KB, read twice.  1 KB cache, 16-byte lines: 128 lines per
@@ -3005,15 +3174,17 @@ non-blocking loads saved.  Compilers schedule loads early for this
 reason.</p>
 </details>
 <h3 id="lab-15--find-the-hazard">Lab 15 — Find the hazard</h3>
-<p>This handler skips the instruction that caused the exception.  On the
-5-stage model it works; with <code>--model 24k</code> the program never ends.
-Why, and what is the smallest fix?</p>
+<p>This handler skips the instruction that caused the exception
+(<code>docs/guide/labs/lab15_hazard.asm</code>: a trap, then this handler).  On the
+5-stage model it works; with <code>--model 24k</code> (the program's settings) it
+never ends.  Why, and what is the smallest fix?</p>
 <pre><code class="language-mips">        .ktext 0x80000180
         mfc0  $k0, $14
         addiu $k0, $k0, 4
         mtc0  $k0, $14
         eret
 </code></pre>
+<p><strong>Checks</strong>: <code>docs/guide/labs/lab15_hazard.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/lab15_hazard.asm</code> (on the 24K).</p>
 <details>
 <summary>Answer</summary>
 <p><code>eret</code> reads EPC one instruction after <code>mtc0</code> wrote it: within the
@@ -3111,6 +3282,7 @@ different cores write in different lines (<code>.align 5</code>).</p>
 <p>Change <code>docs/guide/labs/ipi.asm</code> so that core 0 wakes cores 1-3 with <strong>one</strong>
 store.  Which GIC register do you write first, and what does the output
 become?</p>
+<p><strong>Checks</strong>: <code>docs/guide/labs/ipi.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/ipi.asm</code>.</p>
 <details>
 <summary>Answer</summary>
 <p>Give one IPI source several cores: <code>GIC_SH_MAPn_VP</code> has a bit per core.
@@ -3128,6 +3300,7 @@ runs with EXL = 1: nothing interrupts it.  Make the timer (vector 5)
 able to interrupt it — but not the other way round.  What do the two
 handlers need, and what must the vector-2 handler restore before its
 <code>eret</code>?</p>
+<p><strong>Checks</strong>: <code>docs/guide/labs/eic.check</code> — Run → Check (F8) or <code>python3 -m emips check docs/guide/labs/eic.asm</code>.</p>
 <details>
 <summary>Answer</summary>
 <p>In EIC mode a handler opens itself to <em>more important</em> interrupts by
@@ -3722,6 +3895,277 @@ A compact branch saves a cycle only when it is not taken (the
 delay slot's <code>nop</code> would have been pure waste.  Release 6 gains code
 size and a simpler rule for compilers; a pipeline that predicts
 branches at fetch, such as the 24K, also gains the cycle.</p>
+</details>
+<h3 id="lab-48--which-core-is-this">Lab 48 — Which core is this?</h3>
+<p><a href="labs/which_core.asm"><code>labs/which_core.asm</code></a> asks the hardware what it
+is, as an operating system's CPU probe does: PRId, Config.AR / MT,
+Config1 (the TLB, the FPU, the caches, MIPS16e) and Config3 (microMIPS,
+the DSP Module).  Run it
+on a few real cores (<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>):
+<code>python3 -m emips run docs/guide/labs/which_core.asm --core 24kc</code>, then
+<code>--core 24kf</code>, <code>--core m14kc</code>, <code>--core p5600</code>, <code>--core 1004kc</code> and
+without <code>--core</code>.  Which line tells a 24Kc from a 24Kf?  The P5600 is a
+Release 5 core: what does its release line say, and how could software
+tell it from a Release 2 core?  Then try <code>--core 24kc --mmu bat</code>.</p>
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/which_core.asm --core 24kc
+PRId 0x00019300
+release 1
+MMU type 1, TLB entries 32
+FPU 0
+I-cache KB 32, ways 4, line 32
+D-cache KB 32, ways 4, line 32
+MIPS16e 1
+Config3.ISA 0
+DSP Module 0
+...
+</code></pre>
+<details>
+<summary>Answer</summary>
+<p>The 24Kc and the 24Kf have the same PRId (Processor ID 0x93): one
+core, built with or without its FPU — only Config1.FP (the
+<code>FPU</code> line) differs, and on the 24Kc Status.CU1 cannot even be set,
+so an FPU instruction raises Coprocessor Unusable.  The M14Kc (0x9C)
+says microMIPS (Config3.ISA = 2, no MIPS16e), a 16-entry TLB and
+16-byte cache lines.  Config.AR is 1 for every release from 2 to 5, so
+the P5600 prints <code>release 1</code> like the 24K; software tells them apart
+by the PRId (0xA8) or by the features later releases add and announce
+in Config3 / Config5 (segmentation control: Config3.SC; the P5600's
+VTLB + FTLB: MMU type 4).  The 1004Kc (0x99) also says <code>DSP Module 1</code>:
+Revision 1 of the DSP extension (Config3.DSPP without DSP2P); the interAptiv
+has Revision 2.  The generic core reads PRId 0, Company 0 —
+"not a licensed core".  <code>--core 24kc --mmu bat</code> is refused: a 24K is
+built with a 16-, 32- or 64-entry TLB or the fixed mapping, never BAT.</p>
+</details>
+<h3 id="lab-49--saturation">Lab 49 — Saturation</h3>
+<p><a href="labs/dsp_bright.asm"><code>labs/dsp_bright.asm</code></a> brightens a 16-pixel
+image by 0x40 twice over: <code>bright_dsp</code> with <code>addu_s.qb</code> (four
+pixels per instruction, <a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>), and <code>bright32</code> a byte at
+a time with a branch that clamps (<code>.eqv DSP, 0</code> chooses it).  Both
+print the same image.  How many instructions does each brightening take
+(run both: <code>python3 -m emips run</code>)?  What does the image look like
+with <code>addu.qb</code> instead of <code>addu_s.qb</code>, and what does the debugger's
+<code>dsp</code> say after either?</p>
+<details>
+<summary>Answer</summary>
+<p>The programs run 86 and 222 instructions; the brightening is 31 of
+them with the DSP Module (<code>repl.qb</code>, then 4 x 7 for the loop and the
+return) and 169 without (10 per pixel plus the <code>move</code> for the six
+pixels that clamp).  With <code>addu.qb</code> the six bright pixels wrap
+around: 0xff + 0x40 is 0x3f, white turns dark grey — the bug saturation
+exists to prevent.  In both cases DSPControl's ouflag has bit 20 set
+("add / subtract / abs"): an addition overflowed, saturated or not.  It
+stays set (sticky) until a <code>wrdsp</code> clears it, so a loop can check
+once at the end whether anything clipped.</p>
+</details>
+<h3 id="lab-50--a-filter-in-fractions">Lab 50 — A filter in fractions</h3>
+<p><a href="labs/dsp_fir.asm"><code>labs/dsp_fir.asm</code></a> computes one output of a 16-tap
+FIR filter, the sum of 16 products of Q15 fractions: <code>fir_dsp</code> with
+<code>dpaq_s.w.ph</code> (two products into accumulator 1 per instruction) and
+<code>extr_r.w</code>, <code>fir32</code> with <code>madd</code> and the rounding and shifting
+by hand.  Both print 0x00002a00 (0.328).  Run both on the 24K model
+(<code>python3 -m emips pipe docs/guide/labs/dsp_fir.asm --model 24k</code>):
+how many instructions and cycles?  What would it cost to put the
+<code>extr_r.w</code> right after the last <code>dpaq_s.w.ph</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>85 instructions in 114 cycles with the DSP Module, 155 in 199 without.
+The loops are <code>lw lw dpaq_s.w.ph</code> for two taps against
+<code>lh lh madd</code> for one; and <code>extr_r.w</code> does in one instruction
+what <code>fir32</code> needs seven for (a 64-bit add for the rounding, two
+shifts, an or).  On the 24K family an accumulator read for an
+extract waits for the multiply-accumulate that writes it: three cycles
+back to back (the 1004K manual's Table 2.5), which is why the loop's
+counter and pointer updates sit between the last <code>dpaq_s.w.ph</code> and
+<code>extr_r.w</code> here.  Fixed point also needs no FPU, which the 24Kc
+and the microAptiv do not have.</p>
+</details>
+<h3 id="lab-51--dsp-in-c">Lab 51 — DSP in C</h3>
+<p><a href="labs/c_dsp.c"><code>labs/c_dsp.c</code></a> brightens a 64-pixel image in C, built
+twice with <code>-O 2</code>: <code>c_dsp_plain.elf</code> as plain C and <code>c_dsp.elf</code>
+with <code>cc --dspr2</code>, where it calls GCC's builtins
+<code>__builtin_mips_repl_qb</code> and <code>__builtin_mips_addu_s_qb</code>.  Both print
+11664 255.  Compare the brightening loops in the two listings
+(<code>python3 -m emips dis</code>) and the instructions each program executes.
+Does GCC use the DSP Module by itself?</p>
+<details>
+<summary>Answer</summary>
+<p>1141 and 773 instructions.  The plain loop is seven instructions per
+pixel — <code>lbu</code>, add, <code>slti</code>, <code>movz</code> (GCC clamps without a
+branch), <code>sb</code> and the loop — 448 for the image; the DSP loop is five
+per four pixels (<code>lw</code>, <code>addu_s.qb</code>, <code>sw</code> and the loop), 80: the
+368 instructions between the two programs.  GCC does not turn the plain
+loop into DSP instructions by itself, even with <code>-mdspr2</code>: the
+saturating vector add is something the source asks for, through the
+builtins and the vector types.  The ELF's ABI flags say "DSP R2", so
+<code>run</code> gives the core the DSP Module without being told.</p>
+</details>
+<h3 id="lab-52--the-dsp-module-on-demand">Lab 52 — The DSP Module on demand</h3>
+<p><a href="labs/dsp_lazy.asm"><code>labs/dsp_lazy.asm</code></a> clears Status.MX, as an operating
+system does for a new process, and then adds bytes three times with
+<code>addu.qb</code>.  Its kernel handler sets MX when the exception is
+<em>DSP State Disabled</em> (code 26) and returns to the same instruction.
+It prints 0x31323334 1.  Why is the exception taken once and not three
+times?  What does an operating system gain from this, and what must its
+handler do that this one does not?  What would happen if the handler
+added 4 to EPC, as the system call handlers of 2.11 do?</p>
+<details>
+<summary>Answer</summary>
+<p>Once: after the handler MX stays 1, so the next two <code>addu.qb</code> just
+run (step through it in the debugger: <code>break 0x80000180</code>, then
+<code>dsp</code>).  An OS saves and restores DSPControl and the four
+accumulators only for the processes that use them: a switch to a
+process with MX = 0 costs nothing, and the first DSP instruction asks
+for the state.  A real handler also loads that process's DSP registers
+(and saves the previous owner's) before it returns.  With EPC + 4 the
+faulting <code>addu.qb</code> would be skipped — the program would print
+0x21222324: one addition lost.  The exception happens <em>before</em> the
+instruction, which is why returning to EPC repeats it.  On the 24K model
+nothing needs <code>ehb</code>: <code>eret</code> is a hazard barrier, so the repeated
+instruction sees MX = 1.</p>
+</details>
+<h3 id="lab-53--fork">Lab 53 — Fork</h3>
+<p><a href="labs/mt_fork.asm"><code>labs/mt_fork.asm</code></a> frees thread contexts 1–3,
+forks three threads that each add a quarter of the numbers 1–100, adds
+the last quarter itself and then the four sums: it prints 5050
+(<a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>; its settings: <code>--mt 1:4</code>).  Step through it in
+the debugger (<code>python3 -m emips debug docs/guide/labs/mt_fork.asm</code>,
+then <code>step</code> and <code>mt</code>): in what order do the threads' instructions
+run?  After <code>run</code>, what do <code>mt</code> and <code>tc 1</code> say about TC 1 — its
+state, its <code>$a0</code>, its <code>$sp</code>?  Then run it with <code>--mt 1:3</code>: it prints
+<code>25 1</code>.  What happened, and where?</p>
+<details>
+<summary>Answer</summary>
+<p>One instruction of each runnable TC in turn (the round-robin policy
+manager): TC 0 alone, then TC 0 and TC 1 alternately after the first
+<code>fork</code>, then all four.  At the end TCs 1–3 are <strong>free</strong> again — <code>yield
+$zero</code> deallocated them (TCStatus.A = 0, DA = 1) — after 176 instructions
+each; TC 0 issued 234 (the set-up, its quarter, the wait).  TC 1's <code>$a0</code>
+is 0: <code>fork</code> writes one register of the new thread, <code>rd</code>, with the
+forker's <code>rt</code> (here the quarter number); every other register is
+whatever that TC held — its <code>$sp</code> is 0.  This worker uses no stack; one
+that does must be given its own, as a thread library does.  With
+<code>--mt 1:3</code> there is no TC 3: the third <code>fork</code> finds no free TC and
+raises the <strong>Thread</strong> exception (ExcCode 25) with VPEControl.EXCPT = 1,
+<em>Thread Overflow</em>; EPC is the <code>fork</code>.  An operating system would run
+the work itself or queue it — the hardware never waits for a TC to come
+free.</p>
+</details>
+<h3 id="lab-54--hide-the-miss-behind-another-thread">Lab 54 — Hide the miss behind another thread</h3>
+<p><a href="labs/mt_hide.asm"><code>labs/mt_hide.asm</code></a> adds the first word of 64 cache
+lines that are not in the data cache, so every load misses, and prints
+the sum and the cycles the adding took (from Count).  It runs on the 34K
+pipeline (its settings: <code>--mt 1:2 --model 24k --caches --pipeline</code>):
+<code>python3 -m emips run docs/guide/labs/mt_hide.asm</code>.  With
+<code>THREADS</code> 2, TC 1 adds the second half while TC 0 adds the first; set
+it to 1 and TC 0 adds all 64.  How many cycles in each case, and why is
+two threads not exactly twice as fast?  Look at the pipeline chart
+(<code>pipe</code>, or the window's Pipeline pane): what happens to TC 0's
+<code>addu</code> after its load misses?  With <code>THREADS</code> 1, what does
+<code>--mt 1:1</code> change?</p>
+<details>
+<summary>Answer</summary>
+<p>2202 cycles with two threads, 4070 with one.  Alone, each load misses
+and the <code>addu</code> right after it needs the data: about 63 cycles a line,
+64 times.  With two threads, the <code>addu</code> that finds its data missing
+does not hold the pipeline: it and the instructions behind it go back to
+TC 0's instruction buffer (the <strong>skid buffer</strong>, <code>&lt;&lt;</code> in the chart),
+and TC 1 issues — its own load, which misses too, so two misses are on
+their way at once and the waits overlap.  Not quite half (2035): TC 1
+has to be set up first (a dozen instructions of <code>mttc0</code> /
+<code>mttgpr</code>), and TC 0 waits for it at the end.  With <code>THREADS</code> 1 and <code>--mt 1:1</code> it takes 3970
+cycles: with a single TC the IT stage is bypassed and a missing load's
+user simply waits in AG, as on the 24K.  With two TCs configured the
+skid buffer sends the <code>addu</code> back after every miss even when no other
+thread could use the cycles — 64 replays, about 100 cycles: the price a
+single thread pays on a multithreaded core.</p>
+</details>
+<h3 id="lab-55--who-gets-the-cycles">Lab 55 — Who gets the cycles?</h3>
+<p><a href="labs/mt_share.asm"><code>labs/mt_share.asm</code></a> lets two threads count as fast
+as they can; TC 0 stops after 3000 rounds of its 3-instruction loop and
+prints its count and TC 1's (2 instructions a round).  It runs with the
+weighted round-robin policy manager (<code>--mt-pm wrr</code>), TC 0 in group 1
+and TC 1 in group 0 (<code>GROUP0</code>, <code>GROUP1</code>), and clears
+VPESchedule.GPO so the groups take turns.  It prints <code>3000 2250</code>.
+What share of the issue slots did each thread get?  Compare with
+<code>--mt-pm rr</code>, and with TC 0 in group 3: <code>3000 321</code>.  What happens
+without the <code>mtc0 $zero, $1, 5</code> (GPO stays 1)?  On the pipeline
+(<code>--pipeline --model 24k</code>) the same program prints <code>3000 2429</code>,
+and with TC 0 in group 0 and TC 1 in group 3 <code>3000 8994</code> — where
+instruction mode gives 63016 (<code>--steps 200000</code>).  Why?</p>
+<details>
+<summary>Answer</summary>
+<p>TC 0 issued 9000 instructions, TC 1 4500: two thirds and one third.
+Round-robin (or both TCs in one group) gives them one slot each, <code>3000
+4501</code>.  With GPO = 0 the priorities rotate through the 15 orders of the
+34K manual's Table 13.5, and with two groups what counts is how often
+one is above the other: group 0 is above group 1 in 5 of the 15
+(rotations 2, 6, 8, 10 and 14), so TC 1 gets 1/3; above group 3 only in
+rotation 8, so TC 1 gets 1/15 — 643 instructions, 321 rounds.  With GPO
+= 1 the priorities are fixed: group 1 always beats group 0 and TC 1
+never issues (<code>3000 0</code>); with the groups the other way round TC 0
+never gets a cycle and the program never ends.  That starvation is what
+the rotation is for.  The pipeline's dispatch scheduler chooses only
+among TCs that <em>have</em> an instruction ready in IT.  TC 1's loop is one
+taken branch after another, and the 34K's fetch unit delivers such a
+loop at two instructions every three cycles: even in the top group TC 1
+can fill only two thirds of the cycles (18000 of 27030), and TC 0 takes
+the holes.  TC 0's own loop leaves holes as well, which TC 1 fills: 2429
+instead of 2250.  The CPI stays 1.00 — no cycle is lost, only shared
+differently.</p>
+</details>
+<h3 id="lab-56--a-fifo-between-threads">Lab 56 — A FIFO between threads</h3>
+<p><a href="labs/mt_fifo.asm"><code>labs/mt_fifo.asm</code></a> maps the ITC (CACHE Index Store
+Tag with ErrCtl.ITC, through DTagLo), and passes the numbers 1–10 from
+TC 1 to TC 0 through FIFO cell 0 with plain <code>sw</code> / <code>lw</code> on the
+E/F synchronized view; the producer works <code>WORK</code> cycles for each
+number.  It prints 55 in 758 instructions.  How often does the consumer
+wait, and what does it issue while it waits (<code>python3 -m emips debug
+docs/guide/labs/mt_fifo.asm</code>, <code>mt</code>, <a href="#threads-in-one-core-the-mt-module">above</a>)?
+Change the consumer's load to the <em>try</em> view (<code>lw $t2, 0x18($s6)</code>):
+what does it print?  And as a polling loop, <code>get: lw $t2, 0x18($s6)</code>
+/ <code>beqz $t2, get</code>?  Finally, delete the two <code>ehb</code> and run it on the
+pipeline (<code>--pipeline --model 24k</code>).</p>
+<details>
+<summary>Answer</summary>
+<p>The consumer blocks ten times, for 619 cycles in all, and issues
+nothing meanwhile: it issued 96 instructions, the producer 662.  A
+blocked load is <em>not</em> a loop — the thread is simply not eligible
+(TCStatus.RNST = 3) until a store fills the cell, and then the load is
+issued again.  The try view never waits: it reads 0 from an empty cell,
+so the consumer adds ten zeros and prints 0 long before the producer is
+done.  Polling it works (55) but takes 1359 instructions: the consumer issues
+697, nearly all of them its loop, and every one is a cycle the producer
+did not get — 983 against 1398 cycles on the pipeline.  Without the <code>ehb</code> the
+34K pipeline prints 0: the <code>cache</code> executes before the <code>mtc0</code>
+to ErrCtl has taken effect (a CP0 hazard), so it is an ordinary cache
+operation, the ITC is never mapped (<code>mt itc</code>: off), and the loads and
+stores reach plain memory, which never waits.  The instruction model has
+no hazards and prints 55 — the real core would not.</p>
+</details>
+<h3 id="lab-57--two-vpes-two-processors">Lab 57 — Two VPEs, two processors</h3>
+<p><a href="labs/mt_vpes.asm"><code>labs/mt_vpes.asm</code></a> starts TC 1, which takes a trap;
+the handler (the same code for everyone, at 0x80000180) notes which
+processor took it (EBase.CPUNum) and how far TC 0 counted meanwhile.  It
+prints four numbers: the CPUNum TC 0 and TC 1 read, the handler's, and
+TC 0's count during the handler.  Run it as it is (<code>--mt 2:2</code>: TC 1
+belongs to VPE 1) and with <code>--mt 1:2</code> (both TCs in VPE 0).  Explain
+the two lines.  In the debugger, stop in the handler (<code>break
+0x80000180</code>, <code>run</code>) and compare <code>cp0</code> on <code>cpu 0</code> and <code>cpu
+1</code>.</p>
+<details>
+<summary>Answer</summary>
+<p><code>0 1 1 43</code> and <code>0 0 0 0</code>.  A VPE has its own CP0, so with two VPEs
+TC 1 runs on processor 1: it reads CPUNum 1, its trap is taken by VPE 1
+(VPE 1's EPC, Cause, Status.EXL — VPE 0's stay as they were), and while
+VPE 1 is in its handler VPE 0 goes on: TC 0 counted 43.  This is how an
+operating system sees a 34K: two CPUs, each with its own exceptions,
+interrupts and timer.  With one VPE both TCs share one CP0: both read
+CPUNum 0, and the exception sets the VPE's Status.EXL, after which the
+VPE issues only the TC that took it (VPEConf0.XTC) until <code>eret</code> — TC 0
+counted 0.  That is why a kernel's exception handler can use the CP0
+registers without being disturbed by another thread of the same VPE.
+Starting TC 1 on VPE 1 needs VPE 1 itself to be on (VPEConf0.VPA) and
+the VPEs enabled (<code>evpe</code>); <code>emt</code> matters only for <code>--mt 1:2</code>.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

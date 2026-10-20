@@ -36,10 +36,13 @@ from .guideview import GuideView
 from .partdialog import PartDialog
 from .sourceview import SourceView
 from .systempane import SystemView
+from .mtpane import MTView
+from .checkpane import CheckView
 from .datapath import DatapathView
 from .datapath24k import Datapath24KView
 from .examples import EXAMPLES, Example
 from .i18n import tr
+from .. import check
 from ..options import MAX_CORES, Options
 from .qt import QtCore, QtGui, QtWidgets
 from ..session import Session
@@ -145,6 +148,16 @@ class DockBar(QtWidgets.QWidget):
         self.dock.setFloating(False)
 
 
+def _has_checks(p: Path) -> bool:
+    """A lab program with checks: its own lines, or NAME.check next to it."""
+    if p.with_suffix(".check").is_file():
+        return True
+    try:
+        return check.has_checks(p.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, path: str | None = None,
                  settings: QtCore.QSettings | None = None) -> None:
@@ -157,6 +170,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hex_text: str | bytes | None = None
         #: the editor's language: "asm" or "c" (Build compiles it)
         self.lang = "asm"
+        #: Run > Checks File…: the checks file chosen for this program (None:
+        #: its own '# check:' lines, or NAME.check next to it; emips.check)
+        self.checks_file: Path | None = None
         self.doc_name = ""
         #: the editor text of the last successful assembly (auto-assemble)
         self._assembled_text: str | None = None
@@ -218,6 +234,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.board.save_disk_requested.connect(self.save_disk)
         self.system = SystemView()
         self.system.core_chosen.connect(lambda cpu: self.core.setCurrentIndex(cpu))
+        self.mtview = MTView()
+        self.mtview.vp_chosen.connect(lambda cpu: self.core.setCurrentIndex(cpu))
+        self.mtview.inputs_changed.connect(self.refresh)
+        self.checks = CheckView()
+        self.checks.check_requested.connect(self.run_checks)
+        self.checks.choose_requested.connect(self.choose_checks_file)
+        self.checks.clear_requested.connect(self.clear_checks_file)
+        self.checks.line_chosen.connect(self._check_line)
+        self.checks.finished.connect(self._checks_finished)
         self.chart = PipelineChart()
         self.disasm = DisassemblyView()
         self.details = InstrPanel()
@@ -264,6 +289,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("trace", tr("Trace"), self.trace),
                 ("board", tr("Board"), self.board),
                 ("system", tr("System"), self.system),
+                ("mt", tr("MT"), self.mtview),
+                ("checks", tr("Checks"), self.checks),
                 ("messages", tr("Messages"), self.messages),
                 ("reference", tr("Instruction Reference"), self.reference),
                 ("encoder", tr("Encoder / Decoder"), self.encoder),
@@ -289,8 +316,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for k in ("pipeline", "disassembly", "instruction", "source"):
             self.tabifyDockWidget(d["datapath"], d[k])
         self.addDockWidget(bottom, d["console"])
-        for k in ("memory", "caches", "tlb", "counters", "trace", "board", "system",
-                  "messages"):
+        for k in ("memory", "caches", "tlb", "counters", "trace", "board", "system", "mt",
+                  "checks", "messages"):
             self.tabifyDockWidget(d["console"], d[k])
         for k in TOOL_DOCKS:                    # Tools: next to the views, hidden
             self.tabifyDockWidget(d["datapath"], d[k])
@@ -428,6 +455,12 @@ class MainWindow(QtWidgets.QMainWindow):
         A("run_to_cursor", tr("Run to &Cursor"), self.run_to_cursor, "Ctrl+F10",
           tr("Run until the line the cursor is on"))
         A("reset", tr("Rese&t"), self.reset, "Ctrl+R", tr("Restart the program"))
+        A("check", tr("&Check"), self.run_checks, "F8",
+          tr("Run the program as its checks say — its '# check:' lines, the checks file "
+             "named like it or the one chosen — and show which pass (the Checks pane)"))
+        A("checks_file", tr("Checks &File…"), self.choose_checks_file, None,
+          tr("Check the program against a checks file (a teacher's): it replaces the "
+             "program's own checks"))
         A("dint", tr("&Debug Interrupt (DINT)"), self.debug_interrupt, None,
           tr("Request an EJTAG debug interrupt: the core enters Debug Mode at the debug "
              "vector before its next instruction"))
@@ -537,6 +570,8 @@ class MainWindow(QtWidgets.QMainWindow):
                       a["step_line"], a["next_line"], a["finish"],
                       a["run_to_cursor"], a["reset"]])
         m.addSeparator()
+        m.addActions([a["check"], a["checks_file"]])
+        m.addSeparator()
         m.addAction(a["dint"])
         m.addAction(a["gdb_server"])
         m.addSeparator()
@@ -629,17 +664,45 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self.mode.blockSignals(True)
             self.mode.setCurrentIndex(mode_index)
+            why = forbidden("model", "24k", s.options, s.release)   # (a microMIPS core)
+            self.mode.model().item(2).setEnabled(why is None or mode_index == 2)
+            self.mode.setItemData(2, why or "", Qt.ItemDataRole.ToolTipRole)
             self.mode.blockSignals(False)
             self.fwd.setEnabled(mode_index != 2)    # the 24K always has its bypasses
             self.fwd.setToolTip(tr("Forwarding paths of the 5-stage pipeline") if mode_index != 2
                                 else tr("The 24K always has its bypasses"))
+            from .. import cores
+            core = cores.get(s.options.core)
+            self.m_core.setCurrentIndex(max(0, self.m_core.findData(s.options.core)))
             self.m_release.setCurrentIndex(max(0, self.m_release.findData(s.release)))
+            for i in range(self.m_release.count()):
+                why = forbidden("release", self.m_release.itemData(i), s.options, s.release)
+                self.m_release.model().item(i).setEnabled(why is None)
+                self.m_release.setItemData(i, why or "", Qt.ItemDataRole.ToolTipRole)
             self.m_board.setCurrentIndex(max(0, self.m_board.findData(
                 s.options.board.split(":")[0])))
             base = s.options.mmu.split("+")[0].split(":")[0]
             self.m_mmu.setCurrentIndex(max(0, self.m_mmu.findData(base)))
+            for i in range(self.m_mmu.count()):
+                kind = self.m_mmu.itemData(i)
+                why = None if core is None or any(
+                    m.split(":")[0].split("+")[0] == kind for m in core.mmu) else \
+                    cores.conflict(replace(s.options, mmu=kind), s.release, "mmu")
+                self.m_mmu.model().item(i).setEnabled(why is None)
+                self.m_mmu.setItemData(i, why or "", Qt.ItemDataRole.ToolTipRole)
+            on = s.options.icache != "none" or s.options.dcache != "none"
+            other = replace(s.options, icache="none" if on else "32K",
+                            dcache="none" if on else "32K")
+            why = (cores.conflict(other, s.release, "icache")
+                   or cores.conflict(other, s.release, "dcache"))
+            self.m_caches.setEnabled(why is None)
+            self.m_caches.setToolTip(why or tr("The 24K's L1 caches: 32 KB instruction and "
+                                               "data, 4-way (other shapes, L2 / L3: "
+                                               "Settings > Caches)"))
             why = forbidden("cores", 2, s.options, s.release)
-            self.m_cores.setMaximum(1 if why else MAX_CORES)
+            allowed = core.cores if core is not None else range(1, MAX_CORES + 1)
+            self.m_cores.setMinimum(min(allowed))
+            self.m_cores.setMaximum(1 if why and core is None else max(allowed))
             self.m_cores.setToolTip(why or tr("More than one core: a coherent multi-core "
                                               "system"))
             self.m_cores.setValue(s.options.cores)
@@ -661,6 +724,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addToolBarBreak()                  # its own row: always in view
         mb = self.addToolBar(tr("Machine"))
         mb.setObjectName("toolbar_machine")
+        from ..cores import CORES
+        self.m_core = QtWidgets.QComboBox()
+        self.m_core.addItem(tr("Generic core"), "")
+        for core in CORES.values():
+            self.m_core.addItem(core.title, core.name)
+        self.m_core.setToolTip(tr("A real MIPS core: the release, compressed ISA, FPU, MMU, "
+                                  "caches and pipeline it is built with (the others are "
+                                  "greyed out); Generic core: any setting"))
         self.m_release = QtWidgets.QComboBox()
         for r in RELEASES:
             self.m_release.addItem(f"MIPS32 {r}", r)
@@ -682,8 +753,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.m_caches = QtWidgets.QCheckBox(tr("caches"))
         self.m_caches.setToolTip(tr("The 24K's L1 caches: 32 KB instruction and data, 4-way "
                                     "(other shapes, L2 / L3: Settings > Caches)"))
-        for w in (self.m_release, self.m_board, self.m_mmu, self.m_cores, self.m_caches):
+        for w in (self.m_core, self.m_release, self.m_board, self.m_mmu, self.m_cores,
+                  self.m_caches):
             mb.addWidget(w)
+        self.m_core.currentIndexChanged.connect(
+            lambda _i: self._machine_choice("core", self.m_core.currentData()))
         self.m_release.currentIndexChanged.connect(
             lambda _i: self._machine_choice("release", self.m_release.currentData()))
         self.m_board.currentIndexChanged.connect(
@@ -697,6 +771,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """A choice on the Machine toolbar: what depends on it adjusts
         (and says so); a choice the loaded program cannot run with is
         refused."""
+        from .. import cores
         from ..compat import adjust, program_problem
         if getattr(self, "_syncing", False):
             return
@@ -704,16 +779,27 @@ class MainWindow(QtWidgets.QMainWindow):
         release = value if field == "release" else s.release
         o = replace(s.options, latency=dict(s.options.latency),
                     mem_timing=dict(s.options.mem_timing))
-        if field == "board":
+        core = cores.get(o.core)
+        if field == "core":
+            o, core_release = cores.apply(o, value)
+            release = core_release or release
+            core = cores.get(o.core)
+            if core is not None:
+                self._log(tr("core: {lines}").format(lines="\n  ".join(cores.describe(core))))
+        elif field == "board":
             o.board = value
-        elif field == "mmu":
-            o.mmu = value
+        elif field == "mmu":                    # the core's own spelling of that MMU
+            o.mmu = next((m for m in core.mmu if m.split(":")[0].split("+")[0] == value),
+                         value) if core is not None else value
         elif field == "cores":
             o.cores = int(value)
-        elif field == "caches":
-            o.icache = o.dcache = "32K" if value else "none"
+        elif field == "caches":                 # a core: its own shapes
+            if core is not None and value:
+                o.icache, o.dcache = core.build["icache"], core.build["dcache"]
+            else:
+                o.icache = o.dcache = "32K" if value else "none"
         kind = "c" if s.c_file is not None else s.kind
-        problem = program_problem(o, kind) if s.program is not None else None
+        problem = program_problem(o, kind, s.program) if s.program is not None else None
         if problem:
             self.status.showMessage(problem, 10000)
             self._log(problem)
@@ -814,7 +900,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reference.set_context(s.release, s.abi, s.options.pseudo)
         self.encoder.set_context(s.release, s.abi, s.options.pseudo)
         self.converter.set_nan2008(s.release == "R6")
-        self.config_label.setText(f" MIPS32 {s.release} · "
+        from ..cores import get as get_core
+        core = get_core(s.options.core)
+        self.config_label.setText(f" {core.title + ' · ' if core else ''}MIPS32 {s.release} · "
                                   + (tr("big-endian") if s.endian == "big"
                                      else tr("little-endian")) + " ")
 
@@ -866,6 +954,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hex_text = hex_text
         self.path = path
         self.doc_name = name
+        self.checks_file = None                 # (chosen for the old document)
+        self._show_check_source()
         self.findbar.hide()
         self.editor.setReadOnly(False)
         self.editor.setPlainText(text)
@@ -985,15 +1075,18 @@ class MainWindow(QtWidgets.QMainWindow):
             act = menu.addAction(tr("(the guide's labs are not installed)"))
             act.setEnabled(False)
             return
+        def mark(p: Path) -> str:               # a lab with checks: Run → Check
+            return tr(" (checks)") if _has_checks(p) else ""
         for lab in labs:
             if len(lab.files) == 1:
-                act = menu.addAction(lab.title)
+                act = menu.addAction(lab.title + mark(lab.files[0]))
                 act.setToolTip(lab.files[0].name)
                 act.triggered.connect(lambda _=False, p=lab.files[0]: self.open_lab(p))
             else:
-                sub_ = menu.addMenu(lab.title)
+                sub_ = menu.addMenu(lab.title + (tr(" (checks)") if any(
+                    _has_checks(p) for p in lab.files) else ""))
                 for p in lab.files:
-                    sub_.addAction(p.name).triggered.connect(
+                    sub_.addAction(p.name + mark(p)).triggered.connect(
                         lambda _=False, p=p: self.open_lab(p))
         if more:
             menu.addSeparator()
@@ -1001,7 +1094,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for group in more:
                 sub_ = other.addMenu(group.title)
                 for p in group.files:
-                    sub_.addAction(p.name).triggered.connect(
+                    sub_.addAction(p.name + mark(p)).triggered.connect(
                         lambda _=False, p=p: self.open_lab(p))
 
     def _show_feature_panes(self) -> None:
@@ -1015,6 +1108,8 @@ class MainWindow(QtWidgets.QMainWindow):
             wanted.append("tlb")
         if o.cores > 1:
             wanted.append("system")
+        if self.session.mt is not None:
+            wanted.append("mt")
         if o.board.split(":")[0] == "malta":
             wanted.append("board")
         for key in wanted:
@@ -1297,6 +1392,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.datapath24k.restyle()
         self.legend.set_mode(self.session.mode)
         self.console.restyle()
+        self.checks.restyle()
         for view in (self.reference, self.encoder, self.converter):
             view.update_view()
         self.editor.gutter.update()
@@ -1455,8 +1551,7 @@ class MainWindow(QtWidgets.QMainWindow):
         s = self.session
         keep = set(s.breakpoints)
         if self.hex_text is not None:
-            ok = (s.load_elf(self.hex_text, str(self.path or "")) if isinstance(
-                self.hex_text, bytes) else s.load_hex(self.hex_text))
+            ok = self._load_program(s)
             if ok:
                 self.editor.setReadOnly(False)
                 self.editor.setPlainText(s.listing)
@@ -1471,12 +1566,11 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.lang == "c":
             self.status.showMessage(tr("building the C program…"))
             QtWidgets.QApplication.processEvents()
-            ok = s.load_c(self.editor.toPlainText(), self.path.name if self.path else "program.c",
-                          optimize=f"-O{s.options.c_optimize}")
+            ok = self._load_program(s)
             self.status.clearMessage()
             self._assembled_text = self.editor.toPlainText() if ok else None
         else:
-            ok = s.load_source(self.editor.toPlainText())
+            ok = self._load_program(s)
             self._assembled_text = self.editor.toPlainText() if ok else None
         if ok:
             code = set(s.program.source_map)
@@ -1553,7 +1647,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """The core selector: one entry per core with its power state,
         shown only with more than one core."""
         s = self.session
-        rows = s.cores() if s.cps is not None else []
+        rows = s.cores() if s.cps is not None or len(s.machines) > 1 else []
         self.core_action.setVisible(bool(rows))
         self.core.blockSignals(True)
         if self.core.count() != len(rows):
@@ -1562,10 +1656,100 @@ class MainWindow(QtWidgets.QMainWindow):
         for r in rows:
             state = tr("exited") if r["halted"] else tr("waiting") if r["waiting"] \
                 else tr(r["state"])
-            self.core.setItemText(r["cpu"], tr("core {n}").format(n=r["cpu"]) + f" — {state}")
+            name = s.cpu_name(r["cpu"])
+            self.core.setItemText(r["cpu"], (tr("core {n}").format(n=r["cpu"])
+                                             if name.startswith("core") else name)
+                                  + f" — {state}")
         if rows:
             self.core.setCurrentIndex(s.cpu)
         self.core.blockSignals(False)
+
+    def _load_program(self, s: Session) -> bool:
+        """Load the document into ``s``: the HEX / ELF image, the C program
+        (built), or the editor's assembly (Assemble; every run of the
+        checks)."""
+        if self.hex_text is not None:
+            return (s.load_elf(self.hex_text, str(self.path or "")) if isinstance(
+                self.hex_text, bytes) else s.load_hex(self.hex_text))
+        if self.lang == "c":
+            return s.load_c(self.editor.toPlainText(),
+                            self.path.name if self.path else "program.c",
+                            optimize=f"-O{s.options.c_optimize}")
+        return s.load_source(self.editor.toPlainText())
+
+    # -- checks (PLAN M21 phase 2; emips.check, gui/checkpane.py) ---------------------------
+
+    def _show_check_source(self) -> None:
+        """The Checks pane says where the checks come from now."""
+        sibling = self.path.with_suffix(".check") if self.path is not None else None
+        if self.checks_file is not None:
+            self.checks.set_source(self.checks_file.name, chosen=True)
+        elif sibling is not None and sibling.is_file() and not (
+                self.hex_text is None and check.has_checks(self.editor.toPlainText())):
+            self.checks.set_source(sibling.name)
+        else:
+            self.checks.set_source(None)
+
+    def run_checks(self) -> None:
+        """Run > Check (F8): the program as its checks say, each run in a
+        fresh session (the one being debugged is left alone)."""
+        if self.checks.running:
+            return
+        dock = self.docks["checks"]
+        dock.show()
+        dock.raise_()
+        self._show_check_source()
+        text = self.editor.toPlainText() if self.hex_text is None else None
+        try:
+            found = check.checks_of(text, self.path, self.checks_file)
+        except OSError as exc:
+            self.checks.show_problem(tr("cannot read {file}: {why}").format(
+                file=exc.filename, why=exc.strerror))
+            return
+        except check.CheckError as exc:
+            where = Path(exc.source).name if exc.source else tr("the program")
+            self.checks.show_problem(f"{where}: {exc}", None if exc.source else exc.line)
+            return
+        if not found.runs:
+            self.checks.show_problem(tr("no checks: add '# check: …' lines to the program, "
+                                        "save a NAME.check next to it, or choose a checks "
+                                        "file (Run → Checks File…)"))
+            return
+        s = self.session
+
+        def make(run: check.Run) -> Session:
+            release, endian, mode, fwd, options = check.machine_for(
+                run, s.release, s.endian, s.mode, s.forwarding, s.options)
+            new = Session(release=release, endian=endian, mode=mode, forwarding=fwd,
+                          abi=s.abi, options=options)
+            if not self._load_program(new):
+                raise ValueError(new.errors[0] if new.errors else tr("cannot load the program"))
+            return new
+        self.checks.start(found.runs, make, lines=found.file is None)
+
+    def _checks_finished(self, passed: int, total: int) -> None:
+        self.status.showMessage(
+            tr("checks: all {t} passed").format(t=total) if passed == total and total
+            else tr("checks: {p} of {t} passed").format(p=passed, t=total), 8000)
+
+    def choose_checks_file(self) -> None:
+        """Run > Checks File…: check against a checks file from now on."""
+        start = str(self.path.parent) if self.path is not None else self._start_dir()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, tr("Checks file"), start,
+            tr("Checks") + " (*.check);;" + tr("All files") + " (*)")
+        if path:
+            self.checks_file = Path(path)
+            self.run_checks()
+
+    def clear_checks_file(self) -> None:
+        self.checks_file = None
+        self._show_check_source()
+
+    def _check_line(self, line: int) -> None:
+        """A check of the program's own lines was double-clicked."""
+        self.editor.go_to_line(line)
+        self.editor.setFocus()
 
     def _ensure_assembled(self) -> bool:
         """Auto-assemble (Settings > Assembler): when the source changed
@@ -1832,7 +2016,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for view in (self.datapath, self.registers, self.console, self.chart,
                          self.disasm, self.memory, self.caches, self.tlb, self.counters,
                          self.trace, self.board,
-                         self.system, self.source):
+                         self.system, self.mtview, self.source):
                 view.refresh(s)
             self.details.show_view(None)
             self.editor.breakpoint_lines = set()
@@ -1858,7 +2042,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.editor.show_line(cur)
         self.editor.breakpoint_lines = s.editor_breakpoint_lines()
         self.editor.gutter.update()
-        if s.pipeline is not None and s.pipeline.name == "24K":
+        if s.pipeline is not None and s.pipeline.name in ("24K", "34K"):
             self.datapath_pane.setCurrentWidget(self.datapath24k)
             self.datapath24k.refresh(s)
         else:
@@ -1874,6 +2058,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trace.refresh(s)
         self.board.refresh(s)
         self.system.refresh(s)
+        self.mtview.refresh(s)
         self.source.refresh(s)
         if self.part_dialog is not None and self.part_dialog.isVisible():
             self.part_dialog.refresh(s)

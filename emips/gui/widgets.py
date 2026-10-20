@@ -440,6 +440,12 @@ class RegisterView(QtWidgets.QTabWidget):
         self.addTab(self.gpr, tr("GPRs"))
         self.addTab(self.special, tr("PC / CP0"))
         self.addTab(self.fpr, tr("FPU"))
+        # the DSP Module (Session.dsp_rows): DSPControl field by field, ac0-ac3
+        self.dsp = _table([tr("reg"), tr("hex"), tr("meaning")])
+        self.dsp_tab = self.addTab(self.dsp, tr("DSP"))
+        self.setTabToolTip(self.dsp_tab, tr("The DSP Module: DSPControl and the four "
+                                            "accumulators (Status.MX enables it)"))
+        self._dsp_prev: list[int] = []
         # the interrupt system (mode, request, next vector: Session.
         # interrupt_lines) and the GPR shadow sets (Release 2+, SRSCtl / SRSMap)
         self.sets = QtWidgets.QWidget()
@@ -500,10 +506,12 @@ class RegisterView(QtWidgets.QTabWidget):
                         _set(table, r, c, "")
             self.special.setRowCount(0)
             self.setTabVisible(self.sets_tab, False)
+            self.setTabVisible(self.dsp_tab, False)
             self.setTabVisible(self.debug_tab, False)
             return
         self._session = s
         self._refresh_sets(s)
+        self._refresh_dsp(s)
         self.setTabVisible(self.debug_tab, True)
         self.debug_text.setText("\n".join(ln.strip() for ln in s.debug_lines()))
         self.dint.setEnabled(not s.machine.debug_mode and not s.halted)
@@ -524,7 +532,17 @@ class RegisterView(QtWidgets.QTabWidget):
             _set(self.special, i, 0, name)
             _set(self.special, i, 1, f"0x{value:08x}")
         import struct
+        fpu = s.machine.has_fpu
+        self.setTabToolTip(self.indexOf(self.fpr), "" if fpu else tr(
+            "This core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every FPU "
+            "instruction is Coprocessor Unusable"))
+        self.fpr.setEnabled(fpu)
         for i, raw in enumerate(s.machine.fpr):
+            if not fpu:
+                _set(self.fpr, i, 0, f"$f{i}")
+                _set(self.fpr, i, 1, tr("no FPU"))
+                _set(self.fpr, i, 2, "")
+                continue
             lo = raw & 0xFFFFFFFF
             single = struct.unpack(">f", lo.to_bytes(4, "big"))[0]
             dbl = struct.unpack(">d", raw.to_bytes(8, "big"))[0]
@@ -532,6 +550,25 @@ class RegisterView(QtWidgets.QTabWidget):
             _set(self.fpr, i, 1, f"0x{raw:016x}")
             _set(self.fpr, i, 2, f"{single:.7g} / {dbl:.15g}")
 
+
+    def _refresh_dsp(self, s: Session) -> None:
+        """The DSP tab, when the core has the DSP Module; a value that
+        changed since the last refresh is highlighted."""
+        self.setTabVisible(self.dsp_tab, bool(s.machine.dsp))
+        if not s.machine.dsp:
+            return
+        rows = s.dsp_rows()
+        self.dsp.setRowCount(len(rows))
+        changed = len(self._dsp_prev) == len(rows)
+        for i, (name, value, note) in enumerate(rows):
+            hot = changed and self._dsp_prev[i] != value
+            bg = T().current_line if hot else None
+            _set(self.dsp, i, 0, name, bg, hot)
+            _set(self.dsp, i, 1, f"0x{value:08x}" if not name.startswith("  ")
+                 else (f"{value:04b}" if "ccond" in name else
+                       f"0x{value:02x}" if "ouflag" in name else str(value)), bg, hot)
+            _set(self.dsp, i, 2, tr(note) if note else "", bg)
+        self._dsp_prev = [v for _, v, _ in rows]
 
     def _probe_toggled(self, *_args) -> None:
         on = self.probe_box.isChecked()

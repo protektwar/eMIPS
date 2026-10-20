@@ -36,7 +36,9 @@ KIND_TEXT = {
     "code20": "code", "code19": "code", "bcode": "code", "tcode": "code",
     "code16": "code", "c0rd": "$cp0reg", "fcr": "$fcr", "hwr": "$hwr",
     "c2rt": "$c2reg", "impl16": "impl", "cofun": "cofun", "hint11": "hint",
-    "pos_ext": "pos, size", "pos_ins": "pos, size", "rsd": "rs", "pc19": "label",
+    "pos_ext": "pos, size", "pos_ins": "pos, size",
+    **{f"pos_{k}": "pos, size" for k in ("dext", "dextm", "dextu", "dins", "dinsm", "dinsu")},
+    "bp3": "bp", "pc18": "label", "rs2": "rs", "rsd": "rs", "pc19": "label",
     "sa2": "sa", "sel6": "sel",
 }
 
@@ -77,11 +79,15 @@ class RefRow:
     execution: str            # EXEC / HINT / DEFER / ILLEGAL
     privileged: bool
     delay_slot: bool
+    #: an Application-Specific Extension's row: "dsp" / "dspr2" (the DSP
+    #: Module, MD00374: Revision 1 / 2), "" for the base architecture
+    ase: str = ""
 
     def matches(self, query: str) -> bool:
         q = query.strip().lower()
         return not q or any(q in s.lower() for s in (
-            self.mnemonic, self.description, self.family, self.syntax))
+            self.mnemonic, self.description, self.family, self.syntax,
+            "dsp module" if self.ase else ""))
 
 
 def reference(release: str = "R5") -> list[RefRow]:
@@ -98,10 +104,11 @@ def reference(release: str = "R5") -> list[RefRow]:
             syntax=syntax_text(e), description=e.get("desc") or "",
             format=instruction_format(value), family=e["family"],
             encoding=e["encode"], releases=tuple(e.get("releases", ())),
-            since=rel["since"].get(e["name"], "R1"),
+            since=rel["since"].get(e["name"]) or e["releases"][0],
             removed_in=rel["removed_in"].get(e["name"]),
             execution=classify(e), privileged=e["name"] in PRIVILEGED_NAMES,
-            delay_slot=has_delay_slot(e)))     # compact branches: own family
+            delay_slot=has_delay_slot(e),      # compact branches: own family
+            ase=e.get("ase", "")))
     return sorted(rows, key=lambda r: (r.mnemonic.lower(), r.name))
 
 
@@ -146,9 +153,16 @@ def parse_word(text: str) -> int:
     return v & M32
 
 
+def _dsp(release: str, dsp: int | None) -> int:
+    """The DSP Module level the tools decode with: ``None`` = all the
+    release allows (Revision 2 from Release 2 on: the reference tool knows
+    every instruction; a core's Machine decodes only what it has)."""
+    return dsp if dsp is not None else (0 if release == "R1" else 2)
+
+
 def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
-                abi: bool = True) -> Decoded:
-    isa = ISA.for_release(release)
+                abi: bool = True, dsp: int | None = None) -> Decoded:
+    isa = ISA.for_release(release, _dsp(release, dsp))
     dec = isa.decode(word)                      # ISADecodeError if reserved
     e = dec.entry
     return Decoded(word, disassemble(word, pc, isa=isa, abi=abi), e["name"],
@@ -157,7 +171,8 @@ def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
 
 
 def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
-                pseudo: bool = True, abi: bool = True) -> list[Decoded]:
+                pseudo: bool = True, abi: bool = True,
+                dsp: int | None = None) -> list[Decoded]:
     """Assemble one source line at ``pc``: every machine word it becomes
     (a pseudo-instruction can be several), decoded.  Branch / jump targets
     are absolute addresses or ``.``-free numbers; no delay-slot nop is
@@ -170,7 +185,7 @@ def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
     words = [prog.word(a) for a in sorted(prog.source_map)]
     if not words:
         raise AsmError(1, "no instruction on this line")
-    return [decode_word(w, release=release, pc=pc + 4 * i, abi=abi)
+    return [decode_word(w, release=release, pc=pc + 4 * i, abi=abi, dsp=dsp)
             for i, w in enumerate(words)]
 
 

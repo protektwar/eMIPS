@@ -1,0 +1,5 @@
+# Lab 4 — An exception handler: the checks of a finished handler
+# (Run → Check, or python3 -m emips check docs/guide/labs/lab4_misaligned.asm)
+check: output is "bad address 0x10010002"   (the message and BadVAddr, in hex)
+check: exceptions == 1         (the address error, taken once: the lw was skipped)
+check: $t1 == 0                (the lw that failed changed nothing)

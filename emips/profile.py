@@ -33,7 +33,8 @@ HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\
 #: the options a profile owns (the machine): unnamed ones go to their defaults
 PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
-                  "shadow_sets", "boot", "compressed")
+                  "shadow_sets", "boot", "compressed", "fpu", "dsp", "mt", "mt_pm", "itc",
+                  "core")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -58,6 +59,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--iocu", action="store_true")
     p.add_argument("--shadow-sets", type=int)
     p.add_argument("--compressed")
+    p.add_argument("--core")
+    p.add_argument("--no-fpu", action="store_true")
+    p.add_argument("--dsp", choices=("auto", "none", "dsp", "dspr2"))
+    p.add_argument("--mt")
+    p.add_argument("--mt-pm", choices=("rr", "wrr", "wrr2"))
+    p.add_argument("--itc")
     p.add_argument("--boot", choices=BOOT_MODES)
     p.add_argument("--pipeline", action="store_true")
     p.add_argument("--no-forwarding", action="store_true")
@@ -133,7 +140,8 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
         raise ValueError(f"eMIPS header: unknown {' '.join(rest)}")
     o: dict[str, Any] = {}
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
-                 "shadow_sets", "boot", "cache_init", "compressed"):
+                 "shadow_sets", "boot", "cache_init", "compressed", "dsp", "mt", "mt_pm",
+                 "itc", "core"):
         v = getattr(ns, name)
         if v is not None:
             o[name] = v.lower() if isinstance(v, str) and name != "boot" else v
@@ -147,11 +155,24 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
     for name in ("cache_parity", "cache_ecc", "write_buffer", "nonblocking", "iocu"):
         if getattr(ns, name):
             o[name] = True
+    if ns.no_fpu:
+        o["fpu"] = False
     check = replace(Options(), **o).validated()      # a bad value: say so
     for name, v in o.items():
         if getattr(check, name) != v:
             raise ValueError(f"eMIPS header: bad {name.replace('_', '-')} {v!r}")
-    return Profile(args=args, release=ns.release or "R5",
+    release = ns.release
+    if o.get("core"):                   # its build under the flags given (emips.cores)
+        from .cli import explicit_fields
+        from .cores import apply
+        built, core_release = apply(Options(), o["core"], keep=explicit_fields(ns))
+        o.update({f: getattr(built, f) for f in PROFILE_FIELDS
+                  if f not in o and getattr(built, f) != getattr(Options(), f)}
+                 | {"core": built.core})
+        if built.write_buffer:
+            o.setdefault("write_buffer", True)
+        release = release or core_release
+    return Profile(args=args, release=release or "R5",
                    endian="little" if ns.little else "big",
                    mode="pipeline" if ns.pipeline else "instruction",
                    forwarding=not ns.no_forwarding, options=o,

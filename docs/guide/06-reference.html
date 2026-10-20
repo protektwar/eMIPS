@@ -39,7 +39,8 @@ for teachers.</p>
 <li><a href="#68-what-is-not-simulated">6.8 What is not simulated</a></li>
 <li><a href="#69-frequently-asked-questions">6.9 Frequently asked questions</a></li>
 <li><a href="#610-for-teachers">6.10 For teachers</a></li>
-<li><a href="#611-glossary">6.11 Glossary</a></li>
+<li><a href="#611-real-mips-cores">6.11 Real MIPS cores</a></li>
+<li><a href="#612-glossary">6.12 Glossary</a></li>
 </ul>
 <hr>
 <h2 id="61-system-calls">6.1 System calls</h2>
@@ -265,9 +266,24 @@ ones a student program uses:</p>
 <td>(TLB) the entry <code>tlbwr</code> writes: counts down every cycle from the last entry to Wired (a 10-bit LFSR skips a step now and then, against livelocks)</td>
 </tr>
 <tr>
+<td style="text-align: right;">0, 1–3</td>
+<td>MVPControl, MVPConf0, MVPConf1</td>
+<td>(MT Module, the core) MVPControl: CPA (3) cache way exclusion, STLB (2) one shared TLB, VPC (1) configuration state, EVP (0) the VPEs run; MVPConf0: PVPE (13–10) VPEs − 1, PTC (7–0) TCs − 1, GS (28) gating storage</td>
+</tr>
+<tr>
+<td style="text-align: right;">1, 1–7</td>
+<td>VPEControl, VPEConf0, VPEConf1, YQMask, VPESchedule, VPEScheFBack, VPEOpt</td>
+<td>(MT Module, each VPE) VPEControl: YSI (21) / GSI (20) the scheduler intercepts, EXCPT (18–16) the last Thread exception's reason, TE (15) several TCs issue, TargTC (7–0) the TC <code>mftr</code> / <code>mttr</code> reach; VPEConf0: XTC (28–21) the TC that runs alone in an exception, MVP (1), VPA (0) the VPE runs; YQMask the YIELD qualifier inputs <code>yield</code> may name; VPESchedule.GPO (5) fixed group priorities (WRR)</td>
+</tr>
+<tr>
 <td style="text-align: right;">2 / 3</td>
 <td>EntryLo0 / EntryLo1</td>
 <td>(TLB) the even / odd page of an entry: PFN (29–6) = physical frame, C (5–3) cacheability, D (2) writable, V (1) valid, G (0) global; RI (31) / XI (30) read / execute inhibit (Release 3, PageGrain)</td>
+</tr>
+<tr>
+<td style="text-align: right;">2, 1–7</td>
+<td>TCStatus, TCBind, TCRestart, TCHalt, TCContext, TCSchedule, TCScheFBack</td>
+<td>(MT Module, each TC) TCStatus: TCU (31–28), TMX (27), TKSU (12–11) and TASID (7–0) this TC's Status / EntryHi fields, RNST (24–23) why it is blocked (1 WAIT, 2 YIELD, 3 gating storage), DT (20), DA (15) dynamically allocatable, A (13) activated, IXMT (10) no interrupts; TCBind: CurTC (28–21), CurVPE (3–0); TCRestart its PC; TCHalt.H (0); TCSchedule: STP (3), GRP (1–0) its group (WRR)</td>
 </tr>
 <tr>
 <td style="text-align: right;">4</td>
@@ -777,6 +793,16 @@ entries.  Without caches all of them do nothing.</p>
 <td>MCheck</td>
 <td>Machine Check: a TLB write would make two valid entries match (Status.TS = 1)</td>
 </tr>
+<tr>
+<td style="text-align: right;">25</td>
+<td>Thread</td>
+<td>(MT Module) a thread instruction cannot do it; VPEControl.EXCPT says why: 0 underflow (<code>yield $zero</code> of the last TC that may be freed), 1 overflow (<code>fork</code>: no free TC), 2 an invalid YIELD qualifier, 3 gating storage (a cell's T bit), 4 / 5 the YIELD / gating-storage scheduler intercepts</td>
+</tr>
+<tr>
+<td style="text-align: right;">26</td>
+<td>DSPDis</td>
+<td>(DSP Module) DSP State Disabled: a DSP instruction with Status.MX = 0</td>
+</tr>
 </tbody>
 </table>
 <p>Vectors: <code>0x80000180</code> (<code>0x80000200</code> for interrupts with Cause.IV); with
@@ -1001,7 +1027,7 @@ Not included:</p>
 <li><strong>bus errors on the flat board</strong> — there every physical address is RAM
   (never-written bytes read 0); the Malta board (<code>--board malta</code>) has
   its real map and bus errors, the PIIX4 (8259s, 8254, RTC) and the
-  serial ports; its IDE disk and DMA come next, its floppy, parallel
+  serial ports, its IDE disks and DMA; its floppy, parallel
   port, keyboard, USB and Ethernet are not modelled (the monitor flash is
   read-only: its programming commands are not modelled either);</li>
 <li><strong>memory wait states without caches</strong> — then every access takes one
@@ -1013,10 +1039,15 @@ Not included:</p>
 <li><strong>off-chip trace</strong> (the TCB's probe interface, PIB / TR_DATA) — MIPS
   Trace itself (PDtrace and the TCB's on-chip trace memory) is simulated,
   like EJTAG Debug Mode, the hardware breakpoints, the watch registers,
-  the TAP with a probe and PC sampling; <strong>microMIPS /
-  MIPS16e</strong> (<code>jalx</code> is a reserved instruction);</li>
-<li><strong>ASEs</strong>: MSA (SIMD), DSP, MT, MIPS-3D, paired-single floating point,
-  COP2 (Coprocessor Unusable), the optional Release 6 modules;</li>
+  the TAP with a probe and PC sampling;</li>
+<li><strong>ASEs</strong>: MSA (SIMD), MCU, MIPS-3D, MIPS16e2, the
+  virtualization ASE, paired-single floating point, COP2 (Coprocessor
+  Unusable), the optional Release 6 modules (MIPS16e and microMIPS are
+  simulated: <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19 / 2.20</a>;
+  the DSP Module and the MT Module too: <code>--dsp</code>, <code>--mt</code>,
+  <a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a> / <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>);
+  of a real core (<a href="#611-real-mips-cores">6.11</a>), what is specific to
+  it beyond its build options;</li>
 <li><strong>an external interrupt controller on one core</strong> — EIC mode needs the
   GIC: a multi-core system (<code>--cores 2</code>), <a href="05-understanding.html#the-gic-as-an-external-interrupt-controller-eic-mode">The GIC as an External
   Interrupt Controller</a>;</li>
@@ -1114,7 +1145,247 @@ expected output: it appears in File → Examples.</p>
 <p><strong>Translating the interface.</strong>  <code>python3 tools/extract_gui_strings.py ro</code>
 creates <code>emips/gui/translations/emips_ro.ts</code>; fill it with Qt Linguist
 (or any text editor) — Configure → Language then offers it.</p>
-<h2 id="611-glossary">6.11 Glossary</h2>
+<h2 id="611-real-mips-cores">6.11 Real MIPS cores</h2>
+<p>A <strong>core preset</strong> makes the machine one of the cores MIPS licensed,
+as its datasheet and Software User's Manual let it be built: the release
+it implements, its compressed ISA, whether it has an FPU, its MMU, cache
+shapes, number of cores, shadow register sets and pipeline model, and its
+PRId (Processor ID), and whether it has the DSP Module and the MT Module.  Choose it with the window's <strong>Core</strong> box
+(Machine toolbar, Settings → Processor), <code>--core NAME</code>, <code>set core
+NAME</code> or a program's <code># eMIPS: --core NAME</code> line;
+<code>python3 -m emips cores</code> lists them.  The preset sets one build (the
+manuals name no default: 32 KB caches, 32 TLB entries and 4 shadow sets
+where those are options); after that every setting stays editable within
+what the core can be built with — the rest is greyed out, its tooltip
+naming the core's options and the manual — and a value outside them
+makes the machine the <strong>generic</strong> eMIPS core again (PRId 0), with a
+note.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Core</th>
+<th>Release</th>
+<th>Compressed ISA</th>
+<th>FPU</th>
+<th>DSP Module</th>
+<th>MT Module</th>
+<th>MMU</th>
+<th>L1 caches</th>
+<th>Pipeline model</th>
+<th>Cores</th>
+<th>PRId</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>4kc</code></td>
+<td>4Kc</td>
+<td>R1</td>
+<td>none</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:16</td>
+<td>0-16 KB, 1/2/3/4-way, 16-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00018000</code></td>
+</tr>
+<tr>
+<td><code>24kc</code></td>
+<td>24Kc</td>
+<td>R2</td>
+<td>MIPS16e</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>none/8/16/32/64 KB, 4-way, 32-byte lines</td>
+<td>24k</td>
+<td>1</td>
+<td><code>0x00019300</code></td>
+</tr>
+<tr>
+<td><code>24kf</code></td>
+<td>24Kf</td>
+<td>R2</td>
+<td>MIPS16e</td>
+<td>yes</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>none/8/16/32/64 KB, 4-way, 32-byte lines</td>
+<td>24k</td>
+<td>1</td>
+<td><code>0x00019300</code></td>
+</tr>
+<tr>
+<td><code>34kc</code></td>
+<td>34Kc</td>
+<td>R2</td>
+<td>MIPS16e / none</td>
+<td>no</td>
+<td>Revision 1</td>
+<td>1 or 2 VPEs, 1–9 TCs</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>none/8/16/32/64 KB, 4-way, 32-byte lines (or 1/2/4/8/16 KB direct-mapped)</td>
+<td>24k</td>
+<td>1</td>
+<td><code>0x00019500</code></td>
+</tr>
+<tr>
+<td><code>34kf</code></td>
+<td>34Kf</td>
+<td>R2</td>
+<td>MIPS16e / none</td>
+<td>yes</td>
+<td>Revision 1</td>
+<td>1 or 2 VPEs, 1–9 TCs</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>none/8/16/32/64 KB, 4-way, 32-byte lines (or 1/2/4/8/16 KB direct-mapped)</td>
+<td>24k</td>
+<td>1</td>
+<td><code>0x00019500</code></td>
+</tr>
+<tr>
+<td><code>1004kc</code></td>
+<td>1004Kc</td>
+<td>R2</td>
+<td>MIPS16e / none</td>
+<td>no</td>
+<td>Revision 1 or no</td>
+<td>1 or 2 VPEs, one TC each</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>8/16/32/64 KB, 4-way, 32-byte lines (or 0/1/2/4/8/16 KB direct-mapped)</td>
+<td>24k</td>
+<td>1, 2, 3, 4</td>
+<td><code>0x00019900</code></td>
+</tr>
+<tr>
+<td><code>1004kf</code></td>
+<td>1004Kf</td>
+<td>R2</td>
+<td>MIPS16e / none</td>
+<td>yes</td>
+<td>Revision 1 or no</td>
+<td>1 or 2 VPEs, one TC each</td>
+<td>tlb:16, tlb:32, tlb:64, fixed</td>
+<td>8/16/32/64 KB, 4-way, 32-byte lines (or 0/1/2/4/8/16 KB direct-mapped)</td>
+<td>24k</td>
+<td>1, 2, 3, 4</td>
+<td><code>0x00019900</code></td>
+</tr>
+<tr>
+<td><code>interaptiv</code></td>
+<td>interAptiv</td>
+<td>R3</td>
+<td>MIPS16e / none</td>
+<td>optional</td>
+<td>Revision 2 or no</td>
+<td>1 or 2 VPEs, 1–9 TCs</td>
+<td>tlb:16+sc, tlb:32+sc, tlb:48+sc, tlb:64+sc</td>
+<td>4/8/16/32/64 KB, 4-way, 32-byte lines</td>
+<td>24k</td>
+<td>1, 2, 3, 4</td>
+<td><code>0x0001a100</code></td>
+</tr>
+<tr>
+<td><code>p5600</code></td>
+<td>P5600</td>
+<td>R5</td>
+<td>none</td>
+<td>optional</td>
+<td>no</td>
+<td>no</td>
+<td>ftlb:64:128x4+sc, ftlb:64:128x4+sc+pw, tlb:64+sc, tlb:64+sc+pw</td>
+<td>32/64 KB, 4-way, 32-byte lines</td>
+<td>5-stage, 24k</td>
+<td>1, 2, 3, 4</td>
+<td><code>0x0001a800</code></td>
+</tr>
+<tr>
+<td><code>m14k</code></td>
+<td>M14K</td>
+<td>R2</td>
+<td>microMIPS + MIPS32 / microMIPS only / none</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>fixed</td>
+<td>no cache</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00019b00</code></td>
+</tr>
+<tr>
+<td><code>m14kc</code></td>
+<td>M14Kc</td>
+<td>R2</td>
+<td>microMIPS + MIPS32 / microMIPS only / none</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>fixed, tlb:16, tlb:32</td>
+<td>0-64 KB, 1/2/3/4-way, 16-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00019c00</code></td>
+</tr>
+<tr>
+<td><code>microaptiv-uc</code></td>
+<td>microAptiv UC</td>
+<td>R2</td>
+<td>microMIPS + MIPS32 / microMIPS only / none</td>
+<td>optional</td>
+<td>Revision 2 or no</td>
+<td>no</td>
+<td>fixed</td>
+<td>no cache</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00019d00</code></td>
+</tr>
+<tr>
+<td><code>microaptiv-up</code></td>
+<td>microAptiv UP</td>
+<td>R2</td>
+<td>microMIPS + MIPS32 / microMIPS only / none</td>
+<td>no</td>
+<td>Revision 2 or no</td>
+<td>no</td>
+<td>fixed, tlb:16, tlb:32</td>
+<td>0-64 KB, 1/2/3/4-way, 16-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00019e00</code></td>
+</tr>
+</tbody>
+</table>
+<p>A program finds out which core it runs on as an operating system's
+CPU probe does: PRId names the company (1 = MIPS Technologies) and the
+processor, Config.AR the release (0 = Release 1, 1 = Releases 2 to 5 —
+the P5600, a Release 5 core, reads 1 too — 2 = Release 6), Config.MT the
+MMU, Config1 the TLB size, the FPU (FP), MIPS16e (CA) and the caches,
+Config3.ISA microMIPS and DSPP / DSP2P the DSP Module (Lab 48).  Without an FPU (the 24Kc, the M14K, or
+<code>--no-fpu</code>) Status.CU1 reads 0 whatever is written, so every FPU
+instruction raises Coprocessor Unusable; C is built soft-float.</p>
+<p>What a preset does not change: every core keeps the 24K's
+implementation-specific registers (Config7, the EJTAG 3.20 debug unit
+with 4 instruction / 2 data breakpoints, the micro-TLBs, the cache
+replacement and the performance events).  What a core has that eMIPS
+does not model is listed by <code>python3 -m emips cores NAME</code> ("not
+modelled"): the MCU ASE and the MPU (the microcontroller cores), MSA,
+the virtualization ASE and the out-of-order pipeline of the P5600 (its
+preset offers the 5-stage or the 24K model).  The 34K, the 1004K and the
+interAptiv have the MT Module (<code>mt</code>: their VPEs and TCs, <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>);
+in pipeline mode they run the 34K's pipeline, the 24K model with the
+thread-select stage (bypassed with one thread context).  eMIPS
+builds a multi-core system with 2 to 4 cores, so a single-core 1004K
+has no Coherence Manager here.  Not offered: the M5100 / M5150 (their
+virtualization ASE is always there), the M6250 (its datasheet gives no
+PRId), the 74K and proAptiv (out-of-order pipelines).</p>
+<h2 id="612-glossary">6.12 Glossary</h2>
 <table>
 <thead>
 <tr>
@@ -1294,6 +1565,42 @@ creates <code>emips/gui/translations/emips_ro.ts</code>; fill it with Qt Linguis
 <tr>
 <td>L2 cache</td>
 <td>the second-level cache below the instruction and data caches</td>
+</tr>
+<tr>
+<td>SIMD</td>
+<td>single instruction, multiple data: one instruction on several values at once — the DSP Module's <code>.QB</code> (four bytes) and <code>.PH</code> (two halfwords) instructions on one GPR (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>)</td>
+</tr>
+<tr>
+<td>saturation</td>
+<td>a result too large or too small is clamped to the largest or smallest value instead of wrapping around (<code>addu_s.qb</code>: 0xf0 + 0x30 = 0xff); DSP code's way of not turning an overflow into a sign flip</td>
+</tr>
+<tr>
+<td>Q15 / Q31</td>
+<td>fixed-point fractions in 16 / 32 bits: a sign and 15 / 31 fraction bits, -1 to just under 1 (0x4000 = 0.5, 0x8000 = -1.0); what the DSP Module's <code>Q</code> instructions compute with</td>
+</tr>
+<tr>
+<td>DSP Module (DSP ASE)</td>
+<td>MIPS's extension for signal and media processing: SIMD, saturating and fixed-point arithmetic, three more accumulators, DSPControl; enabled by Status.MX (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>)</td>
+</tr>
+<tr>
+<td>multithreading (fine-grained)</td>
+<td>one core runs several instruction streams, issuing from a different one every cycle if it likes, so one thread's wait (a cache miss) is another's turn — what the MT Module does (<a href="05-understanding.html#threads-in-one-core-the-mt-module">5.9</a>)</td>
+</tr>
+<tr>
+<td>TC (thread context)</td>
+<td>one hardware thread of the MT Module: a PC, the GPRs, HI / LO and a few CP0 fields; the TCs of a core share its pipeline and caches (<a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>)</td>
+</tr>
+<tr>
+<td>VPE (virtual processing element)</td>
+<td>a group of TCs with its own CP0 — to software a processor of its own; a 34K has 1 or 2; in a multi-core system each VPE is a <strong>VP</strong>, numbered core × VPEs + VPE</td>
+</tr>
+<tr>
+<td>policy manager</td>
+<td>the part of an MT core that decides which TC issues: round-robin, or weighted by groups (TCSchedule.GRP) with fixed or rotating priorities</td>
+</tr>
+<tr>
+<td>gating storage, ITC</td>
+<td>memory whose loads and stores wait: a load from an empty cell or a store to a full one stops its thread until another thread makes it possible; the 34K's Inter-Thread Communication unit has FIFO and semaphore cells (Lab 56)</td>
 </tr>
 </tbody>
 </table>

@@ -32,6 +32,8 @@ MAX_CORES = 4
 MAX_SHADOW_SETS = 16
 #: the compressed instruction sets a core may have
 COMPRESSED = ("auto", "none", "mips16e", "micromips", "micromips-only")
+#: the DSP Module a core may have (emips.dsp, MD00374)
+DSP_LEVELS = ("auto", "none", "dsp", "dspr2")
 #: the instruction set C programs are compiled to (emips.cc)
 C_ISAS = ("mips32", "mips16e", "micromips")
 
@@ -73,6 +75,29 @@ class Options:
     #: "micromips" (microMIPS32 and MIPS32, Config3.ISA = 2, Release 3+;
     #: emips.micromips); "micromips-only" (Config3.ISA = 1)
     compressed: str = "auto"
+    #: an FPU (CP1: Config1.FP; off = a core without one, the 24Kc: Status.CU1
+    #: reads 0, every FPU instruction is Coprocessor Unusable; C as soft-float)
+    fpu: bool = True
+    #: the DSP Module (emips.dsp): "auto" = the core has it (Revision 2)
+    #: when the program has DSP instructions, else not (the 24K has none);
+    #: "none"; "dsp" (Revision 1, the 24KE); "dspr2" (Revision 2: the 34K,
+    #: 74K, 1004K, interAptiv, microAptiv; on Release 6 Revision 3)
+    dsp: str = "auto"
+    #: the MT Module (emips.mt, MD00378): "auto" = 2 VPEs and 5 TCs (a 34K)
+    #: when the program has MT instructions, else none; "none"; "VPES:TCS"
+    #: (1-2 VPEs, VPES-9 TCs, the 34K's limits; Release 2-5)
+    mt: str = "auto"
+    #: the policy manager of the MT processor's dispatch scheduler (MD00534
+    #: 13.2): "rr" basic round-robin, "wrr" weighted round-robin (TCSchedule
+    #: groups), "wrr2" with its throttles
+    mt_pm: str = "rr"
+    #: the MT processor's ITC (Inter-Thread Communication storage, MD00534
+    #: ch. 12): "auto" = 4 FIFO + 8 semaphore cells, "none",
+    #: "FIFOS:SEMAPHORES" (0, 1, 2, 4, 8 or 16 each)
+    itc: str = "auto"
+    #: the core preset (emips.cores: "24kf", "m14k" ...): the release and the
+    #: settings its manuals allow, its PRId; "" = the generic eMIPS core
+    core: str = ""
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -184,6 +209,31 @@ class Options:
             self.shadow_sets = d.shadow_sets
         if self.compressed not in COMPRESSED:
             self.compressed = d.compressed
+        if self.dsp not in DSP_LEVELS:
+            self.dsp = d.dsp
+        self.mt = (self.mt or "").strip().lower()
+        if self.mt != "auto":
+            from .mt import parse_spec
+            try:
+                spec = parse_spec(self.mt)
+                self.mt = "none" if spec is None else f"{spec[0]}:{spec[1]}"
+            except ValueError:
+                self.mt = d.mt
+        from .mt import POLICY_MANAGERS
+        if self.mt_pm not in POLICY_MANAGERS:
+            self.mt_pm = d.mt_pm
+        self.itc = (self.itc or "").strip().lower()
+        if self.itc != "auto":
+            from .itc import parse_spec as itc_spec
+            try:
+                spec = itc_spec(self.itc)
+                self.itc = "none" if spec is None else f"{spec[0]}:{spec[1]}"
+            except ValueError:
+                self.itc = d.itc
+        from .cores import CORES
+        self.core = (self.core or "").lower()
+        if self.core and self.core not in CORES:
+            self.core = d.core
         for name, level in (("icache", 1), ("dcache", 1), ("l2", 2), ("l3", 3)):
             try:
                 Geometry.parse(getattr(self, name), level)
@@ -248,5 +298,6 @@ class Options:
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
         return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
-                self.c_isa) != \
-            (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa)
+                self.c_isa, self.fpu) != \
+            (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa,
+             other.fpu)

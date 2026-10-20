@@ -57,11 +57,14 @@ branch decisions, flushes, exceptions) — what the CLI / GUI show.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+from itertools import chain, islice
 from typing import Any, Callable
 
 from . import cp0 as C
-from .disasm import disassemble
+from . import dsp as DSP
+from .disasm import text_at
 from .exceptions import FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .sim import NULLIFY, Machine, _Arch
@@ -87,7 +90,9 @@ _RT_DEST = (_LOADS_TO_RT | {"SC", "SCE", "SC@R6", "MFC0", "MFC1", "MFHC1",
                             "CFC1", "RDHWR", "RDHWR@R6", "DI", "EI", "EXT",
                             "INS", "LUI",
                             "AUI"})
+_RT_DEST |= DSP.RT_DEST                    # the DSP Module's rt results (M18)
 _RT_DEST_AND_SRC = {"LWL", "LWR", "LWLE", "LWRE", "INS", "SC", "SCE", "SC@R6"}
+_RT_DEST_AND_SRC |= DSP.RT_DEST - DSP.ACC_READERS     # INSV, APPEND ...: merge into rt
 _LINKS = {"JAL", "BAL", "BGEZAL", "BLTZAL", "BGEZALL", "BLTZALL", "NAL",
           # Release 6 compact (link = PC + 4)
           "BALC", "JIALC", "BEQZALC", "BNEZALC", "BLEZALC", "BGEZALC",
@@ -98,7 +103,14 @@ _MDU_OPS = {"MULT", "MULTU", "MADD", "MADDU", "MSUB", "MSUBU", "DIV", "DIVU"}
 _FP_LOADS = {"LWC1", "LDC1", "LWXC1", "LDXC1", "LUXC1"}
 _COND_MOVES = ("MOVZ.", "MOVN.", "MOVF.", "MOVT.")
 
-Res = tuple[str, int] | str          # ("r", 5), ("f", 2), "hi", "lo", "fcc"
+Res = tuple[str, int] | str          # ("r", 5), ("f", 2), "hi", "lo", "fcc",
+#                                      ("hi", 1) ... ("lo", 3): the DSP Module's
+#                                      ac1-ac3, "dspctl": its DSPControl
+
+
+def is_accumulator(r: Res) -> bool:
+    """HI / LO of any accumulator: the multiply unit's, never forwarded."""
+    return r in ("hi", "lo") or isinstance(r, tuple) and r[0] in ("hi", "lo")
 
 
 @dataclass(frozen=True)
@@ -120,9 +132,27 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) ->
     MIPS16e / microMIPS instruction without a MIPS32 twin: ``insn``, its
     compressed form)."""
     e = dec.entry
-    name, fam = e["name"], e["family"]
     if e.get("isa") in ("mips16e", "micromips"):
         return _analyze_compressed(dec, insn)
+    key = (dec.word, e["name"], id(latency))
+    hit = _ANALYZED.get(key)
+    if hit is not None and hit[0] == latency:
+        return hit[1]
+    if len(_ANALYZED) >= 1 << 16:
+        _ANALYZED.clear()
+    info = _analyze(dec, latency)
+    _ANALYZED[key] = (dict(latency), info)
+    return info
+
+
+#: (word, row, the latency table's id) -> (that table's values, Info): an
+#: Info depends on those only (frozen, so it is shared)
+_ANALYZED: dict[tuple, tuple[dict, Info]] = {}
+
+
+def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
+    e = dec.entry
+    name, fam = e["name"], e["family"]
     w = dec.word
     f5 = lambda lsb: (w >> lsb) & 31                     # noqa: E731
     reads: set = set()
@@ -170,6 +200,10 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) ->
         writes.add("hi")
     if name == "MTLO":
         writes.add("lo")
+    if e.get("ase") in ("dsp", "dspr2"):         # the DSP Module: ac0-3, DSPControl
+        r_dsp, w_dsp = DSP.resources(name, w)
+        reads |= r_dsp
+        writes |= w_dsp
     if name.startswith("C.") or name == "CTC1":
         writes.add("fcc")
     if name.startswith(("BC1", "MOVF", "MOVT")) or name == "CFC1":
@@ -185,7 +219,7 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) ->
     reads_id = frozenset(reads) if control else frozenset()
     reads_ex = frozenset() if control else frozenset(reads)
 
-    ready = "MEM" if (name in _LOADS_TO_RT or name in _FP_LOADS
+    ready = "MEM" if (name in _LOADS_TO_RT or name in _FP_LOADS or name in DSP.LOADS
                       or name in ("SC", "SCE", "SC@R6", "LWPC")) else "EX"
     ex_cycles, mdu = 1, 0
     if name == "MUL" or name in _R6_MUL:
@@ -194,8 +228,10 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) ->
         ex_cycles = latency["DIV"]
     elif name in ("DIV", "DIVU"):
         mdu = latency["DIV"]
-    elif name in _MDU_OPS:
-        mdu = latency["MULT"]
+    elif name in _MDU_OPS or name in DSP.MACS or name in DSP.ACC_WRITERS:
+        mdu = latency["MULT"]                    # (the DSP Module's MACs: the MDU)
+    elif name in DSP.GPR_MULTIPLIES:
+        ex_cycles = latency["MUL"]               # (as MUL: holds EX)
     elif fam in ("fpu_arith", "fpu_cvt", "fpu_cmp"):
         op, fmt = name.split(".")[0], name.split(".")[-1]
         key = {"ADD": "FP_ADD", "SUB": "FP_ADD", "MUL": "FP_MUL",
@@ -225,7 +261,7 @@ _M16_REGS: dict[str, tuple[tuple, tuple]] = {
     "JALX": ((), (31,)),
 }
 _MM_REGS: dict[str, tuple[tuple, tuple]] = {
-    **dict.fromkeys(("B16", "J", "BC16", "BC", "BC2F", "BC2T", "BC2EQZC", "BC2NEZC"), ((), ())),
+    **dict.fromkeys(("B16", "J", "BC16", "BC", "BC2F", "BC2T", "BC2EQZC", "BC2NEZC", "BPOSGE32"), ((), ())),
     **dict.fromkeys(("BEQZ16", "BNEZ16", "BLTZ", "BGEZ", "BLEZ", "BGTZ", "BEQZC", "BNEZC",
                      "BEQZC16", "BNEZC16", "JR16", "JRC", "JRC16"), (("s",), ())),
     **dict.fromkeys(("BEQ", "BNE", "BEQC", "BNEC", "BLTC", "BGEC", "BLTUC", "BGEUC", "BOVC",
@@ -296,6 +332,8 @@ def _analyze_compressed(dec: Decode, insn: Any) -> Info:
         writes |= {("r", n) for n in MOVEP_DEST[f["e"]]}
     if name in ("MM.BC1F", "MM.BC1T"):
         reads.add("fcc")
+    if name == "MM.BPOSGE32":                    # the DSP Module: DSPControl.pos
+        reads.add("dspctl")
     if name in ("MM.BC1EQZC", "MM.BC1NEZC"):
         reads.add(("f", f["T"]))
     writes.discard(("r", 0))
@@ -321,6 +359,21 @@ def control_signals(dec: Decode, info: Info) -> dict[str, Any]:
             "Branch": info.control == "branch", "Jump": info.control == "jump",
             "ALUOp": e["mnemonic"],
         }
+    key = (name, info)
+    hit = _SIGNALS.get(key)
+    if hit is None:
+        if len(_SIGNALS) >= 1 << 14:
+            _SIGNALS.clear()
+        hit = _SIGNALS[key] = _signals(e, info)
+    return dict(hit)
+
+
+#: (row, Info) -> its control signals (control_signals; depend on those only)
+_SIGNALS: dict[tuple, dict[str, Any]] = {}
+
+
+def _signals(e, info: Info) -> dict[str, Any]:
+    fam, name = e["family"], e["name"]
     spec = [kind_of(k)[0] for k in operand_spec(e)]
     gpr_write = any(r[0] == "r" for r in info.writes if isinstance(r, tuple))
     load = info.ready == "MEM"
@@ -386,6 +439,8 @@ class Slot:
     back: int = 4
     slot_raw: int | None = None
     decode_error: ISADecodeError | None = None
+    #: its last stage views without / with the control signals (_view)
+    views: Any = None
 
     @property
     def addr(self) -> int:
@@ -435,12 +490,67 @@ class CycleTrace:
     id_view: Any = None
 
 
+class History:
+    """What a pipeline keeps of a run (its :class:`CycleTrace` s, the 24K's
+    slots): everything with ``last=None``, else the first ``first`` and the
+    last ``last`` items — a cycle's trace holds its views, a few KB, so a
+    long run kept all of them grew without bound (PLAN M20).  Read it as a
+    list: ``len``, iteration, ``h[-1]``, ``h[-24:]`` see the kept items in
+    order; :attr:`dropped` counts the ones in between that were let go."""
+
+    FIRST, LAST = 1000, 4000
+
+    def __init__(self, first: int | None = FIRST, last: int | None = LAST) -> None:
+        self.head: list = []
+        self.first = first if last is not None else None
+        self.tail: deque = deque(maxlen=last)
+        self.dropped = 0
+
+    def append(self, item) -> None:
+        if self.first is None or len(self.head) < self.first:
+            self.head.append(item)
+            return
+        tail = self.tail
+        if tail.maxlen is not None and len(tail) == tail.maxlen:
+            self.dropped += 1
+        tail.append(item)
+
+    def __len__(self) -> int:
+        return len(self.head) + len(self.tail)
+
+    def __bool__(self) -> bool:
+        return bool(self.head)
+
+    def __iter__(self):
+        return chain(self.head, self.tail)
+
+    def __getitem__(self, i):
+        tail = self.tail
+        if isinstance(i, int):
+            if i < 0 and -i <= len(tail):
+                return tail[i]
+            return list(self)[i]
+        if i.step is None and i.stop is None and i.start is not None \
+                and i.start < 0 and -i.start <= len(tail):   # the last n: the GUI's chart
+            return list(islice(tail, len(tail) + i.start, None))
+        return list(self)[i]
+
+
 def _view(slot: Slot | None, control: bool = False) -> StageView | None:
+    """The stage view of a slot (the same object while what it shows stays:
+    a slot is in a stage view every cycle it is in flight)."""
     if slot is None:
         return None
-    ctl = control_signals(slot.dec, slot.info) if control and slot.dec else None
-    return StageView(slot.seq, slot.pc, slot.text, ctl, slot.fetch_cache,
-                     slot.fetch_wait, slot.mem_wait, slot.fetch_tlb, *stage_word(slot))
+    views = slot.views
+    if views is None:
+        views = slot.views = [None, None]
+    v = views[control]
+    if v is None or v.fetch_wait != slot.fetch_wait or v.mem_wait != slot.mem_wait:
+        ctl = control_signals(slot.dec, slot.info) if control and slot.dec else None
+        v = views[control] = StageView(slot.seq, slot.pc, slot.text, ctl, slot.fetch_cache,
+                                       slot.fetch_wait, slot.mem_wait, slot.fetch_tlb,
+                                       *stage_word(slot))
+    return v
 
 
 #: the performance counter event of a memory wait (timing / micro-TLB kind)
@@ -468,8 +578,10 @@ def _pop_run(runs: list) -> str | None:
 def _rname(r: Res) -> str:
     if isinstance(r, tuple):
         from .syntax import gpr_name
+        if r[0] in ("hi", "lo"):
+            return f"{r[0].upper()}{r[1]} ($ac{r[1]})"
         return gpr_name(r[1]) if r[0] == "r" else f"$f{r[1]}"
-    return r.upper() if r != "fcc" else "FCC"
+    return {"fcc": "FCC", "dspctl": "DSPControl"}.get(r, r.upper())
 
 
 def fetch_compressed(p, m: Machine, pc: int) -> Slot:
@@ -562,7 +674,7 @@ class Pipeline:
         self.mdu_busy = 0
         self.stalls: dict[str, int] = {}
         self._seq = 0
-        self.history: list[CycleTrace] = []
+        self.history = History()
         #: False: fetch nothing more (let the pipeline drain)
         self.fetching = True
         self.stage["IF"] = self._fetch()
@@ -623,7 +735,7 @@ class Pipeline:
         except ISADecodeError:
             return Slot(self._seq, pc, word, None, f".word 0x{word:08x}", None,
                         fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb)
-        return Slot(self._seq, pc, word, dec, disassemble(word, pc, isa=m.isa),
+        return Slot(self._seq, pc, word, dec, text_at(word, pc, m.isa),
                     analyze(dec, self.latency), fetch_cache=m.fetch_accesses,
                     fetch_tlb=m.fetch_tlb, imiss=m.fetch_missed)
 
@@ -635,7 +747,7 @@ class Pipeline:
         if s.info is None:
             return None
         ex, mem = self.stage["EX"], self.stage["MEM"]
-        if s.info.mdu_cycles or s.info.reads_ex & {"hi", "lo"}:
+        if s.info.mdu_cycles or any(is_accumulator(r) for r in s.info.reads_ex):
             if self.mdu_busy:
                 return ("mdu", f"multiply/divide unit busy "
                                f"({self.mdu_busy} more cycle(s))")
@@ -649,7 +761,7 @@ class Pipeline:
         for prod, where in ((ex, "EX"), (mem, "MEM")):
             if prod is None or prod.info is None:
                 continue
-            common = needs & prod.info.writes - {"hi", "lo"}
+            common = {r for r in needs & prod.info.writes if not is_accumulator(r)}
             if not common:
                 continue
             r = _rname(sorted(common, key=str)[0])
@@ -1003,7 +1115,10 @@ class Pipeline:
                            (self.stage["WB"], "MEM/WB")):
             if prod is None or prod.info is None:
                 continue
-            for r in sorted(needs & prod.info.writes - {"hi", "lo"}, key=str):
+            common = needs & prod.info.writes
+            if not common:
+                continue
+            for r in sorted((r for r in common if not is_accumulator(r)), key=str):
                 ev.append(f"forward {_rname(r)}: {path} -> {stage} "
                           f"({prod.text} -> {s.text})")
                 sources[r] = f"forwarded {path} -> {stage} from {prod.text}"

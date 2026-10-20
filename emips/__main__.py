@@ -11,6 +11,8 @@
     python3 -m emips debug prog.asm|prog.hex|prog.elf [-c "cmd; cmd"] [-x FILE]
     python3 -m emips gui   [prog.asm|prog.hex|prog.elf]   (needs PyQt6 or PySide6)
     python3 -m emips cc    prog.c [more.c] [-o prog.elf] [--release R2] [--little]
+    python3 -m emips check prog.asm|prog.c|prog.elf [--checks FILE] [--pipeline]
+                           [--limit N] [--quiet]
 
 Shared options: ``--release R1|R2|R3|R5|R6``, ``--little``, ``--strict``
 (no pseudo-instructions), ``--noreorder`` (no automatic delay-slot nops),
@@ -38,13 +40,16 @@ every cache; ``--tlb-stats``: TLB lookups, misses and exceptions;
 stalls (``--events``: forwarding, branch decisions, flushes per cycle;
 ``--views``: the datapath view of EX / ID); ``run --pipeline`` prints
 the same.  ``debug`` is the interactive debugger
-(:mod:`emips.cli`; ``help`` at its prompt).  Everything runs on
+(:mod:`emips.cli`; ``help`` at its prompt).  ``check`` runs the program
+as its ``# check:`` lines (or a checks file) say and prints which pass
+(:mod:`emips.check`).  Everything runs on
 :class:`emips.session.Session`, the engine of the GUI.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import sys
 from pathlib import Path
@@ -55,6 +60,7 @@ from .disasm import disassemble
 from .hexload import DecodeFile
 from .memory import PMemory
 from .cache import Geometry
+from .cores import CORES, describe as describe_core, get as get_core
 from .timing import MEMORY_TIMING
 from .options import BOOT_MODES, CACHE_INIT_MODES, Options
 from .session import Session, StepResult
@@ -91,9 +97,18 @@ def _cmd_cc(args) -> None:
     from .cc import BuildError, build
     out = args.output or str(Path(args.sources[0]).with_suffix(".elf"))
     try:
-        release = args.release or ("R5" if args.micromips else "R2")
+        core = get_core(args.core)
+        release = args.release or (core.release if core is not None else
+                                   "R5" if args.micromips else "R2")
+        if core is not None and release != core.release:
+            sys.exit(f"the {core.title} is a Release {core.release[1:]} core")
+        fpu = not args.no_fpu and (core is None or core.build["fpu"])
+        dsp = {"dsp": 1, "dspr2": 2}.get(args.dsp or (core.build["dsp"] if core else ""), 0)
+        if core is not None and args.dsp and not core.allows("dsp", args.dsp):
+            sys.exit(f"the {core.title} is built with {core.choices('dsp')}")
         log = build(args.sources, out, release=release, endian=args.endian,
-                    optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips)
+                    optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips,
+                    fpu=fpu, dsp=dsp)
     except BuildError as exc:
         sys.exit(str(exc))
     if args.verbose:
@@ -120,6 +135,14 @@ def _cmd_dis(args) -> None:
         word = m.read_word(w)
         print(f"{w:08x}  {word:08x}  "
               f"{disassemble(word, w, abi=not args.numeric, isa=m.isa)}")
+
+
+def _cmd_cores(args) -> None:
+    names = [args.name] if args.name else list(CORES)
+    for i, name in enumerate(names):
+        if i:
+            print()
+        print(f"{name}:  " + "\n".join(describe_core(CORES[name])))
 
 
 # ------------------------------------------------------------------- run
@@ -158,6 +181,72 @@ def _run_to_stop(d: Debugger, max_steps: int, trace: bool) -> StepResult:
         if r.stopped or r.error or not r.steps:
             break
     return total
+
+
+def _cmd_check(args) -> None:
+    """Run the program as its checks say and print what passes (PLAN M21,
+    emips.check); exit status 0: every check passes, 1: one fails, 2: the
+    checks or the program cannot be read."""
+    from . import check as K
+    path = args.file
+    try:
+        text = Path(path).read_bytes().decode("utf-8", errors="replace")
+        found = K.checks_of(text, path, args.checks)
+    except OSError as exc:
+        print(f"error: cannot read {exc.filename}: {exc.strerror}", file=sys.stderr)
+        sys.exit(2)
+    except K.CheckError as exc:
+        print(f"{exc.source or path}: {exc}", file=sys.stderr)
+        sys.exit(2)
+    runs = found.runs
+    source = str(found.file) if found.file is not None else path
+    if not runs:
+        print(f"{path}: no checks (add '# check: ...' lines, write "
+              f"{Path(path).with_suffix('.check').name} next to it, or give --checks FILE)",
+              file=sys.stderr)
+        sys.exit(2)
+    parser = build_parser()
+    plain = vars(parser.parse_args(["check", path]))
+    machines = []                               # every run's flags, read before any runs
+    for run in runs:
+        rargs = argparse.Namespace(**vars(args))
+        if run.flags:                           # this run's machine, over the command line
+            why = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(why):
+                    given = vars(parser.parse_args(["check", path, *run.flags]))
+            except SystemExit:
+                reason = why.getvalue().strip().splitlines()[-1:] or [""]
+                print(f"{source}: line {run.flags_line}: eMIPS: bad flags "
+                      f"{' '.join(run.flags)} ({reason[0].split(': error: ')[-1]})",
+                      file=sys.stderr)
+                sys.exit(2)
+            for key, value in given.items():
+                if value != plain.get(key):
+                    setattr(rargs, key, value)
+        machines.append(rargs)
+    passed = total = 0
+    for i, (run, rargs) in enumerate(zip(runs, machines)):
+        s = session_from_args(rargs)
+        errors: list[str] = []
+        if not load_file(s, path, errors.append):
+            print(errors[0] if errors else f"error: cannot load {path}", file=sys.stderr)
+            sys.exit(2)
+        for note in s.program_notes:            # what the program's code made change
+            print(f"note: {note}", file=sys.stderr)
+        if rargs.keys:
+            s.type_keys(_keys(rargs))
+        limit = args.limit or K.default_limit(s)
+        res = K.execute(s, run, limit=limit)
+        if len(runs) > 1 or run.name:
+            print(f"--- run {i + 1}" + (f": {run.name}" if run.name else ""))
+        if res.output and not args.quiet:
+            print(res.output, end="" if res.output.endswith("\n") else "\n")
+        p, t = K.report([res], print, header=False)
+        passed, total = passed + p, total + t
+    print(f"--- all {total} checks passed" if passed == total
+          else f"--- {passed} of {total} checks passed")
+    sys.exit(0 if passed == total else 1)
 
 
 def _cmd_gdb(args) -> None:
@@ -216,7 +305,7 @@ def _cmd_run(args) -> None:
     _extras(d, args)
     for i, m in enumerate(s.machines):
         for e in m.exception_log:
-            if "vector" in e and s.cps is not None:
+            if "vector" in e and (s.cps is not None or s.mt is not None):
                 e = dict(e, cpu=i)
             print(d._exception_line(e).strip() if "vector" in e else f"exception: {e}")
 
@@ -403,7 +492,9 @@ def build_parser() -> argparse.ArgumentParser:
             ("run", _cmd_run, "run a program, print the registers"),
             ("pipe", _cmd_pipe, "run on the 5-stage pipeline: chart, CPI, stalls"),
             ("debug", _cmd_debug, "interactive debugger (help at its prompt)"),
-            ("gdb", _cmd_gdb, "serve GDB's remote protocol: target remote :PORT")):
+            ("gdb", _cmd_gdb, "serve GDB's remote protocol: target remote :PORT"),
+            ("check", _cmd_check, "run a program's checks ('# check:' lines, or "
+                                  "--checks FILE): pass / fail, exit status 1 on a fail")):
         p = sub.add_parser(name, help=helptext)
         if name == "debug":
             p.add_argument("file", nargs="?")
@@ -434,7 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="the TCP port GDB connects to (default 1234; 0: any free)")
             p.add_argument("--host", default="127.0.0.1",
                            help="the address to listen on (default 127.0.0.1: this machine)")
-        if name in ("run", "pipe", "debug", "gdb"):
+        if name in ("run", "pipe", "debug", "gdb", "check"):
             p.add_argument("--keys", default="", help="type this on the MMIO keyboard (\\n = Enter)")
             p.add_argument("--no-header", action="store_true",
                            help="ignore the program's '# eMIPS: ...' settings line")
@@ -515,7 +606,35 @@ def build_parser() -> argparse.ArgumentParser:
                                 "micromips = microMIPS32 and MIPS32 (Config3.ISA = 2, "
                                 "Release 3+); micromips-only (Config3.ISA = 1); a program "
                                 "with MIPS16e / microMIPS code gets it anyway")
-        if name in ("run", "debug", "gdb"):
+            p.add_argument("--core", default=None, type=str.lower,
+                           choices=["generic"] + list(CORES),
+                           help="a real MIPS core: its release, compressed ISA, FPU, MMU, "
+                                "caches, cores, shadow sets and pipeline model as its "
+                                "manuals allow (the flags given choose among them; "
+                                "python3 -m emips cores lists them)")
+            p.add_argument("--no-fpu", action="store_true",
+                           help="a core without an FPU (the 24Kc: Status.CU1 reads 0, "
+                                "FPU instructions are Coprocessor Unusable)")
+            p.add_argument("--dsp", default=None, type=str.lower,
+                           choices=["auto", "none", "dsp", "dspr2"],
+                           help="the DSP Module (MD00374): auto (default) = Revision 2 "
+                                "when the program has DSP instructions; none; dsp = "
+                                "Revision 1 (the 24KE); dspr2 = Revision 2 (Revision 3 on "
+                                "Release 6); Config3.DSPP / DSP2P, Status.MX enables it")
+            p.add_argument("--mt", default=None, type=str.lower, metavar="VPES:TCS",
+                           help="the MT Module (MD00378): auto (default) = 2 VPEs and 5 "
+                                "TCs (a 34K) when the program has MT instructions; none; "
+                                "VPES:TCS = 1-2 VPEs, up to 9 TCs (Release 2-5)")
+            p.add_argument("--mt-pm", default=None, type=str.lower,
+                           choices=["rr", "wrr", "wrr2"],
+                           help="the MT processor's policy manager (MD00534 13.2): rr "
+                                "(default) basic round-robin, wrr weighted round-robin "
+                                "(TCSchedule groups), wrr2 with throttles")
+            p.add_argument("--itc", default=None, type=str.lower, metavar="FIFOS:SEMS",
+                           help="the MT processor's ITC gating storage (MD00534 ch. 12): "
+                                "auto (default) = 4 FIFO + 8 semaphore cells; none; "
+                                "FIFOS:SEMAPHORES = 0, 1, 2, 4, 8 or 16 each")
+        if name in ("run", "debug", "gdb", "check"):
             p.add_argument("--pipeline", action="store_true",
                            help="pipeline mode (--model): a step is a clock cycle"
                            + (" (GDB still steps instructions)" if name == "gdb" else ""))
@@ -550,6 +669,17 @@ def build_parser() -> argparse.ArgumentParser:
                            help="forwarding, branch decisions, flushes per cycle")
             p.add_argument("--views", action="store_true",
                            help="events + the datapath view of EX / ID")
+        if name == "check":
+            p.add_argument("--checks", metavar="FILE",
+                           help="the checks to run (a checks file: the same lines, "
+                                "without the comment marker); instead of the "
+                                "program's own '# check:' lines (or of NAME.check "
+                                "next to it)")
+            p.add_argument("--limit", type=int, default=None, metavar="N",
+                           help="the most steps a run may take (default 100000; on the "
+                                "Malta 1000000); a run's limit: line overrides it")
+            p.add_argument("--quiet", action="store_true",
+                           help="do not print the program's output")
         if name == "debug":
             p.add_argument("-c", "--command", action="append",
                            help='commands instead of the prompt: -c "break loop; c; regs"')
@@ -571,8 +701,23 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--micromips", action="store_true",
                    help="compile the C as microMIPS (16- and 32-bit instructions; Release 3 "
                         "or 5)")
+    c.add_argument("--no-fpu", action="store_true",
+                   help="for a core without an FPU: -msoft-float (float arithmetic needs "
+                        "a soft-float libgcc)")
+    c.add_argument("--dsp", dest="dsp", action="store_const", const="dsp", default=None,
+                   help="the C may use the DSP Module, Revision 1 (-mdsp: the "
+                        "__builtin_mips_* functions)")
+    c.add_argument("--dspr2", dest="dsp", action="store_const", const="dspr2",
+                   help="... Revision 2 (-mdspr2)")
+    c.add_argument("--core", default=None, type=str.lower, choices=list(CORES),
+                   help="build for this core: its release, soft-float without an FPU, "
+                        "its DSP Module")
     c.add_argument("-v", "--verbose", action="store_true", help="print the commands")
     c.set_defaults(fn=_cmd_cc)
+    k = sub.add_parser("cores", help="the core presets (--core) and what each can be built "
+                                     "with")
+    k.add_argument("name", nargs="?", type=str.lower, choices=list(CORES))
+    k.set_defaults(fn=_cmd_cores)
     g = sub.add_parser("gui", help="graphical debugger / datapath view")
     g.add_argument("file", nargs="?")
     g.set_defaults(fn=_cmd_gui)

@@ -13,6 +13,8 @@ SECTIONS
     *(.text .text.* .gnu.linkonce.t.*)
   }
   .rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
+  /* the ABI flags: the ISA and the ASEs the code needs (the DSP Module) */
+  .MIPS.abiflags : { *(.MIPS.abiflags) }
 
   . = 0x10010000;
   .data : { *(.data .data.* .gnu.linkonce.d.*) }
@@ -28,7 +30,7 @@ SECTIONS
   __stack_top = 0x7FFFEFFC;
 
   /DISCARD/ : {
-    *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.note.*)
+    *(.reginfo) *(.pdr) *(.comment) *(.note.*)
     *(.gnu.attributes) *(.MIPS.options)
   }
 }

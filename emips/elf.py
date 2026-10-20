@@ -34,6 +34,9 @@ EM_MIPS = 8
 ET_EXEC = 2
 PT_LOAD = 1
 SHT_SYMTAB = 2
+#: the MIPS ABI flags section (Elf_MIPS_ABIFlags_v0) and its DSP ASE bits
+SHT_MIPS_ABIFLAGS = 0x7000002A
+AFL_ASE_DSP, AFL_ASE_DSPR2, AFL_ASE_DSPR3 = 0x1, 0x2, 0x2000
 STT_OBJECT, STT_FUNC = 1, 2
 #: e_flags (binutils include/elf/mips.h)
 EF_MIPS_PIC, EF_MIPS_CPIC = 0x2, 0x4
@@ -92,6 +95,9 @@ class ElfImage:
     lines: list[LineRow] = field(default_factory=list)
     #: things that may surprise (a PIC binary, no line table ...)
     notes: list[str] = field(default_factory=list)
+    #: the DSP Module level its code needs (.MIPS.abiflags ases: AFL_ASE_DSP
+    #: 1, AFL_ASE_DSPR2 / DSPR3 2; binutils include/elf/mips.h)
+    dsp: int = 0
 
     @property
     def release(self) -> str:
@@ -239,6 +245,14 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
         if sh_type == SHT_SYMTAB:
             img.symbols = _symbols(data, end, off, size, entsize, sections[link])
     by_name = {s[0]: s for s in sections}
+    flags = next((s for s in sections if s[1] == SHT_MIPS_ABIFLAGS and s[5] >= 24), None)
+    if flags is not None:                          # Elf_MIPS_ABIFlags_v0.ases
+        ases = struct.unpack_from(end + "I", data, flags[4] + 12)[0]
+        img.dsp = 2 if ases & (AFL_ASE_DSPR2 | AFL_ASE_DSPR3) else 1 if ases & AFL_ASE_DSP else 0
+        if img.dsp:
+            img.notes.append("DSP Module code (.MIPS.abiflags: "
+                             + ("Revision 2" if img.dsp > 1 else "Revision 1")
+                             + "): the core gets the DSP Module")
     if ".debug_line" in by_name:
         s = by_name[".debug_line"]
         line_str = by_name.get(".debug_line_str")

@@ -19,7 +19,7 @@ RELEASES = ["R1", "R2", "R3", "R5", "R6"]
 RELEASE_NOTES = {
     "R1": N_("MIPS32 Release 1 (the original MIPS32)"),
     "R2": N_("Release 2: ROTR, EXT/INS, WSBH, SEB/SEH, EHB, 64-bit FPU"),
-    "R3": N_("Release 3: adds EVA and microMIPS (microMIPS is not simulated)"),
+    "R3": N_("Release 3: adds EVA, segmentation control and the microMIPS manual"),
     "R5": N_("Release 5: the full pre-R6 set (default)"),
     "R6": N_("Release 6: compact branches, no branch-likely, new encodings"),
 }
@@ -121,8 +121,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.set_values(release, endian, forwarding, options)
         self._constraining = False
         for box in (self.release, self.board, self.mmu, self.model, self.icache, self.dcache,
-                    self.l2, self.l3, self.compressed, self.c_isa):
+                    self.l2, self.l3, self.compressed, self.c_isa, self.dsp, self.mt):
             box.currentIndexChanged.connect(self._constrain)
+        self.fpu.toggled.connect(self._constrain)
         for box in (self.icache, self.dcache, self.l2, self.l3):
             box.editTextChanged.connect(self._constrain)
         for spin in (self.cores, self.shadow_sets):
@@ -137,8 +138,17 @@ class SettingsDialog(QtWidgets.QDialog):
     # -- tabs ----------------------------------------------------------------
 
     def _processor_tab(self) -> QtWidgets.QWidget:
+        from ..cores import CORES
         w = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(w)
+        self.core = QtWidgets.QComboBox()
+        self.core.addItem(tr("Generic eMIPS core (any setting)"), "")
+        for core in CORES.values():
+            self.core.addItem(core.title, core.name)
+        form.addRow(tr("Core"), self.core)
+        self.core_note = _note("")
+        form.addRow("", self.core_note)
+        self.core.currentIndexChanged.connect(self._core_chosen)
         self.release = QtWidgets.QComboBox()
         for r in RELEASES:
             self.release.addItem(f"MIPS32 {r}", r)
@@ -156,15 +166,62 @@ class SettingsDialog(QtWidgets.QDialog):
         for key, text in (("auto", tr("Automatic: MIPS16e in Release 1-5, none in Release 6")),
                           ("none", tr("None: MIPS32 only")),
                           ("mips16e", tr("MIPS16e (16-bit instructions)")),
-                          ("micromips", tr("microMIPS and MIPS32 (Release 3+)")),
+                          ("micromips", tr("microMIPS and MIPS32 (Release 2+)")),
                           ("micromips-only", tr("microMIPS only, no MIPS32 mode "
-                                                "(Release 3+)"))):
+                                                "(Release 2+)"))):
             self.compressed.addItem(text, key)
         form.addRow(tr("Compressed instructions"), self.compressed)
         form.addRow("", _note(tr("Automatic is the 24K's choice; a program with .set mips16 "
-                                 "/ .set micromips code gets that ISA anyway.  microMIPS "
-                                 "needs Release 3+ and runs on the 5-stage model (the 24K "
-                                 "has none).")))
+                                 "/ .set micromips code gets that ISA anyway (not on a "
+                                 "real core).  microMIPS needs Release 2+ (the M14K) and "
+                                 "runs on the 5-stage model (the 24K has none).")))
+        self.fpu = QtWidgets.QCheckBox(tr("Floating-point unit (CP1)"))
+        self.fpu.setToolTip(tr("Off: a core without an FPU (the 24Kc, the M14K): Status.CU1 "
+                               "reads 0, every FPU instruction is Coprocessor Unusable, C is "
+                               "built soft-float"))
+        form.addRow("", self.fpu)
+        self.dsp = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: Revision 2 when the program has DSP "
+                                      "instructions")),
+                          ("none", tr("None (the 24K)")),
+                          ("dsp", tr("Revision 1 (the 24KE, the 1004K)")),
+                          ("dspr2", tr("Revision 2 (the interAptiv, the microAptiv; "
+                                       "Revision 3 in Release 6)"))):
+            self.dsp.addItem(text, key)
+        self.dsp.setToolTip(tr("The DSP Module (MD00374): SIMD on bytes and halfwords, "
+                               "saturating fractional arithmetic, the accumulators ac1-ac3, "
+                               "DSPControl; Status.MX enables it (Release 2+)"))
+        form.addRow(tr("DSP Module"), self.dsp)
+        self.mt = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: 2 VPEs, 5 TCs when the program has MT "
+                                      "instructions")),
+                          ("none", tr("None")),
+                          ("1:2", tr("1 VPE, 2 TCs")), ("1:5", tr("1 VPE, 5 TCs")),
+                          ("2:2", tr("2 VPEs, 2 TCs")), ("2:5", tr("2 VPEs, 5 TCs (a 34K)")),
+                          ("2:9", tr("2 VPEs, 9 TCs (the 34K's largest)"))):
+            self.mt.addItem(text, key)
+        self.mt.setToolTip(tr("The MT Module (MD00378): virtual processors (VPEs) with their "
+                              "own CP0, thread contexts (TCs) issuing in turn; FORK, YIELD, "
+                              "MFTR / MTTR (Release 2-5; on a CPS per core: the 1004K, the "
+                              "interAptiv; pipeline mode runs the 34K's pipeline)"))
+        form.addRow(tr("MT Module"), self.mt)
+        self.mt_pm = QtWidgets.QComboBox()
+        for key, text in (("rr", tr("Basic round-robin")),
+                          ("wrr", tr("Weighted round-robin (TCSchedule groups)")),
+                          ("wrr2", tr("Weighted round-robin with throttles (WRR2)"))):
+            self.mt_pm.addItem(text, key)
+        self.mt_pm.setToolTip(tr("The 34K's policy manager (MD00534 13.2): which thread "
+                                 "context the dispatch scheduler issues from"))
+        form.addRow(tr("MT policy manager"), self.mt_pm)
+        self.itc = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("4 FIFO + 8 semaphore cells")), ("none", tr("None")),
+                          ("0:16", tr("16 semaphore cells")), ("16:0", tr("16 FIFO cells")),
+                          ("16:16", tr("16 FIFO + 16 semaphore cells"))):
+            self.itc.addItem(text, key)
+        self.itc.setToolTip(tr("Inter-Thread Communication storage (MD00534 ch. 12): "
+                               "gating storage cells whose loads and stores block a thread "
+                               "until the cell is full / empty"))
+        form.addRow(tr("ITC storage"), self.itc)
         self.model = QtWidgets.QComboBox()
         self.model.addItem(tr("5-stage (textbook)"), "5-stage")
         self.model.addItem(tr("MIPS 24K (8 stages, branch prediction)"), "24k")
@@ -309,7 +366,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.c_isa = QtWidgets.QComboBox()
         for key, text in (("mips32", tr("MIPS32 (default)")),
                           ("mips16e", tr("MIPS16e (needs a MIPS GCC)")),
-                          ("micromips", tr("microMIPS (Release 3 / 5)"))):
+                          ("micromips", tr("microMIPS (Release 2 / 3 / 5)"))):
             self.c_isa.addItem(text, key)
         row.addWidget(self.c_isa, 1)
         lay.addLayout(row)
@@ -496,6 +553,19 @@ class SettingsDialog(QtWidgets.QDialog):
         self.forwarding.setChecked(forwarding)
         self.model.setCurrentIndex(max(0, self.model.findData(o.model)))
         self.compressed.setCurrentIndex(max(0, self.compressed.findData(o.compressed)))
+        self.fpu.setChecked(o.fpu)
+        self.dsp.setCurrentIndex(max(0, self.dsp.findData(o.dsp)))
+        if self.mt.findData(o.mt) < 0:          # another VPES:TCS (the command line)
+            self.mt.addItem(o.mt, o.mt)
+        self.mt.setCurrentIndex(max(0, self.mt.findData(o.mt)))
+        self.mt_pm.setCurrentIndex(max(0, self.mt_pm.findData(o.mt_pm)))
+        if self.itc.findData(o.itc) < 0:        # another FIFOS:SEMAPHORES
+            self.itc.addItem(o.itc, o.itc)
+        self.itc.setCurrentIndex(max(0, self.itc.findData(o.itc)))
+        self.core.blockSignals(True)
+        self.core.setCurrentIndex(max(0, self.core.findData(o.core)))
+        self.core.blockSignals(False)
+        self._core_text()
         self.c_isa.setCurrentIndex(max(0, self.c_isa.findData(o.c_isa)))
         self.cores.setValue(o.cores)
         self.iocu.setChecked(o.iocu)
@@ -566,7 +636,10 @@ class SettingsDialog(QtWidgets.QDialog):
             iocu=self.iocu.isChecked(),
             shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
             disks=self._disks_spec(), c_optimize=self.c_optimize.currentData(),
-            compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData())
+            compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData(),
+            fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), mt=self.mt.currentData(),
+            mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
+            core=self.core.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 
@@ -619,24 +692,44 @@ class SettingsDialog(QtWidgets.QDialog):
                     b.setChecked(b.property("key") == fixed.boot)
                 self._set_cache(self.l3, fixed.l3)
                 for box, value in ((self.compressed, fixed.compressed),
-                                   (self.c_isa, fixed.c_isa), (self.model, fixed.model)):
+                                   (self.c_isa, fixed.c_isa), (self.model, fixed.model),
+                                   (self.dsp, fixed.dsp), (self.mt, fixed.mt),
+                                   (self.core, fixed.core)):
                     box.setCurrentIndex(max(0, box.findData(value)))
+                self._core_text()
             if note:
                 self.compat_note.setText(
                     tr("Adjusted to go with the rest: {notes}").format(notes="; ".join(notes))
                     if notes else "")
             for box, field in ((self.mmu, "mmu"), (self.compressed, "compressed"),
-                               (self.c_isa, "c_isa"), (self.model, "model")):
+                               (self.c_isa, "c_isa"), (self.model, "model"), (self.dsp, "dsp"),
+                               (self.mt, "mt"),
+                               (self.release, "release"), (self.icache, "icache"),
+                               (self.dcache, "dcache"), (self.l2, "l2"), (self.l3, "l3")):
                 model = box.model()
+                text = box.currentText() if box.isEditable() else None
                 for i in range(box.count()):
                     why = forbidden(field, box.itemData(i), fixed, release)
                     model.item(i).setEnabled(why is None)
                     box.setItemData(i, why or "", QtCore.Qt.ItemDataRole.ToolTipRole)
+                if text is not None and box.currentText() != text:
+                    box.setEditText(text)       # (an item change resets the typed text)
+            from ..cores import get as get_core
+            core = get_core(fixed.core)
             for spin, field, top in ((self.cores, "cores", MAX_CORES),
                                      (self.shadow_sets, "shadow_sets", 16)):
+                if core is not None:            # the core's build options
+                    allowed = getattr(core, field)
+                    spin.setRange(min(allowed), max(allowed))
+                    spin.setToolTip(tr("The {core} is built with {values}").format(
+                        core=core.title, values=core.choices(field)))
+                    continue
                 why = forbidden(field, 2, fixed, release)
-                spin.setMaximum(1 if why else top)
+                spin.setRange(1, 1 if why else top)
                 spin.setToolTip(why or "")
+            why = forbidden("fpu", not fixed.fpu, fixed, release)
+            self.fpu.setEnabled(why is None)
+            self.fpu.setToolTip(why or self.fpu.toolTip())
             self.iocu.setChecked(fixed.iocu)
             why = forbidden("iocu", True, fixed, release)
             self.iocu.setEnabled(why is None)
@@ -660,6 +753,35 @@ class SettingsDialog(QtWidgets.QDialog):
                 spin.setEnabled(any_cache or tlb)
         finally:
             self._constraining = False
+
+    def _core_chosen(self, _index: int = 0) -> None:
+        """A core preset: the release and its build (emips.cores.apply)."""
+        from ..cores import apply
+        if self._constraining:
+            return
+        release, endian, forwarding, o = self.values()
+        o, core_release = apply(o, self.core.currentData())
+        self._constraining = True
+        try:
+            self.set_values(core_release or release, endian, forwarding, o)
+        finally:
+            self._constraining = False
+        self._constrain()
+
+    def _core_text(self) -> None:
+        from ..cores import get as get_core
+        core = get_core(self.core.currentData())
+        if core is None:
+            self.core_note.setText(html.escape(tr(
+                "Any combination eMIPS can model; PRId 0 (no licensed core).")))
+            return
+        lines = [tr("MIPS32 Release {r}, PRId 0x{p:08x}; the settings below offer what "
+                    "its manuals allow (the others are greyed out).").format(
+                        r=core.release[1:], p=core.prid)]
+        if core.missing:
+            lines.append(tr("Not modelled: {what}.").format(what="; ".join(core.missing)))
+        lines += list(core.notes)
+        self.core_note.setText(html.escape(" ".join(lines)))
 
     def restore_defaults(self) -> None:
         self.set_values("R5", "big", True, Options())

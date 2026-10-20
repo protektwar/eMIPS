@@ -1,0 +1,4 @@
+# Lab 20 — Wake them all at once: the checks of one IPI for cores 1-3
+# (Run → Check, or python3 -m emips check docs/guide/labs/ipi.asm)
+eMIPS: --cores 4
+check: output is "0x00000123"  (the three woke together: core 1 first in each step)

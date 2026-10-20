@@ -23,21 +23,37 @@ choice open, it says which one it made.
   pipeline chart, every instruction's bit fields, operands and addresses.
 - **Every MIPS32 release, R1 to R6** — the integer instruction set, the
   IEEE 754 FPU, Release 6 compact branches; big and little endian; the
-  compressed instruction sets MIPS16e and microMIPS (Releases 3 to 6), in
+  compressed instruction sets MIPS16e and microMIPS (Releases 2 to 6), in
   the assembler, the pipelines, C and GDB.
+- **The DSP Module** — SIMD on bytes and halfwords, saturating and
+  fixed-point arithmetic, four accumulators (Revisions 1 to 3), in
+  MIPS32 and microMIPS, on both pipelines, from C and in GDB.
+- **The MT Module** — hardware threads: thread contexts and VPEs, FORK /
+  YIELD, the policy managers, the ITC's gating storage, on the 34K's
+  pipeline and on multi-core 1004K / interAptiv systems; a GDB thread per
+  thread context.
 - **The privileged architecture** — CP0, exceptions, interrupts
   (compatibility, vectored, EIC), shadow register sets, kernel /
   supervisor / user mode, the timer.
 - **The memory system** — L1 / L2 / L3 caches, the write buffer, memory
   timing; the TLB and the other MMUs (BAT, VTLB + FTLB, segmentation
   control, the page table walker).
+- **Real MIPS cores** — presets for the 4Kc, 24Kc / 24Kf, 34Kc / 34Kf,
+  1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc and microAptiv UC / UP:
+  each core's release, compressed ISA, FPU, DSP Module, MT Module, MMU,
+  caches and PRId as its manuals allow.
 - **A real core's pipeline** — a model of the MIPS 24K's 8-stage pipeline
-  with branch prediction, CP0 hazards and performance counters.
+  with branch prediction, CP0 hazards and performance counters, and the
+  34K's, which adds the thread contexts.
 - **More than one core** — up to four cores with coherent caches (MESI),
   memory ordering, the Cluster Power Controller and the Global Interrupt
   Controller.
 - **Debugging hardware** — EJTAG Debug Mode, hardware breakpoints, watch
   registers, a probe on the TAP, PC sampling and MIPS Trace.
+- **Exercise checks** — what a program must do (its output, registers,
+  memory, cycles, stalls), written in the program or in a teacher's file;
+  Run → Check in the window or `python3 -m emips check` says which checks
+  pass (with an exit status for scripts).
 
 <p>
 <img alt="Forwarding in the 5-stage datapath" src="docs/guide/img/03-datapath-forwarding.png" width="49%">
@@ -110,6 +126,7 @@ python3 -m emips asm prog.asm            # the listing: address, word, disassemb
 python3 -m emips pipe prog.asm --events  # the 5-stage pipeline chart, stalls, forwarding
 python3 -m emips debug prog.asm          # the debugger (type help)
 python3 -m emips gdb prog.asm            # let GDB debug it: gdb-multiarch -ex 'target remote :1234'
+python3 -m emips check prog.asm          # run its '# check:' lines: pass / fail
 python3 -m emips --help                  # everything else
 ```
 
@@ -142,7 +159,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 47 labs
+computer architecture behind every number on the screen (with 57 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

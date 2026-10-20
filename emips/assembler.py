@@ -59,6 +59,7 @@ from typing import Callable
 from . import cp0 as C
 from .isa import ISA
 from .syntax import (
+    DEFAULTS,
     KINDS,
     kind_of,
     operand_spec,
@@ -125,6 +126,11 @@ class Program:
     m16: dict[int, int] = field(default_factory=dict)
     #: microMIPS code (emips.micromips): instruction address -> its size
     mm: dict[int, int] = field(default_factory=dict)
+    #: the DSP Module level its instructions need (0: none, 1: the DSP
+    #: Module, 2: Revision 2 — emips.isa.ISA ``dsp``)
+    dsp: int = 0
+    #: it uses the MT Module's instructions (emips.mt, MD00378)
+    mt: bool = False
 
     def word(self, addr: int) -> int:
         data = bytes(self.image.get(addr + i, 0) for i in range(4))
@@ -167,12 +173,22 @@ class Program:
         if machine.big_endian != (self.endian == "big"):
             raise ValueError(f"program is {self.endian}-endian, machine is not")
         fixed = getattr(machine.mmu, "mt", 3) == 3
+        if self.dsp > getattr(machine, "dsp", 0):
+            raise ValueError("the program uses DSP Module " + (
+                "Revision 2 " if self.dsp > 1 else "") + "instructions: the core needs "
+                f"the DSP Module (--dsp {'dspr2' if self.dsp > 1 else 'dsp'})")
+        if self.mt and getattr(machine, "mt", None) is None:
+            raise ValueError("the program uses MT Module instructions: the core needs "
+                             "the MT Module (--mt VPES:TCS)")
         if boot:
             from .tlb import boot_cca, firmware_refill, user_window
             cca = boot_cca(machine)                    # 3; a CPS core: 5, coherent
             # (Release 6: Status.FR is 1 and read-only — 64-bit FPRs only)
             fr = machine.status & C.ST_FR if machine.release == "R6" else 0
-            machine._cp0_set(C.STATUS, C.ST_CU1 | fr)
+            # (no FPU: CU1 reads 0, the 24Kc's MD00343 Table 6.12; the DSP
+            # Module is enabled like the FPU: Status.MX, MD00374 3.11)
+            machine._cp0_set(C.STATUS, (C.ST_CU1 if machine.has_fpu else 0) | fr
+                             | (C.ST_MX if getattr(machine, "dsp", 0) else 0))
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
             ku_k23 = (2 << 28) | (cca << 25) if fixed else 0
             machine._cp0_set(C.CONFIG, config | ku_k23 | cca)
@@ -265,7 +281,7 @@ class Program:
         """The microMIPS instruction at ``addr`` (emips.micromips.MM)."""
         from . import micromips
         return micromips.decode(self.half(addr), lambda: self.half(addr + 2),
-                                release=self.release)
+                                release=self.release, dsp=self.dsp, mt=self.mt)
 
     def listing(self, *, abi: bool = True) -> list[tuple[int, int, str, str]]:
         """``(address, word, disassembly, source)`` for every instruction
@@ -273,7 +289,7 @@ class Program:
         from . import mips16
         from .disasm import disassemble
         labels = self.labels()
-        isa = ISA.for_release(self.release)
+        isa = ISA.for_release(self.release, self.dsp, self.mt)
         out = []
         for a, s in sorted(self.source_map.items()):
             if a in self.m16:
@@ -294,6 +310,11 @@ class Program:
 
 _LABEL = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*:")
 _NAME = re.compile(r"[A-Za-z_.$][\w.$]*$")
+#: Release 6 compact branch-and-link on a register: GPR 31 as the source is
+#: UNPREDICTABLE (Vol. II-A rev. 6.06, B{LE,GE,GT,LT,EQ,NE}ZALC)
+_ZALC = frozenset({"BLEZALC", "BGEZALC", "BGTZALC", "BLTZALC", "BEQZALC", "BNEZALC"})
+#: a DSP Module accumulator operand
+_AC = re.compile(r"\$ac([0-3])", re.I)
 #: a numeric local label (GNU as: "1:"), and a reference to one ("1f" the
 #: next definition, "1b" the latest)
 _LOCAL = re.compile(r"^\s*(\d+)\s*:")
@@ -543,6 +564,64 @@ class _Relax(Exception):
     """A MIPS16e statement needs its long form: lay the program out again."""
 
 
+#: The MT Module's MFTR / MTTR idioms (MD00378 Tables 5.1 / 5.2, GNU as'
+#: MT32 entries): mnemonic -> (instruction, u, sel, h, the target's kind,
+#: its fixed register number or None).  ``"gpr"`` / ``"fpr"`` / ``"num"``:
+#: the operand names the target; ``"ac"``: an optional $acN (rt / rd = 4N +
+#: the fixed number); None: no target operand.
+_MT_IDIOMS: dict[str, tuple[str, int, int, int, str | None, int | None]] = {
+    "mftc0": ("mftr", 0, 0, 0, "num", None), "mttc0": ("mttr", 0, 0, 0, "num", None),
+    "mftgpr": ("mftr", 1, 0, 0, "gpr", None), "mttgpr": ("mttr", 1, 0, 0, "gpr", None),
+    "mftlo": ("mftr", 1, 1, 0, "ac", 0), "mttlo": ("mttr", 1, 1, 0, "ac", 0),
+    "mfthi": ("mftr", 1, 1, 0, "ac", 1), "mtthi": ("mttr", 1, 1, 0, "ac", 1),
+    "mftacx": ("mftr", 1, 1, 0, "ac", 2), "mttacx": ("mttr", 1, 1, 0, "ac", 2),
+    "mftdsp": ("mftr", 1, 1, 0, None, 16), "mttdsp": ("mttr", 1, 1, 0, None, 16),
+    "mftc1": ("mftr", 1, 2, 0, "fpr", None), "mttc1": ("mttr", 1, 2, 0, "fpr", None),
+    "mfthc1": ("mftr", 1, 2, 1, "fpr", None), "mtthc1": ("mttr", 1, 2, 1, "fpr", None),
+    "cftc1": ("mftr", 1, 3, 0, "num", None), "cttc1": ("mttr", 1, 3, 0, "num", None),
+    "mftc2": ("mftr", 1, 4, 0, "num", None), "mttc2": ("mttr", 1, 4, 0, "num", None),
+    "mfthc2": ("mftr", 1, 4, 1, "num", None), "mtthc2": ("mttr", 1, 4, 1, "num", None),
+    "cftc2": ("mftr", 1, 5, 0, "num", None), "cttc2": ("mttr", 1, 5, 0, "num", None),
+}
+
+
+def _mt_idiom(mn: str, ops: list[str], err) -> tuple[str, list[str]]:
+    """``mftc0 rd, rt[, sel]`` ... -> the MFTR / MTTR it stands for."""
+    insn, u, sel, h, kind, fixed = _MT_IDIOMS[mn]
+    if not ops:
+        raise err("expects a GPR")
+    gpr, rest = ops[0], [o.strip() for o in ops[1:]]
+    if kind == "num" and mn.endswith("c0") and len(rest) == 2:
+        sel = None                              # mftc0 rd, rt, sel
+    want = {"num": 1, "gpr": 1, "fpr": 1, "ac": (0, 1), None: 0}[kind]
+    n = len(rest) - (1 if sel is None else 0)
+    if n not in (want if isinstance(want, tuple) else (want,)):
+        raise err(f"expects {1 + (want if isinstance(want, int) else 1)} operands")
+    if kind == "gpr":
+        r = parse_gpr(rest[0])
+        if r is None:
+            raise err(f"GPR expected, got {rest[0]!r}")
+        target = str(r)
+    elif kind == "fpr":
+        r = parse_fpr(rest[0]) if rest[0].lower().startswith("$f") else parse_numreg(rest[0])
+        if r is None:
+            raise err(f"FPR expected, got {rest[0]!r}")
+        target = str(r)
+    elif kind == "ac":
+        a = 0
+        if rest:
+            m = _AC.fullmatch(rest[0])
+            if not m:
+                raise err(f"accumulator $ac0..$ac3 expected, got {rest[0]!r}")
+            a = int(m.group(1))
+        target = str(4 * a + fixed)
+    elif kind is None:
+        target = str(fixed)
+    else:
+        target = rest[0]
+    return insn, [gpr, target, str(u), rest[1] if sel is None else str(sel), str(h)]
+
+
 @dataclass
 class _Stmt:
     line: int
@@ -563,6 +642,10 @@ class _Stmt:
     #: microMIPS, noreorder: the size the previous branch's delay slot
     #: demands of this statement's first instruction (0 = any)
     slot: int = 0
+    #: the DSP Module level ``.set dsp`` / ``dspr2`` / ``nodsp`` allows here
+    dsp: int = 2
+    #: ``.set mt`` / ``nomt``: the MT Module's instructions are allowed
+    mt: bool = True
 
 
 class Assembler:
@@ -579,10 +662,15 @@ class Assembler:
         self.reorder = reorder
         self.isa = isa or ISA.for_release(release)
         self.bases = dict(SEGMENT_BASES, **(bases or {}))
-        #: instructions of the target release only, by mnemonic
-        self._by_name = {e.get("mnemonic", e["name"]).lower(): e
+        #: instructions of the target release only, by mnemonic (the DSP
+        #: Module's accumulator forms by row name: ``mult@dsp``)
+        self._by_name = {(e["name"] if "@DSP" in e["name"]
+                          else e.get("mnemonic", e["name"])).lower(): e
                          for e in self.isa.instructions
                          if self.isa.in_release(e["name"])}
+        for e in self.isa.instructions:           # MIPS64 dextm ... dinsu by their names
+            if e["name"] in _DFIELD and self.isa.in_release(e["name"]):
+                self._by_name.setdefault(e["name"].lower(), e)
         self._all = {e.get("mnemonic", e["name"]).lower()
                      for e in self.isa.instructions}
 
@@ -609,6 +697,8 @@ class Assembler:
         self._modemm = False
         self._mm_enc = None
         self._seen_m16 = self._seen_mm = False
+        self._dsp_set = 2                       # .set dsp / dspr2 / nodsp
+        self._mt_set = True                     # .set mt / nomt
         self.prog = Program(endian=self.endian, release=self.isa.release)
         stmts = self._pass1(source)
         for st in stmts:
@@ -692,7 +782,8 @@ class Assembler:
                     raise AsmError(n, "instruction not word-aligned" + (
                         " (after MIPS16e / microMIPS code: .align 2)" if self._m16_labels
                         else ""), raw)
-                st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok)
+                st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok,
+                           dsp=self._dsp_set, mt=self._mt_set)
                 insns = self._expand(st)
                 if (prev is not None and prev.reorder and prev.seg == seg
                         and prev.addr + prev.size == lc[seg]
@@ -750,13 +841,24 @@ class Assembler:
                 self._mode16 = word == "mips16"
                 self._seen_m16 |= self._mode16
             elif word in ("micromips", "nomicromips"):
-                if word == "micromips" and self.isa.release in ("R1", "R2"):
-                    raise AsmError(n, "microMIPS32 starts with Release 3 (--release R3, "
-                                   "R5 or R6)", raw)
+                if word == "micromips" and self.isa.release == "R1":
+                    raise AsmError(n, "microMIPS32 needs Release 2+ (the M14K is a Release 2 "
+                                   "core with microMIPS)", raw)
                 if word == "micromips" and self._seen_m16:
                     raise AsmError(n, "microMIPS after MIPS16e code: no core has both", raw)
                 self._modemm = word == "micromips"
                 self._seen_mm |= self._modemm
+            elif word in ("dsp", "dspr2", "dspr3", "nodsp", "nodspr2", "nodspr3"):
+                # GNU as: which DSP Module instructions are allowed
+                if not word.startswith("no") and self.isa.release == "R1":
+                    raise AsmError(n, "the DSP Module needs Release 2+ (MD00374 3.1)", raw)
+                self._dsp_set = (0 if word == "nodsp" else 1 if word.startswith("nodspr")
+                                 else 1 if word == "dsp" else 2)
+            elif word in ("mt", "nomt"):        # GNU as: the MT Module's instructions
+                if word == "mt" and self.isa.release in ("R1", "R6"):
+                    raise AsmError(n, "the MT Module needs Release 2-5 (MD00378 1.1; "
+                                   "Release 6 has none)", raw)
+                self._mt_set = word == "mt"
             return seg, reorder, at_ok
         if d in (".eqv", ".equ"):
             if len(ops) != 2:
@@ -894,6 +996,15 @@ class Assembler:
             if parse_gpr(ops[0]) != 0:
                 raise AsmError(st.line, f"{mn} rd form: first operand must be $zero", st.text)
             out = [(mn, ops[1:])]
+        elif self._dsp_form(mn, ops) != mn:
+            out = [(mn + "@dsp", ops)]          # mult $ac1, ...: the DSP Module's form
+        elif mn == "balign" and len(ops) == 3 and self._is_constant(ops[2]) and \
+                self._value(ops[2], st) in (0, 2):
+            # GNU as: bp 0 / 2 are UNPREDICTABLE (MD00374 BALIGN): a nop / packrl.ph
+            out = ([("nop", [])] if self._value(ops[2], st) == 0
+                   else [("packrl.ph", [ops[0], ops[0], ops[1]])])
+        elif mn in _MT_IDIOMS and "mftr" in self._by_name:
+            out = [_mt_idiom(mn, ops, lambda m: AsmError(st.line, f"{mn}: {m}", st.text))]
         elif (alu := self._alu_macro(st, need_at)) is not None:
             out = alu
         elif mn in self._by_name:
@@ -1139,7 +1250,7 @@ class Assembler:
                   "blez", "bgtz", "bgezal", "bltzal", "bgezals", "bltzals", "bal", "bals",
                   "bc1f", "bc1t", "bc2f", "bc2t", "j", "jal", "jals", "jalx", "jr", "jr.hb",
                   "jrs", "jrs.hb", "jalr", "jalr.hb", "jalrs", "jalrs.hb", "jrc", "jraddiusp",
-                  "lwp", "swp", "lwm", "swm", "lwxs", "movep", "addiupc",
+                  "lwp", "swp", "lwm", "swm", "lwxs", "movep", "addiupc", "bposge32",
                   # Release 6
                   "balc", "beqc", "bnec", "bltc", "bgec", "bltuc", "bgeuc", "bovc", "bnvc",
                   "bgtc", "blec", "bgtuc", "bleuc", "bltzc", "blezc", "bgezc", "bgtzc",
@@ -1153,7 +1264,8 @@ class Assembler:
     _MM_SLOT32 = {"jal", "jalr", "jalr.hb", "jalx", "bgezal", "bltzal", "bal"}
     _MM_SLOT16 = {"jals", "jalrs", "jalrs.hb", "bgezals", "bltzals", "bals"}
     _MM_SLOT_ANY = {"b", "beqz", "bnez", "beq", "bne", "bgez", "bltz", "blez", "bgtz",
-                    "bc1f", "bc1t", "bc2f", "bc2t", "j", "jr", "jr.hb", "jrs", "jrs.hb"}
+                    "bc1f", "bc1t", "bc2f", "bc2t", "j", "jr", "jr.hb", "jrs", "jrs.hb",
+                    "bposge32"}
 
     def _mm_expand(self, st: _Stmt) -> list[tuple[str, list[str], int]]:
         """(mnemonic, operands, forced size) of a microMIPS statement:
@@ -1258,7 +1370,16 @@ class Assembler:
         return out
 
     def _mm_mips32(self, addr: int, st: _Stmt):
-        return lambda mn, ops: self._encode(mn, ops, addr, st)
+        return lambda mn, ops: self._encode(self._dsp_form(mn, ops), ops, addr, st)
+
+    def _dsp_form(self, mn: str, ops: list[str]) -> str:
+        """``mult $ac1, ...`` / ``mfhi $t0, $ac1``: the DSP Module's
+        accumulator row (``mult@dsp``), else ``mn``."""
+        dsp = mn + "@dsp"
+        if dsp in self._by_name and (any(_AC.fullmatch(o.strip()) for o in ops)
+                                     or len(ops) == len(operand_spec(self._by_name[dsp]))):
+            return dsp
+        return mn
 
     def _cvalue(self, final: bool, unresolved):
         def value(expr: str) -> int:
@@ -1343,8 +1464,38 @@ class Assembler:
         name = e["name"]
 
         def err(msg: str) -> AsmError:
-            return AsmError(st.line, f"{mn}: {msg}", st.text)
+            return AsmError(st.line, f"{mn.split('@')[0]}: {msg}", st.text)
 
+        if e.get("ase") == "mt":                # the MT Module (MD00378)
+            if not st.mt:
+                raise err("an MT Module instruction, after .set nomt")
+            self.prog.mt = True
+        elif e.get("ase"):                      # the DSP Module (MD00374)
+            level = ISA.DSP_LEVEL[e["ase"]]
+            if level > st.dsp:
+                raise err("a DSP Module Revision 2 instruction (.set dsp allows "
+                          "Revision 1 only)" if st.dsp else
+                          "a DSP Module instruction, after .set nodsp")
+            self.prog.dsp = max(self.prog.dsp, level)
+
+        if name in _DFIELD:                     # MIPS64 DEXT ... DINSU
+            if len(ops) != 4:
+                raise err("expects rt, rs, pos, size")
+            pos, size = self._value(ops[2], st), self._value(ops[3], st)
+            row = name if mn in ("dextm", "dextu", "dinsm", "dinsu") else \
+                _dfield_row(name[:4], pos, size)
+            if row is None or not _DFIELD[row][0](pos, size):
+                raise err(f"bad pos {pos} / size {size}")
+            lsb, high = _DFIELD[row][1](pos, size)
+            return (self.isa.get(row)["decode"]["value"]
+                    | self._operand("rt", ops[0], addr, st, err)
+                    | self._operand("rs", ops[1], addr, st, err)
+                    | (high << 11) | (lsb << 6))
+        if name in ("DAHI", "DATI"):            # MIPS64 R6: "DAHI rs, rs, immediate"
+            if len(ops) != 3 or parse_gpr(ops[0]) != parse_gpr(ops[1]):
+                raise err("expects rs, rs, immediate (the same register twice)")
+            return (word | self._operand("rs", ops[0], addr, st, err)
+                    | self._operand("uimm", ops[2], addr, st, err))
         if name in ("EXT", "INS"):
             if len(ops) != 4:
                 raise err("expects rt, rs, pos, size")
@@ -1379,11 +1530,13 @@ class Assembler:
                     continue
                 extra -= 1
             word |= self._operand(kind, next(it), addr, st, err)
-        if name in ("CLO", "CLZ"):                     # rt = rd
+        if name in ("CLO", "CLZ", "DCLO", "DCLZ"):     # rt = rd
             word |= ((word >> 11) & 31) << 16
         word = self._r6_fields(name, word, err)
         if name in ("BGEZAL", "BLTZAL", "BGEZALL", "BLTZALL") and (word >> 21) & 31 == 31:
             raise err("rs must not be $ra (the link register)")
+        if name in _ZALC and (word >> 16) & 31 == 31:   # R6: UNPREDICTABLE (GNU as: error)
+            raise err("rt must not be $ra (the link register)")
         if name.startswith("JALR") and (word >> 11) & 31 == (word >> 21) & 31:
             raise err("rd and rs must be different")
         return word
@@ -1400,7 +1553,9 @@ class Assembler:
                 name in ("BOVC", "BNVC") and rs < rt:
             word = (word & ~(0x3FF << 16)) | (rt << 21) | (rs << 16)   # swap
         from .isa import _constraint_ok
-        entry = ISA.for_release("R6").get(name) if "@" not in name else None
+        # (the MIPS64 table has every row: MIPS32's and the doubleword ones)
+        entry = ISA.for_release("R6", arch="mips64")._by_name.get(name) \
+            if "@" not in name else None
         if entry is not None and not _constraint_ok(entry, word):
             raise err("these registers cannot be encoded (e.g. $zero, or "
                       "the same register twice)")
@@ -1410,7 +1565,7 @@ class Assembler:
     def _default(kind: str, name: str) -> int:
         if kind == "rd" and name.startswith("JALR"):
             return 31 << 11
-        return 0
+        return DEFAULTS.get(kind, 0) << KINDS[kind].fields[0][0]
 
     def _operand(self, kind: str, tok: str, addr: int, st: _Stmt, err) -> int:
         def reg(parse, what: str) -> int:
@@ -1430,11 +1585,17 @@ class Assembler:
             return reg(parse_gpr, "GPR") << lsb
         if kind in ("fs", "ft", "fd", "fr"):
             return reg(parse_fpr, "FPR") << lsb
-        if kind in ("c0rd", "fcr", "hwr", "c2rt"):
+        if kind in ("c0rd", "fcr", "hwr", "c2rt", "trt", "trd"):
             r = parse_numreg(tok)
+            if r is None and kind in ("trt", "trd"):
+                r = parse_gpr(tok)              # (binutils: a GPR operand, any name)
             if r is None:
                 r = num(0, 31, "register number")
             return r << lsb
+        if kind in ("u1", "h1"):
+            return num(0, 1, kind[0]) << lsb
+        if kind == "rx":
+            return num(0, 31, "rx") << lsb
         if kind in ("sa", "hint", "hint11", "stype"):
             return num(0, 31, kind) << lsb
         if kind == "sel":
@@ -1457,10 +1618,17 @@ class Assembler:
             if delta & 3 or not -(1 << 20) <= delta < (1 << 20):
                 raise err(f"address {tok} not reachable PC-relative (+-1 MB, x4)")
             return (delta >> 2) & 0x7FFFF
+        if kind == "pc18":                  # LDPC: (PC & ~7) + offset * 8 (MIPS64 R6)
+            delta = _sx32((self._value(tok, st) & M32) - (addr & ~7))
+            if delta & 7 or not -(1 << 20) <= delta < (1 << 20):
+                raise err(f"address {tok} not reachable PC-relative (+-1 MB, x8)")
+            return (delta >> 3) & 0x3FFFF
         if kind == "sa2":
             return (num(1, 4, "shift") - 1) << 6
         if kind == "bp":
             return num(0, 3, "byte position") << 6
+        if kind == "bp3":
+            return num(0, 7, "byte position") << 6
         if kind == "code16":
             return num(0, 0xFFFF, "code")
         if kind == "mem11":
@@ -1521,6 +1689,21 @@ class Assembler:
             if not -0x20000 <= delta <= 0x1FFFC:
                 raise err(f"branch target 0x{target:08x} out of range")
             return (delta >> 2) & 0xFFFF
+        if kind in ("ac", "ac21"):
+            m = _AC.fullmatch(tok.strip())
+            if not m:
+                raise err(f"accumulator $ac0..$ac3 expected, got {tok!r}")
+            return int(m.group(1)) << lsb
+        if kind in ("dsa3", "dsa4", "dsa5", "dsize", "dsa", "bp2", "rmask", "wmask",
+                    "dimm8"):
+            width = KINDS[kind].fields[0][1]
+            return num(0, (1 << width) - 1, {"dsize": "size", "bp2": "byte position",
+                                             "rmask": "mask", "wmask": "mask",
+                                             "dimm8": "immediate"}.get(kind, "shift")) << lsb
+        if kind == "dimm10":
+            return (num(-512, 511, "immediate") & 0x3FF) << lsb
+        if kind == "shilo":
+            return (num(-32, 31, "shift") & 0x3F) << lsb
         if kind == "jt":
             target = self._value(tok, st) & M32
             if target & 3:
@@ -1529,6 +1712,33 @@ class Assembler:
                 raise err(f"jump target 0x{target:08x} outside the 256 MB region")
             return (target >> 2) & 0x3FFFFFF
         raise err(f"internal: unknown operand kind {kind}")
+
+
+#: MIPS64 (PLAN M22, MIPS64 Vol. II DEXT ... DINSU): row -> (pos / size
+#: in its range, (pos, size) -> (lsb, msbd or msb))
+_DFIELD = {
+    "DEXT": (lambda p, n: 0 <= p < 32 and 1 <= n <= 32, lambda p, n: (p, n - 1)),
+    "DEXTM": (lambda p, n: 0 <= p < 32 and 33 <= n <= 64 and p + n <= 64,
+              lambda p, n: (p, n - 33)),
+    "DEXTU": (lambda p, n: 32 <= p < 64 and 1 <= n <= 32 and p + n <= 64,
+              lambda p, n: (p - 32, n - 1)),
+    "DINS": (lambda p, n: 0 <= p < 32 and 1 <= n <= 32 and p + n <= 32,
+             lambda p, n: (p, p + n - 1)),
+    "DINSM": (lambda p, n: 0 <= p < 32 and 2 <= n <= 64 and 32 < p + n <= 64,
+              lambda p, n: (p, p + n - 33)),
+    "DINSU": (lambda p, n: 32 <= p < 64 and 1 <= n <= 32 and p + n <= 64,
+              lambda p, n: (p - 32, p + n - 33)),
+}
+
+
+def _dfield_row(base: str, pos: int, size: int) -> str | None:
+    """The DEXT / DINS encoding for ``pos`` / ``size`` (as GNU as chooses:
+    the manual's "the assembler will ... emit DEXT, DEXTM, or DEXTU as
+    appropriate"); None when no form takes them."""
+    for row in (base, base + "M", base + "U"):
+        if _DFIELD[row][0](pos, size):
+            return row
+    return None
 
 
 def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,

@@ -59,9 +59,10 @@ no routable bits (its local interrupts always go through the GIC); eMIPS
 follows the 1004K-generation GIC, where they are a build option.
 
 eMIPS choices (``sim.DEVIATIONS`` "GIC"): 40 sources as Boot-MIPS's
-example; the counter counts system cycles; no MT ASE (no yield
-qualifiers); the watchdog counts system cycles (the rate is not given)
-and stops while its core sleeps unless WAIT; REVISIONID reads 0 (as QEMU).
+example; the counter counts system cycles; with MT cores MAP_TO_YQ
+drives the YIELD qualifier inputs; the watchdog counts system cycles
+(the rate is not given) and stops while its core sleeps unless WAIT;
+REVISIONID reads 0 (as QEMU).
 """
 
 from __future__ import annotations
@@ -170,7 +171,9 @@ class GIC(_Registers):
         self.inputs = 0
         self.map_pin = [MAP_TO_PIN] * self.n
         self.map_vp = [0] * self.n
-        self.vps = [_VP() for _ in range(cps.n)]
+        self.vps = [_VP() for _ in range(cps.nvp)]
+        #: the YIELD qualifier inputs the GIC drives, per core (MAP_TO_YQ)
+        self.yq = [0] * cps.n
 
     # -- the bus ---------------------------------------------------------------------
 
@@ -233,9 +236,9 @@ class GIC(_Registers):
         if vp.wd_config & WD_WAIT:
             return True
         cps = self.cps
-        if v >= len(cps.cores) or cps.state[v] not in _AWAKE:
+        if v >= len(cps.vps) or cps.state[cps.vp_core(v)] not in _AWAKE:
             return False
-        return not cps.cores[v].waiting
+        return not cps.vps[v].waiting
 
     def _wd_run(self, vp: _VP, cycles: int) -> tuple[bool, bool]:
         """Count ``cycles`` down; at 0 (Table 12.52 TYPE): one trip — the
@@ -324,8 +327,8 @@ class GIC(_Registers):
         they are routable."""
         vp = self.vps[v]
         pend = vp.pend
-        cores = self.cps.cores
-        if v < len(cores):
+        cores = self.cps.vps
+        if v < len(cores) and cores[v] is not None:
             out = cores[v].irq_outputs()
             for bit, local in zip(out, _CORE_LOCAL):
                 if local in (LOCAL_SWINT0, LOCAL_SWINT1):
@@ -344,20 +347,33 @@ class GIC(_Registers):
         pending, enabled sources and local interrupts: pins HW0..HW5, or in
         EIC mode the highest vector as RIPL with its shadow set."""
         active = self.pending() & self.mask if self.enabled else 0
-        cores = self.cps.cores
+        cores = self.cps.vps
+        yq = [0] * self.cps.n
+        if active:
+            for src in range(self.n):           # MAP_TO_YQ: MAPn_VP names cores
+                mapping = self.map_pin[src]
+                if active >> src & 1 and mapping & MAP_TO_YQ and (mapping & 0x1F) < 16:
+                    for c in range(self.cps.n):
+                        if self.map_vp[src] >> c & 1:
+                            yq[c] |= 1 << (mapping & 0x1F)
         for v, vp in enumerate(self.vps):
             pins, nmi, ripl = 0, False, 0
             if self.enabled:
                 maps = [self.map_pin[src] for src in range(self.n)
-                        if active >> src & 1 and self.map_vp[src] >> v & 1]
+                        if active >> src & 1 and self.map_vp[src] >> v & 1
+                        and not self.map_pin[src] & MAP_TO_YQ]
                 local = self.local_pending(v) & vp.mask
-                maps += [vp.maps[_MAP_INDEX[i]] for i in range(7) if local >> i & 1]
+                lmaps = [vp.maps[_MAP_INDEX[i]] for i in range(7) if local >> i & 1]
+                for mapping in lmaps:
+                    if mapping & MAP_TO_YQ and (mapping & 0x1F) < 16:
+                        yq[self.cps.vp_core(v)] |= 1 << (mapping & 0x1F)
+                maps += [mp for mp in lmaps if not mp & MAP_TO_YQ]
                 for mapping in maps:
                     pins, nmi = _route(mapping, pins, nmi)
                     if mapping & MAP_TO_PIN:
                         ripl = max(ripl, min((mapping & 0x3F) + 1, 63))
             lines = ripl if vp.eic else pins | vp.extra
-            if v < len(cores):
+            if v < len(cores) and cores[v] is not None:
                 m = cores[v]
                 ss = vp.eic_ss[ripl] if vp.eic else 0
                 if (lines, ss) != (m.irq_lines, m.eic_ss):
@@ -365,6 +381,7 @@ class GIC(_Registers):
                 if nmi and not vp.nmi:
                     m.nmi()                      # an edge on the NMI input
             vp.pins, vp.nmi = lines, nmi
+        self._drive_yq(yq)
 
     def attach(self, m) -> None:
         """Wire a core to its VP: its timer / performance counter go out
@@ -375,14 +392,26 @@ class GIC(_Registers):
         m.set_eic_present(self.vps[m.cpu_num].eic)
         m._update_ip()
 
+    def _drive_yq(self, yq: list[int]) -> None:
+        """The YIELD qualifier inputs of each core (MD00904 Table 9.38:
+        MAP_TO_YQ, the MAP field 0-15 = YR_ysi[n], "YQ is per-CORE")."""
+        for c, bits in enumerate(yq):
+            if bits != self.yq[c]:
+                self.yq[c] = bits
+                m = self.cps.cores[c] if c < len(self.cps.cores) else None
+                if m is not None and getattr(m, "mt", None) is not None:
+                    m.mt.set_gic_yield_inputs(bits)
+
     def _eic_vps(self, vps: int) -> bool:
         """Are the VPs of a MAPn_VP in EIC mode?"""
         return any(vps >> v & 1 and vp.eic for v, vp in enumerate(self.vps)) and \
             all(vp.eic for v, vp in enumerate(self.vps) if vps >> v & 1)
 
     def reattach(self, core: int) -> None:
-        """A core was (re)started: its pins start low; drive them again."""
-        self.vps[core].pins, self.vps[core].nmi = 0, False
+        """A core was (re)started: its VPs' pins start low; drive them again."""
+        for v in range(core * self.cps.vpes, (core + 1) * self.cps.vpes):
+            self.vps[v].pins, self.vps[v].nmi = 0, False
+        self.yq[core] = 0
         self.update()
 
     # -- registers ---------------------------------------------------------------------------
@@ -492,8 +521,8 @@ class GIC(_Registers):
         vp = self.vps[v]
         if o == VL_CTL:                   # only EIC_MODE is writable
             vp.eic = bool(value & CTL_EIC)
-            if v < len(self.cps.cores):
-                self.cps.cores[v].set_eic_present(vp.eic)
+            if v < len(self.cps.vps) and self.cps.vps[v] is not None:
+                self.cps.vps[v].set_eic_present(vp.eic)
         elif o == VL_RMASK:
             vp.mask &= ~value & 0x7F
         elif o == VL_SMASK:

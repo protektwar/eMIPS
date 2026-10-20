@@ -62,6 +62,7 @@ from . import pdtrace as PDT
 from . import fpu as F
 from . import perf
 from .exceptions import (
+    Blocked,
     BusError,
     CP0RegisterError,
     FetchError,
@@ -76,6 +77,9 @@ from .exceptions import (
 )
 from .cache import CACHED_CCA, CACHED_CCA_CPS, CCA_24K, CCA_UCA, COHERENT_CCA, CacheError, Caches
 from .isa import ISA, Decode, ISADecodeError
+from . import dsp as DSP
+from . import mt as MT
+from .itc import ERRCTL_ITC as ITC_ERRCTL
 from . import micromips as MM
 from . import mips16 as M16
 from .memory import PMemory
@@ -202,8 +206,12 @@ DEVIATIONS: dict[str, str] = {
                  "(Config3.ISA = 2: MIPS32 out of reset, ISAOnExc R/W, reset 0), "
                  "\"micromips-only\" (Config3.ISA = 1, ISAOnExc 1 read-only, the core "
                  "starts in microMIPS; a jump to an even address faults on the fetch, "
-                 "JALX is Reserved Instruction); Release 3+; Options.compressed the "
-                 "same, and a program with microMIPS code gets it. Recoded "
+                 "JALX is Reserved Instruction); Release 2+ (MD00582 describes "
+                 "Release 3, but the M14K / M14Kc / microAptiv are Release 2 cores "
+                 "with microMIPS: MD00668 Table 5.26, AR = Release 2; their microMIPS "
+                 "has the Release 2 instructions: EVA twins are Reserved); "
+                 "Options.compressed the same, and a program with microMIPS code gets "
+                 "it (not with a core preset). Recoded "
                  "instructions run as their MIPS32 twin (emips.micromips.expand; "
                  "Release 6's CACHE keeps a 12-bit offset: its twin is the Release 5 "
                  "row), branches / jumps / LWP / SWP / LWM / SWM / LWXS / MOVEP / "
@@ -243,10 +251,125 @@ DEVIATIONS: dict[str, str] = {
                  "1.2.1.11): Pipeline24K refuses a microMIPS core, Options / the CLI "
                  "refuse the pair, a microMIPS program in 24K mode runs on the "
                  "5-stage model (Session.program_notes says so). C: cc --micromips "
-                 "for Release 3 / 5 (crt0 MIPS32); Release 6 is refused (GNU as has "
+                 "for Release 2 / 3 / 5 (crt0 MIPS32); Release 6 is refused (GNU as has "
                  "no microMIPS R6, clang 18's la / li macros emit the MIPS32 LUI "
                  "encoding there and its compact branches use the other offset "
                  "scale).",
+    "DSP Module": "emips.dsp (MD00374 rev. 3.01): Revision 1 / 2 and, on Release "
+                  "6, Revision 3. Where the manual leaves a result UNPREDICTABLE "
+                  "eMIPS does what QEMU does: a .PH compare leaves ccond 27..26; EXTP / "
+                  "EXTPV / EXTPDP / EXTPDPV that fail (EFI = 1) write 0 to rt; INSV "
+                  "with pos / size outside 0 <= pos < 32, 0 < size <= 32, pos + size "
+                  "<= 32 leaves rt; MTHLIP with pos > 32 leaves pos; BALIGN with bp 0 "
+                  "/ 2 leaves rt; the GPR-targeting multiplies (MUL.PH, MULQ_*, "
+                  "MULEQ_S, MULEU_S) leave HI / LO (ac0) as base MUL does. MAQ_SA.W."
+                  "PHL / PHR's page swaps its two limits (bit 32 = 0 gives "
+                  "0x80000000): eMIPS saturates a positive overflow to 0x7FFFFFFF, as "
+                  "DPAQX_SA's page and QEMU. RDDSP / WRDSP decode the manual's 10-bit "
+                  "mask (bits 6-9 ignored; binutils accepts only 6 bits). The one-"
+                  "operand idiom rddsp rd / wrdsp rs is GNU as's mask 0x3FF (the "
+                  "manual says 31: the EFI bit is included). The accumulator forms of "
+                  "MULT ... MTLO with ac = 0 are the base instructions before Release "
+                  "6 (no DSP State Disabled); on Release 6 the accumulators belong to "
+                  "the DSP Module and every form needs Status.MX. LWX / LHX / LBUX "
+                  "stay aligned on Release 6 (their pages: Address Error). microMIPS: "
+                  "MD00764's encodings are pre-Release 6 (Releases 2-5); on Release 6 "
+                  "microMIPS has none. The 24K model times the DSP Module as the 1004K "
+                  "(MD00622 Table 2.5: the 24KE's manual is not available); an RDDSP "
+                  "after a multiply-accumulate waits 4 cycles (2.4.2 says only that it "
+                  "waits for the MDU). The 5-stage model has no Status.MX hazard (it "
+                  "has no CP0 hazards).",
+    "MT Module": "emips.mt (MD00378 rev. 1.12, the 34K MD00534): 1-2 VPEs, 1-9 TCs, "
+                 "Releases 2-5; on a CPS per core (see CPS). Dispatch: one instruction "
+                 "of one runnable "
+                 "TC a cycle, chosen by the 34K's policy managers (MD00534 13.2: basic "
+                 "round-robin — the schedule registers read -1 —, WRR, WRR2); inside a "
+                 "group the TCs take turns after the group's last issuer; a rotation "
+                 "begins when the previous one's hold ends, its hold = the runnable TCs "
+                 "of the winning group then (at least 1, also when nothing runs); "
+                 "TCScheFBack counts completed instructions (not a blocked one, not one "
+                 "that took an exception). WRR2's inputs: PM_wbb_avail = 4 - the open "
+                 "write buffer entries, PM_fsb_avail = 8 - the fills in flight with the "
+                 "memory timing, PM_ldq_avail = 7 in instruction mode, PM_sys_avail is "
+                 "set from the debugger (7 at reset); VPEScheFBack shows SYSS 0, WBBS 4, "
+                 "FSBS 8, LDQS 9. Pipeline mode: the 34K pipeline (see 34K pipeline). "
+                 "A WAIT ends when an interrupt signal is active on the VPE, taken or "
+                 "not (the 34K's Config7.WII = 1, read-only). A blocked instruction (a YIELD waiting for its "
+                 "qualifiers, a gating storage access) has had no effect and issues "
+                 "again, as itself (in its delay slot), when it can complete. SI_Vpe0MaxTC: VPE 1 gets the last TC "
+                 "at reset, its XTC (UNDEFINED) is that TC. Configuration (MVPControl."
+                 "VPC): TCBind.CurVPE rebinds a TC; VPEConf1 / Config1 (the FPU, the "
+                 "TLB sizes) follow the configuration: VPEConf1.NCP1 moves the FPU "
+                 "context with its registers (it starts on VPE 0; with NCP1 0 on both "
+                 "it is kept for the next binding), MVPControl.STLB joins the JTLBs "
+                 "into one array of at most 64 entries (VPE 0's first) and clearing it "
+                 "gives each VPE its entries back as they are then; a shared TLBWR "
+                 "that would hit the other VPE's Index entry (P = 0) writes the entry "
+                 "Random takes next instead of stalling; the micro-TLBs stay per VPE. "
+                 "MVPControl.CPA + VPEOpt.IWX / DWX: the refilling VPE's excluded ways "
+                 "are not allocated (all excluded: no exclusion; a locked line still "
+                 "counts as in 8.5.4). The YIELD qualifier inputs are set from the "
+                 "debugger. The "
+                 "TCStatus layout is the 34K's (no TFR: Status.FR stays per VPE). A "
+                 "TC halted with a delay slot next shows TCRestart = the branch and "
+                 "TDS = 1, and when released without a TCRestart write goes on at the "
+                 "slot (the branch's effect is not redone). A reserved negative YIELD "
+                 "rs is treated as -1. A TCStatus write by the TC itself keeps "
+                 "the DT it writes. An MTTR to an FPU control register does not take "
+                 "the FPE it may enable (6.29: the target TC services it). The "
+                 "performance counters and the EJTAG TAP stay per VPE (the 34K: per "
+                 "processor). The MARS console interrupts VPE 0. microMIPS (MD00768): "
+                 "the eight instructions as the manual's pages; its FORK diagram gives "
+                 "bits 6:0 a 6-bit value 100111 — eMIPS takes bit 6 = 0 (no binutils, "
+                 "LLVM or QEMU encodes microMIPS MT to compare with).",
+    "ITC": "emips.itc (MD00534 ch. 12, MD00378 9.1 / App. A): the reference ITU of "
+           "one MT processor, 4 FIFO + 8 semaphore cells by default. The block decodes "
+           "physical addresses ahead of the caches and the bus, whatever the CCA "
+           "(MD00427 3.3.1: 'all accesses to this physical address range will go to "
+           "ITC'). The CACHE pseudo-tag accesses (ErrCtl.ITC, Index Load / Store Tag D) "
+           "act on address bit 3 before any translation. MD00534 Table 12.6 says "
+           "AddrMask 0x3f = 128 KB: eMIPS follows the field's 7 bits (0x7f = 128 KB, "
+           "MD00427). FIFOPtr = the entries (MD00534; MD00427 calls it the oldest's "
+           "index). Reset (UNDEFINED): every cell's data and E / F / T bits 0, "
+           "ITCAddressMap0 / 1 0. A partial-word access acts as a word access and "
+           "returns / changes its bytes of the 32-bit value (undefined); an address "
+           "inside the block with no cell reads 0, writes are dropped (undefined); "
+           "P/V views of a FIFO cell act on its oldest entry without changing E / F "
+           "(undefined); the reserved views read 0, ignore writes; SC: success = the "
+           "ITC's answer on every view (the E/F try view fails on a full cell), "
+           "independent of the LLbit (MD00378 7.2); the P/V counter is bits 15:0, "
+           "the upper bits are kept. A blocked access has had no effect and is issued "
+           "again when the cell lets it complete (a TCHalt or an exception on the TC "
+           "aborts it: nothing to undo). No ITC performance events (the presets keep "
+           "the 24K's events).",
+    "core presets": "emips.cores: a preset sets what the core's datasheet and "
+                    "Software User's Manual let it be built with (the release, the "
+                    "compressed ISA, the FPU, the MMU, the cache shapes, the cores, "
+                    "the shadow sets, the pipeline model) and its PRId (Company 1, "
+                    "the Processor ID, Revision 0 as QEMU's models: the revision is "
+                    "the silicon's; FIR 15:0 repeats it, MD00343 Table 3.6). The "
+                    "documents name no default build: the preset's own (e.g. the 24Kf "
+                    "with 32 KB caches and 32 TLB entries, 4 shadow sets) is an eMIPS "
+                    "choice inside the options. Every preset keeps the 24K's "
+                    "implementation registers (Config7, the EJTAG 3.20 DCR with 4 "
+                    "instruction / 2 data breakpoints, the micro-TLBs of 4 / 8 "
+                    "entries, the 24K's cache line replacement, CCAs and performance "
+                    "events); what a core has that eMIPS does not model is listed in "
+                    "Core.missing (the MCU ASE, MIPS16e2, MSA, "
+                    "VZ, XPA, the P5600's out-of-order pipeline: its preset offers the "
+                    "5-stage or the 24K model), and eMIPS builds a CPS only with 2-4 "
+                    "cores (a 1-core 1004K / interAptiv / P5600 has no CM here). The "
+                    "34K / 1004K / interAptiv use the 24K model, with the MT Module "
+                    "the 34K pipeline (its thread-select stage IT; bypassed with one "
+                    "thread context, MD00584). Not offered: the "
+                    "M5100 / M5150 (VZ always present, a 2008 FPU), the M6250 (no PRId "
+                    "in its datasheet), the 74K / proAptiv (out of order). A core "
+                    "without an FPU (Config1.FP = 0): Status.CU1 / FR read 0 and ignore "
+                    "writes (MD00343 Table 6.18 / 6.12), every FPU instruction is "
+                    "Coprocessor Unusable 1, the boot firmware leaves CU1 0, GDB sees "
+                    "the FPU registers as unavailable (its MIPS description requires "
+                    "the feature), C is built -msoft-float (the soft-float routines "
+                    "need a soft-float libgcc).",
     "EJTAG": "Debug Mode as the 24K's EJTAG 3.20 (MD00343 ch. 11, MD00047 "
              "ch. 2 / 3): Debug.EJTAGver = 3, NoDCR = 0 (dseg present), "
              "CountDM R/W (reset 1), IBusEP / MCheckP read 0 (precise on the "
@@ -624,7 +747,15 @@ DEVIATIONS: dict[str, str] = {
            "bits 31:30 = 10; 0: 0xBFC00000; the BEV overlay fields are stored "
            "only; the BEV vectors: base + 0x200); GCR_REGn steer the shared L2 "
            "only (see Coherence Manager); CPC_Cx_OTHER.CORENUM is 23:16 (Linux; "
-           "the P5600: 18:16); one VPE per core; no IOCU; no CM power domain "
+           "the P5600: 18:16); MT cores (the 1004K / interAptiv, emips.mt "
+           "Cluster): every core has the same VPEs / TCs, VP = core * VPEs + VPE "
+           "(MD00904 Table 9.1) = EBase.CPUNum, the CPC powers / resets a core "
+           "with all its VPEs (a fresh processor: TC 0 at the reset vector), one "
+           "ITC for the CPS (the 1004K's multi-core ITC), the GIC's MAP_TO_YQ "
+           "drives the YIELD qualifier inputs of the cores MAPn_VP names (ORed "
+           "with the debugger's), the CM sees a core (its caches) whichever VPE "
+           "accesses, a cycle issues one TC on every running core; no IOCU; no "
+           "CM power domain "
            "(the GIC: see GIC). The firmware "
            "(kernel / user boot) gives every core write access, enables the "
            "CPC at 0x1BDE0000, puts every core in the coherence domain, maps "
@@ -735,6 +866,37 @@ DEVIATIONS: dict[str, str] = {
                               "Operation adds XOR and the barrel shifter to the textbook "
                               "slice. The gate values are derived from the traced operands "
                               "and agree with the traced result.",
+    "34K pipeline": "emips.pipe34k (MD00534 ch. 2 / 13): the 24K pipeline model with "
+                    "the MT Module's TCs — used in pipeline mode whenever the MT Module "
+                    "is on (the 1004K / interAptiv too: their thread-select stage is the "
+                    "34K's). Per TC: the fetch state, an 8-entry instruction buffer (the "
+                    "6-entry option is not offered), the register scoreboard; per VPE: "
+                    "the CP0 hazards and the micro-TLBs (the 34K's ITLB of 3 shared + 1 "
+                    "entry per TC is the 24K's 4-entry ITLB per VPE). Before IF one TC "
+                    "fetches a cycle, round-robin among those that can (runnable or in "
+                    "WAIT, buffer not full, not waiting for a jump); an I-cache miss "
+                    "holds that TC only. IT (several TCs): RF at IF + 3 at the earliest, "
+                    "the dispatch scheduler chooses among the TCs with an instruction "
+                    "ready by the policy manager. The skid buffer: an instruction whose "
+                    "operand comes from a load that missed (its data later than EX + 2) "
+                    "goes back with its TC's younger issued instructions, the TC "
+                    "dispatches again when the data is there; the MDU / FPU 'long "
+                    "stall' replays are not modelled (they hold AG as on the 24K). A TC "
+                    "that is not runnable (WAIT, a blocked YIELD / ITC access, its VPE "
+                    "exclusive to another TC, TCHalt) loses its issued instructions the "
+                    "same way; a blocked instruction re-issues as itself. Software "
+                    "stopping a TC (TCHalt, TCStatus.A = 0) sets its PC to the oldest "
+                    "instruction it has not executed (a delay slot: armed, the next "
+                    "fetched one after it); a restart / release refetches from its PC. "
+                    "An MFTR of a running TC's TCRestart reads the last instruction it "
+                    "executed. A WAIT ends when an interrupt signal is active on the VPE "
+                    "even if IE / IXMT / EXL keep it from being taken (Config7.WII = 1), "
+                    "at the TC's next dispatch; the interrupt goes with whichever TC's "
+                    "instruction enters EX first. The return prediction stack is used "
+                    "only while one TC is runnable (2.2.2), else a JR $31 waits. No "
+                    "performance counter events of the 34K's (Replays, Single Threaded "
+                    "mode ... are kept as Pipeline34K.replays only). The exit service "
+                    "drains every TC.",
     "24K pipeline": "emips.pipe24k (MD00343 chapter 2): results from the "
                     "Machine's executors in EX, in program order; exceptions "
                     "and interrupts are taken in ER (an interrupt goes with the "
@@ -908,7 +1070,12 @@ DEVIATIONS: dict[str, str] = {
                                 "views and the loader use the same mapping for "
                                 "a page not yet in the TLB.",
     "GDB stub": "emips gdb / Run > GDB Server (emips.gdbstub) is a debug agent, "
-                "not part of the core: it reads and writes registers and memory "
+                "not part of the core (with the MT Module GDB's threads are the "
+                "TCs, core by core: a packet that reads registers / memory binds "
+                "the thread's TC to its VPE for that moment, a stop names the TC "
+                "about to issue on the selected VP, vCont;s:N runs cycles until "
+                "TC N issued one instruction, vCont;c:N lets only the named TCs "
+                "issue): it reads and writes registers and memory "
                 "through the debugger's side-effect-free views (no exception, no "
                 "cache or TLB counting; an unmapped address or a bus error is an E "
                 "reply) and keeps breakpoints itself (Z0 and Z1 alike, no BREAK "
@@ -981,7 +1148,9 @@ PRIVILEGED_NAMES: frozenset[str] = frozenset(
     {"MFC0", "MTC0", "ERET", "DERET", "WAIT", "DI", "EI", "RDPGPR", "WRPGPR",
      "TLBP", "TLBR", "TLBWI", "TLBWR", "TLBINV", "TLBINVF", "CACHE", "CACHEE",
      "LBE", "LBUE", "LHE", "LHUE", "LWE", "LWLE", "LWRE", "LLE",
-     "SBE", "SHE", "SWE", "SWLE", "SWRE", "SCE", "PREFE", "CACHE@R6"}
+     "SBE", "SHE", "SWE", "SWLE", "SWRE", "SCE", "PREFE", "CACHE@R6",
+     # the MT Module (MD00378 5.1: "privileged Cop0 instructions")
+     "DMT", "EMT", "DVPE", "EVPE", "MFTR", "MTTR"}
 )
 
 
@@ -1109,6 +1278,14 @@ class _Arch(Exception):
 #: Executor return value: a branch-likely was not taken — skip its delay slot.
 NULLIFY = -1
 
+#: emips.trace, imported on the first traced instruction
+_trace = None
+
+#: id(row) -> (the row, its executor) for the rows Machine._dispatch runs
+#: without a check (no Coprocessor Unusable / DSPDis / EVA / privilege
+#: gate, an EXEC row): found by its first dispatch
+_PLAIN: dict[int, tuple] = {}
+
 # ---------------------------------------------------------------------------
 # Machine
 # ---------------------------------------------------------------------------
@@ -1141,14 +1318,30 @@ class Machine:
                  pc: int = 0, *, endian: str = "big",
                  exceptions: str = "cp0", release: str | None = None,
                  mmu: Any = None, caches: Caches | None = None, cpu: int = 0,
-                 shadow_sets: int = 1, compressed: str | None = None) -> None:
+                 shadow_sets: int = 1, compressed: str | None = None,
+                 fpu: bool = True, prid: int = 0, dsp: int | None = None,
+                 mt: bool = False) -> None:
         if endian not in ("big", "little"):
             raise ValueError(f"endian must be 'big' or 'little', not {endian!r}")
         if exceptions not in ("cp0", "raise"):
             raise ValueError(f"exceptions must be 'cp0' or 'raise', not {exceptions!r}")
         if isa is not None and release is not None and isa.release != release:
             raise ValueError(f"isa is {isa.release}, release={release!r}")
-        self.isa = isa if isa is not None else ISA(release=release)
+        if dsp is None:
+            dsp = isa.dsp if isa is not None else 0
+        if isa is not None and isa.dsp != dsp:
+            raise ValueError(f"isa has DSP level {isa.dsp}, dsp={dsp!r}")
+        if dsp and (isa.release if isa is not None else release) == "R1":
+            raise ValueError("the DSP Module needs Release 2+ (MD00374 3.1)")
+        if dsp == 1 and (isa.release if isa is not None else release) == "R6":
+            raise ValueError("Release 6 has only DSP Revision 3 (DSPP = DSP2P = 1): dsp=2")
+        if isa is not None and mt and not isa.mt:
+            raise ValueError("isa has no MT Module rows, mt=True")
+        if mt and (isa.release if isa is not None else release or ISA.DEFAULT_RELEASE) \
+                in ("R1", "R6"):
+            raise ValueError("the MT Module needs Release 2-5 (MD00378 1.1; Release 6 "
+                             "has none)")
+        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp, mt=mt)
         #: MIPS32 release of this core (ISA, Config.AR, FPU width)
         self.release = self.isa.release
         #: Count increments every ``ccres`` cycles (the implementation's
@@ -1169,8 +1362,9 @@ class Machine:
                              f"'micromips-only', not {compressed!r}")
         if compressed == "mips16e" and self.release == "R6":
             raise ValueError("Release 6 has no MIPS16e (Vol. II rev. 6: removed)")
-        if compressed in ("micromips", "micromips-only") and self.release in ("R1", "R2"):
-            raise ValueError("microMIPS32 starts with Release 3 (MD00582 3.1)")
+        if compressed in ("micromips", "micromips-only") and self.release == "R1":
+            raise ValueError("microMIPS32 needs Release 2+ (the M14K: Release 2, "
+                             "MD00668 Table 5.26; MD00582: Release 3)")
         #: the compressed instruction set the core implements: "mips16e"
         #: (Config1.CA), "micromips" (Config3.ISA) or None
         self.compressed = "micromips" if compressed == "micromips-only" else compressed
@@ -1198,20 +1392,53 @@ class Machine:
         self.regs: list[int] = self.shadow[0]
         self.hi = 0
         self.lo = 0
+        #: the DSP Module (emips.dsp, MD00374): 0 = none, 1 = Revision 1,
+        #: 2 = Revision 2 (Revision 3 on Release 6); DSPControl and the
+        #: accumulators ac1-ac3 (index 0 unused: ac0 = hi / lo)
+        self.dsp = dsp
+        self.dspctl = 0
+        self.dsp_hi: list[int] = [0] * 4
+        self.dsp_lo: list[int] = [0] * 4
         #: FPU: 32 64-bit FPRs (see fpr_* for the FR=0 / FR=1 views),
         #: FCSR (FCR31) and the read-only FIR (FCR0).
+        #: an FPU (CP1) is implemented (Config1.FP; the 24Kf, not the 24Kc:
+        #: without one Status.CU1 / FR read 0 and ignore writes, MD00343
+        #: Table 6.12, so every FPU instruction is Coprocessor Unusable 1)
+        self.has_fpu = fpu
         self.fpr: list[int] = [0] * 32
         self.fcsr: int = 0
         self.fir: int = FIR if self.release != "R1" else FIR_R1
         if self.release == "R6":                   # IEEE 754-2008 FPU
             self.fir |= FIR_HAS2008
             self.fcsr = FCSR_RO_2008
+        #: PRId (CP0 15.0): Company ID 23:16, Processor ID 15:8, Revision 7:0
+        #: (0: no licensed core); FIR 15:0 repeats Processor ID / Revision
+        #: (MD00343 Table 3.6)
+        self.prid = prid & M32
+        self.fir |= self.prid & 0xFFFF
         #: CP0 registers, keyed ``(register, selector)``.
         self.cp0: dict[tuple[int, int], dict[str, Any]] = _load_cp0_table()
         for key, name in C.EXTRA_CELLS.items():
             self.cp0.setdefault(key, {"name": name, "value": 0})
         for key, value in C.reset_values(self.big_endian, self.release).items():
             self.cp0[key]["value"] = value
+        self.cp0[C.PRID]["value"] = self.prid
+        if not fpu:                             # Config1.FP = 0; CU1, FR: R0
+            self.cp0[C.CONFIG1]["value"] &= ~1
+            self.cp0[C.STATUS]["value"] &= ~(C.ST_CU1 | C.ST_FR)
+            self._wmask[C.STATUS] &= ~(C.ST_CU1 | C.ST_FR)
+        #: the MT processor this Machine is a VPE of (emips.mt.Processor; it
+        #: attaches itself), the VPE number, the MT registers it handles,
+        #: the bound TC is interrupt exempt (TCStatus.IXMT)
+        self.mt: Any = None
+        self.vpe = 0
+        self._mt_regs: frozenset = frozenset()
+        self._ixmt = False
+        if mt:                                  # Config3.MT, ULRI (MD00378 6.25.7)
+            self.cp0[C.CONFIG3]["value"] |= C.CFG3_MT | C.CFG3_ULRI
+        if dsp:                                 # Config3.DSPP / DSP2P, Status.MX R/W
+            self.cp0[C.CONFIG3]["value"] |= C.CFG3_DSPP | (C.CFG3_DSP2P if dsp > 1 else 0)
+            self._wmask[C.STATUS] |= C.ST_MX    # (MD00374 3.11; reset 0: MD00622 Table 7.32)
         if compressed == "mips16e":
             self.cp0[C.CONFIG1]["value"] |= C.CFG1_CA
         elif self.compressed == "micromips":    # Config3.ISA; ISAOnExc RW with both
@@ -1232,6 +1459,9 @@ class Machine:
         #: (9:0, read-only), RDHWR 0, GCR_CL_ID
         self.cpu_num = cpu
         self.cp0[C.EBASE]["value"] |= cpu & 0x3FF
+        #: the core it is in (a VPE of an MT core in a CPS: the core's
+        #: number; the GCR / CPC core-local blocks)
+        self.core_num = cpu
         #: the multi-core system this core belongs to (emips.cps.CPS) or None
         self.system: Any = None
         #: the BEV = 1 vector base (0xBFC00200; a CPS core: its reset base
@@ -1351,6 +1581,11 @@ class Machine:
         self.nmi_pending: bool = False
         #: True after WAIT until an interrupt is taken.
         self.waiting: bool = False
+        #: the last step's instruction could not complete yet (the MT
+        #: Module: emips.exceptions.Blocked); the scheduler takes it
+        self.blocked = None
+        #: the MT processor's gating storage (emips.itc.ITC) or None
+        self.itc = None
         #: EJTAG (emips.ejtag): the debug unit (drseg, dmseg), Debug.DM,
         #: Debug.SSt, a Debug Single Step due (an execution step completed
         #: with SSt = 1), a debug interrupt request (the DINT input)
@@ -1404,13 +1639,26 @@ class Machine:
             self.regs[index] = value & M32
 
     def cp0_read(self, reg: int, sel: int = 0) -> int:
+        if self._mt_regs and (reg, sel) in self._mt_regs:
+            return self.mt.read(self, (reg, sel))
         return self.cp0[(reg, sel)]["value"]
+
+    def mtc0(self, reg: int, sel: int, value: int) -> None:
+        """What an MTC0 does (an MTTR to a CP0 register too): the write,
+        and a Compare write clears the timer interrupt."""
+        self.cp0_write(reg, sel, value)
+        if (reg, sel) == C.COMPARE:             # writing Compare clears TI
+            self._cp0_set(C.CAUSE, self.cp0_read(*C.CAUSE) & ~C.CA_TI)
+            self._update_ip()
 
     def cp0_write(self, reg: int, sel: int = 0, value: int = 0) -> None:
         """Software write (``MTC0``): only the writable bits change.  In
         Release 6 a write of an unsupported cacheability attribute to
         ``Config.K0 / KU / K23`` leaves that field unchanged (Vol. III
         Config); before R6 using one is UNDEFINED and it is just stored."""
+        if self._mt_regs and (reg, sel) in self._mt_regs:
+            self.mt.write(self, (reg, sel), value)
+            return
         if (reg, sel) == (10, 0):               # EntryHi: a TMOAS with a TLB (3.2)
             self.pdt.entryhi_written()
         if (reg, sel) in self._mmu_regs:
@@ -1477,7 +1725,8 @@ class Machine:
         if save:
             srs = (srs & ~(0xF << C.SRS_PSS)) | ((srs & 0xF) << C.SRS_PSS)
         self.cp0[C.SRSCTL]["value"] = (srs & ~0xF) | new
-        self.regs = self.shadow[new]
+        # (an MT VPE's sets can shrink under it, emips.mt: UNDEFINED -> set 0)
+        self.regs = self.shadow[new] if new < len(self.shadow) else self.shadow[0]
 
     def interrupt_mode(self) -> str:
         """"compatibility", "vectored" or "eic" (Vol. III Table 6.1)."""
@@ -1700,19 +1949,23 @@ class Machine:
             self.ejtag.tick(cycles)
         if self.perf.armed:
             self.perf.tick(cycles)
-        if self.cp0_read(*C.CAUSE) & C.CA_DC:
+        cp0 = self.cp0                          # (Cause / Count / Compare: never MT's)
+        if cp0[C.CAUSE]["value"] & C.CA_DC:
             return
-        if self._dm and not self.cp0[C.DEBUG]["value"] & EJ.COUNTDM:
+        if self._dm and not cp0[C.DEBUG]["value"] & EJ.COUNTDM:
             return                              # Count stopped in Debug Mode
         self._count_phase += cycles
-        count = self.cp0_read(*C.COUNT)
-        compare = self.cp0_read(*C.COMPARE)
+        if self._count_phase < self.ccres:
+            return                              # (no tick this cycle)
+        cell = cp0[C.COUNT]
+        count = cell["value"]
+        compare = cp0[C.COMPARE]["value"]
         hit = False
         while self._count_phase >= self.ccres:
             self._count_phase -= self.ccres
             count = (count + 1) & M32
             hit = hit or count == compare
-        self._cp0_set(C.COUNT, count)
+        cell["value"] = count
         if hit:
             self._cp0_set(C.CAUSE, self.cp0_read(*C.CAUSE) | C.CA_TI)
             self._update_ip()
@@ -1722,13 +1975,15 @@ class Machine:
         whatever Status says (Vol. III "Non Maskable Interrupt")."""
         self.nmi_pending = True
 
-    def interrupt_request(self) -> "_Arch | None":
+    def interrupt_request(self, ixmt: bool | None = None) -> "_Arch | None":
         """What the core takes before its next instruction (MD00343 Table
         5.1): a Debug Single Step, a Debug Interrupt, an NMI, or an
         enabled interrupt (``Status.IE``, ``EXL = ERL = 0``; IM & IP, or in
         EIC mode the controller's RIPL above ``Status.IPL``).  In Debug
         Mode none (MD00047 2.5); the DCR's IntE / NMIE mask interrupts /
-        NMIs in Non-Debug Mode (the NMI stays pending)."""
+        NMIs in Non-Debug Mode (the NMI stays pending).  An MT VPE's TC
+        with TCStatus.IXMT (``ixmt``; default: the bound TC's) takes no
+        interrupt (MD00378 6.12)."""
         if self.ss_pending:
             return _Arch(C.DSS)
         if self._dm:
@@ -1740,18 +1995,34 @@ class Machine:
         dcr = self.ejtag.dcr
         if self.nmi_pending and dcr & EJ.DCR_NMIE:
             return _Arch(C.NMI)
-        status = self.status
-        cause = self.cp0_read(*C.CAUSE)
-        if dcr & EJ.DCR_INTE:
+        cp0 = self.cp0
+        status = cp0[C.STATUS]["value"]
+        cause = cp0[C.CAUSE]["value"]
+        if (status & C.ST_IE and not status & (C.ST_EXL | C.ST_ERL)   # (both modes need
+                and dcr & EJ.DCR_INTE                                  # these: first)
+                and not (self._ixmt if ixmt is None else ixmt)):
             if self.interrupt_mode() == "eic":
-                if (status & C.ST_IE and not status & (C.ST_EXL | C.ST_ERL)
-                        and self.irq_lines > (status >> C.ST_IM_SHIFT + 2) & 0x3F):
+                if self.irq_lines > (status >> C.ST_IM_SHIFT + 2) & 0x3F:
                     return _Arch(C.INT)
             elif C.interrupt_pending(status, cause):
                 return _Arch(C.INT)
         if cause & C.CA_WP and not status & (C.ST_EXL | C.ST_ERL):
             return _Arch(C.WATCH, info={"why": "deferred (Cause.WP)"})
         return None
+
+    def interrupt_signal(self) -> bool:
+        """An interrupt signal is active on this core / VPE, whether or not
+        Status.IE, EXL / ERL or TCStatus.IXMT let it be taken: Cause.IP &
+        Status.IM (EIC mode: RIPL above Status.IPL), an NMI, a debug
+        interrupt — what ends an MT TC's WAIT on the 34K (Config7.WII,
+        MD00534 10.2.1)."""
+        if self.nmi_pending or self.dint_pending:
+            return True
+        status = self.status
+        if self.interrupt_mode() == "eic":
+            return self.irq_lines > (status >> C.ST_IM_SHIFT + 2) & 0x3F
+        cause = self.cp0_read(*C.CAUSE)
+        return bool((status >> 8) & (cause >> 8) & 0xFF)
 
     def set_irq_lines(self, value: int, eic_ss: int = 0) -> None:
         """An interrupt controller drives the six interrupt lines at once:
@@ -1835,6 +2106,14 @@ class Machine:
                                   name=None, word=None, addr=addr & M32)
         return hit
 
+    def _xlate_peek(self, addr: int) -> int:
+        """The physical address of *addr* now, -1 when nothing maps it
+        (no side effects)."""
+        try:
+            return self._peek(addr)[0]
+        except UnmappedAddress:
+            return -1
+
     def physical(self, addr: int) -> int:
         """The physical address of the virtual address *addr* (views and
         the loader: no side effects; :class:`UnmappedAddress` if none)."""
@@ -1888,6 +2167,8 @@ class Machine:
     def _view_byte(self, addr: int, pa: int, cached: bool | None = None) -> int:
         """The byte a load at *addr* (physical *pa*) would return now,
         without side effects (the caches, the write buffer, memory)."""
+        if self.itc is not None and self.itc.covers(pa):
+            return self._itc_part(pa, self.itc.peek(pa), 1)
         if self.caches is not None:
             if cached is None:
                 cached = self._cached(addr)
@@ -1944,6 +2225,8 @@ class Machine:
                 self._log("read", addr, size, value)
             return value
         pas, cca = self._access(addr, size, kind)
+        if self.itc is not None and self.itc.covers(pas[0]):
+            return self._itc_load(addr, pas[0], size)
         if self.perf.armed and cca not in self.cached_cca:
             self.perf.pending.append("uncached_load")
         if self._vc is None and self._pdt_acc is None:
@@ -1952,6 +2235,21 @@ class Machine:
         if self._vc is not None:
             self._value_checks(addr & M32, size, value, False)
         if self._pdt_acc is not None:               # MIPS Trace: the load
+            self._pdt_acc.append(("load", addr & M32, size, value))
+        return value
+
+    def _itc_part(self, pa: int, word: int, size: int) -> int:
+        """The ``size`` bytes at ``pa`` of an ITC cell's 32-bit value."""
+        k = pa & 3
+        shift = 8 * (4 - size - k) if self.big_endian else 8 * k
+        return (word >> shift) & ((1 << (8 * size)) - 1)
+
+    def _itc_load(self, addr: int, pa: int, size: int) -> int:
+        """A load from gating storage (emips.itc): uncached, may block."""
+        value = self._itc_part(pa, self.itc.load(self, pa), size)
+        if self._mem_log is not None:
+            self._log("read", addr, size, value)
+        if self._pdt_acc is not None:
             self._pdt_acc.append(("load", addr & M32, size, value))
         return value
 
@@ -1987,12 +2285,17 @@ class Machine:
                 if self._mem_log is not None:
                     self._log("read", addr, size, value)
                 return value
-        data = [self.phys_read_byte(pa) for pa in pas]
-        if not self.big_endian:
-            data.reverse()
-        value = 0
-        for byte in data:
-            value = (value << 8) | byte
+        pa0 = pas[0]
+        w = self.mem.word(pa0) if size == 4 and not pa0 & 3 and pas[3] == pa0 + 3 else None
+        if w is not None:                       # (one written word: the cached copy)
+            value = w if self.big_endian else int.from_bytes(w.to_bytes(4, "big"), "little")
+        else:
+            data = [self.phys_read_byte(pa) for pa in pas]
+            if not self.big_endian:
+                data.reverse()
+            value = 0
+            for byte in data:
+                value = (value << 8) | byte
         if self._mem_log is not None:
             self._log("read", addr, size, value)
         return value
@@ -2008,11 +2311,13 @@ class Machine:
         return 0
 
     def store(self, addr: int, value: int, size: int, *, gather: bool = True,
-              atomic: bool = False) -> None:
+              atomic: bool = False) -> bool | None:
         """Store the low ``size`` bytes of *value* at virtual address
         *addr*, machine order; through the data cache when cacheable, the
         write buffer when there is one (``gather = False``: a partial or
-        conditional store, never gathered as uncached accelerated)."""
+        conditional store, never gathered as uncached accelerated).  A
+        store to gating storage returns whether it succeeded (emips.itc:
+        the E/F try view of a full cell drops it)."""
         if self._dm and EJ.in_dseg(addr & M32) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
             value &= (1 << (8 * size)) - 1
             if self._mem_log is not None:
@@ -2020,9 +2325,16 @@ class Machine:
             self.ejtag.store(addr & M32, value, size)
             return
         pas, cca = self._access(addr, size, "store")
+        value &= (1 << (8 * size)) - 1
+        if self.itc is not None and self.itc.covers(pas[0]):
+            if self._mem_log is not None:
+                self._log("write", addr, size, self._itc_part(pas[0], self.itc.peek(pas[0]),
+                                                               size), value)
+            if self._pdt_acc is not None:
+                self._pdt_acc.append(("store", addr & M32, size, value))
+            return self.itc.store(self, pas[0], value)    # gating storage: may block
         if self.perf.armed and cca not in self.cached_cca:
             self.perf.pending.append("uncached_store")
-        value &= (1 << (8 * size)) - 1
         if self._vc is not None:
             self._value_checks(addr & M32, size, value, True)
         if self._pdt_acc is not None:               # MIPS Trace: the store
@@ -2198,6 +2510,14 @@ class Machine:
                 return self.board.bus.load(self, pas[0], 4)
             except BusError:                    # IBE: precise (MD00343 5.8.13)
                 raise _Arch(C.IBE, info={"why": "instruction fetch bus error"}) from None
+        pa0 = pas[0]
+        if not pa0 & 3 and pas[3] == pa0 + 3:   # (one word: the cached copy)
+            w = self.mem.word(pa0)
+            if w is not None:
+                for dev in self.devices:
+                    if dev.covers(pa0):
+                        return dev.load(self, pa0, 4)
+                return w if self.big_endian else int.from_bytes(w.to_bytes(4, "big"), "little")
         mem = self.mem.get_memory()
         raw = [mem.get(format(pa, "x")) for pa in pas]
         for i, (pa, byte) in enumerate(zip(pas, raw)):
@@ -2248,6 +2568,11 @@ class Machine:
         pas = self._view_pas(addr, 4)
         if self.board is not None and self.board.bus.covers(pas[0]):
             return self._board_peek(pas[0], 4)
+        pa0 = pas[0]
+        if not pa0 & 3 and pas[3] == pa0 + 3:   # (one word: the cached copy)
+            w = self.mem.word(pa0)
+            if w is not None:
+                return w if self.big_endian else int.from_bytes(w.to_bytes(4, "big"), "little")
         mem = self.mem.get_memory()
         raw = [mem.get(format(pa, "x")) for pa in pas]
         for i, (pa, byte) in enumerate(zip(pas, raw)):
@@ -2268,6 +2593,11 @@ class Machine:
         addr &= M32
         if not self.address_ok(addr):
             raise _Arch(C.ADEL, badvaddr=addr)
+        if self.itc is not None and self.cp0_read(*C.ERRCTL) & ITC_ERRCTL:
+            done = self.itc.cache_op(self, op, addr)   # the ITC's address maps
+            if done is not None:
+                self.last_cache_op = done
+                return done
         pa, cca = self._xlate(self, addr, "cacheop")
         if self.caches is None:
             done = "no caches: no operation"
@@ -2375,19 +2705,21 @@ class Machine:
         return C.address_ok(self.status, addr)
 
     def data_address(self, addr: int, size: int, store: bool, *,
-                     atomic: bool = False, span: tuple[int, int] | None = None) -> int:
+                     atomic: bool = False, span: tuple[int, int] | None = None,
+                     aligned: bool = False) -> int:
         """Address check of a data access: alignment to ``size`` and the
         segment rights of the current mode, else Address Error (AdEL for
         loads, AdES for stores) with ``BadVAddr = addr``.  Release 6
         handles misaligned ordinary loads/stores in hardware (here); only
-        LL/SC (``atomic``) must stay aligned.  First the data breakpoints
+        LL/SC (``atomic``) and the DSP Module's indexed loads (``aligned``:
+        MD00374 LWX / LHX) must stay aligned.  First the data breakpoints
         and watch registers, which come before an address error."""
         addr &= M32
         if self.agent_watch:
             self._agent_watch(addr, size, store, span)
         if self._dhw and not self._dm:
             self._data_checks(addr, size, store, span)
-        misaligned = addr % size and (self.release != "R6" or atomic)
+        misaligned = addr % size and (self.release != "R6" or atomic or aligned)
         if misaligned or not self.address_ok(addr):
             raise _Arch(C.ADES if store else C.ADEL, badvaddr=addr)
         return addr
@@ -2464,6 +2796,9 @@ class Machine:
                 self._trace_cycle(False)
             self._take_exception(req, pc, None, None, in_slot)
             return None
+        if self.waiting and self.mt is not None and self.interrupt_signal():
+            self.wake()                         # Config7.WII: the WAIT is over (MD00534
+            #                                     10.2.1), the interrupt is not taken
         if self.waiting:
             self.advance(1)
             if self.ejtag.sample_due:           # asleep: the WAIT is what graduated
@@ -2510,6 +2845,15 @@ class Machine:
             self.slot_armed, self.slot_target, self._forbidden = in_slot, outer_target, forbidden
             self.last_events = None
             raise
+        except Blocked as b:                    # MT: it issues again when it can complete
+            self.slot_armed, self.slot_target, self._forbidden = in_slot, outer_target, forbidden
+            self.last_events = None
+            self.blocked = b
+            self.advance(1)
+            if self.pdt.active:
+                self._trig = []
+                self._trace_cycle(False)
+            return dec
         except (SimException, ISADecodeError) as exc:
             self.exception_log.append({
                 "name": getattr(exc, "name", None),
@@ -2596,7 +2940,8 @@ class Machine:
                 raise _Arch(C.ADEL, badvaddr=(pc + 2) & M32)
             return self._second_half(pc + 2)
         try:
-            i = MM.decode(h, second, release=self.release)
+            i = MM.decode(h, second, release=self.release, dsp=self.dsp,
+                          mt=self.mt is not None)
             word = MM.expand(i)
             dec = Decode(i.raw, MM.ENTRIES[i.form]) if word is None else \
                 self._twin_isa(i).decode(word)
@@ -2763,7 +3108,11 @@ class Machine:
 
     def _viewed(self, pc: int, word: int, dec: Decode, in_slot: bool,
                 sources: dict | None) -> int | None:
-        from . import trace
+        global _trace
+        trace = _trace
+        if trace is None:
+            from . import trace
+            _trace = trace
         view = trace.begin(self, pc, word, dec, in_slot, sources)
         self.last_view = view
         try:
@@ -2784,8 +3133,13 @@ class Machine:
 
     def _dispatch(self, dec: Decode, word: int) -> int | None:
         entry = dec.entry
+        plain = _PLAIN.get(id(entry))
+        if plain is not None and plain[0] is entry:     # no gate: its executor
+            return plain[1](self, word)
         name, family = entry["name"], entry["family"]
         status = self.status
+        if entry.get("ase") in ("dsp", "dspr2") and not status & C.ST_MX:
+            raise _Arch(C.DSPDIS)               # MD00374 Table 3.7
         if family in FPU_FAMILIES or name in ("MOVF", "MOVT", "PREFX"):
             if not status & C.ST_CU1:
                 raise _Arch(C.CPU, ce=1)
@@ -2814,7 +3168,12 @@ class Machine:
         if bucket == BUCKET_DEFER:
             raise UnimplementedError(
                 f"not executed yet: {name}", name=name, word=word, addr=self.pc)
-        return _EXECUTORS[name](self, word)
+        run = _EXECUTORS[name]
+        if entry.get("ase") not in ("dsp", "dspr2") and family not in FPU_FAMILIES \
+                and name not in ("MOVF", "MOVT", "PREFX") and family != "cop2" \
+                and name not in EVA_NAMES and name not in PRIVILEGED_NAMES:
+            _PLAIN[id(entry)] = (entry, run)    # (the checks above never apply to it)
+        return run(self, word)
 
     def _take_exception(self, exc: _Arch, pc: int, word: int | None,
                         dec: Decode | None, in_slot: bool) -> None:
@@ -3657,7 +4016,11 @@ def _ll(m: _M, w: int, addr: int) -> None:
 def _sc(m: _M, w: int, addr: int) -> None:
     addr = m.data_address(addr, 4, store=True, atomic=True)
     ok = m.lr_valid and m.lr_addr == addr
-    if ok:                                     # atomic: never waits in the FSB
+    if m.itc is not None and m.itc.enabled and m.itc.covers(m._xlate_peek(addr) & M32):
+        # gating storage: success is the ITC's answer, whatever the LLbit
+        # (MD00378 7.2; the E/F try view fails on a full cell, A.2)
+        ok = bool(m.store(addr, m.read_reg(rt(w)), 4, gather=False, atomic=True))
+    elif ok:                                   # atomic: never waits in the FSB
         m.store(addr, m.read_reg(rt(w)), 4, gather=False, atomic=True)
     m.write_reg(rt(w), int(ok))
     m.lr_valid = False
@@ -3770,10 +4133,7 @@ def _e_mfc0(m: _M, w: int) -> int | None:
 
 def _e_mtc0(m: _M, w: int) -> int | None:
     reg, sel = _cp0_cell(m, w, "MTC0")
-    m.cp0_write(reg, sel, m.read_reg(rt(w)))
-    if (reg, sel) == C.COMPARE:             # writing Compare clears TI
-        m._cp0_set(C.CAUSE, m.cp0_read(*C.CAUSE) & ~C.CA_TI)
-        m._update_ip()
+    m.mtc0(reg, sel, m.read_reg(rt(w)))
     return None
 
 
@@ -4193,9 +4553,10 @@ def _e_mthc1(m: _M, w: int) -> int | None:
     return None
 
 
-def _e_cfc1(m: _M, w: int) -> int | None:
-    """CFC1 rt, fs: FIR (0), FCCR (25), FEXR (26), FENR (28), FCSR (31)."""
-    fcsr, n = m.fcsr, _fs(w)
+def fcr_read(m: _M, n: int) -> int | None:
+    """FPU control register ``n`` as CFC1 reads it: FIR (0), FCCR (25),
+    FEXR (26), FENR (28), FCSR (31); None for any other number."""
+    fcsr = m.fcsr
     views = {
         0: m.fir,
         25: ((fcsr >> 24) & 0xFE) | ((fcsr >> 23) & 1),
@@ -4203,16 +4564,14 @@ def _e_cfc1(m: _M, w: int) -> int | None:
         28: (fcsr & 0xF80) | ((fcsr >> 22) & 4) | (fcsr & 3),
         31: fcsr,
     }
-    if n not in views:
-        raise _Arch(C.RI)
-    m.write_reg(rt(w), views[n])
-    return None
+    return views.get(n)
 
 
-def _e_ctc1(m: _M, w: int) -> int | None:
-    """CTC1 rt, fs (25, 26, 28, 31).  A write that leaves an enabled Cause
-    bit set traps (FPE) *after* the write (Vol. II-A CTC1)."""
-    v, n, fcsr = m.read_reg(rt(w)), _fs(w), m.fcsr
+def fcr_write(m: _M, n: int, v: int) -> bool | None:
+    """CTC1 to FPU control register ``n`` (25, 26, 28, 31): None for any
+    other number, else whether an enabled Cause bit is now set (the FPE
+    CTC1 then takes)."""
+    fcsr = m.fcsr
     if n == 25:
         if m.release != "R6":                   # R6 has no FCCs: ignored
             fcsr = (fcsr & ~(0xFE << 24) & ~(1 << 23)) | ((v & 0xFE) << 24) | ((v & 1) << 23)
@@ -4224,9 +4583,27 @@ def _e_ctc1(m: _M, w: int) -> int | None:
         mask = FCSR_MASK_R6 if m.release == "R6" else FCSR_MASK
         fcsr = (v & mask) | (fcsr & FCSR_RO_2008)   # NAN2008/ABS2008 RO
     else:
-        raise _Arch(C.RI)
+        return None
     m.fcsr = fcsr
-    if (fcsr >> 12) & 0x20 or (fcsr >> 12) & (fcsr >> 7) & 0x1F:
+    return bool((fcsr >> 12) & 0x20 or (fcsr >> 12) & (fcsr >> 7) & 0x1F)
+
+
+def _e_cfc1(m: _M, w: int) -> int | None:
+    """CFC1 rt, fs: FIR (0), FCCR (25), FEXR (26), FENR (28), FCSR (31)."""
+    value = fcr_read(m, _fs(w))
+    if value is None:
+        raise _Arch(C.RI)
+    m.write_reg(rt(w), value)
+    return None
+
+
+def _e_ctc1(m: _M, w: int) -> int | None:
+    """CTC1 rt, fs (25, 26, 28, 31).  A write that leaves an enabled Cause
+    bit set traps (FPE) *after* the write (Vol. II-A CTC1)."""
+    trap = fcr_write(m, _fs(w), m.read_reg(rt(w)))
+    if trap is None:
+        raise _Arch(C.RI)
+    if trap:
         raise _Arch(C.FPE)
     return None
 
@@ -4983,6 +5360,7 @@ _MM_EXECUTORS: dict[str, Executor] = {
     "MM.BEQZ16": _emm_branch(lambda m, f: m.read_reg(f["s"]) == 0),
     "MM.BNEZ16": _emm_branch(lambda m, f: m.read_reg(f["s"]) != 0),
     "MM.BEQ": _emm_branch(lambda m, f: m.read_reg(f["s"]) == m.read_reg(f["t"])),
+    "MM.BPOSGE32": _emm_branch(lambda m, f: (m.dspctl & 0x3F) >= 32),   # MD00764
     "MM.BNE": _emm_branch(lambda m, f: m.read_reg(f["s"]) != m.read_reg(f["t"])),
     "MM.BLTZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1),
     "MM.BGEZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0),
@@ -5055,6 +5433,8 @@ _EXECUTORS.update(_MM_EXECUTORS)
 _EXECUTORS.update(_fpu_executors())
 _EXECUTORS.update(_r6_executors())
 _EXECUTORS.update(_r6_fpu())
+_EXECUTORS.update(DSP.EXECUTORS)
+_EXECUTORS.update(MT.EXECUTORS)
 
 #: Row names with an executor (dispatched by name, never by ``funct``).
 #: the MIPS32 rows with an executor (MIPS16e's own M16.* executors are not rows)

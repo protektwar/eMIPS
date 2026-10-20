@@ -15,7 +15,9 @@ Descriptions" (G.5.8 MIPS Features: ``org.gnu.gdb.mips.cpu`` / ``cp0`` /
 The registers in GDB's order (the ``g`` packet): r0-r31, status (32),
 lo (33), hi (34), badvaddr (35), cause (36), pc (37), f0-f31 (38-69: 32
 bits with Status.FR = 0, 64 with FR = 1), fcsr (70), fir (71); each in
-the target's byte order.  Breakpoints (``Z0`` / ``Z1``) are the
+the target's byte order; with the DSP Module ``org.gnu.gdb.mips.dsp``
+too: hi1, lo1, hi2, lo2, hi3, lo3 (72-77), dspctl (78) — GDB's
+``features/mips-dsp.xml`` (M18).  Breakpoints (``Z0`` / ``Z1``) are the
 session's: nothing is written into the program, as in QEMU's stub.  The
 stub runs the session in slices and looks for GDB's interrupt between
 them; what the program prints goes to GDB as ``O`` packets.
@@ -26,6 +28,7 @@ from __future__ import annotations
 import select
 import socket
 import sys
+from contextlib import contextmanager
 from typing import Callable
 
 from . import cp0 as C
@@ -36,8 +39,9 @@ from .session import Watchpoint
 M32 = 0xFFFFFFFF
 #: GDB's signal numbers (include/gdb/signals.def)
 SIGINT, SIGILL, SIGTRAP, SIGFPE, SIGBUS, SIGSEGV = 2, 4, 5, 8, 10, 11
-#: the number of registers of the g packet
+#: the number of registers of the g packet (without / with the DSP Module)
 NREGS = 72
+NREGS_DSP = 79
 #: steps between looks at the socket while continuing
 SLICE = 2000
 #: pipeline mode: the most cycles a step (or a stop) waits for an instruction
@@ -195,6 +199,8 @@ class GdbStub:
         self.exited: int | None = None
         self.fr64 = False
         self.last_stop: tuple[int, str] = (SIGTRAP, "")
+        #: the MT Module: GDB's current thread, a TC (index into _tcs())
+        self.tc: int | None = None
         #: a host polls (GdbServer): resumes run in slices from poll()
         self.polled = False
         #: while GDB's continue / step runs (polled): is it a step?
@@ -208,6 +214,24 @@ class GdbStub:
 
     def _size(self, n: int) -> int:
         return 8 if 38 <= n <= 69 and self.fr64 else 4
+
+    @property
+    def nregs(self) -> int:
+        """The g packet's registers: the DSP Module's 72-78 with it."""
+        return NREGS_DSP if self.m.dsp else NREGS
+
+    def available(self, n: int) -> bool:
+        """f0-f31 / fcsr / fir exist only with an FPU (Config1.FP): GDB
+        needs the mips.fpu feature (G.5.8), so a core without one reports
+        them unavailable (``xx`` in g / p: GDB shows ``<unavailable>``)."""
+        if n >= NREGS:
+            return n < self.nregs
+        return n < 38 or self.m.has_fpu
+
+    def _reg_hex(self, n: int) -> str:
+        if not self.available(n):
+            return "xx" * self._size(n)
+        return self._hex(self.get_reg(n), self._size(n))
 
     def get_reg(self, n: int) -> int:
         m = self.m
@@ -232,10 +256,17 @@ class GdbStub:
             return m.fcsr & M32
         if n == 71:
             return m.fir & M32
+        if 72 <= n <= 77 and m.dsp:              # hi1, lo1 ... hi3, lo3
+            k = (n - 72) // 2 + 1
+            return (m.dsp_hi[k] if n % 2 == 0 else m.dsp_lo[k]) & M32
+        if n == 78 and m.dsp:
+            return m.dspctl & M32
         raise KeyError(n)
 
     def set_reg(self, n: int, value: int) -> None:
         m = self.m
+        if not self.available(n):
+            raise KeyError(n)
         if n < 32:
             m.write_reg(n, value)
         elif n == 32:
@@ -255,6 +286,12 @@ class GdbStub:
             m.fpr[k] = value if self.fr64 else (m.fpr[k] & ~M32) | (value & M32)
         elif n == 70:
             m.fcsr = value & M32
+        elif 72 <= n <= 77:
+            k = (n - 72) // 2 + 1
+            (m.dsp_hi if n % 2 == 0 else m.dsp_lo)[k] = value & M32
+        elif n == 78:
+            from .dsp import DSPCONTROL_MASK
+            m.dspctl = value & DSPCONTROL_MASK
         elif n != 71:                            # FIR is read-only
             raise KeyError(n)
 
@@ -286,7 +323,8 @@ class GdbStub:
         return int.from_bytes(bytes.fromhex(text), order)
 
     def target_xml(self) -> str:
-        """The target description: GDB's three MIPS features (G.5.8)."""
+        """The target description: GDB's three MIPS features (G.5.8; the
+        fpu one is required — without an FPU its registers are unavailable)."""
         from .sim import _fr64
         self.fr64 = _fr64(self.m)                           # Status.FR (R6: always 1)
         arch = {"R1": "mips:isa32", "R6": "mips:isa32r6"}.get(self.s.release, "mips:isa32r2")
@@ -309,7 +347,12 @@ class GdbStub:
                 '<reg name="cause" bitsize="32" regnum="36"/></feature>'
                 '<feature name="org.gnu.gdb.mips.fpu">' + fpu +
                 '<reg name="fcsr" bitsize="32" group="float"/>'
-                '<reg name="fir" bitsize="32" group="float"/></feature></target>')
+                '<reg name="fir" bitsize="32" group="float"/></feature>'
+                + (('<feature name="org.gnu.gdb.mips.dsp">'
+                    + "".join(f'<reg name="{h}{k}" bitsize="32" regnum="{72 + 2 * (k - 1) + j}"/>'
+                              for k in (1, 2, 3) for j, h in enumerate(("hi", "lo")))
+                    + '<reg name="dspctl" bitsize="32" regnum="78"/></feature>')
+                   if self.m.dsp else "") + '</target>')
 
     # -- memory --------------------------------------------------------------------------
 
@@ -334,6 +377,13 @@ class GdbStub:
         """``T``: the signal, pc and sp of the thread (= core) that
         stopped, and ``reason`` ("swbreak:", "watch:ADDR" ...)."""
         self.last_stop = (sig, reason)
+        if self._tcs() is not None:             # the TC that stopped (about to issue)
+            self.tc = self._stopped_tc()
+            with self._bound():
+                pc = self._hex(self.get_reg(37), 4)
+                sp = self._hex(self.get_reg(29), 4)
+            return (f"T{sig:02x}25:{pc};1d:{sp};thread:{self.tc + 1:x};core:{self.s.cpu:x};"
+                    + (f"{reason};" if reason else ""))
         pc = self._hex(self.get_reg(37), 4)
         sp = self._hex(self.get_reg(29), 4)
         cpu = self.s.cpu
@@ -363,6 +413,8 @@ class GdbStub:
         s = self.s
         if s.pipeline is not None:
             r = self._step_instruction() if step else s.run(max_steps=SLICE)
+        elif step and self._tcs() is not None:
+            r = self._step_tc()
         else:
             r = s.step() if step else s.run(max_steps=SLICE)
         self._output(conn)
@@ -409,6 +461,20 @@ class GdbStub:
         finally:
             p.debug_stop = keep
 
+    def _step_tc(self):
+        """The MT Module: cycles until GDB's thread has issued an
+        instruction (the others' issue too unless vCont named it alone)."""
+        s = self.s
+        p, tc, _ = self._tcs()[self._thread() - 1]
+        before = p.issued[tc.n]
+        r = s.step()
+        for _ in range(STEP_CYCLES):
+            if r.stopped or r.error or p.issued[tc.n] != before:
+                break
+            r = s.step()
+        self.s.select(self._tcs()[self.tc][2] + tc.vpe)
+        return r
+
     def _settle(self) -> None:
         """Pipeline mode, stopped between instructions (Ctrl-C): clock on
         to a cycle where an instruction is about to execute."""
@@ -423,28 +489,38 @@ class GdbStub:
     # -- the packets ---------------------------------------------------------------------
 
     def handle(self, conn: Connection, pkt: str) -> str | None:
-        """The reply to one packet (None: no reply; "" = not supported)."""
+        """The reply to one packet (None: no reply; "" = not supported).
+        With the MT Module GDB's current thread (a TC) is bound to its VPE
+        while the packet reads or writes registers / memory (its ASID)."""
         if not pkt:
             return ""
+        if self._tcs() is not None and pkt[0] in "gGpPmMXZz?":
+            with self._bound():
+                return self._handle(conn, pkt)
+        return self._handle(conn, pkt)
+
+    def _handle(self, conn: Connection, pkt: str) -> str | None:
         c, rest = pkt[0], pkt[1:]
         if c == "?":
             return self.stop_reply(*self.last_stop)
         if c == "g":
-            return "".join(self._hex(self.get_reg(n), self._size(n)) for n in range(NREGS))
+            return "".join(self._reg_hex(n) for n in range(self.nregs))
         if c == "G":
             at = 0
-            for n in range(NREGS):
+            for n in range(self.nregs):
                 w = 2 * self._size(n)
                 if at + w > len(rest):
                     break
-                if n != 71:
+                if n != 71 and self.available(n):
                     self.set_reg(n, self._unhex(rest[at:at + w]))
                 at += w
             return "OK"
         if c == "p":
             n = int(rest, 16)
             try:
-                return self._hex(self.get_reg(n), self._size(n))
+                if n >= self.nregs:
+                    raise KeyError(n)
+                return self._reg_hex(n)
             except KeyError:
                 return "E00"
         if c == "P":
@@ -496,13 +572,13 @@ class GdbStub:
         if c == "H":                             # Hg: the registers' thread; Hc: all run
             tid = self._tid(rest[1:])
             if rest[:1] == "g" and tid is not None and tid > 0:
-                if tid > len(self.s.machines):
+                if tid > self._nthreads():
                     return "E01"
-                self.s.select(tid - 1)
+                self._select_thread(tid)
             return "OK"
         if c == "T":
             tid = self._tid(rest)
-            return "OK" if tid is not None and 0 < tid <= len(self.s.machines) else "E01"
+            return "OK" if tid is not None and 0 < tid <= self._nthreads() else "E01"
         if pkt.startswith("vCont?"):
             return "vCont;c;C;s;S"
         if pkt.startswith("vCont;"):
@@ -526,9 +602,9 @@ class GdbStub:
             span = pkt.rsplit(":", 1)[1]                 # annex = the pid (ours: 1)
             return self._xfer(self.exec_file.encode(), span)
         if pkt in ("qC",):
-            return f"QC{self.s.cpu + 1:x}"
+            return f"QC{self._thread():x}"
         if pkt in ("qfThreadInfo",):
-            return "m" + ",".join(f"{i + 1:x}" for i in range(len(self.s.machines)))
+            return "m" + ",".join(f"{i + 1:x}" for i in range(self._nthreads()))
         if pkt in ("qsThreadInfo",):
             return "l"
         if pkt.startswith("qThreadExtraInfo,"):
@@ -554,7 +630,69 @@ class GdbStub:
         except ValueError:
             return None
 
+    # -- threads = the MT Module's TCs ----------------------------------------------------
+
+    def _tcs(self) -> list | None:
+        """With the MT Module: every (processor, TC, VP base), core by core —
+        GDB's threads; else None (the threads are the cores)."""
+        mt = self.s.mt
+        if mt is None:
+            return None
+        if hasattr(mt, "procs"):
+            vpes = self.s.cps.vpes
+            return [(p, tc, c * vpes) for c, p in enumerate(mt.procs) for tc in p.tcs]
+        return [(mt, tc, 0) for tc in mt.tcs]
+
+    def _nthreads(self) -> int:
+        tcs = self._tcs()
+        return len(tcs) if tcs is not None else len(self.s.machines)
+
+    def _thread(self) -> int:
+        """GDB's current thread id."""
+        tcs = self._tcs()
+        if tcs is None:
+            return self.s.cpu + 1
+        if self.tc is None or self.tc >= len(tcs):
+            self.tc = self._stopped_tc()
+        return self.tc + 1
+
+    def _stopped_tc(self) -> int:
+        """The TC bound to the selected VP (the one about to issue there)."""
+        tcs = self._tcs()
+        vp = self.s.cpu
+        for i, (p, tc, base) in enumerate(tcs):
+            if base + tc.vpe == vp and p.is_bound(tc):
+                return i
+        return 0
+
+    def _select_thread(self, tid: int) -> None:
+        tcs = self._tcs()
+        if tcs is None:
+            self.s.select(tid - 1)
+            return
+        self.tc = tid - 1
+        p, tc, base = tcs[self.tc]
+        self.s.select(base + tc.vpe)
+
+    @contextmanager
+    def _bound(self):
+        """GDB's thread (a TC) bound to its VPE for a moment."""
+        tcs = self._tcs()
+        tid = self._thread()
+        p, tc, base = tcs[tid - 1]
+        if self.s.cpu != base + tc.vpe:
+            self.s.select(base + tc.vpe)
+        with p.bound(tc):
+            yield
+
     def _thread_info(self, tid: int | None) -> str:
+        tcs = self._tcs()
+        if tcs is not None:
+            if tid is None or not 0 < tid <= len(tcs):
+                return ""
+            p, tc, base = tcs[tid - 1]
+            where = f"VP {base + tc.vpe}" if base or len(tcs) > len(p.tcs) else f"VPE {tc.vpe}"
+            return f"TC {tc.n} on {where}, {p.state(tc)}"
         rows = self.s.cores()
         if tid is None or not 0 < tid <= len(rows):
             return ""
@@ -569,7 +707,7 @@ class GdbStub:
         other cores stay stopped, :attr:`Session.only`); a step action
         names the thread the stop reports."""
         step, only, everyone = None, set(), False
-        n = len(self.s.machines)
+        n = self._nthreads()
         for a in actions.split(";"):
             act, _, tid = a.partition(":")
             if act[:1] not in "cCsS":
@@ -580,27 +718,39 @@ class GdbStub:
             if t in (-1, 0):
                 everyone = True
                 if act[:1] in "sS" and step is None:
-                    step = self.s.cpu + 1
+                    step = self._thread()
                 continue
             only.add(t - 1)
             if act[:1] in "sS" and step is None:
                 step = t
         if step is not None:
-            self.s.select(step - 1)
+            self._select_thread(step)
         return self._resume(conn, step is not None, None if everyone else only)
 
     def _resume(self, conn: Connection, step: bool, only: set | None = None) -> str | None:
         """Run now (the blocking server), or, for a host that polls
         (:class:`GdbServer`), note it: :attr:`resuming` until it stops.
         ``only``: the cores that run (None: all)."""
-        self.s.only = only
+        tcs = self._tcs()
+        if tcs is not None:                     # threads are TCs: the scheduler's
+            self.s.only = None
+            if only is not None:
+                for p in {id(p): p for p, _, _ in tcs}.values():
+                    p.only = {tcs[i][1] for i in only if tcs[i][0] is p}
+        else:
+            self.s.only = only
         if self.polled:
             self.resuming = step
             return None
         try:
             return self.resume(conn, step=step)
         finally:
-            self.s.only = None
+            self._unrestrict()
+
+    def _unrestrict(self) -> None:
+        self.s.only = None
+        for p, _, _ in self._tcs() or ():
+            p.only = None
 
     # -- monitor -------------------------------------------------------------------------
 
@@ -742,7 +892,7 @@ class GdbServer:
                 if reply is None:
                     return "running"
                 stub.resuming = None
-                self.s.only = None
+                stub._unrestrict()
                 conn.send(reply)
                 if stub.finished(reply):
                     self.exited = stub.exited
@@ -760,6 +910,8 @@ class GdbServer:
     def _drop(self) -> str:
         """GDB is gone (detach, kill, exit, a closed socket): wait for the
         next one."""
+        if self.stub is not None:
+            self.stub._unrestrict()
         self.s.only = None
         if self.conn is not None:
             try:

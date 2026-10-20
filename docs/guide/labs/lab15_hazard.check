@@ -1,0 +1,6 @@
+# Lab 15 — Find the hazard: the checks of a fixed handler
+# (Run → Check, or python3 -m emips check docs/guide/labs/lab15_hazard.asm)
+eMIPS: --pipeline --model 24k  (the 24K: where the hazard is)
+limit: 5000                    (a fixed handler ends in a few dozen cycles)
+check: output is "survived"    (the handler returned past the trap)
+check: exceptions == 1         (the trap was taken once, not again and again)

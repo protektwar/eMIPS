@@ -83,11 +83,11 @@ to know exactly what something does.</p>
 <tr>
 <td>6</td>
 <td><strong>Registers</strong></td>
-<td>GPRs, PC / CP0, FPU (<a href="#37-registers">3.7</a>)</td>
+<td>GPRs, PC / CP0, FPU, DSP (<a href="#37-registers">3.7</a>)</td>
 </tr>
 <tr>
 <td>7</td>
-<td><strong>Console, Memory, Caches, TLB, Counters, Trace, Board, System, Messages</strong></td>
+<td><strong>Console, Memory, Caches, TLB, Counters, Trace, Board, System, MT, Checks, Messages</strong></td>
 <td>tabs of the bottom area</td>
 </tr>
 <tr>
@@ -98,7 +98,11 @@ to know exactly what something does.</p>
 </tbody>
 </table>
 <h3 id="the-machine-toolbar">The Machine toolbar</h3>
-<p>The second toolbar chooses the machine in one click: the <strong>MIPS32
+<p>The second toolbar chooses the machine in one click: the <strong>core</strong>
+(Generic, or a real one: the 24Kf, the 1004K, the P5600, the M14K ...
+— its release, ISA, FPU, MMU, caches and pipeline as its manuals allow,
+the choices it is not built with greyed out with the reason;
+<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>), the <strong>MIPS32
 release</strong> (R1–R6), the <strong>board</strong> (flat memory or the MIPS Malta), the
 <strong>MMU</strong> (fixed mapping, BAT, the 24K's TLB, VTLB + FTLB), the number of
 <strong>cores</strong> and the 24K's L1 <strong>caches</strong>; the mode box beside the run
@@ -109,7 +113,8 @@ together is offered: choosing Release 1 makes a single core with no
 shadow register sets (the message says so), the Malta is greyed out for a
 C program (its tooltip says why) — see <a href="features.html#settings-that-go-together">What's in eMIPS</a>.  A
 feature you switch on brings up its pane: the caches the Caches tab, a
-TLB the TLB tab, cores the System tab, the Malta the Board tab.</p>
+TLB the TLB tab, cores the System tab, the Malta the Board tab, the MT
+Module the MT tab.</p>
 <h3 id="moving-the-panes">Moving the panes</h3>
 <p>Everything except the editor is a <strong>pane</strong> with a title bar:</p>
 <ul>
@@ -244,6 +249,11 @@ source.  Changing the release or byte order re-decodes it.</p>
 <td>Ctrl+F10</td>
 <td>run until the line the cursor is on</td>
 </tr>
+<tr>
+<td>Run → Check</td>
+<td>F8</td>
+<td>run the program as its checks say and show which pass (<a href="#checking-your-program-the-checks-pane">below</a>)</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Mode</strong> (toolbar list, or Run → Mode):</p>
@@ -306,6 +316,26 @@ Step or Run again (<a href="#39-console-and-messages">3.9</a>).</p>
 cursor line</em>, <em>the program has ended</em>, <em>step limit reached</em> or an error,
 which also goes to the Messages pane — for example an exception with no
 handler is explained there (<a href="02-writing-programs.html#211-exceptions-and-exception-handlers">Phase 2, 2.11</a>).</p>
+<h3 id="checking-your-program-the-checks-pane">Checking your program: the Checks pane</h3>
+<p>An exercise can say what a finished program must do — print the right
+thing, leave a value in a register or in memory, take no more than so
+many cycles — as <strong>checks</strong>: <code># check:</code> lines in the program, or a
+checks file next to it named like it (<code>lab3_sum.check</code> for
+<code>lab3_sum.asm</code>), or one a teacher hands out (<strong>Run → Checks File…</strong>,
+or the pane's <strong>Checks File…</strong>: it replaces the program's own checks;
+<strong>Program's Checks</strong> goes back).  What a check can say is in
+<a href="04-command-line.html#414-check--does-the-program-do-what-it-should">Phase 4, 4.14</a>;
+the labs that have checks say <em>(checks)</em> in File → Labs.</p>
+<p><strong>Run → Check</strong> (F8, or the pane's <strong>Check</strong>) runs the program in the
+editor — as it is now, assembled afresh — on the machine you have set up
+(each run's own <code>eMIPS:</code> line can change it), from the start, and the
+<strong>Checks</strong> pane shows every run: the machine's count of cycles or steps,
+then each check, PASS or FAIL, and for a failed one what the run had.
+Every run also checks that the program finishes.  The program you are
+debugging is not touched: the checks run on a copy, so you can check,
+change the code, and check again.  A long run can be stopped (<strong>Stop</strong>);
+double-click a check to go to its line in the editor.</p>
+<p><img alt="The Checks pane: Lab 3's checks, two of them failed" src="img/03-checks.png"></p>
 <h2 id="34-the-datapath">3.4 The Datapath</h2>
 <p>The Datapath draws the classic 5-stage MIPS pipeline (Patterson &amp;
 Hennessy).  The stages are the coloured columns, separated by the grey
@@ -538,6 +568,14 @@ the pane draws the 24K's nine stages instead:</p>
   hazards.</li>
 </ul>
 <p>The model is explained in <a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>.</p>
+<p>With the <strong>MT Module</strong> pipeline mode runs the <strong>34K</strong>'s pipeline,
+whatever the model: the 24K's stages with IT selecting the thread
+context that issues (<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5, Threads in one core</a>).  Each
+stage's instruction is marked with its TC (<code>[TC1] lw $t8, 0($a0)</code>),
+the instruction buffer box shows every TC's buffer, and a TC that has to
+wait — for a missing load, a blocked ITC access, a <code>yield</code> — sends
+its instructions back to its buffer (<code>&lt;&lt;</code> in the chart) so the
+others go on.</p>
 <h2 id="35-the-pipeline-chart">3.5 The Pipeline chart</h2>
 <p>One row per instruction, one column per clock cycle; each cell is the
 stage the instruction was in.  <code>--</code> (red) is a cycle <strong>stalled</strong> in ID;
@@ -588,7 +626,7 @@ shows the call stack, and Step Line steps a source line (a
 pseudo-instruction's several instructions at once).</p>
 <p><img alt="The Source pane: c_recursion.c on return 1;, six fact() frames deep" src="img/03-source.png"></p>
 <h2 id="37-registers">3.7 Registers</h2>
-<p>Five tabs:</p>
+<p>Five tabs (six with the DSP Module):</p>
 <ul>
 <li><strong>GPRs</strong> — the 32 registers in hex and decimal; those changed by the
   last step are <strong>highlighted</strong>.</li>
@@ -599,6 +637,12 @@ pseudo-instruction's several instructions at once).</p>
   and the FPU's <strong>FCSR</strong>.</li>
 <li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
   double.</li>
+<li><strong>DSP</strong> (a core with the DSP Module) — DSPControl and its fields (pos,
+  scount, the carry, EFI, ccond, the overflow flags and what set them) and
+  the four accumulators <code>ac0</code>–<code>ac3</code> (<code>ac0</code> is HI / LO); a value the
+  last step changed is highlighted
+  (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">Phase 2, 2.21</a>).  The debugger's
+  <code>dsp</code> prints the same.</li>
 <li><strong>Interrupts</strong> — the interrupt mode (compatibility, vectored, EIC),
   the vector spacing, what is pending and enabled (or, in EIC mode, the
   RIPL the controller requests, Status.IPL and the RIPL / shadow set
@@ -788,6 +832,33 @@ highlighted line is the selected core's):</p>
 <p><img alt="The System pane: the cores" src="img/03-system-cores.png"></p>
 <p><img alt="The System pane: coherence" src="img/03-system-coherence.png"></p>
 <p><img alt="The System pane: the GIC, core 0 in EIC mode (labs/eic.asm)" src="img/03-system-gic.png"></p>
+<h3 id="threads-the-mt-pane">Threads: the MT pane</h3>
+<p>With the MT Module (Settings → Processor → <strong>MT Module</strong>, or a program
+with MT instructions) the toolbar's core selector lists the VPEs
+("VPE 0", "VPE 1"; on a multi-core 1004K or interAptiv "VP 2 (core 1)"),
+and every pane shows the chosen VPE: its CP0 and the registers of the TC
+it runs.  The <strong>MT</strong> pane (a tab of the bottom area) shows the MT
+Module itself (<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5, Threads in one core</a>):</p>
+<ul>
+<li><strong>Threads</strong> — MVPControl and the policy manager; every VPE (VPA, MVP,
+  TE, the last Thread exception's EXCPT, YQMask, and "runs only TC n" when
+  an exception, Debug Mode or TE = 0 lets only one TC of it issue); every
+  TC: its state (running; blocked by WAIT, YIELD or gating storage;
+  halted; free), PC and source line, flags (DA, IXMT, DT; XTC marks the
+  TC that runs alone while its VPE is in an exception), its group (the
+  WRR policy managers), the instructions it issued and what it waits for.  <code>&gt;</code> marks
+  the TC that issues next.  Click a TC for its registers (and to show its
+  VPE in the other panes).  Below: the 16 <strong>YIELD qualifier inputs</strong> a
+  waiting <code>yield</code> looks at (type a value, <strong>Set</strong>), and the WRR2
+  policy manager's <strong>PM_sys_avail</strong> input.  Both are recorded: Step Back
+  replays them.</li>
+<li><strong>ITC</strong> — the gating storage: where it is mapped, and every cell (FIFO
+  or semaphore, its address, its Empty / Full / Trap bits, the data
+  oldest first).</li>
+</ul>
+<p><img alt="The MT pane: TC 0 blocked on an empty ITC FIFO while TC 1 runs (labs/mt_fifo.asm)" src="img/03-mt.png"></p>
+<p>The debugger's <code>mt</code>, <code>mt itc</code> and <code>tc N</code> print the same
+(<a href="04-command-line.html#48-debugger-commands">Phase 4, 4.8</a>).</p>
 <h2 id="39-console-and-messages">3.9 Console and Messages</h2>
 <p>The <strong>Console</strong> shows what the program prints (system calls and the MMIO
 display), and has two input fields:</p>
@@ -860,6 +931,22 @@ other change restarts it.</p>
 <tr>
 <td>Compressed instructions</td>
 <td>automatic (default: MIPS16e from Release 1 to 5, as the 24K has it, none in Release 6), none, MIPS16e, microMIPS with MIPS32, or microMIPS only (<a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a> / <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program's own <code>.set mips16</code> / <code>.set micromips</code> code gets its ISA anyway.  microMIPS needs Release 3+ and the 5-stage model (the 24K has no microMIPS)</td>
+</tr>
+<tr>
+<td>DSP Module</td>
+<td>automatic (default: Revision 2 when the program has DSP instructions — the 24K has none), none, Revision 1, or Revision 2 (Revision 3 in Release 6); Release 2+ (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">Phase 2, 2.21</a>)</td>
+</tr>
+<tr>
+<td>MT Module</td>
+<td>automatic (default: 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions), none, or 1–2 VPEs with 2–9 TCs; Releases 2–5 (<a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>)</td>
+</tr>
+<tr>
+<td>MT policy manager</td>
+<td>which thread context issues: basic round-robin (default), weighted round-robin (the TCSchedule groups), or weighted round-robin with throttles (WRR2) (<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5</a>)</td>
+</tr>
+<tr>
+<td>ITC storage</td>
+<td>the MT Module's gating storage: 4 FIFO + 8 semaphore cells (default), none, or 16 of either or both</td>
 </tr>
 <tr>
 <td>Pipeline model</td>
@@ -1128,7 +1215,7 @@ translations with Qt Linguist or a text editor.</p>
 <tr>
 <td>Examples</td>
 <td></td>
-<td>the example programs, each with the settings it needs; <strong>Labs</strong>: every lab of the guide and the other programs it uses, opened with the settings they are made for</td>
+<td>the example programs, each with the settings it needs; <strong>Labs</strong>: every lab of the guide and the other programs it uses, opened with the settings they are made for (<em>(checks)</em>: Run → Check says how far you are)</td>
 </tr>
 <tr>
 <td>Save / Save As…</td>
@@ -1153,12 +1240,13 @@ Comment / Indent / Unindent, Toggle Breakpoint (F9), Clear All
 Breakpoints.  Undo, Copy and Paste act on the field that has the
 keyboard focus (the editor, a console field ...).</p>
 <p><strong>Run</strong> — Assemble, Run, Pause, Step, Step Back, Run to Cursor, Reset;
+Check (F8) and Checks File… (<a href="#checking-your-program-the-checks-pane">3.3</a>);
 Debug Interrupt (DINT: EJTAG Debug Mode, <a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>);
 GDB Server (GDB debugs the program, <a href="04-command-line.html#gdb-and-the-window">Phase 4</a>);
 Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline); Forwarding.</p>
 <p><strong>View</strong> — show or hide each pane (Datapath, Pipeline, Disassembly,
 Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
-Board, System, Messages); Register Names (ABI <code>$t0</code> / numbers
+Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers
 <code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
 <p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
 <p><strong>Configure</strong> — Settings…; MIPS32 Release; Byte Order; Theme; Language.</p>

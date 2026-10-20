@@ -602,6 +602,14 @@ class TLBMMU:
         self.log: list[TLBAccess] | None = None
         self.stats = TLBStats()
         self._memo: dict[tuple[int, int], int] = {}
+        #: a VPE of an MT processor (emips.mt): a write that would make two
+        #: valid entries match is dropped, no Machine Check (MD00378 6.25.3)
+        self.mt_drop = False
+        #: an MT processor (MD00534 5.4.4): Index.P is writable (software
+        #: "parks" its Index); with MVPControl.STLB the other VPE's MMU,
+        #: whose Index entry a TLBWR here never overwrites
+        self.index_p = False
+        self.peer: "TLBMMU | None" = None
 
     def _features(self, release: str) -> None:
         """The optional features, by default those of ``release``."""
@@ -780,6 +788,8 @@ class TLBMMU:
             p = old & INDEX_P
             if r6 and value & INDEX_P:       # R6: software may set P (not clear it)
                 p = INDEX_P
+            if self.index_p:                 # an MT processor: P is R/W
+                p = value & INDEX_P
             new = p | ix
         elif key in (ENTRYLO0, ENTRYLO1):
             pg = m.cp0[PAGEGRAIN]["value"]
@@ -1275,6 +1285,12 @@ class TLBMMU:
             i = self.ftlb_index(m.cycles % self.fways, self.ftlb_set(hi))
         else:
             i = self._ix(self.random)
+            peer = self.peer.m.cp0[INDEX]["value"] if self.peer is not None else INDEX_P
+            if not peer & INDEX_P and i == peer & self.index_mask:
+                # a shared TLB: never the other VPE's Index entry — the 34K
+                # stalls until Random moves on (MD00534 5.4.4): the next one
+                wired = m.cp0[WIRED]["value"] & INDEX_BITS
+                i = self._ix(self.n - 1 if i <= wired else i - 1)
         if how != "TLBWR":
             self.last_walk = f"{how}: wrote {self.entry_name(i)}"
         self._write(m, i, pagemask, hi, lo0, lo1, how)
@@ -1323,6 +1339,9 @@ class TLBMMU:
                 from .sim import _Arch
                 why = (f"{how} to {self.entry_name(i)} matches valid "
                        f"{self.entry_name(j)}")
+                if self.mt_drop:            # MT: dropped, no Machine Check (MD00534 5.4.4)
+                    self._note("write", hi, f"{why}: write dropped (MT Module)", i)
+                    return
                 self._note("write", hi, f"{why}: write aborted, Machine Check", i)
                 raise _Arch(C.MCHECK, info={"why": why})
             clash.append(j)

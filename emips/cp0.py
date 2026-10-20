@@ -63,6 +63,11 @@ CONFIG3 = (16, 3)
 #: (MIPS32 / microMIPS32 out of reset); Config3.ISAOnExc (16): the ISA of
 #: the handlers at EBase offsets (Vol. III Table 9.67)
 CFG3_ISA_SHIFT = 14
+#: the DSP Module / its Revision 2 is implemented (MD00374 3.11)
+CFG3_DSPP, CFG3_DSP2P = 1 << 10, 1 << 11
+#: the MT Module is implemented (MD00378 Table 6.21); UserLocal exists
+#: (RDHWR 29; the 34K has it, per TC: MD00534 7.2.21)
+CFG3_MT, CFG3_ULRI = 1 << 2, 1 << 13
 CFG3_ISAONEXC = 1 << 16
 #: CMGCRBase (CP0 15.3, a CPS core: the Coherence Manager's GCR base);
 #: Config3.CMGCR says it is implemented
@@ -118,6 +123,8 @@ ST_BEV = 1 << 22
 #: non-maskable interrupt / a soft reset; software may only clear them
 ST_NMI, ST_SR = 1 << 19, 1 << 20
 ST_CU0 = 1 << 28
+#: the DSP Module enable (MD00374 Figure 3.7; R/W only with the DSP Module)
+ST_MX = 1 << 24
 ST_CU1 = 1 << 29
 ST_CU2 = 1 << 30
 ST_CU3 = 1 << 31
@@ -140,6 +147,11 @@ ADEL, ADES = 4, 5
 IBE, DBE = 6, 7
 SYS, BP, RI, CPU, OV, TR = 8, 9, 10, 11, 12, 13
 FPE = 15
+#: DSP Module State Disabled (MD00374 Table 3.6): Status.MX = 0
+DSPDIS = 26
+#: the MT Module's Thread exception (MD00378 Table 6.20; VPEControl.EXCPT
+#: says which)
+THREAD = 25
 #: Release 3 RI / XI exceptions (PageGrain.IEC = 1), Machine Check
 TLBRI, TLBXI = 19, 20
 WATCH = 23
@@ -160,7 +172,7 @@ EXC_NAMES: dict[int, str] = {
     INT: "Int", MOD: "Mod", TLBL: "TLBL", TLBS: "TLBS", ADEL: "AdEL",
     ADES: "AdES", IBE: "IBE", DBE: "DBE", SYS: "Sys", BP: "Bp", RI: "RI",
     CPU: "CpU", OV: "Ov", TR: "Tr", FPE: "FPE", TLBRI: "TLBRI", TLBXI: "TLBXI",
-    WATCH: "WATCH", MCHECK: "MCheck", CACHE_ERROR: "CacheErr", NMI: "NMI",
+    WATCH: "WATCH", MCHECK: "MCheck", DSPDIS: "DSPDis", THREAD: "Thread", CACHE_ERROR: "CacheErr", NMI: "NMI",
     DSS: "DSS", DINT: "DINT", DDBLIMPR: "DDBLImpr", DDBSIMPR: "DDBSImpr",
     DIB: "DIB", DBP: "DBp", DDBL: "DDBL", DDBS: "DDBS",
 }

@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
+from . import cores as _cores
 from .options import Options
 
 RELEASE_ORDER = ("R1", "R2", "R3", "R5", "R6")
@@ -32,6 +33,11 @@ def _drop_flag(o: Options, flag: str) -> None:
     o.mmu = "+".join([base] + [f for f in flags if f != flag])
 
 
+def _mt(o: Options) -> bool:
+    """The MT Module asked for explicitly ("VPES:TCS")."""
+    return o.mt not in ("auto", "none")
+
+
 def _malta(o: Options) -> bool:
     return o.board.split(":")[0] == "malta"
 
@@ -46,8 +52,11 @@ class Rule:
     broken: Callable[[Options, str], bool]
     #: the dependent's adjustment (to a value that works)
     fix: Callable[[Options], None]
-    #: why, for the user
-    why: str
+    #: why, for the user (or a function of the options and the release)
+    why: str | Callable[[Options, str], str]
+
+    def reason(self, o: Options, release: str) -> str:
+        return self.why(o, release) if callable(self.why) else self.why
 
 
 RULES = (
@@ -55,16 +64,17 @@ RULES = (
          lambda o: setattr(o, "compressed", "auto"),
          "Release 6 has no MIPS16e (it was removed; microMIPS R6 is its 16-bit ISA)"),
     Rule("compressed", "release",
-         lambda o, r: o.compressed.startswith("micromips") and not at_least(r, "R3"),
+         lambda o, r: o.compressed.startswith("micromips") and not at_least(r, "R2"),
          lambda o: setattr(o, "compressed", "auto"),
-         "microMIPS32 starts with Release 3 (MD00582 3.1)"),
+         "microMIPS32 needs Release 2 or later (MD00582 describes it for Release 3; the "
+         "M14K is a Release 2 core with microMIPS, MD00668 Table 5.26)"),
     Rule("c_isa", "release", lambda o, r: o.c_isa == "mips16e" and r == "R6",
          lambda o: setattr(o, "c_isa", "mips32"),
          "Release 6 has no MIPS16e"),
-    Rule("c_isa", "release", lambda o, r: o.c_isa == "micromips" and r not in ("R3", "R5"),
+    Rule("c_isa", "release", lambda o, r: o.c_isa == "micromips" and r not in ("R2", "R3", "R5"),
          lambda o: setattr(o, "c_isa", "mips32"),
-         "microMIPS C needs Release 3 or 5: microMIPS starts with Release 3 (MD00582 3.1), "
-         "and no compiler builds Release 6 microMIPS as the manual defines it (emips.cc)"),
+         "microMIPS C needs Release 2, 3 or 5: Release 1 has no microMIPS core, and no "
+         "compiler builds Release 6 microMIPS as the manual defines it (emips.cc)"),
     Rule("compressed", "c_isa", lambda o, r: o.c_isa == "micromips" and o.compressed in (
         "none", "mips16e", "micromips-only"), lambda o: setattr(o, "compressed", "auto"),
          "microMIPS C needs a core with microMIPS and MIPS32 (crt0 is MIPS32; auto: the "
@@ -76,6 +86,17 @@ RULES = (
          lambda o: setattr(o, "model", "5-stage"),
          "the 24K has no microMIPS (MD00343 1.2.1.11: MIPS16e); the microMIPS cores (M14K, "
          "microAptiv) have 5-stage pipelines"),
+    Rule("dsp", "release", lambda o, r: o.dsp in ("dsp", "dspr2") and not at_least(r, "R2"),
+         lambda o: setattr(o, "dsp", "auto"),
+         "the DSP Module needs Release 2 or later (MD00374 3.1)"),
+    Rule("dsp", "release", lambda o, r: o.dsp == "dsp" and r == "R6",
+         lambda o: setattr(o, "dsp", "dspr2"),
+         "on Release 6 the DSP Module is Revision 3: Revision 2's instructions and "
+         "BPOSGE32C (Config3.DSPP = DSP2P = 1, MD00374 3.11)"),
+    Rule("mt", "release", lambda o, r: _mt(o) and r in ("R1", "R6"),
+         lambda o: setattr(o, "mt", "auto"),
+         "the MT Module needs Release 2-5 (MD00378 1.1: Release 2; Release 6 replaced "
+         "it with DVP / EVP and has none of its instructions)"),
     Rule("shadow_sets", "release", lambda o, r: o.shadow_sets > 1 and not at_least(r, "R2"),
          lambda o: setattr(o, "shadow_sets", 1),
          "shadow register sets exist from Release 2 (SRSCtl / SRSMap); Release 1 has the "
@@ -109,7 +130,14 @@ RULES = (
     Rule("l3", "l2", lambda o, r: o.l3 != "none" and o.l2 == "none",
          lambda o: setattr(o, "l3", "none"),
          "an L3 cache needs an L2 cache"),
-)
+) + tuple(
+    # last: a core preset (emips.cores) holds only while every setting is one
+    # its manuals allow; any other value makes it the generic eMIPS core
+    Rule("core", name,
+         lambda o, r, name=name: _cores.conflict(o, r, name) is not None,
+         lambda o: setattr(o, "core", ""),
+         lambda o, r, name=name: _cores.conflict(o, r, name) or "")
+    for name in _cores.FIELDS)
 
 
 def problems(o: Options, release: str) -> list[Rule]:
@@ -126,9 +154,10 @@ def adjust(o: Options, release: str, keep: frozenset[str] | set[str] = frozenset
     notes = []
     for rule in RULES:
         if rule.field not in keep and rule.broken(o, release):
-            old = getattr(o, rule.field)
+            old, why = getattr(o, rule.field), rule.reason(o, release)
             rule.fix(o)
-            notes.append(f"{rule.field} {old} -> {getattr(o, rule.field)}: {rule.why}")
+            notes.append(f"{rule.field} {old or 'generic'} -> "
+                         f"{getattr(o, rule.field) or 'generic'}: {why}")
     return o, notes
 
 
@@ -141,18 +170,42 @@ def forbidden(field: str, value, o: Options, release: str) -> str | None:
         cand, rel = replace(o, **{field: value}), release
     for rule in RULES:
         if rule.broken(cand, rel) and field in (rule.field, rule.on):
-            return rule.why
+            return rule.reason(cand, rel)
     return None
 
 
-def program_problem(o: Options, kind: str) -> str | None:
+def program_problem(o: Options, kind: str, program=None) -> str | None:
     """A loaded program that cannot run with these options: ``kind`` "c" /
-    "elf" (linked for the flat MARS layout, 0x00400000)."""
+    "elf" (linked for the flat MARS layout, 0x00400000); ``program`` (an
+    emips.assembler.Program) with MIPS16e / microMIPS code the chosen core
+    does not have."""
     if kind in ("c", "elf") and _malta(o):
         return ("C programs and ELF executables are linked for the flat memory layout "
                 "(code at 0x00400000): on the Malta that is not memory — choose the flat board")
+    core = _cores.get(o.core)
+    if getattr(program, "mt", False) and o.mt == "none":
+        return ("the program has MT Module instructions: " + (
+            f"this {core.title} is built without the MT Module" if core is not None
+            and core.mt == ("none",) else "the core has none (--mt none)"))
+    need = getattr(program, "dsp", 0)
+    have = {"dsp": 1, "dspr2": 2}.get(o.dsp, 0 if o.dsp == "none" or core else need)
+    if need > have:
+        rev = "DSP Module Revision 2" if need > 1 else "DSP Module"
+        has = "only Revision 1" if have else ("no DSP Module" if core else "none")
+        what = (f"this {core.title} has {has} (--dsp {o.dsp}; it is built with "
+                f"{core.choices('dsp')})" if core else f"the core has {has} (--dsp {o.dsp})")
+        return f"the program has {rev} instructions: {what}"
+    if core is not None and program is not None:
+        for code, isa, name in ((program.m16, "mips16e", "MIPS16e"),
+                                (program.mm, "micromips", "microMIPS")):
+            if code and not o.compressed.startswith(isa):
+                return (f"the program has {name} code: this {core.title} has "
+                        f"{'no compressed ISA' if o.compressed == 'none' else 'no ' + name} "
+                        f"(--compressed {o.compressed}; it is built with "
+                        f"{core.choices('compressed')})")
     return None
 
 
-def explain(rules: list[Rule]) -> str:
-    return "; ".join(f"{r.field} with this {r.on}: {r.why}" for r in rules)
+def explain(rules: list[Rule], o: Options | None = None, release: str = "R5") -> str:
+    o = o if o is not None else Options()
+    return "; ".join(f"{r.field} with this {r.on}: {r.reason(o, release)}" for r in rules)

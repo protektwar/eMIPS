@@ -44,6 +44,10 @@ output — the test suite re-runs them.</p>
 <li><a href="#48-debugger-commands">4.8 Debugger commands</a></li>
 <li><a href="#49-scripts">4.9 Scripts</a></li>
 <li><a href="#410-gui">4.10 gui</a></li>
+<li><a href="#411-cc--build-a-c-program">4.11 cc — build a C program</a></li>
+<li><a href="#412-gdb--debugging-with-gdb">4.12 gdb — debugging with GDB</a></li>
+<li><a href="#413-cores--real-mips-cores">4.13 cores — real MIPS cores</a></li>
+<li><a href="#414-check--does-the-program-do-what-it-should">4.14 check — does the program do what it should?</a></li>
 </ul>
 <hr>
 <h2 id="41-overview">4.1 Overview</h2>
@@ -86,6 +90,10 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>gdb FILE</code></td>
 <td>let GDB debug the program (GDB's remote protocol)</td>
+</tr>
+<tr>
+<td><code>check FILE</code></td>
+<td>run the program as its checks say: which pass, which fail</td>
 </tr>
 </tbody>
 </table>
@@ -223,7 +231,37 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--compressed auto|none|mips16e|micromips|micromips-only</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the core's compressed ISA: <code>auto</code> (default) = MIPS16e from Release 1 to 5, as the 24K, none in Release 6; <code>none</code> = a MIPS32 core without one (<code>jalx</code> is Reserved, a <code>jr</code> to an odd address an address error); <code>mips16e</code> (Config1.CA, <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a>); <code>micromips</code> = microMIPS32 and MIPS32, Release 3+ (Config3.ISA = 2); <code>micromips-only</code> = no MIPS32 (Config3.ISA = 1; <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program with MIPS16e / microMIPS code gets it anyway</td>
+<td>the core's compressed ISA: <code>auto</code> (default) = MIPS16e from Release 1 to 5, as the 24K, none in Release 6; <code>none</code> = a MIPS32 core without one (<code>jalx</code> is Reserved, a <code>jr</code> to an odd address an address error); <code>mips16e</code> (Config1.CA, <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a>); <code>micromips</code> = microMIPS32 and MIPS32, Release 2+ (Config3.ISA = 2; the M14K is a Release 2 core with microMIPS); <code>micromips-only</code> = no MIPS32 (Config3.ISA = 1; <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program with MIPS16e / microMIPS code gets it anyway</td>
+</tr>
+<tr>
+<td><code>--no-fpu</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>a core without an FPU, as the 24Kc: Status.CU1 reads 0, every FPU instruction is Coprocessor Unusable (Config1.FP = 0); a C program is built <code>-msoft-float</code></td>
+</tr>
+<tr>
+<td><code>--dsp auto|none|dsp|dspr2</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the DSP Module (SIMD on bytes and halfwords, saturating fractional arithmetic, the accumulators <code>$ac1</code>–<code>$ac3</code>, DSPControl): <code>auto</code> (default) = Revision 2 when the program has DSP instructions, none otherwise (the 24K has none); <code>none</code>; <code>dsp</code> = Revision 1 (the 24KE, the 1004K); <code>dspr2</code> = Revision 2 (the interAptiv, the microAptiv; Revision 3 on Release 6); Release 2 or later; Config3.DSPP / DSP2P, Status.MX enables it</td>
+</tr>
+<tr>
+<td><code>--mt auto|none|VPES:TCS</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the MT Module (thread contexts and VPEs: <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>): <code>auto</code> (default) = 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions, none otherwise; <code>none</code>; <code>VPES:TCS</code> = 1–2 VPEs, up to 9 TCs; Releases 2–5; with <code>--cores</code> every core has them (the 1004K, the interAptiv); pipeline mode runs the 34K's pipeline</td>
+</tr>
+<tr>
+<td><code>--mt-pm rr|wrr|wrr2</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the MT Module's policy manager, which TC issues: <code>rr</code> (default) round-robin, <code>wrr</code> weighted round-robin (TCSchedule.GRP groups, VPESchedule.GPO), <code>wrr2</code> with throttles on the core's queues (<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--itc auto|none|FIFOS:SEMS</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the MT Module's ITC gating storage: <code>auto</code> (default) = 4 FIFO + 8 semaphore cells; <code>none</code>; FIFO and semaphore cells 0, 1, 2, 4, 8 or 16 each</td>
+</tr>
+<tr>
+<td><code>--core NAME</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>a real MIPS core (<code>24kf</code>, <code>m14k</code>, <code>p5600</code> ...; <a href="#413-cores--real-mips-cores">4.13</a>): its release, compressed ISA, FPU, MMU, caches, cores, shadow sets, pipeline model and PRId; the other flags choose among what the core can be built with, a flag it cannot have is refused (<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>)</td>
 </tr>
 <tr>
 <td><code>--no-header</code></td>
@@ -416,7 +454,7 @@ stall cycles: branch 1, ex-busy 3, load-use 1
 </tr>
 <tr>
 <td><code>--events</code></td>
-<td>forwarding, stalls, branch decisions, flushes per cycle</td>
+<td>forwarding, stalls, branch decisions, flushes per cycle (every cycle of the run: without it eMIPS keeps the first 1000 and the last 4000)</td>
 </tr>
 <tr>
 <td><code>--views</code></td>
@@ -598,6 +636,22 @@ condition and increment) gets a breakpoint on each.</p>
 <td>set an EJTAG instruction (0–3) / data (0–1) breakpoint or a watch register pair (0, 1 fetches; 2, 3 loads / stores) as a probe would; turn one off; clear the match bits (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
 </tr>
 <tr>
+<td><code>dsp</code></td>
+<td>the DSP Module: its revision, Status.MX, DSPControl field by field (pos, scount, c, EFI, ccond, ouflag and what set each flag) and the accumulators <code>ac0</code>–<code>ac3</code></td>
+</tr>
+<tr>
+<td><code>mt</code> / <code>mt itc</code></td>
+<td>the MT Module: MVPControl, each VPE (VPEControl, VPEConf0, YQMask), the policy manager and every TC — its state, PC, flags (DA, IXMT, DT), group, the instructions it issued and what it waits for (<code>&gt;</code> = the TC that issues next); <code>mt itc</code> lists the ITC cells</td>
+</tr>
+<tr>
+<td><code>mt yq BITS</code> / <code>mt sys N</code></td>
+<td>set the 16 YIELD qualifier inputs a waiting <code>yield</code> looks at / the WRR2 policy manager's PM_sys_avail input (0–7); recorded, so <code>back</code> replays them</td>
+</tr>
+<tr>
+<td><code>tc N</code></td>
+<td>thread context N: TCStatus, TCBind, TCRestart, TCHalt, TCContext, Status as it sees it, HI / LO and its GPRs</td>
+</tr>
+<tr>
 <td><code>fpu</code></td>
 <td><code>$f0</code>–<code>$f31</code> as single and double, FCSR</td>
 </tr>
@@ -695,11 +749,11 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>cpu</code></td>
-<td>the cores (<code>--cores N</code>): each one's power state (the CPC's SEQSTATE), position, <code>(waiting)</code> / <code>(exited)</code>; <code>=&gt;</code> marks the one the other commands show</td>
+<td>the cores (<code>--cores N</code>) — with the MT Module the VPEs (VPs on a multi-core system): each one's power state (the CPC's SEQSTATE; a VPE: active or not), position, <code>(waiting)</code> / <code>(exited)</code>; <code>=&gt;</code> marks the one the other commands show</td>
 </tr>
 <tr>
 <td><code>cpu N</code></td>
-<td>show core N: <code>regs</code>, <code>cp0</code>, <code>mem</code>, <code>view</code>, <code>chart</code>, ... look at it (a breakpoint selects the core that reaches it)</td>
+<td>show core (VPE) N: <code>regs</code>, <code>cp0</code>, <code>mem</code>, <code>view</code>, <code>chart</code>, ... look at it (a breakpoint selects the core that reaches it)</td>
 </tr>
 <tr>
 <td><code>cm</code></td>
@@ -743,7 +797,7 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>chart [CYCLES]</code></td>
-<td>pipeline mode: the chart of the last cycles (default 24)</td>
+<td>pipeline mode: the chart of the last cycles (default 24; up to the last 4000)</td>
 </tr>
 <tr>
 <td><code>print VALUE</code> (<code>p</code>)</td>
@@ -885,6 +939,22 @@ the program exited
 <td>GPR shadow sets (1 = the normal GPRs only)</td>
 </tr>
 <tr>
+<td><code>set core NAME|generic</code></td>
+<td>a real MIPS core's release and build (like <code>--core</code>); a later <code>set</code> the core cannot have makes it the generic core and says so</td>
+</tr>
+<tr>
+<td><code>set dsp auto|none|dsp|dspr2</code></td>
+<td>the DSP Module (like <code>--dsp</code>)</td>
+</tr>
+<tr>
+<td><code>set mt auto|none|VPES:TCS</code> / <code>set mt-pm rr|wrr|wrr2</code> / <code>set itc auto|none|FIFOS:SEMS</code></td>
+<td>the MT Module, its policy manager, its ITC (like <code>--mt</code>, <code>--mt-pm</code>, <code>--itc</code>)</td>
+</tr>
+<tr>
+<td><code>set fpu on|off</code></td>
+<td>the FPU (like <code>--no-fpu</code>)</td>
+</tr>
+<tr>
 <td><code>set strict on|off</code></td>
 <td>strict mode (no pseudo-instructions)</td>
 </tr>
@@ -989,7 +1059,8 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--little] [-O 0|1|2|3|s] [--mips16 | --micromips] [-v]
+                    [--little] [-O 0|1|2|3|s] [--mips16 | --micromips] [--no-fpu]
+                    [--dsp | --dspr2] [--core NAME] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
 ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
@@ -997,9 +1068,21 @@ memory map (<a href="02-writing-programs.html#218-programs-in-c">Phase 2, 2.18</
 <code>--mips16</code> compiles the C as MIPS16e (16-bit instructions,
 <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">2.19</a>; it needs a MIPS
 GCC), <code>--micromips</code> as microMIPS
-(<a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>; Release 3
-or 5, the default with it is R5).  In both, crt0 stays MIPS32 and the
-linker turns the calls between the two ISAs into <code>jalx</code>.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
+(<a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>; Release 2,
+3 or 5, the default with it is R5).  In both, crt0 stays MIPS32 and the
+linker turns the calls between the two ISAs into <code>jalx</code>.
+<code>--no-fpu</code> builds for a core without an FPU (<code>-msoft-float</code>):
+integer code needs nothing more, float arithmetic calls the soft-float
+routines (<code>__addsf3</code> ...) of a MIPS GCC's soft-float libgcc — a
+toolchain without one (Debian's <code>mips-linux-gnu</code>) is refused with the
+reason.  <code>--dsp</code> / <code>--dspr2</code> let the C use the DSP Module,
+Revision 1 / 2 (<code>-mdsp</code> / <code>-mdspr2</code>: GCC's
+<code>__builtin_mips_addu_s_qb</code> ... on the vector types
+<code>v4i8</code> / <code>v2q15</code>; Release 2, 3 or 5); the ELF says so in its ABI
+flags, and the core that runs it gets the DSP Module.  A C program in
+the window or given to <code>run</code> is built with <code>-mdspr2</code> when it
+calls these builtins.  <code>--core NAME</code> builds for that core's
+release and DSP Module, soft-float when it has no FPU.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
 <code>.c</code> file too (built for the session's release and byte order) and every
 command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
 disassembly with each C line above its instructions.</p>
@@ -1126,7 +1209,12 @@ lists them with their state, <code>thread 3</code> shows core 2's registers
 and frame, and a stop names the core that stopped — the watchpoint above
 caught core 2 storing its part of <code>cores_sum.asm</code>.  The cores run
 together, as they do in eMIPS (GDB's all-stop mode): a continue or a step
-moves every running core, and a stop stops them all.</p>
+moves every running core, and a stop stops them all.  With the MT
+Module the threads are the thread contexts (on a multi-core 1004K or
+interAptiv, every core's TCs in turn): <code>info threads</code> names each
+one's VPE and state ("TC 1 on VPE 0, running"), <code>thread N</code> shows
+its registers, and a free or halted TC is a thread that does not
+move.</p>
 <pre><code class="language-text">$ python3 -m emips gdb docs/guide/labs/cores_sum.asm      # (its settings: --cores 4)
 $ gdb-multiarch -q -ex 'target remote :1234'
 (gdb) info threads
@@ -1182,6 +1270,247 @@ program has ended starts it again.</p>
 <p>Labs 38–40 (<a href="05-understanding.html#lab-38--a-bug-that-gdb-finds">Phase 5</a>)
 use GDB: a C bug found with a watchpoint, a race between two cores
 watched access by access, and what a watchpoint cannot see (DMA).</p>
+<p>On a core without an FPU (<code>--no-fpu</code>, the 24Kc) GDB still has its
+FPU registers (its MIPS description needs them) but shows them as
+<code>&lt;unavailable&gt;</code>.  With the DSP Module GDB also has
+<code>$hi1</code>, <code>$lo1</code> ... <code>$hi3</code>, <code>$lo3</code> and <code>$dspctl</code>
+(its <code>org.gnu.gdb.mips.dsp</code> registers, 72-78).</p>
+<h2 id="413-cores--real-mips-cores">4.13 cores — real MIPS cores</h2>
+<pre><code class="language-text">python3 -m emips cores [NAME]
+</code></pre>
+<p>Lists the core presets that <code>--core</code>, <code>set core</code> and the window's
+<strong>Core</strong> choice offer, each with what its manuals let it be built
+with and what eMIPS does not model on it
+(<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>):</p>
+<pre><code class="language-console">$ python3 -m emips cores m14k
+m14k:  MIPS M14K: MIPS32 Release 2, PRId 0x00019b00
+  compressed: micromips, micromips-only, none
+  fpu: no FPU
+  dsp: no DSP Module
+  mt: no MT Module
+  mmu: fixed
+  icache: no cache
+  dcache: no cache
+  l2: no L2
+  l3: no L3
+  cores: 1
+  shadow sets: 1, 2, 4, 8, 16
+  model: 5-stage
+...
+</code></pre>
+<h2 id="414-check--does-the-program-do-what-it-should">4.14 check — does the program do what it should?</h2>
+<pre><code class="language-text">python3 -m emips check FILE [--checks CHECKS] [--limit N] [--quiet] [shared options]
+</code></pre>
+<p>An exercise says what a finished program must do: print the right
+thing, leave a value in a register or in memory, take no more than so
+many cycles.  Written down as <strong>checks</strong>, <code>check</code> runs the program and
+says which hold (in the window: Run → Check,
+<a href="03-the-gui.html#checking-your-program-the-checks-pane">Phase 3</a>).  A check
+is a line — a comment in the program, so a student checks their own
+work:</p>
+<pre><code class="language-mips"># check: output is "36"          (it computes the same sum)
+# check: stalls == 0             (nothing waits)
+# check: cycles &lt;= 53
+</code></pre>
+<p>or the same lines (the <code>#</code> may go) in a file of their own, which a
+teacher keeps — <code>--checks FILE</code> then replaces the program's own.  A
+program without <code>check:</code> lines uses the checks file named like it, next
+to it: Lab 3's (<a href="05-understanding.html#lab-3--remove-the-stalls">Phase 5</a>)
+is <code>docs/guide/labs/lab3_sum.check</code>, and the program as handed out fails two
+of them:</p>
+<pre><code class="language-console">$ python3 -m emips check docs/guide/labs/lab3_sum.asm
+36
+--- 77 cycles, 57 instructions retired, 16 stall cycles
+PASS  the program finishes
+PASS  output is "36" (it computes the same sum)
+FAIL  stalls == 0 (nothing waits): 16
+FAIL  cycles &lt;= 53 (and the delay slot does useful work): 77
+--- 2 of 4 checks passed
+</code></pre>
+<p>and a solution passes them all:</p>
+<pre><code class="language-console">$ python3 -m emips check docs/guide/labs/lab3_solution.asm --checks docs/guide/labs/lab3_sum.check --quiet
+--- 53 cycles, 49 instructions retired
+PASS  the program finishes
+PASS  output is "36" (it computes the same sum)
+PASS  stalls == 0 (nothing waits)
+PASS  cycles &lt;= 53 (and the delay slot does useful work)
+--- all 4 checks passed
+</code></pre>
+<p>A failed check shows what the run had.  A text in parentheses at the
+end of a check is a note, printed with it.  Every run also checks that
+the program <strong>finishes</strong> — exits, or runs past its last instruction —
+without an error, within the step limit.  The exit status is 0 when every
+check passes, 1 when one fails, 2 when the checks (or the program) cannot
+be read: a script can check a folder of programs,
+<code>for f in *.asm; do python3 -m emips check "$f" --checks lab3_sum.check --quiet || echo "$f"; done</code>.</p>
+<p>What a check can test:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Passes when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>output is "TEXT"</code></td>
+<td>the program's console output is TEXT (white space at the end not compared); <code>\n</code> is a new line; <code>output == "TEXT"</code> / <code>!=</code> as <code>is</code> / <code>is not</code></td>
+</tr>
+<tr>
+<td><code>output contains "TEXT"</code></td>
+<td>TEXT is somewhere in the output</td>
+</tr>
+<tr>
+<td><code>output matches "REGEX"</code></td>
+<td>the Python regular expression is found in the output, e.g. <code>"bad address 0x[0-9a-f]{8}"</code></td>
+</tr>
+<tr>
+<td><code>$t2 == 36</code>, <code>$8 != 0</code>, <code>hi</code>, <code>lo</code>, <code>pc</code></td>
+<td>a register after the run, compared with a number (<code>-5</code>, <code>0x24</code>), a character (<code>'A'</code>) or a label (its address, <code>nums+32</code>)</td>
+</tr>
+<tr>
+<td><code>word[nums+4] == 2</code>, <code>half[LOC]</code>, <code>byte[LOC]</code></td>
+<td>memory at LOC — a label, a number or <code>$reg</code>, <code>+</code> / <code>-</code> an offset — in the program's byte order</td>
+</tr>
+<tr>
+<td><code>$f2 == 0x3e99999a</code>, <code>$f2.s == 0.3</code>, <code>$f4.d == 2.5</code>, <code>float[LOC]</code>, <code>double[LOC]</code></td>
+<td>an FPU register's bits, or the single / double it (or memory) holds — the number is rounded to that format first</td>
+</tr>
+<tr>
+<td><code>cycles &lt;= 53</code></td>
+<td>clock cycles (pipeline mode; in instruction mode the machine's cycles)</td>
+</tr>
+<tr>
+<td><code>instructions</code>, <code>steps</code></td>
+<td>instructions retired (instruction mode: executed); the run's steps</td>
+</tr>
+<tr>
+<td><code>stalls == 0</code>, <code>stalls load-use == 0</code></td>
+<td>stall cycles, all or of one kind (pipeline mode; the kinds <code>pipe</code> lists)</td>
+</tr>
+<tr>
+<td><code>exceptions == 0</code></td>
+<td>exceptions taken</td>
+</tr>
+<tr>
+<td><code>exit code == 3</code></td>
+<td>the code of syscall 17 (0 after syscall 10)</td>
+</tr>
+<tr>
+<td><code>cpu 1 $t0 == 1</code></td>
+<td>any check on core (or VPE) 1 of a multi-core system</td>
+</tr>
+</tbody>
+</table>
+<p><code>==</code> and <code>!=</code> compare the bits (<code>$t0 == -1</code> is <code>$t0 == 0xffffffff</code>);
+<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code> the signed values.  The machine is the
+program's <code># eMIPS:</code> line (<a href="features.html#a-programs-own-settings">What's in eMIPS</a>)
+and the options given; lines before the checks set up the run:</p>
+<table>
+<thead>
+<tr>
+<th>Line</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eMIPS: FLAGS</code></td>
+<td>the machine for this run (checks files only: in a program the <code>eMIPS:</code> line is the program's own)</td>
+</tr>
+<tr>
+<td><code>input: LINE</code></td>
+<td>one line for a read syscall (one line per read)</td>
+</tr>
+<tr>
+<td><code>keys: TEXT</code></td>
+<td>keystrokes for the MMIO keyboard (<code>\n</code> = Enter)</td>
+</tr>
+<tr>
+<td><code>limit: N</code></td>
+<td>the most steps the run may take (default 100 000, on the Malta 1 000 000; also <code>--limit N</code>)</td>
+</tr>
+<tr>
+<td><code>after: N</code></td>
+<td>check after N steps — the program need not have finished (it may loop for ever)</td>
+</tr>
+<tr>
+<td><code>run: NAME</code></td>
+<td>a new run, with settings and checks of its own</td>
+</tr>
+</tbody>
+</table>
+<p>Several runs test a program with several inputs or on several machines;
+settings after a run's checks begin the next run:</p>
+<pre><code class="language-text">input: 5
+check: output is "120"
+run: zero
+input: 0
+check: output is "1"
+run: the 24K
+eMIPS: --pipeline --model 24k
+input: 5
+check: cycles &lt; 400
+</code></pre>
+<h3 id="writing-checks-for-an-exercise">Writing checks for an exercise</h3>
+<p>For a teacher, the way that works:</p>
+<ol>
+<li><strong>Solve the exercise first</strong>, then write the checks and run them on your
+  solution until they all pass — and on the program as you hand it out:
+  it should fail exactly the checks the exercise is about.  The labs of
+  this guide that have checks (<a href="05-understanding.html#512-labs">5.12</a>) were
+  made so: <code>docs/guide/labs/*.check</code> are examples.</li>
+<li><strong>Check what a correct program does, not how</strong>: its output, the values
+  it leaves where the exercise says they go (a result in <code>$v0</code> by the
+  calling convention, an array in memory).  A register a student may
+  choose freely is not a good check.</li>
+<li><strong>Budgets</strong> — <code>cycles</code>, <code>stalls</code>, <code>instructions</code> — suit performance
+  exercises.  Measure your solution; leave room when other good solutions
+  take a few more cycles.</li>
+<li><strong>Several runs</strong> try several inputs, the edge cases included (0, a
+  negative number, the largest one); <code>limit:</code> keeps a program that loops
+  for ever from holding up the rest, <code>after:</code> checks one that never ends
+  by design (an interrupt-driven loop).</li>
+<li><strong>Notes</strong> — <code>(the square of a negative is positive)</code> — are printed
+  with the result: they are the hint a student gets for a failed check.</li>
+</ol>
+<p>Keep the checks file yourself, and hand out the program (with checks of
+its own, or none): <code>--checks</code> replaces what the program says.  The
+example <em>Console input / output</em> (File → Examples) squares the number it
+reads; three runs check it:</p>
+<pre><code class="language-text">run: seven
+input: 7
+check: output contains "squared = 49"
+run: a negative number
+input: -3
+check: output contains "squared = 9"   (the square of a negative is positive)
+run: zero
+input: 0
+check: output matches "^Enter a number: "    (it asks first)
+check: output contains "squared = 0"
+</code></pre>
+<pre><code class="language-console">$ python3 -m emips check emips/gui/examples/hello_input.asm --checks docs/guide/labs/squared.check --quiet
+--- run 1: seven
+--- 19 steps, 19 cycles
+PASS  the program finishes
+PASS  output contains "squared = 49"
+--- run 2: a negative number
+--- 19 steps, 19 cycles
+PASS  the program finishes
+PASS  output contains "squared = 9" (the square of a negative is positive)
+--- run 3: zero
+--- 19 steps, 19 cycles
+PASS  the program finishes
+PASS  output matches "^Enter a number: " (it asks first)
+PASS  output contains "squared = 0"
+--- all 7 checks passed
+</code></pre>
+<p>Checking a folder of submissions is a loop over the exit status — here
+the names of the programs that fail, and every report in a file:</p>
+<pre><code class="language-text">for f in submissions/*.asm; do
+    python3 -m emips check "$f" --checks squared.check --quiet &gt; "$f.txt" || echo "$f"
+done
+</code></pre>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a> · next: <a href="05-understanding.html">Phase 5 — Understanding what you see</a></nav>
 </main>

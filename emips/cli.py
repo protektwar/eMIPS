@@ -27,7 +27,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import BOOT_MODES, COMPRESSED, Options
+from .options import BOOT_MODES, COMPRESSED, DSP_LEVELS, Options
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
 from .syntax import parse_gpr
@@ -178,7 +178,7 @@ class Debugger(cmd.Cmd):
             where = f"   {Path(c[0]).name}:{c[1]}: {c[2]}"
         if s.cps is not None and cpu is None:
             cpu = s.cpu
-        core = f"core {cpu}  " if cpu is not None else ""
+        core = f"{s.cpu_name(cpu)}  " if cpu is not None else ""
         if s.machines[s.cpu if cpu is None else cpu].debug_mode:
             core += "[debug] "
         return f"{marker} {core}0x{pc:08x}  {text:<30}{where}"
@@ -207,13 +207,12 @@ class Debugger(cmd.Cmd):
         if show:
             self._show_position(r.exceptions)
 
-    @staticmethod
-    def _exception_line(e: dict) -> str:
+    def _exception_line(self, e: dict) -> str:
         """``exception TLBL (TLB refill: ...) at PC, BadVAddr -> vector``."""
         what = e["error"] + (" (TLB refill)" if e.get("refill") else "")
         why = f": {e['why']}" if e.get("why") else ""
         bad = f", BadVAddr 0x{e['badvaddr']:08x}" if e.get("badvaddr") is not None else ""
-        core = f"core {e['cpu']}: " if e.get("cpu") is not None else ""
+        core = f"{self.s.cpu_name(e['cpu'])}: " if e.get("cpu") is not None else ""
         if e.get("vector_number") is not None:      # a vectored interrupt
             what += f" (vector {e['vector_number']})"
         to = f"0x{e['vector']:08x}" + (f", shadow set {e['shadow_set']}"
@@ -952,11 +951,60 @@ class Debugger(cmd.Cmd):
         """fpu   the 32 FPU registers (as single / double) and FCSR"""
         self._need_program()
         m = self.s.machine
+        if not m.has_fpu:
+            self.say("  this core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every "
+                     "FPU instruction is Coprocessor Unusable")
+            return
         for i, raw in enumerate(m.fpr):
             single = struct.unpack(">f", (raw & M32).to_bytes(4, "big"))[0]
             dbl = struct.unpack(">d", raw.to_bytes(8, "big"))[0]
             self.say(f"  $f{i:<2} 0x{raw:016x}  {single:<14.7g} {dbl:.15g}")
         self.say(f"  fcsr 0x{m.fcsr:08x}")
+
+    def do_dsp(self, arg: str) -> None:
+        """dsp   the DSP Module: its revision, Status.MX, DSPControl (pos,
+        scount, c, EFI, ccond, ouflag) and the accumulators ac0-ac3"""
+        self._need_program()
+        for line in self.s.dsp_lines():
+            self.say(f"  {line}")
+
+    def do_mt(self, arg: str) -> None:
+        """mt [yq BITS | sys N | itc]   the MT Module: MVPControl, each VPE
+        (VPEControl, VPEConf0), the policy manager and each thread context
+        (state, PC, DA / IXMT / DT, group; > issues next); yq BITS sets the
+        YIELD qualifier inputs (the 34K's 16 pins) a blocked YIELD waits
+        for; sys N the policy manager's PM_sys_avail input (0-7, WRR2's
+        throttles); itc lists the ITC cells (gating storage)"""
+        self._need_program()
+        parts = arg.split()
+        if parts and parts[0] == "yq":
+            if len(parts) != 2:
+                raise CliError("mt yq BITS, e.g. mt yq 0x1")
+            self.s.yield_inputs(int(parts[1], 0))
+        elif parts and parts[0] == "sys":
+            if len(parts) != 2 or not 0 <= int(parts[1], 0) <= 7:
+                raise CliError("mt sys N (0-7: free entries of the system buffer)")
+            self.s.pm_input(int(parts[1], 0))
+        elif parts == ["itc"]:
+            for line in self.s.itc_lines():
+                self.say(f"  {line}")
+            return
+        elif parts:
+            raise CliError("mt [yq BITS | sys N | itc]")
+        for line in self.s.mt_lines():
+            self.say(f"  {line}")
+
+    def do_tc(self, arg: str) -> None:
+        """tc N   thread context N: its TC registers and its GPRs (MFTR's view)"""
+        self._need_program()
+        if not arg.strip():
+            raise CliError("tc N")
+        try:
+            lines = self.s.tc_lines(int(arg, 0))
+        except ValueError as exc:
+            raise CliError(str(exc)) from None
+        for line in lines:
+            self.say(f"  {line}")
 
     def do_mem(self, arg: str) -> None:
         """mem [-p] LOCATION [WORDS]   (x) memory as words + text, from
@@ -1261,9 +1309,10 @@ class Debugger(cmd.Cmd):
         self.say(text(p))
 
     def do_cpu(self, arg: str) -> None:
-        """cpu [N]   the cores of a multi-core system (set cores N): their
-        power state (the CPC's SEQSTATE) and position; cpu N selects the
-        core the other commands show (regs, cp0, mem, view, chart, ...)"""
+        """cpu [N]   the cores of a multi-core system (set cores N) — or the
+        VPEs of the MT Module: their power state (the CPC's SEQSTATE) and
+        position; cpu N selects the core / VPE the other commands show
+        (regs, cp0, mem, view, chart, ...)"""
         self._need_program()
         s = self.s
         if arg.strip():
@@ -1272,14 +1321,15 @@ class Debugger(cmd.Cmd):
             except ValueError as exc:
                 raise CliError(str(exc) if "core" in str(exc) else
                                f"not a core number: {arg.strip()}") from None
-        if s.cps is None:
+        if len(s.machines) < 2:
             self.say("one core (core 0); set cores 2..4 for a multi-core system")
             return
         for c in s.cores():
             where = (f", pc 0x{c['pc']:08x}" if c["pc"] is not None else "") + (
                 f" (line {c['line']})" if c["line"] else "") + (
                 " (exited)" if c["halted"] else " (waiting)" if c["waiting"] else "")
-            self.say(("=> " if c["selected"] else "   ") + f"core {c['cpu']}: {c['state']}{where}")
+            self.say(("=> " if c["selected"] else "   ") + f"{s.cpu_name(c['cpu'])}: "
+                     f"{c['state']}{where}")
 
     def do_dis(self, arg: str) -> None:
         """dis [LOCATION] [COUNT]   disassembly (default: around the current
@@ -1498,8 +1548,13 @@ class Debugger(cmd.Cmd):
         mmu fixed|bat|tlb[:N]|ftlb[:N[:SxW]][+sc][+pw] | model 5-stage|24k |
         cores 1..4 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
         disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off |
-        compressed auto|none|mips16e|micromips|micromips-only
-        (changes reassemble or restart the program)"""
+        compressed auto|none|mips16e|micromips|micromips-only | fpu on|off |
+        dsp auto|none|dsp|dspr2 (the DSP Module) |
+        mt auto|none|VPES:TCS (the MT Module: 1-2 VPEs, up to 9 TCs) |
+        mt-pm rr|wrr|wrr2 (its policy manager) | itc auto|none|FIFOS:SEMAPHORES |
+        core NAME|generic (a real core's settings: python3 -m emips cores)
+        (changes reassemble or restart the program; a setting the chosen core
+        is not built with makes it the generic core)"""
         parts = arg.split()
         if len(parts) != 2:
             raise CliError("set OPTION VALUE — see help set")
@@ -1550,9 +1605,56 @@ class Debugger(cmd.Cmd):
         elif key == "compressed" and value.lower() in COMPRESSED:
             if value.lower() == "mips16e" and self.s.release == "R6":
                 raise CliError("Release 6 has no MIPS16e")
-            if value.lower().startswith("micromips") and self.s.release in ("R1", "R2"):
-                raise CliError("microMIPS32 starts with Release 3 (set release R3)")
+            if value.lower().startswith("micromips") and self.s.release == "R1":
+                raise CliError("microMIPS32 needs Release 2 or later (set release R2)")
             o.compressed = value.lower()
+        elif key == "fpu":
+            o.fpu = on
+        elif key == "dsp" and value.lower() in DSP_LEVELS:
+            if value.lower() in ("dsp", "dspr2") and self.s.release == "R1":
+                raise CliError("the DSP Module needs Release 2 or later (set release R2)")
+            if value.lower() == "dsp" and self.s.release == "R6":
+                raise CliError("Release 6 has only DSP Revision 3: set dsp dspr2")
+            o.dsp = value.lower()
+        elif key == "mt":
+            from .mt import parse_spec
+            v = value.lower()
+            if v != "auto":
+                try:
+                    spec = parse_spec(v)
+                except ValueError as exc:
+                    raise CliError(str(exc)) from None
+                if spec is not None and self.s.release in ("R1", "R6"):
+                    raise CliError("the MT Module needs Release 2-5 (set release R5)")
+                v = "none" if spec is None else f"{spec[0]}:{spec[1]}"
+            o.mt = v
+        elif key == "mt-pm":
+            from .mt import POLICY_MANAGERS
+            if value.lower() not in POLICY_MANAGERS:
+                raise CliError("set mt-pm rr|wrr|wrr2")
+            o.mt_pm = value.lower()
+        elif key == "itc":
+            from .itc import parse_spec as itc_spec
+            v = value.lower()
+            if v != "auto":
+                try:
+                    spec = itc_spec(v)
+                except ValueError as exc:
+                    raise CliError(str(exc)) from None
+                v = "none" if spec is None else f"{spec[0]}:{spec[1]}"
+            o.itc = v
+        elif key == "core":
+            from . import cores
+            try:
+                built, release = cores.apply(o, value)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            s.options = built
+            if release:
+                s.release = release
+            core = cores.get(built.core)
+            self.say(f"core: {core.title if core else 'the generic eMIPS core'}"
+                     + (f" (Release {core.release[1:]}, PRId 0x{core.prid:08x})" if core else ""))
         elif key == "mmu":
             from .mmu import make_mmu
             try:
@@ -1580,7 +1682,12 @@ class Debugger(cmd.Cmd):
             s._media = {}
         else:
             raise CliError(f"unknown option or value: set {arg}")
+        had = s.options.core
         self._reload()
+        if had and not s.options.core:
+            for note in s.adjusted:
+                if note.startswith("core "):
+                    self.say(f"adjusted: {note}")
 
     def _reload(self) -> None:
         s = self.s
@@ -1721,7 +1828,26 @@ def options_from_args(args) -> Options:
                    cores=getattr(args, "cores", None) or 1,
                    iocu=getattr(args, "iocu", False),
                    shadow_sets=getattr(args, "shadow_sets", None) or 4,
-                   compressed=getattr(args, "compressed", None) or "auto")
+                   compressed=getattr(args, "compressed", None) or "auto",
+                   fpu=not getattr(args, "no_fpu", False),
+                   dsp=getattr(args, "dsp", None) or "auto",
+                   mt=getattr(args, "mt", None) or "auto",
+                   mt_pm=getattr(args, "mt_pm", None) or "rr",
+                   itc=getattr(args, "itc", None) or "auto")
+
+
+def explicit_fields(args) -> set[str]:
+    """The Options fields the command line (or the program's header) gave
+    on purpose: a core preset (``--core``) sets only the others."""
+    out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
+    for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
+                 "compressed", "dsp", "mt", "mt_pm", "itc"):
+        if getattr(args, name, None) is not None:
+            out.add(name)
+    for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer")):
+        if getattr(args, flag, False):
+            out.add(name)
+    return out
 
 
 def apply_header(args) -> str | None:
@@ -1756,20 +1882,32 @@ def apply_header(args) -> str | None:
 
 
 def session_from_args(args) -> Session:
+    from . import cores
     from .compat import adjust, explain, problems
     apply_header(args)
     options = options_from_args(args)
+    release = args.release
+    core = getattr(args, "core", None)
+    if core:                                    # its build, under what was given
+        options, core_release = cores.apply(options, core, keep=explicit_fields(args))
+        release = release or core_release
+    release = release or "R5"
     given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
                             ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"),
-                            ("model", "model"), ("compressed", "compressed"))
+                            ("model", "model"), ("compressed", "compressed"), ("dsp", "dsp"),
+                            ("mt", "mt"))
              if getattr(args, a, None) not in (None, "kernel")}
-    options, _notes = adjust(options, args.release or "R5", keep=given)
-    bad = problems(options, args.release or "R5")
+    if options.core:
+        given |= {"core"} | explicit_fields(args)
+    options, _notes = adjust(options, release, keep=given)
+    bad = problems(options, release)
     if bad:                                     # given together on purpose: refuse
-        sys.exit("these settings do not go together: " + explain(bad))
-    s = Session(release=args.release or "R5", endian=args.endian,
+        sys.exit("these settings do not go together: " + explain(bad, options, release))
+    s = Session(release=release, endian=args.endian,
                 mode="pipeline" if getattr(args, "pipeline", False) else "instruction",
                 forwarding=not getattr(args, "no_forwarding", False),
                 abi=not getattr(args, "numeric", False),
                 options=options)
+    # pipe --events / --views print every cycle: keep them all
+    s.full_history = bool(getattr(args, "events", False) or getattr(args, "views", False))
     return s

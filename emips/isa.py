@@ -174,41 +174,95 @@ class ISA:
     and the most specific row *of that release* wins — e.g. ``EHB`` is
     ``SLL $0,$0,3`` in Release 1.  The default is ``"R5"``, the full
     pre-Release-6 instruction set.
+
+    ``dsp`` (PLAN M18) adds the DSP Module's rows (``ase`` "dsp" /
+    "dspr2", MD00374): 0 = none (their words are Reserved), 1 = the DSP
+    Module (Config3.DSPP), 2 = Revision 2 (DSP2P; on Release 6 this is
+    Revision 3, with BPOSGE32C).  Without it a DSP word does not decode —
+    the Reserved Instruction exception of Table 3.7.
+
+    ``mt`` (PLAN M19) adds the MT Module's rows (``ase`` "mt", MD00378:
+    DMT, EMT, DVPE, EVPE, FORK, YIELD, MFTR, MTTR; Releases 2-5).  Without
+    it they are Reserved Instructions (MD00378 5.1).
+
+    ``arch`` (PLAN M22) is "mips32" (the default) or "mips64": a MIPS64
+    ISA has every row plus the doubleword ones (``arch`` "mips64", MIPS64
+    Vol. II), each in the releases of its ``releases64`` (MIPS64 Release
+    1 already has what MIPS32 only gained in Release 2: COP1X, paired
+    single); a MIPS32 ISA never sees the MIPS64 rows — their words are
+    Reserved Instructions there.
     """
 
     DEFAULT_RELEASE = "R5"
+    #: the DSP Module level an ``ase`` value needs
+    DSP_LEVEL = {"dsp": 1, "dspr2": 2}
+
+    ARCHES = ("mips32", "mips64")
 
     def __init__(self, path: str | Path | None = None, *,
-                 release: str | None = None) -> None:
+                 release: str | None = None, dsp: int = 0, mt: bool = False,
+                 arch: str = "mips32") -> None:
         src = Path(path) if path is not None else _ISAREF_PATH
         with open(src, encoding="utf-8") as handle:
             self._data = json.load(handle)
-        self._instructions: list[dict[str, Any]] = self._data["instructions"]
+        if arch not in self.ARCHES:
+            raise ValueError(f"arch must be one of {self.ARCHES}, not {arch!r}")
+        #: "mips32" / "mips64": which rows exist, and which release list
+        #: says when (``releases`` / ``releases64``)
+        self.arch = arch
+        self._key = "releases64" if arch == "mips64" else "releases"
+        self._instructions: list[dict[str, Any]] = [
+            e for e in self._data["instructions"]
+            if arch == "mips64" or e.get("arch") != "mips64"]
         self._by_name = {e["name"]: e for e in self._instructions}
         self.release = release or self.DEFAULT_RELEASE
         order = self._data["meta"].get("release_order", [])
         if order and self.release not in order:
             raise ValueError(f"unknown release {self.release!r}; one of {order}")
+        if dsp not in (0, 1, 2):
+            raise ValueError(f"dsp must be 0, 1 or 2, not {dsp!r}")
+        #: the DSP Module level whose rows decode (0: none)
+        self.dsp = dsp
+        #: the MT Module's rows decode
+        self.mt = bool(mt)
         self._leads = [e for e in self._instructions if e["decode"]["lead"]
-                       and self.release in e.get("releases", [self.release])]
+                       and self._has(e)]
         self._leads.sort(key=lambda e: -e["decode"]["specificity"])
         #: word -> Decode (decoding is a pure function of the word)
         self._decoded: dict[int, Decode] = {}
 
-    _cache: dict[str, "ISA"] = {}
+    _cache: dict[tuple[str, int, bool, str], "ISA"] = {}
     _DECODED_MAX = 1 << 16
 
     @classmethod
-    def for_release(cls, release: str | None = None) -> "ISA":
-        """A shared (cached) ISA of ``release`` — the tables are read once."""
-        key = release or cls.DEFAULT_RELEASE
+    def for_release(cls, release: str | None = None, dsp: int = 0,
+                    mt: bool = False, arch: str = "mips32") -> "ISA":
+        """A shared (cached) ISA of ``release`` (DSP Module level ``dsp``,
+        the MT Module ``mt``, ``arch`` MIPS32 / MIPS64) — the tables are
+        read once."""
+        key = (release or cls.DEFAULT_RELEASE, dsp, bool(mt), arch)
         if key not in cls._cache:
-            cls._cache[key] = cls(release=key)
+            cls._cache[key] = cls(release=key[0], dsp=dsp, mt=key[2], arch=arch)
         return cls._cache[key]
+
+    def _has(self, e: dict[str, Any]) -> bool:
+        """Row ``e`` exists in this release with these modules."""
+        if self.release not in e.get(self._key, e.get("releases", [self.release])):
+            return False
+        ase = e.get("ase")
+        if ase == "mt":
+            return self.mt
+        return self.DSP_LEVEL.get(ase, 0) <= self.dsp
 
     def in_release(self, name: str) -> bool:
         """Does row ``name`` exist in this ISA's release?"""
-        return self.release in self._by_name[name].get("releases", [self.release])
+        e = self._by_name[name]
+        return self.release in e.get(self._key, e.get("releases", [self.release]))
+
+    def implemented(self, name: str) -> bool:
+        """Does row ``name`` decode on this ISA (its release, and the
+        module its ``ase`` needs)?"""
+        return self._has(self._by_name[name])
 
     # -- decode ------------------------------------------------------------
     def decode(self, word: int | str) -> Decode:
@@ -217,6 +271,10 @@ class ISA:
         Raises :class:`ISADecodeError` (code 201) when no lead entry
         matches the fixed-bit pattern.
         """
+        if type(word) is int:              # (the usual call: a word decoded before)
+            hit = self._decoded.get(word)
+            if hit is not None:
+                return hit
         w = _as_word(word)
         hit = self._decoded.get(w)
         if hit is not None:
@@ -247,7 +305,8 @@ class ISA:
         return self._by_name[name]
 
     def names(self) -> list[str]:
-        """Instruction names in table order (313 rows)."""
+        """Instruction names in table order (every row of the architecture,
+        all releases)."""
         return [e["name"] for e in self._instructions]
 
     def status(self, name: str) -> str:

@@ -60,8 +60,9 @@ reset base is taken when a core starts (GCR_Cx_RESET_EXT_BASE.
 UseExceptionBase = 1: GCR_Cx_RESET_BASE with bits 31:30 forced to 10,
 else 0xBFC00000; the BEV overlay fields are stored, not used); the
 address regions (GCR_REGn) are stored, used only for the L2's CCA
-override / DROP_L2; one VPE per core (no MT ASE); no IOCU.  The GIC is
-:mod:`emips.gic` (GCR_GIC_STATUS.EX = 1, GCR_GIC_BASE enables it).
+override / DROP_L2; MT cores (``vpes``): VP = core * VPEs + VPE; no
+IOCU.  The GIC is :mod:`emips.gic` (GCR_GIC_STATUS.EX = 1, GCR_GIC_BASE
+enables it).
 """
 
 from __future__ import annotations
@@ -184,7 +185,7 @@ class GCR(_Registers):
         return self.read(m, pa - self.base, size)
 
     def store(self, m, pa: int, value: int, size: int) -> None:
-        if not self.regs[GCR_ACCESS] >> m.cpu_num & 1:
+        if not self.regs[GCR_ACCESS] >> m.core_num & 1:
             return                                 # this core may not write the GCRs
         self.write(m, pa - self.base, value, size)
 
@@ -197,9 +198,9 @@ class GCR(_Registers):
         """``(core, offset in its block)`` for a core-local / core-other
         offset; ``(None, off)`` for a global one."""
         if CORE_LOCAL <= off < CORE_LOCAL + 0x2000:
-            return m.cpu_num, off - CORE_LOCAL
+            return m.core_num, off - CORE_LOCAL
         if CORE_OTHER <= off < CORE_OTHER + 0x2000:
-            return (self.core[m.cpu_num][CX_OTHER] >> 16) & 0xFFFF, off - CORE_OTHER
+            return (self.core[m.core_num][CX_OTHER] >> 16) & 0xFFFF, off - CORE_OTHER
         return None, off
 
     def get(self, m, off: int) -> int:
@@ -207,8 +208,8 @@ class GCR(_Registers):
         if core is not None:
             if core >= self.cps.n:
                 return 0
-            if o == CX_CONFIG:
-                return 0                           # PVPE = 0: one VPE, no IOCU
+            if o == CX_CONFIG:                     # PVPE 9:0 = the core's VPEs - 1
+                return self.cps.vpes - 1           # (MD00904 GCR_CL_CONFIG; no IOCU)
             if o == CX_ID:
                 return core
             return self.core[core].get(o, 0)
@@ -291,7 +292,7 @@ class CPC(_Registers):
         return self.read(m, pa - self.base, size)
 
     def store(self, m, pa: int, value: int, size: int) -> None:
-        if not self.regs[CPC_ACCESS] >> m.cpu_num & 1:
+        if not self.regs[CPC_ACCESS] >> m.core_num & 1:
             return
         self.write(m, pa - self.base, value, size)
 
@@ -300,9 +301,9 @@ class CPC(_Registers):
 
     def _core(self, m, off: int) -> tuple[int | None, int]:
         if CORE_LOCAL <= off < CORE_LOCAL + 0x2000:
-            return m.cpu_num, off - CORE_LOCAL
+            return m.core_num, off - CORE_LOCAL
         if CORE_OTHER <= off < CORE_OTHER + 0x2000:
-            return (self.other[m.cpu_num] >> 16) & 0xFF, off - CORE_OTHER
+            return (self.other[m.core_num] >> 16) & 0xFF, off - CORE_OTHER
         return None, off
 
     def get(self, m, off: int) -> int:
@@ -345,20 +346,26 @@ class CPC(_Registers):
 
 
 class CPS:
-    """The cores and the platform.  ``factory(cpu)`` builds a core in its
-    hardware reset state (a Machine with ``cpu=cpu`` on the shared
-    physical memory; the CPS puts the GCR and the CPC first on its bus);
-    ``on_start(cpu, machine)`` is called when the CPC / GCR (re)start a
-    core.  At power-on core 0 runs and the others are powered down."""
+    """The cores and the platform.  ``factory(cps, core)`` builds a core in
+    its hardware reset state: a Machine on the shared physical memory, or
+    — an MT core (the 1004K / interAptiv, ``vpes`` = 2) — the list of its
+    VPEs' Machines (VPE n of core c: ``cpu = c * vpes + n``, the GIC's
+    processor number, MD00904 Table 9.1); the CPS puts the GCR and the CPC
+    first on their buses.  ``on_start(core, machine)`` is called when the
+    CPC / GCR (re)start a core (with its first VPE).  At power-on core 0
+    runs and the others are powered down."""
 
     def __init__(self, n: int, factory: Callable[["CPS", int], Any],
                  on_start: Callable[[int, Any], None] | None = None, *,
                  l2=None, l3=None, ecc: bool = False, hardware_init: bool = False,
-                 iocu: bool = False) -> None:
+                 iocu: bool = False, vpes: int = 1) -> None:
         from .coherence import CoherenceManager
         if not 1 <= n <= 4:
             raise ValueError(f"a CPS has 1 to 4 cores, not {n}")
         self.n = n
+        #: VPEs per core (the MT Module) and the GIC's processors (VPs)
+        self.vpes = vpes
+        self.nvp = n * vpes
         #: an I/O Coherence Unit (GCR_CONFIG.NUMIOCU = 1): the I/O masters
         #: behind it (the Malta's PCI DMA) make coherent requests
         self.iocu = iocu
@@ -377,8 +384,10 @@ class CPS:
         self.gic = GIC(self)
         #: the platform devices every core's bus has
         self.devices: list = [self.gcr, self.cpc, self.gic]
-        #: the cores (a powered-down core keeps its last Machine)
+        #: the cores (a powered-down core keeps its last Machine): the
+        #: Machine of each core's VPE 0, and every VPE (the GIC's VPs)
         self.cores: list = []
+        self.vps: list = [None] * self.nvp
         #: the sequencer state per core: SEQ_D0, SEQ_U2 (powered, clock off),
         #: SEQ_D2 (clock off from execution, state kept) or SEQ_U5 (executing; it
         #: reads U6 while the core is in the coherence domain)
@@ -392,16 +401,29 @@ class CPS:
         #: subside")
         self.pending: list[int | None] = [None] * n
         for i in range(n):
-            self.cores.append(self._build(i))
+            self.cores.append(self._build(i)[0])
 
-    def _build(self, core: int) -> Any:
+    def _build(self, core: int) -> list:
         """A core in its reset state: ``factory(cps, core)`` builds the
-        Machine (its caches attached to :attr:`cm` first)."""
-        m = self.factory(self, core)
-        m.join_system(self)
-        m.devices[:0] = self.devices
-        self.gic.attach(m)
-        return m
+        Machine(s) (its caches attached to :attr:`cm` first); returns its
+        VPEs."""
+        built = self.factory(self, core)
+        ms = list(built) if isinstance(built, (list, tuple)) else [built]
+        for k, m in enumerate(ms):
+            m.core_num = core
+            m.join_system(self)
+            m.devices[:0] = self.devices
+            self.vps[core * self.vpes + k] = m
+        for m in ms:
+            self.gic.attach(m)
+        return ms
+
+    def vps_of(self, core: int) -> list:
+        """The Machines of ``core``'s VPEs."""
+        return self.vps[core * self.vpes:(core + 1) * self.vpes]
+
+    def vp_core(self, v: int) -> int:
+        return v // self.vpes
 
     # -- power ---------------------------------------------------------------------------
 
@@ -422,21 +444,24 @@ class CPS:
     def start(self, core: int, pc: int | None = None) -> Any:
         """Reset ``core`` and let it run: a fresh core (the hardware reset
         state) at its reset vector GCR_Cx_RESET_BASE, non-coherent."""
-        m = self._build(core)
-        m.clock_offset = self.clock - m.cycles     # its cycles count from now
+        ms = self._build(core)
         regs = self.gcr.core[core]
         if regs[CX_RESET_EXT_BASE] & EXT_UEB:     # SI_UseExceptionBase (Table 11.65)
             base = (regs[CX_RESET_BASE] & 0x3FFFF000) | 0x80000000
         else:
             base = RESET_VECTOR
-        m.bev_base = (base + 0x200) & M32          # its BEV vectors follow it
-        m.pc = (pc if pc is not None else base) & M32
+        for m in ms:
+            m.clock_offset = self.clock - m.cycles     # its cycles count from now
+            m.bev_base = (base + 0x200) & M32          # its BEV vectors follow it
+            m.pc = (pc if pc is not None else base) & M32
+        m = ms[0]
         self.cores[core] = m
         self.state[core] = SEQ_U5
         self.gic.reattach(core)
         self.pending[core] = None
-        if self.on_start is not None:
-            self.on_start(core, m)
+        if self.on_start is not None:           # each VPE (VP core * vpes + n)
+            for k, vm in enumerate(ms):
+                self.on_start(core * self.vpes + k, vm)
         return m
 
     def command(self, core: int, cmd: int) -> None:
@@ -533,7 +558,7 @@ class CPS:
                   and not c.coherent(cca))
         if not hidden:
             block = pa & ~31
-            for other in self.cores:
+            for other in self.vps:
                 if other is not m and other.lr_valid and other.lr_pa is not None \
                         and other.lr_pa & ~31 == block:
                     other.lr_valid = False

@@ -1,0 +1,7 @@
+# Lab 3 — Remove the stalls: the checks of a solution
+# (python3 -m emips check YOUR_PROGRAM.asm --checks docs/guide/labs/lab3_sum.check;
+#  next to lab3_sum.asm, check lab3_sum.asm finds it by itself)
+eMIPS: --pipeline
+check: output is "36"          (it computes the same sum)
+check: stalls == 0             (nothing waits)
+check: cycles <= 53            (and the delay slot does useful work)

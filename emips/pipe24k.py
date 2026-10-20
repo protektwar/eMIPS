@@ -61,12 +61,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import cp0 as C
-from .disasm import disassemble
+from . import dsp as DSP
+from .disasm import text_at
 from .exceptions import FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
-from .pipeline import (_HAZARD_EVENTS, _MEM_EVENTS, CycleTrace, Info, StageView,
-                       _pop_run, _rname, analyze, enter, fetch_compressed, mark_slot,
-                       stage_word)
+from .pipeline import (_HAZARD_EVENTS, _MEM_EVENTS, CycleTrace, History, Info, StageView,
+                       _pop_run, _rname, analyze, enter, fetch_compressed,
+                       is_accumulator, mark_slot, stage_word)
 from .sim import NULLIFY, Machine, _Arch
 from .syntax import kind_of, operand_spec
 from .timing import MEMORY_TIMING
@@ -205,8 +206,9 @@ def hazard_spacing(h: Hazard, key: Any, consumer: str) -> int:
         return 3 if consumer == "lsu" else 2       # TLBWR -> load / store 3, TLBP / TLBR 2
     if consumer == "int" and h.src == _COMPARE and key == C.CAUSE:
         return 4                                   # the timer interrupt still seen
-    if consumer == "cop" and key == C.STATUS:
-        return 4                                   # Status.CU / FR -> coprocessor
+    if consumer in ("cop", "dsp") and key == C.STATUS:
+        return 4                                   # Status.CU / FR -> coprocessor; Status.MX
+        #                                            -> DSP (MD00622 Table 2.10)
     if consumer == "lsu" and key in (_ENTRYHI, C.STATUS, C.DEBUG):
         return 3                                   # EntryHi.ASID, Status.ERL, Debug.LSNM
                                                    # (EJTAG Table 2.6) -> load / store
@@ -217,10 +219,16 @@ def hazard_spacing(h: Hazard, key: Any, consumer: str) -> int:
     return 2                                       # MTC0 -> MFC0, ERET, EI / DI, any other
 
 
+#: the DSP Module's ase values (emips.dsp)
+_DSP_ASE = ("dsp", "dspr2")
+
+
 def consumer_class(dec: Decode) -> str:
     fam, name = dec.entry["family"], dec.name
     if name in ("RDPGPR", "WRPGPR"):
         return "srs"
+    if dec.entry.get("ase") in ("dsp", "dspr2"):
+        return "dsp"                             # the DSP Module: Status.MX
     from .sim import FPU_FAMILIES
     if fam in FPU_FAMILIES or fam == "cop2" or name in (
             "MOVF", "MOVT", "PREFX", "LWC1", "LDC1", "SWC1", "SDC1", "LWXC1", "LDXC1",
@@ -252,9 +260,30 @@ class Timing24:
     writes: frozenset
     ready: int                  # GPR / FPR results: EX cycle + ready
     kind: str                   # "alu", "load", "mfc0", "mdu", "div", "fpu"
+    #: the results that come at another time than ``ready`` (the DSP
+    #: Module: an EXTR's GPR is late, its DSPControl is not)
+    ready_by: dict = field(default_factory=dict)
 
 
 def timing24(dec: Decode, info: Info) -> Timing24:
+    """The 24K timing of an instruction (remembered for the MIPS32 rows: a
+    function of the word, the row and its :class:`Info` only)."""
+    e = dec.entry
+    if e.get("isa") in ("mips16e", "micromips"):
+        return _timing24(dec, info)
+    key = (dec.word, e["name"], info)
+    hit = _TIMED.get(key)
+    if hit is None:
+        if len(_TIMED) >= 1 << 16:
+            _TIMED.clear()
+        hit = _TIMED[key] = _timing24(dec, info)
+    return hit
+
+
+_TIMED: dict[tuple, Timing24] = {}
+
+
+def _timing24(dec: Decode, info: Info) -> Timing24:
     e = dec.entry
     name, fam = e["name"], e["family"]
     w = dec.word
@@ -275,6 +304,8 @@ def timing24(dec: Decode, info: Info) -> Timing24:
     at_ex = frozenset(reads - at_ag)
     fpu = fam.startswith("fpu") or fam in ("cop1_move",) or name in (
         "LWC1", "LDC1", "LDXC1", "LUXC1", "LWXC1")
+    if e.get("ase") in ("dsp", "dspr2"):
+        return _timing_dsp(name, at_ag, at_ex, info)
     if name in _OTHER:
         ready, kind = 3, "mfc0"
     elif name in _MDU_GPR:
@@ -292,6 +323,35 @@ def timing24(dec: Decode, info: Info) -> Timing24:
     else:
         ready, kind = 1, "alu"
     return Timing24(at_ag, at_ex, info.writes, ready, kind)
+
+
+def _timing_dsp(name: str, at_ag, at_ex, info: Info) -> Timing24:
+    """The DSP Module on the 24K model: the 24K family's delays, MD00622
+    (1004K) Table 2.5 — a GPR from a multiply or an accumulator read (MUL*,
+    EXT*, MFHI / MFLO) 4 cycles, from any other DSP instruction 1; the
+    accumulators and DSPControl as the MDU's HI / LO (the pair delays:
+    :meth:`Pipeline24K._waits_for`)."""
+    other = {r: 1 for r in info.writes if r == "dspctl" or is_accumulator(r)}
+    if name in DSP.GPR_MULTIPLIES or name in DSP.ACC_READERS or \
+            name in ("MFHI@DSP", "MFLO@DSP"):
+        return Timing24(at_ag, at_ex, info.writes, 5, "mdu", other)
+    if info.mdu_cycles or name in DSP.ACC_SHIFTS or name in ("MTHI@DSP", "MTLO@DSP"):
+        return Timing24(at_ag, at_ex, info.writes, 1, "mdu", other)
+    if info.ready == "MEM":                      # LWX / LHX / LBUX: loads
+        return Timing24(at_ag, at_ex, info.writes, 2, "load", other)
+    return Timing24(at_ag, at_ex, info.writes, 2, "alu", other)
+
+
+def _dsp_pair(pname: str, name: str) -> int:
+    """MD00622 Table 2.5: the extra delay of an accumulator consumer
+    ``name`` after the accumulator writer ``pname`` (same accumulator)."""
+    if name in DSP.ACC_READERS or name in DSP.ACC_SHIFTS:
+        return 3                                 # EXT*, SHILO*, MTHLIP: 3
+    if name in DSP.MACS or name in _MADD:
+        if pname in DSP.SATURATING_MACS or pname in DSP.ACC_SHIFTS or pname in (
+                "MTHI@DSP", "MTLO@DSP", "MTHI", "MTLO"):
+            return 1                             # *_SA, HI / LO writes -> MAC: 1
+    return 0
 
 
 # ------------------------------------------------------------------ in flight
@@ -331,6 +391,9 @@ class Slot24:
     pdt: Any = None
     imiss: bool = False
     mispredicted: bool = False
+    #: the next instruction of its stream (its delay slot / forbidden
+    #: slot), once fetched — not seq + 1 when several TCs fetch (the 34K)
+    next_seq: int | None = None
     #: the stage of every cycle (the chart)
     timeline: dict = field(default_factory=dict)
     #: MIPS16e (as emips.pipeline.Slot): the ISA mode, size, compressed
@@ -342,6 +405,8 @@ class Slot24:
     slot_raw: int | None = None
     decode_error: ISADecodeError | None = None
     recode: int = 0
+    #: its last stage view (_sv)
+    view: Any = None
 
     @property
     def addr(self) -> int:
@@ -357,10 +422,15 @@ class Slot24:
 
 
 def _sv(s: Slot24 | None) -> StageView | None:
+    """The stage view of a slot (the same object while what it shows stays:
+    a slot is in a stage view every cycle it is in flight)."""
     if s is None:
         return None
-    return StageView(s.seq, s.pc, s.text, None, s.fetch_cache, 0, s.mem_wait, s.fetch_tlb,
-                     *stage_word(s))
+    v = s.view
+    if v is None or v.mem_wait != s.mem_wait or v.text is not s.text:
+        v = s.view = StageView(s.seq, s.pc, s.text, None, s.fetch_cache, 0, s.mem_wait,
+                               s.fetch_tlb, *stage_word(s))
+    return v
 
 
 # ------------------------------------------------------------------ the pipeline
@@ -404,7 +474,7 @@ class Pipeline24K:
         self.cycles = 0
         self.retired = 0
         self.stalls: dict[str, int] = {}
-        self.history: list[CycleTrace] = []
+        self.history = History()
         self._seq = 0
         #: the fetch unit (fetch_isa: the ISA mode there, MIPS16e = 1)
         self.fetch_pc = machine.pc
@@ -447,7 +517,7 @@ class Pipeline24K:
         self.rps_top = 0
         #: prediction counters (the views; the 24K's events are in emips.perf)
         self.predicted = self.mispredicts = 0
-        self.slots: list[Slot24] = []      # every slot (the chart)
+        self.slots = History(History.FIRST, 2 * History.LAST)   # the slots (the chart)
         self._fetch_notes: list[str] = []
 
     # -- predictors ------------------------------------------------------------------
@@ -676,7 +746,7 @@ class Pipeline24K:
             except ISADecodeError:
                 text = f".word 0x{word:08x}"
             else:
-                text = disassemble(word, a, isa=m.isa)
+                text = text_at(word, a, m.isa)
                 info = analyze(dec)
                 t24 = timing24(dec, info)
                 cti = info.control
@@ -691,6 +761,8 @@ class Pipeline24K:
 
     def _link(self, s: Slot24) -> None:
         last = self.last_fetched
+        if last is not None:
+            last.next_seq = s.seq
         if last is not None and last.cti and not last.compact:
             mark_slot(last, s)
         self.last_fetched = s
@@ -856,7 +928,13 @@ class Pipeline24K:
                 continue
             ready, p = entry
             pname = p.dec.name
-            if pname in ("MTHI", "MTLO") and name in _MADD:
+            if is_accumulator(r) and (s.dec.entry.get("ase") in _DSP_ASE
+                                         or p.dec.entry.get("ase") in _DSP_ASE):
+                ready += _dsp_pair(pname, name)  # the DSP Module: MD00622 Table 2.5
+            elif r == "dspctl" and name == "RDDSP" and (pname in DSP.MACS
+                                                        or pname in DSP.GPR_MULTIPLIES):
+                ready += 4                       # ouflag from the MDU's A stage (2.4.2)
+            elif pname in ("MTHI", "MTLO") and name in _MADD:
                 ready += 1                       # Table 2.2: MTHI / MTLO -> MADD 1
             elif pname.startswith("C.") and name.startswith(("MOVF.", "MOVT.")):
                 ready -= 1                       # Table 3.33: C.cond -> MOVF.fmt 1
@@ -921,7 +999,9 @@ class Pipeline24K:
 
         # AG -> EX: operands, interlocks, a pending exception older than it
         entered = None
-        frozen = any(x is not None and x.exc is not None for x in (st["EX"], st["MS"], st["ER"]))
+        x, y, z = st["EX"], st["MS"], st["ER"]
+        frozen = (x is not None and x.exc is not None or y is not None and y.exc is not None
+                  or z is not None and z.exc is not None)
         ag = st["AG"]
         if ag is not None and not held and st["EX"] is None and not frozen:
             wait = self._waits_for(ag, ag.t24.at_ex if ag.t24 else (), t)
@@ -968,23 +1048,25 @@ class Pipeline24K:
             s = st[name]
             if s is not None:
                 s.timeline[t] = name
+        first: dict[str, Slot24] = {}            # the oldest in IS / IR / IK / IT
         for s in self.queue:
             if s.isa:                                # MIPS16e: IR / IK (2.1.3, 2.1.4)
-                s.timeline[t] = ("IF" if t == s.fetched else "IS" if t < s.recode else
-                                 "IR" if t == s.recode else "IK" if t == s.recode + 1
-                                 else "IT")
+                where = ("IF" if t == s.fetched else "IS" if t < s.recode else
+                         "IR" if t == s.recode else "IK" if t == s.recode + 1 else "IT")
             elif t < s.avail - 1:
-                s.timeline[t] = "IF"
+                where = "IF"
             elif t == s.avail - 1:
-                s.timeline[t] = "IS"
+                where = "IS"
             else:
-                s.timeline[t] = "IT"
-        trace.stages = {n: _sv(st[n]) for n in BACK}
-        front = [s for s in self.queue]
-        trace.stages["IF"] = _sv(fetched[0]) if fetched else None
+                where = "IT"
+            s.timeline[t] = where
+            if where not in first:
+                first[where] = s
+        stages = {n: _sv(st[n]) for n in BACK}
+        stages["IF"] = _sv(fetched[0]) if fetched else None
         for n in ("IS", "IR", "IK", "IT"):
-            trace.stages[n] = _sv(next((s for s in front if s.timeline.get(t) == n), None))
-        trace.stages = {n: trace.stages.get(n) for n in STAGES16}
+            stages[n] = _sv(first.get(n))
+        trace.stages = {n: stages.get(n) for n in STAGES16}
         if stall is None and st["RF"] is None and self.fetching:
             stall = ("fetch", "the fetch unit has no instruction for RF")
         if stall is not None:
@@ -1149,8 +1231,8 @@ class Pipeline24K:
         elif name == "TLBR":
             self.tlb_until = t + 2
         for r in s.t24.writes:
-            s.ready_at[r] = t + ready
-            self.scoreboard[r] = (t + ready, s)
+            s.ready_at[r] = t + s.t24.ready_by.get(r, ready)
+            self.scoreboard[r] = (s.ready_at[r], s)
         self._memory_time(s, ev)
         if m.halted:                                     # exit service
             self.fetching = False
@@ -1171,20 +1253,21 @@ class Pipeline24K:
     def _resolve(self, s: Slot24, res, t: int, ev: list[str]) -> None:
         """A branch / jump executed in EX: was the fetch right?"""
         m = self.m
+        nxt = s.next_seq
         # the delay slot not fetched yet: it comes before the new target
-        slot_missing = not s.compact and self._find(s.seq + 1) is None
+        slot_missing = not s.compact and (nxt is None or self._find(nxt) is None)
         if s.compact:
             if m._redirect is not None:
                 taken, actual = True, m._redirect & M32
             else:
                 taken, actual = False, s.fall
                 if m._forbidden:
-                    self._mark(s.seq + 1, "forbidden")
+                    self._mark(nxt, "forbidden")
             m._redirect = None
             m._forbidden = False
         elif res == NULLIFY:
             taken, actual = False, (s.pc + 8) & M32
-            self._mark(s.seq + 1, "kill")
+            self._mark(nxt, "kill")
             ev.append(f"{s.text}: not taken, the delay slot is killed")
         else:
             taken = res is not None
@@ -1192,7 +1275,7 @@ class Pipeline24K:
         if s.pred.startswith("BHT") or s.pred.endswith("(Config7.BHT)"):
             self._bht_update(s.pc, taken)
         word = "taken" if taken else "not taken"
-        keep = s.seq if s.compact else s.seq + 1
+        keep = s.seq if s.compact or nxt is None else nxt
         if s.pred_next is None:                          # the fetch was waiting
             ev.append(f"{s.text}: {word} -> fetch 0x{actual:08x} (it was waiting: "
                       f"{s.pred})")
@@ -1218,13 +1301,15 @@ class Pipeline24K:
         self._redirect(actual, t + REDIRECT_DELAY, after_slot=slot_missing)
         self.recovering = keep
 
-    def _find(self, seq: int) -> Slot24 | None:
+    def _find(self, seq: int | None) -> Slot24 | None:
+        if seq is None:
+            return None
         for s in list(self.stage.values()) + self.queue:
             if s is not None and s.seq == seq:
                 return s
         return None
 
-    def _mark(self, seq: int, what: str) -> None:
+    def _mark(self, seq: int | None, what: str) -> None:
         """Mark the next instruction (a delay / forbidden slot), fetched or not."""
         s = self._find(seq)
         if s is None:

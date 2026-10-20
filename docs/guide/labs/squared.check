@@ -1,0 +1,13 @@
+# A teacher's checks for the example "square a number" (File → Examples →
+# Console input / output: emips/gui/examples/hello_input.asm) — three runs,
+# three inputs (python3 -m emips check PROGRAM --checks squared.check)
+run: seven
+input: 7
+check: output contains "squared = 49"
+run: a negative number
+input: -3
+check: output contains "squared = 9"   (the square of a negative is positive)
+run: zero
+input: 0
+check: output matches "^Enter a number: "    (it asks first)
+check: output contains "squared = 0"

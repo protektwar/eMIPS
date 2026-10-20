@@ -1,0 +1,4 @@
+# Lab 21 — Priorities in hardware: the checks of a nested vector-2 handler
+# (Run → Check, or python3 -m emips check docs/guide/labs/eic.asm)
+eMIPS: --cores 2
+check: output is "0x000000a2 3 3"   (all three timer ticks came while the vector-2 handler ran)

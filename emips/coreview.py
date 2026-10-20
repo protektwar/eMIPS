@@ -37,11 +37,21 @@ class BufferRow:
     pred: str                   # a branch / jump: how it was predicted
 
 
+def _queues(p: Pipeline24K) -> list:
+    """The instruction buffers: one, or the 34K's one per TC (its
+    instructions carry their TC in their text)."""
+    fronts = getattr(p, "fronts", None)
+    if fronts is None:
+        return list(p.queue)
+    return sorted((s for tc in p.p.tcs for s in p._front(tc).queue), key=lambda s: s.seq)
+
+
 def buffer_rows(p: Pipeline24K) -> list[BufferRow]:
-    """The fetched instructions not in RF yet, oldest first."""
+    """The fetched instructions not in RF yet, oldest first (the 34K:
+    every TC's)."""
     t = p.cycles
     out = []
-    for s in p.queue:
+    for s in _queues(p):
         where = s.timeline.get(t, "IT")
         out.append(BufferRow(s.seq, s.pc, s.text, where, max(0, s.avail - t - 1),
                              s.in_slot, s.pred))
@@ -59,8 +69,19 @@ def rps_rows(p: Pipeline24K) -> list[tuple[int, int, bool]]:
 
 
 def fetch_state(p: Pipeline24K) -> str:
-    """What the fetch unit is doing now."""
-    t = p.cycles + 1
+    """What the fetch unit is doing now (the 34K: each TC's)."""
+    fronts = getattr(p, "fronts", None)
+    if fronts is not None:
+        parts = []
+        for tc in p.p.tcs:
+            f = p._front(tc)
+            parts.append(f"TC{tc.n}: " + _fetch_text(f, p.cycles + 1, f.fetch_isa,
+                                                      len(f.queue)))
+        return "; ".join(parts)
+    return _fetch_text(p, p.cycles + 1, p.fetch_isa, len(p.queue))
+
+
+def _fetch_text(p, t: int, isa: int, queued: int) -> str:
     if not p.fetching:
         return "stopped (the program is ending)"
     if p.blocked:
@@ -70,11 +91,11 @@ def fetch_state(p: Pipeline24K) -> str:
         return ("fetching the delay slot, then waiting for the jump" if what == "wait" else
                 f"fetching the delay slot, then 0x{target:08x} (from cycle {at})")
     m16 = " (MIPS16e: a 64-bit bundle every other cycle, recoded in IR / IK)" \
-        if p.fetch_isa else ""
+        if isa else ""
     if p.fetch_at > t:
         return (f"waiting until cycle {p.fetch_at} (a miss, a redirect"
                 f"{' or the other cycle' if m16 else ''}), then 0x{p.fetch_pc:08x}{m16}")
-    if len(p.queue) > IB_ENTRIES + 2:
+    if queued > IB_ENTRIES + 2:
         return "the instruction buffer is full"
     return f"fetching 0x{p.fetch_pc:08x}{m16}"
 

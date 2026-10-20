@@ -166,6 +166,10 @@ class MmioConsole:
             return
         if self.owner is not None:
             machine = self.owner
+        lines = machine.irq_lines               # (every tick: usually nothing to change)
+        if (bool(lines >> self.RX_IRQ & 1) == bool(self.rx_ready and self.rx_ie)
+                and bool(lines >> self.TX_IRQ & 1) == bool(self.tx_ready and self.tx_ie)):
+            return
         for line, on in ((self.RX_IRQ, self.rx_ready and self.rx_ie),
                          (self.TX_IRQ, self.tx_ready and self.tx_ie)):
             if on:

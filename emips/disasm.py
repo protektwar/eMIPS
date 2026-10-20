@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from .isa import ISA, ISADecodeError
-from .syntax import KINDS, gpr_name, kind_of, operand_spec
+from .syntax import DEFAULTS, KINDS, gpr_name, kind_of, operand_spec
 
 M32 = 0xFFFFFFFF
 
@@ -57,7 +57,7 @@ def operand_text(kind: str, word: int, pc: int, *, abi: bool = True,
         return g(KINDS[kind].fields[0][0])
     if kind in ("fs", "ft", "fd", "fr"):
         return f"$f{_bits(word, KINDS[kind].fields[0][0], 5)}"
-    if kind in ("c0rd", "fcr", "hwr", "c2rt"):
+    if kind in ("c0rd", "fcr", "hwr", "c2rt", "trt", "trd"):
         return f"${_bits(word, KINDS[kind].fields[0][0], 5)}"
     if kind in ("sa", "sel", "hint", "hint11", "stype", "tcode", "code20",
                 "code19", "sel6"):
@@ -97,6 +97,19 @@ def operand_text(kind: str, word: int, pc: int, *, abi: bool = True,
         return f"{_sx(word & 0x7FF, 11)}({g(11)})"
     if kind == "jt":
         return _addr(jump_target(word, pc), symbols)
+    if kind in ("ac", "ac21"):
+        return f"$ac{_bits(word, KINDS[kind].fields[0][0], 2)}"
+    if kind in ("dsa3", "dsa4", "dsa5", "dsize", "dsa", "bp2", "u1", "h1", "rx"):
+        lsb, width = KINDS[kind].fields[0]
+        return str(_bits(word, lsb, width))
+    if kind in ("rmask", "wmask", "dimm8"):
+        lsb, width = KINDS[kind].fields[0]
+        v = _bits(word, lsb, width)
+        return f"0x{v:x}" if v > 9 else str(v)
+    if kind == "dimm10":
+        return str(_sx(_bits(word, 16, 10), 10))
+    if kind == "shilo":
+        return str(_sx(_bits(word, 20, 6), 6))
     if kind in ("cc18", "cc8"):
         return f"$fcc{_bits(word, KINDS[kind].fields[0][0], 3)}"
     if kind == "c2cc":
@@ -110,7 +123,32 @@ def operand_text(kind: str, word: int, pc: int, *, abi: bool = True,
     if kind == "pos_ins":
         pos, msb = _bits(word, 6, 5), _bits(word, 11, 5)
         return f"{pos}, {msb - pos + 1}"
+    if kind.startswith("pos_d"):                # MIPS64 DEXT ... DINSU: pos, size
+        pos, size = mips64_field(kind, _bits(word, 6, 5), _bits(word, 11, 5))
+        return f"{pos}, {size}"
+    if kind == "bp3":
+        return str(_bits(word, 6, 3))
+    if kind == "pc18":                          # LDPC: (PC & ~7) + offset * 8
+        return _addr(((pc & ~7) + (_sx(word & 0x3FFFF, 18) << 3)) & M32, symbols)
+    if kind == "rs2":                           # DAHI / DATI: rs, written twice
+        return g(21)
     raise KeyError(kind)
+
+
+def mips64_field(kind: str, lsb: int, high: int) -> tuple[int, int]:
+    """(pos, size) of a MIPS64 DEXT / DEXTM / DEXTU / DINS / DINSM / DINSU
+    from its lsb and msbd / msb fields (MIPS64 Vol. II)."""
+    if kind == "pos_dext":
+        return lsb, high + 1
+    if kind == "pos_dextm":
+        return lsb, high + 33
+    if kind == "pos_dextu":
+        return lsb + 32, high + 1
+    if kind == "pos_dins":
+        return lsb, high - lsb + 1
+    if kind == "pos_dinsm":
+        return lsb, high + 32 - lsb + 1
+    return lsb + 32, high - lsb + 1             # pos_dinsu
 
 
 def _is_default(kind: str, name: str, word: int) -> bool:
@@ -119,18 +157,21 @@ def _is_default(kind: str, name: str, word: int) -> bool:
     if kind == "bcode":
         return _bits(word, 6, 20) == 0
     lsb, width = KINDS[kind].fields[0]
-    return _bits(word, lsb, width) == 0
+    return _bits(word, lsb, width) == DEFAULTS.get(kind, 0)
 
 
 def disassemble(word: int, pc: int = 0, *, isa: ISA | None = None,
                 abi: bool = True, symbols: Mapping[int, str] | None = None,
-                style: str = "mars", release: str | None = None) -> str:
+                style: str = "mars", release: str | None = None,
+                dsp: int = 0, mt: bool = False) -> str:
     """Assembly text of one instruction word at address ``pc``.
 
     A word that does not decode is printed as ``.word 0x........``.
-    ``symbols`` maps addresses to label names for branch / jump targets.
+    ``symbols`` maps addresses to label names for branch / jump targets;
+    ``dsp`` = the DSP Module level whose instructions decode, ``mt`` = the
+    MT Module's (``isa``'s when given).
     """
-    isa = isa or ISA.for_release(release)
+    isa = isa or ISA.for_release(release, dsp, mt)
     try:
         dec = isa.decode(word & M32)
     except ISADecodeError:
@@ -143,10 +184,27 @@ def disassemble(word: int, pc: int = 0, *, isa: ISA | None = None,
                 style == "gas" and name.startswith(("MOVF", "MOVT"))):
             continue                       # GNU as wants movf/movt's cc
         parts.append(operand_text(kind, word, pc, abi=abi, symbols=symbols))
-    if style == "gas" and name in ("DIV", "DIVU"):
+    if style == "gas" and name in ("DIV", "DIVU", "DDIV", "DDIVU"):
         parts.insert(0, gpr_name(0, abi))
     mnemonic = dec.entry.get("mnemonic", name).lower()
     return f"{mnemonic} {', '.join(parts)}" if parts else mnemonic
+
+
+#: (word, pc, ISA) -> its text (text_at)
+_TEXTS: dict[tuple, str] = {}
+
+
+def text_at(word: int, pc: int, isa: ISA) -> str:
+    """``disassemble(word, pc, isa=isa)``, remembered: a pure function of
+    the three, asked for every instruction the trace and the pipelines
+    run (loops ask for the same ones again)."""
+    key = (word, pc, isa)
+    text = _TEXTS.get(key)
+    if text is None:
+        if len(_TEXTS) >= 1 << 16:
+            _TEXTS.clear()
+        text = _TEXTS[key] = disassemble(word, pc, isa=isa)
+    return text
 
 
 def disassemble_range(machine, start: int, count: int, **kw) -> list[tuple[int, int, str]]:
