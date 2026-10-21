@@ -36,7 +36,7 @@ from .cache import Geometry
 COMPANY_MIPS = 1
 #: the settings a preset decides (Options fields) and the release
 FIELDS = ("release", "compressed", "fpu", "dsp", "mt", "mmu", "icache", "dcache", "l2", "l3",
-          "cores", "shadow_sets", "model")
+          "cores", "vps", "shadow_sets", "model")
 
 
 def _pow2(n: int) -> bool:
@@ -143,6 +143,13 @@ class Core:
     missing: tuple[str, ...] = ()
     #: what eMIPS models differently on this core
     notes: tuple[str, ...] = field(default=())
+    #: the architecture: "mips32", or "mips64" (a 64-bit core, PLAN M22)
+    arch: str = "mips32"
+    #: Release 6 virtual processors a core it may have (emips.vp)
+    vps: tuple[int, ...] = (1,)
+    #: its Coherence Manager with more than one core: "cm2" (the 1004K /
+    #: interAptiv / P5600 / P6600 generation) or "cm3" (the I6400's)
+    cm: str = "cm2"
 
     @property
     def prid(self) -> int:
@@ -194,6 +201,9 @@ class Core:
                     + ("one TC per VPE" if one else f"{tcs[0]}-{tcs[-1]} TCs"))
         if name == "mmu":
             return ", ".join(self.mmu)
+        if name == "vps":
+            return ("one VP a core (no Release 6 multi-threading)" if self.vps == (1,)
+                    else "/".join(map(str, self.vps)) + " VPs a core (Release 6, a CM3)")
         return ", ".join(str(v) for v in getattr(self, name))
 
 
@@ -216,7 +226,37 @@ _24K_MISSING = ("CorExtend (UDI)",)
 #: the 34K's MT build options (MD00534 1.1: 1 or 2 VPEs, 1-9 TCs)
 _MT_SPECS = tuple(f"{v}:{t}" for v in (1, 2) for t in range(v, 10))
 _CPS_NOTE = ("eMIPS builds a CPS (the CM, CPC, GIC) only with 2 or more cores, and at "
-             "most 4",)
+             "most 6",)
+
+
+#: the 5K's caches (MD00109 Table 6: 4 / 8 / 16 KB ways, direct-mapped to
+#: 4-way, at most 64 KB, 32-byte lines)
+_L1_5K = CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(32,), way_kb=(4, 16), max_kb=64)
+#: the I6400's L1 (MD01196 3.4: 32 or 64 KB, 4-way, 64-byte lines)
+_L1_I6400 = CacheChoice(sizes=(32, 64), ways=(4,), lines=(64,))
+
+
+def _5k(name: str, title: str, fpu: bool) -> Core:
+    """The MIPS64 5Kc / 5Kf (MD00109: the 5Kf datasheet; the 5Kc is the 5K
+    without an FPU — GCC's 5k.md)."""
+    return Core(
+        name, title, "R1", 0x81, ("none",), (fpu,), ("none",), ("none",),
+        ("tlb:16", "tlb:32", "tlb:48", "fixed"), _L1_5K, _L1_5K, None, (1,), (1,),
+        ("5-stage",),
+        build=dict(compressed="none", fpu=fpu, dsp="none", mt="none", mmu="tlb:32",
+                   icache="32K:4:32", dcache="32K:4:32", l2="none", l3="none", cores=1,
+                   shadow_sets=1, model="5-stage"),
+        source="MD00109 (the 5Kf datasheet 01.03: MIPS64 Release 1, a 16 / 32 / 48 "
+               "dual-entry JTLB or the FMT, caches 0-64 KB of 4-16 KB ways, direct-mapped "
+               "to 4-way, 32-byte lines: Table 6; DMULT 9 / DDIV 67 cycles: Table 3), "
+               "GCC's 5k.md (the 5Kc: no FPU), QEMU's 5Kc / 5Kf models (PRId 0x81)",
+        missing=("the 5K's six-stage I D R E M W pipeline (eMIPS: the textbook 5-stage)"
+                 + (" and the 5Kf's dual issue of FPU and integer instructions" if fpu
+                    else ""),
+                 "42-bit virtual / 36-bit physical addresses (eMIPS: 40 / 32)",
+                 "the write-through, write-allocate cache attribute (CCA 1)",
+                 "the COP2 interface", "MDMX"),
+        arch="mips64")
 
 
 def _24k(name: str, title: str, fpu: bool) -> Core:
@@ -315,7 +355,7 @@ CORES: dict[str, Core] = {c.name: c for c in (
          ("ftlb:64:128x4+sc", "ftlb:64:128x4+sc+pw", "tlb:64+sc", "tlb:64+sc+pw"),
          CacheChoice(sizes=(32, 64)), CacheChoice(sizes=(32, 64)),
          CacheChoice(sizes=(512, 1024, 2048, 4096, 8192), ways=(8,), lines=(32, 64)),
-         (1, 2, 3, 4), (1,), ("5-stage", "24k"),
+         (1, 2, 3, 4, 5, 6), (1,), ("5-stage", "24k"),
          build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:64:128x4+sc",
                     icache="32K:4:32",
                     dcache="32K:4:32", l2="512K:8:32", l3="none", cores=2, shadow_sets=1,
@@ -373,6 +413,72 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "32-entry TLB, caches 0-64 KB 1-4 way 16-byte lines, FP = 0, the DSP "
                 "Module Revision 2 build-time configurable: 3.2)",
          missing=("the MCU ASE",)),
+    # -- MIPS64 (PLAN M22 phase 5c) --
+    _5k("5kc", "MIPS64 5Kc", fpu=False),
+    _5k("5kf", "MIPS64 5Kf", fpu=True),
+    Core("20kc", "MIPS64 20Kc", "R1", 0x82, ("none",), (True,), ("none",), ("none",),
+         ("tlb:48",), CacheChoice(sizes=(32,), lines=(32,)), CacheChoice(sizes=(32,), lines=(32,)),
+         None, (1,), (1,), ("5-stage",),
+         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="tlb:48",
+                    icache="32K:4:32", dcache="32K:4:32", l2="none", l3="none", cores=1,
+                    shadow_sets=1, model="5-stage"),
+         source="QEMU's 20Kc model (cpu-defs.c.inc: PRId 0x82, MIPS64 Release 1, a "
+                "48-entry TLB, 32 KB 4-way caches with 32-byte lines, an FPU, SEGBITS 40 / "
+                "PABITS 36), the 2002 announcements (a hard core: two 32 KB caches), GCC's "
+                "20kc.md (its pipeline); the 20Kc user's manual was not available",
+         missing=("the 20Kc's 7-stage dual-issue pipeline (eMIPS: the textbook 5-stage)",
+                  "paired single and MIPS-3D (QEMU's FIR.PS / 3D)",
+                  "36-bit physical addresses (eMIPS: 32)"),
+         arch="mips64"),
+    Core("p6600", "MIPS64 P6600", "R6", 0xA4, ("none",), (True, False), ("none",), ("none",),
+         ("ftlb:64:128x4+sc", "ftlb:64:128x4+sc+pw"),
+         CacheChoice(sizes=(32, 64)), CacheChoice(sizes=(32, 64)),
+         CacheChoice(sizes=(512, 1024, 2048, 4096, 8192), ways=(8,), lines=(32, 64)),
+         (1, 2, 3, 4, 5, 6), (1,), ("5-stage",),
+         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:64:128x4+sc",
+                    icache="32K:4:32", dcache="32K:4:32", l2="512K:8:32", l3="none", cores=2,
+                    shadow_sets=1, model="5-stage"),
+         source="MD01137 (P6600 datasheet: up to six MIPS64 Release 6 cores, L1 32 / 64 KB "
+                "4-way, the 8-way L2 of 512 KB-8 MB, VTLB 64 + FTLB 512 dual entries in "
+                "128 sets x 4 ways, an optional FPU), MD01138 (Table 2.11 PRId 0xA4; Config1: "
+                "32-byte L1 lines; Config2: L2 lines 32 / 64; Config3: SC = 1, PW by "
+                "configuration, ISA = 0 and DSPP = 0: no microMIPS, no DSP Module; SRSCtl."
+                "HSS = 0; ch. 6-8: the CM2, CPC and GIC, with 40-bit physical addresses)",
+         missing=("the P6600's out-of-order superscalar pipeline (eMIPS: the textbook "
+                  "5-stage)", "MSA (M24)", "the virtualization ASE (VZ)", "the IOCU and its "
+                  "IOMMU", "40-bit physical addresses (eMIPS: 32 — the CM's _UPPER registers "
+                  "are kept, a block they move above 4 GB is out of reach)",
+                  "48-bit virtual addresses (eMIPS: SEGBITS 40)"),
+         notes=_CPS_NOTE,
+         arch="mips64"),
+    Core("i6400", "MIPS I6400", "R6", 0xA9, ("none",), (True,), ("none",), ("none",),
+         ("ftlb:16:64x4",), _L1_I6400, _L1_I6400,
+         CacheChoice(sizes=(256,), ways=(8,), lines=(64,)), (1, 2, 3, 4, 5, 6), (1,),
+         ("5-stage",),
+         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:16:64x4",
+                    icache="64K:4:64", dcache="64K:4:64", l2="256K:8:64", l3="none", cores=1,
+                    vps=1, shadow_sets=1, model="5-stage"),
+         source="MD01196 (the I6400 Programmer's Guide 1.00: MIPS64 Release 6, 1.2; 16 "
+                "VTLB entries per VP and the FTLB of 64 sets x 4 ways, 2.2.1-2.2.2 / "
+                "Config4; L1 32 / 64 KB 4-way, 64-byte lines, 3.4 / Config1; the L2 of "
+                "Table 3.1; up to 6 cores of 1, 2 or 4 VPs, 5.1 / 6.2.11 / 12.1; the CM3, "
+                "CPC, GIC and ITU, ch. 5-7 / 11), QEMU's I6400 model (PRId 0xA9)",
+         missing=("the I6400's simultaneous multi-threading, dual-issue pipeline (eMIPS: "
+                  "the textbook 5-stage, a pipeline per VP)",
+                  "the shared micro-TLBs of its VPs (eMIPS: the 24K's per VP)",
+                  "the Debug Unit (DBU: the CPC keeps its power domain only)",
+                  "clock ratios and the prescaler (stored: eMIPS has one clock)",
+                  "the MMIO regions' ports and request limit (stored: one memory port)",
+                  "the L2 prefetcher (GCR_L2_PFT_CONTROL.NPFT = 0)",
+                  "the 16-way L2 of 512 KB-8 MB (eMIPS's L2 has 1-8 ways: Config2.SA)",
+                  "64 KB FTLB pages (eMIPS: 4 / 16 KB)", "MSA (M24)",
+                  "the virtualization ASE (VZ)", "MMID and GINVT",
+                  "48-bit virtual and physical addresses (eMIPS: 40 / 32)", "L1 ECC"),
+         notes=("MD01196 1.3 calls the FTLB \"512 dual-entry\", 2.2.1 / Config4 64 sets x 4 "
+                "ways: eMIPS follows the registers (256 entries)",
+                "eMIPS builds the CM3 system (CM, CPC, GIC, ITU) with 2 or more cores or "
+                "VPs"),
+         arch="mips64", vps=(1, 2, 4), cm="cm3"),
 )}
 
 #: the generic eMIPS core's name (no preset): any setting, PRId 0
@@ -409,12 +515,17 @@ def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
     if core is None:
         raise ValueError(f"unknown core {name!r} ({', '.join(CORES)})")
     changes = {k: v for k, v in core.build.items() if k not in keep}
+    if "arch" not in keep:
+        changes["arch"] = core.arch
+    if "vps" not in keep:
+        changes.setdefault("vps", 1)
     return replace(o, core=core.name, **changes), core.release
 
 
 def describe(core: Core) -> list[str]:
     """The core's settings, for the CLI / GUI."""
-    out = [f"{core.title}: MIPS32 Release {core.release[1:]}, PRId 0x{core.prid:08x}"]
+    out = [f"{core.title}: {core.arch.upper()} Release {core.release[1:]}, "
+           f"PRId 0x{core.prid:08x}"]
     for name in FIELDS[1:]:
         out.append(f"  {name.replace('_', ' ')}: {core.choices(name)}")
     out += [f"  not modelled: {m}" for m in core.missing]

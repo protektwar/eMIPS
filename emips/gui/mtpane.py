@@ -159,9 +159,10 @@ class MTView(QtWidgets.QTabWidget):
               [colors.valid_fill if r.vp == s.cpu else None for r in vpes])
         tcs = mv.tc_rows(s)
         fill = {"running": colors.hit_fill, "halted": None, "free": None}
+        d = s.hex_digits("pc")
         _fill(self.tcs, [[(">" if r.next else " ") + f"TC{r.tc}",
                           "-" if r.core is None else str(r.core), str(r.vp), r.state,
-                          f"0x{r.pc:08x}", str(r.line) if r.line else "-", r.flags or "-",
+                          f"0x{r.pc:0{d}x}", str(r.line) if r.line else "-", r.flags or "-",
                           "-" if r.group is None else str(r.group), str(r.issued),
                           r.waits or "-"] for r in tcs],
               [fill.get(r.state, colors.miss_fill) for r in tcs])

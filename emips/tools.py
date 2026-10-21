@@ -90,21 +90,25 @@ class RefRow:
             "dsp module" if self.ase else ""))
 
 
-def reference(release: str = "R5") -> list[RefRow]:
-    """Every instruction of a MIPS32 release, sorted by mnemonic."""
-    isa = ISA.for_release(release)
+def reference(release: str = "R5", arch: str = "mips32") -> list[RefRow]:
+    """Every instruction of a MIPS32 (``arch="mips64"``: MIPS64) release,
+    sorted by mnemonic.  MIPS64: the DSP Module's rows are MD00375's (with
+    LDX), the MT Module's MD00378's."""
+    isa = ISA.for_release(release, arch=arch)
     rel = _releases()
+    wide = arch == "mips64"
     rows = []
     for e in isa.instructions:
         if not isa.in_release(e["name"]):
             continue
+        rels = e.get("releases64" if wide else "releases", ())
         value = e["decode"]["value"]
         rows.append(RefRow(
             name=e["name"], mnemonic=e.get("mnemonic", e["name"]),
             syntax=syntax_text(e), description=e.get("desc") or "",
             format=instruction_format(value), family=e["family"],
-            encoding=e["encode"], releases=tuple(e.get("releases", ())),
-            since=rel["since"].get(e["name"]) or e["releases"][0],
+            encoding=e["encode"], releases=tuple(rels),
+            since=rel["since64" if wide else "since"].get(e["name"]) or rels[0],
             removed_in=rel["removed_in"].get(e["name"]),
             execution=classify(e), privileged=e["name"] in PRIVILEGED_NAMES,
             delay_slot=has_delay_slot(e),      # compact branches: own family
@@ -112,11 +116,12 @@ def reference(release: str = "R5") -> list[RefRow]:
     return sorted(rows, key=lambda r: (r.mnemonic.lower(), r.name))
 
 
-def template_fields(row_name: str, release: str = "R5") -> list[tuple[int, int, str, str]]:
+def template_fields(row_name: str, release: str = "R5", arch: str = "mips32"
+                    ) -> list[tuple[int, int, str, str]]:
     """``(msb, lsb, name, bits)`` of a row's encoding: the fixed bits and
     the operand fields named by their role (rs / base / offset ...), the
     same split as the Instruction panel; operand bits shown as letters."""
-    isa = ISA.for_release(release)
+    isa = ISA.for_release(release, arch=arch)
     entry = next(e for e in isa.instructions if e["name"] == row_name)
     template = entry["encode"]
     out = []
@@ -153,7 +158,7 @@ def parse_word(text: str) -> int:
     return v & M32
 
 
-def _dsp(release: str, dsp: int | None) -> int:
+def _dsp(release: str, dsp: int | None, arch: str = "mips32") -> int:
     """The DSP Module level the tools decode with: ``None`` = all the
     release allows (Revision 2 from Release 2 on: the reference tool knows
     every instruction; a core's Machine decodes only what it has)."""
@@ -161,8 +166,8 @@ def _dsp(release: str, dsp: int | None) -> int:
 
 
 def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
-                abi: bool = True, dsp: int | None = None) -> Decoded:
-    isa = ISA.for_release(release, _dsp(release, dsp))
+                abi: bool = True, dsp: int | None = None, arch: str = "mips32") -> Decoded:
+    isa = ISA.for_release(release, _dsp(release, dsp, arch), arch=arch)
     dec = isa.decode(word)                      # ISADecodeError if reserved
     e = dec.entry
     return Decoded(word, disassemble(word, pc, isa=isa, abi=abi), e["name"],
@@ -172,7 +177,7 @@ def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
 
 def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
                 pseudo: bool = True, abi: bool = True,
-                dsp: int | None = None) -> list[Decoded]:
+                dsp: int | None = None, arch: str = "mips32") -> list[Decoded]:
     """Assemble one source line at ``pc``: every machine word it becomes
     (a pseudo-instruction can be several), decoded.  Branch / jump targets
     are absolute addresses or ``.``-free numbers; no delay-slot nop is
@@ -181,11 +186,11 @@ def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
     if not line:
         raise AsmError(1, "type an instruction")
     prog = assemble(f".text 0x{pc & M32:08x}\n{line}\n", release=release,
-                    pseudo=pseudo, reorder=False)
+                    pseudo=pseudo, reorder=False, arch=arch)
     words = [prog.word(a) for a in sorted(prog.source_map)]
     if not words:
         raise AsmError(1, "no instruction on this line")
-    return [decode_word(w, release=release, pc=pc + 4 * i, abi=abi, dsp=dsp)
+    return [decode_word(w, release=release, pc=pc + 4 * i, abi=abi, dsp=dsp, arch=arch)
             for i, w in enumerate(words)]
 
 

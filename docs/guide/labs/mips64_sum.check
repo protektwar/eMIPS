@@ -1,0 +1,3 @@
+# Lab 58 — Unsigned words in a 64-bit register: the checks of a solution
+# (python3 -m emips check docs/guide/labs/mips64_sum.asm finds them by itself)
+check: output is "9500000000"   (the total of the five sizes)

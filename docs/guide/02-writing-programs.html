@@ -55,6 +55,7 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#220-micromips-16--and-32-bit-instructions">2.20 microMIPS: 16- and 32-bit instructions</a></li>
 <li><a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21 The DSP Module: SIMD and fixed-point arithmetic</a></li>
 <li><a href="#222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</a></li>
+<li><a href="#223-mips64-64-bit-programs">2.23 MIPS64: 64-bit programs</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -115,7 +116,8 @@ main:   la    $a0, greeting             # $a0 = address of the text
 </tbody>
 </table>
 <p>Each can be given an address: <code>.text 0x00400100</code>, <code>.data 0x10020000</code>.
-The stack pointer <code>$sp</code> starts at <code>0x7fffeffc</code> and the heap (<code>sbrk</code>) at
+The stack pointer <code>$sp</code> starts at <code>0x7fffeffc</code> (on a MIPS64 core at
+<code>0x7fffeff0</code>, 16-byte aligned for <code>sd</code> / <code>ld</code>) and the heap (<code>sbrk</code>) at
 <code>0x10040000</code>.</p>
 <h2 id="22-registers">2.2 Registers</h2>
 <p>MIPS has 32 general-purpose registers.  Write them by name or number:
@@ -194,7 +196,9 @@ The stack pointer <code>$sp</code> starts at <code>0x7fffeffc</code> and the hea
 <p>Besides these: <strong>HI</strong> and <strong>LO</strong> (results of <code>mult</code> / <code>div</code>, read with
 <code>mfhi</code> / <code>mflo</code>), the <strong>PC</strong>, the floating-point registers <strong><code>$f0</code>–<code>$f31</code></strong>
 (<a href="#213-floating-point">2.13</a>) and the coprocessor-0 registers, accessed
-by number with <code>mfc0</code> / <code>mtc0</code> (<a href="#211-exceptions-and-exception-handlers">2.11</a>).</p>
+by number with <code>mfc0</code> / <code>mtc0</code> (<a href="#211-exceptions-and-exception-handlers">2.11</a>).
+On a MIPS64 core the registers have 64 bits and <code>$8</code>–<code>$15</code> are named
+<code>$a4</code>–<code>$a7</code>, <code>$t0</code>–<code>$t3</code> (<a href="#223-mips64-64-bit-programs">2.23</a>).</p>
 <h2 id="23-instructions-and-operands">2.3 Instructions and operands</h2>
 <p>An instruction is a mnemonic followed by operands separated by commas.
 The order is the MIPS manual's: <strong>destination first</strong>.</p>
@@ -1183,8 +1187,8 @@ MIPS binutils (<code>binutils-mips-linux-gnu</code>), or a MIPS <strong>GCC</str
 <p>There is no C library: a program talks to eMIPS through the system
 calls of <a href="#29-system-calls">2.9</a> and the console of
 <a href="#210-the-memory-mapped-console">2.10</a>, which <code>emips.h</code> wraps —
-<code>print_int</code>, <code>print_string</code>, <code>print_char</code>, <code>print_hex</code>, <code>print_float</code>,
-<code>read_int</code>, <code>read_char</code>, <code>read_string</code>, <code>sbrk</code>, <code>exit</code>, the MMIO
+<code>print_int</code>, <code>print_long</code>, <code>print_string</code>, <code>print_char</code>, <code>print_hex</code>, <code>print_float</code>,
+<code>read_int</code>, <code>read_long</code>, <code>read_char</code>, <code>read_string</code>, <code>sbrk</code>, <code>exit</code>, the MMIO
 registers (<code>MMIO_RX_CONTROL</code> ...) and <code>MFC0</code> / <code>MTC0</code> for kernel
 code.  <a href="labs/c_primes.c"><code>labs/c_primes.c</code></a> counts the primes below 100:</p>
 <pre><code class="language-c">#include &quot;emips.h&quot;
@@ -1225,13 +1229,25 @@ clears <code>.bss</code>, calls <code>main</code> and ends the program with its 
 the <em>exit2</em> service), <code>libemips.c</code> (<code>memcpy</code>, <code>memset</code>, <code>memmove</code>,
 <code>memcmp</code>, <code>strlen</code> — compilers call them by themselves) and the linker
 script <code>emips.ld</code>: code at <code>0x00400000</code>, data at <code>0x10010000</code>, the stack
-below <code>0x7FFFF000</code> — the memory map of assembly programs.  The flags:
+below <code>0x7FFFF000</code> — the memory map of assembly programs (the stack starts at
+<code>0x7FFFEFF0</code>, aligned for the ABIs: a <code>double</code> on the stack needs 8 bytes).  The flags:
 <code>-march</code> from <code>--release</code> (R1 <code>mips32</code>, R2-R5 <code>mips32r2</code>, R6
 <code>mips32r6</code>), o32, hard float, no position-independent code
 (<code>-fno-pic -mno-abicalls</code>), <code>-G0</code>, <code>-g</code> for the line table, <code>-O1</code> (<code>-O
 0</code> keeps every statement, easier to follow).</p>
+<p><strong>MIPS64 C</strong>: <code>python3 -m emips cc --arch mips64 prog.c</code> builds for the
+<strong>n64</strong> ABI — <code>long</code> and pointers of 64 bits, an ELF64 executable —
+with the same memory map (<code>-march</code> <code>mips64</code> / <code>mips64r2</code> /
+<code>mips64r6</code>, <code>-mabi=64</code>; GCC adds <code>-msym32</code>, every address in the 32-bit
+compatibility space).  On a MIPS64 core the system calls take whole
+registers: <code>print_long</code> / <code>read_long</code> handle 64-bit values and
+<code>print_hex</code> prints 16 digits.  Opening an ELF64 makes the session
+MIPS64 (and an ELF32 MIPS32 again), and a C file with the line
+<code>// eMIPS: --arch mips64</code> is built for n64.  The n32 ABI (64-bit registers,
+32-bit pointers) is not supported.</p>
 <p>eMIPS reads the ELF's <strong>release</strong> (<code>EF_MIPS_ARCH</code>: MIPS32 → R1, Release
-2 → R5, Release 6 → R6) and <strong>byte order</strong> from its header, and the
+2 → R5, Release 6 → R6; MIPS64 → R1, its Release 2 → R5, Release 6 → R6)
+and <strong>byte order</strong> from its header, and the
 <strong>source line</strong> of every instruction from its DWARF line table: the
 debugger shows <code>c_primes.c:14: if (composite[i])</code> beside the PC, <code>break
 main</code> stops at a function, and the GUI's listing has each C line above
@@ -1359,6 +1375,42 @@ run MIPS16e: the 5-stage one fetches 2 or 4 bytes per instruction, the
 (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">5.3</a>).  GDB sees <code>$pc</code> with
 bit 0 set in MIPS16e code (<a href="04-command-line.html#gdb-in-mips16e-and-micromips-code">4.12</a>).
 Labs 41, 42 and 46 compare the two ISAs.</p>
+<p><strong>MIPS16e on MIPS64.</strong>  A MIPS64 core (<code>--arch mips64</code>,
+Releases 1 to 5) can have MIPS16e too, with the doubleword instructions of
+MIPS64's Volume IV-a: <code>ld</code> / <code>sd</code> / <code>lwu</code>, <code>daddiu</code>,
+<code>daddu</code> / <code>dsubu</code>, <code>dsll</code> / <code>dsrl</code> / <code>dsra</code> (EXTEND
+gives them a shift of 0 to 63), <code>dmult</code> ... <code>ddivu</code>, <code>sew</code> /
+<code>zew</code>, and PC-relative <code>ld</code> and <code>dla</code>.  The 32-bit
+instructions stay 32-bit operations (<code>addiu</code> sign-extends its sum),
+while <code>move</code>, <code>and</code>, <code>or</code> ... work on the whole register, and
+<code>save</code> / <code>restore</code> still push words.  A program with MIPS16e code
+gets it; C: <code>python3 -m emips cc prog.c --arch mips64 --mips16</code> (GCC
+compiles 64-bit MIPS16 code only without floating point, so such a
+program is built with <code>-msoft-float</code>).  The doubleword forms need
+64-bit operations enabled, as in MIPS64 code: in User Mode with
+Status.PX = 0 they are Reserved Instructions.</p>
+<pre><code class="language-asm"># output: 4886718345\n
+# arch: mips64
+        .text
+main:   jalx    f16                     # into MIPS16e code
+        move    $a0, $v0
+        li      $v0, 1
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        li      $v0, 10
+        syscall
+
+        .set mips16
+        .align  2
+f16:    ld      $v0, big                # a doubleword next to the code (PC-relative)
+        li      $v1, 9
+        daddu   $v0, $v0, $v1           # 64 bits: addu would cut it to a word
+        jr      $ra
+        .align  3
+big:    .dword  0x123456780
+</code></pre>
 <h2 id="220-micromips-16--and-32-bit-instructions">2.20 microMIPS: 16- and 32-bit instructions</h2>
 <p>microMIPS32 replaced MIPS16e from Release 3 on (the MIPS M14K and
 microAptiv have it).  It is not a small subset: <em>every</em> MIPS32
@@ -1441,6 +1493,39 @@ note that says so.  C: <code>python3 -m emips cc prog.c --micromips</code>
 no compiler builds it the way the manual defines it).  GDB sees
 <code>$pc</code> with bit 0 set (<a href="04-command-line.html#gdb-in-mips16e-and-micromips-code">4.12</a>).
 Labs 43, 44, 45 and 47 measure what microMIPS saves.</p>
+<p><strong>microMIPS64.</strong>  A MIPS64 core of Release 3 or later
+(<code>--arch mips64</code>) has microMIPS64: the same 16-bit instructions — they
+stay 32-bit operations, so <code>addu16</code> sign-extends its sum as
+<code>addu</code> does, while <code>move</code> copies all 64 bits — and a 32-bit
+encoding of every doubleword instruction (<code>daddu</code>, <code>ld</code> /
+<code>sd</code>, <code>dsll32</code>, <code>dext</code> ...), plus <code>ldp</code> / <code>sdp</code>
+and <code>ldm</code> / <code>sdm</code>, the doubleword forms of <code>lwp</code> and
+<code>lwm</code>.</p>
+<pre><code class="language-asm"># output: 4886718345\n
+# arch: mips64
+        .set micromips
+        .text
+main:   dli     $t0, 0x123456789        # 64 bits: li, dsll, ori, dsll, ori
+        daddiu  $sp, $sp, -16           # 32 bits: ADDIUSP would add only 32 bits
+        sd      $t0, 0($sp)
+        sd      $zero, 8($sp)
+        ldp     $s0, 0($sp)             # $s0 and $s1: two doublewords at once
+        move    $a0, $s0                # MOVE16: all 64 bits
+        li      $v0, 1                  # print_int prints the whole register
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        daddiu  $sp, $sp, 16
+        li      $v0, 10
+        syscall
+</code></pre>
+<p>Release 6 adds the doubleword forms of its new instructions
+(<code>dlsa</code>, <code>dalign</code>, <code>dbitswap</code>, <code>daui</code> / <code>dahi</code> /
+<code>dati</code>, <code>ldpc</code>, <code>lwupc</code>, <code>dmul</code> ... <code>dmodu</code>).  C:
+<code>python3 -m emips cc prog.c --arch mips64 --micromips</code> (Release 3
+or 5, with a MIPS GCC: clang has no microMIPS64).  MIPS16e on MIPS64 is
+in <a href="#219-mips16e-16-bit-instructions">2.19</a>.</p>
 <h2 id="221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21 The DSP Module: SIMD and fixed-point arithmetic</h2>
 <p>The <strong>DSP Module</strong> (the DSP ASE; MIPS's Volume IV-e) adds about 150
 instructions for signal and media processing: the MIPS 24KE, 34K, 74K,
@@ -1539,6 +1624,36 @@ view shows what each instruction changed in them.  C uses the module
 through GCC's builtins (<code>python3 -m emips cc --dspr2</code>,
 <a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>, Lab 51).  Labs 49-52 brighten an
 image, filter a signal, compare with C, and handle the exception.</p>
+<p><strong>On MIPS64</strong> (<code>--arch mips64</code>, Release 2 or later) the
+DSP Module is the same set of instructions: they take the low 32 bits of
+their registers and write sign-extended results, each half of an
+accumulator sign-extended too, while <code>mthi</code> / <code>mfhi $acN</code> move
+whole 64-bit registers.  It adds <code>ldx</code>, the doubleword
+<code>lwx</code>.  (The manual's earlier revisions had 64-bit SIMD instructions on
+eight bytes or four halfwords; they were withdrawn, and eMIPS does not
+have them.)</p>
+<pre><code class="language-asm"># output: 0x0000000002040608\n0x1234567812345678\n
+# arch: mips64
+        .data
+pair:   .dword  0x1234567812345678
+        .text
+main:   li      $a0, 0x01020304
+        addu_s.qb $a0, $a0, $a0         # four bytes doubled: 0x02040608
+        li      $v0, 34
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        la      $t0, pair
+        ldx     $a0, $zero($t0)         # a doubleword from base + index
+        li      $v0, 34
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        li      $v0, 10
+        syscall
+</code></pre>
 <h2 id="222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</h2>
 <p>The <strong>MT Module</strong> (the MT ASE; MIPS's Volume IV-f) lets one core run
 several instruction streams at once.  Each stream is a <strong>thread
@@ -1642,6 +1757,46 @@ code (<code>.set micromips</code>) they have 32-bit encodings.</li>
 stores wait: a load from an empty FIFO cell stops its thread until
 another thread stores — no polling (Lab 56).</li>
 </ul>
+<p><strong>On MIPS64</strong> (<code>--arch mips64</code>, Releases 2–5) the module is the
+same with 64-bit registers: a TC's GPRs and HI / LO are doublewords,
+<code>mftgpr</code> / <code>mttgpr</code> and <code>mftlo</code> ... move them whole, TCRestart and
+TCContext hold 64 bits (<code>dmfc0</code> / <code>dmtc0</code>; a TC may restart at a
+64-bit PC), YIELD and FORK read whole registers.  Here FORK hands the
+new thread a doubleword:</p>
+<pre><code class="language-asm"># output: 1311768467463790321
+# arch: mips64
+        .text
+main:   li      $t0, 1
+        mtc0    $t0, $1, 1              # VPEControl.TargTC = 1
+        li      $t1, 0x8000
+        mttc0   $t1, $2, 1              # TC 1: DA
+        mttc0   $zero, $2, 4            # TC 1: TCHalt = 0
+        emt
+        evpe
+        dla     $a0, worker
+        dli     $a1, 0x123456789abcdef0
+        fork    $a2, $a0, $a1           # TC 1 starts at worker with $a2 = $a1
+spin:   ld      $t0, done
+        beqz    $t0, spin
+        ld      $a0, result
+        li      $v0, 1
+        syscall
+        li      $v0, 10
+        syscall
+
+worker: daddiu  $a2, $a2, 1
+        sd      $a2, result
+        li      $t0, 1
+        sd      $t0, done
+        wait                            # (this TC sleeps; TC 0 prints)
+        .data
+done:   .dword  0
+result: .dword  0
+</code></pre>
+<p>No MIPS64 core had the MT Module, and eMIPS's multithreaded pipeline is
+the 34K's (a MIPS32 core): MT on MIPS64 runs instruction by instruction
+— pipeline mode says so and switches.  The ITC's cells are 64 bits
+there: <code>ld</code> / <code>sd</code> move a whole cell, a word is one half of it.</p>
 <p>The debugger's <code>mt</code> lists the VPEs and every TC (its state, PC,
 what it waits for), <code>tc N</code> shows one TC's registers, and the
 window's <strong>MT</strong> pane shows the same
@@ -1651,6 +1806,124 @@ which thread issues, and what that buys, is in
 <a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5</a>; Labs 53-57 fork
 threads, hide cache misses, share the cycles out, pass data through the
 ITC and run two VPEs.</p>
+<p><strong>Release 6</strong> has no MT Module: a multi-threaded Release 6 core
+(the I6400) has <strong>virtual processors</strong> instead (<code>--release R6
+--vps 2</code>), each a whole processor with its own registers and CP0, which a
+program uses as it uses cores — its number is in EBase.CPUNum, the
+Global Number register (CP0 3, select 1) says which core and VP it is.  Two
+instructions come with them: <code>dvp rt</code> stops the core's other VPs and
+<code>evp rt</code> lets them go on (both put the old VPControl in rt).  The VPs of a
+core share its ITU, gating storage like the ITC.  See
+<a href="05-understanding.html#release-6-threads-virtual-processors">Phase 5</a>.</p>
+<h2 id="223-mips64-64-bit-programs">2.23 MIPS64: 64-bit programs</h2>
+<p><strong>MIPS64</strong> is MIPS32 with 64-bit registers.  Every MIPS32 instruction
+is there and does what it does on MIPS32, on the low 32 bits of its
+registers; the <strong>doubleword</strong> instructions — most of them a <code>d</code> in
+front of a MIPS32 name — work on all 64.  A program asks for a MIPS64 core
+with the line <code># eMIPS: --arch mips64</code> (or <code>--arch mips64</code> on the
+command line, the Machine toolbar's MIPS64 R1–R6, or a MIPS64 core: <code>--core
+5kc</code>, <code>5kf</code>, <code>20kc</code>, <code>i6400</code>, <code>p6600</code>, <a href="06-reference.html#611-real-mips-cores">6.11</a>).  The
+GPRs, HI, LO and the PC have 64 bits, and so do EPC, BadVAddr and the other
+CP0 registers that hold an address.  MIPS64 has the same releases as MIPS32:
+Release 1 (the 5K, the 20Kc), 2, 3, 5 and 6 (the I6400, the P6600).</p>
+<p><strong>One rule holds it together: a 32-bit result is sign-extended.</strong>  Every
+instruction that makes a 32-bit value — <code>addu</code>, <code>addiu</code>, <code>lw</code>, <code>sll</code>,
+<code>lui</code> ... — copies its bit 31 into bits 63..32: <code>addiu</code> of 0x7fffffff + 1
+gives 0xffffffff80000000, and so does <code>lw</code> of the word 0x80000000.  A
+32-bit number in a register is therefore always a <em>sign-extended word</em>, and
+the 32-bit instructions expect their operands in that form (for anything
+else the manual makes their result UNPREDICTABLE; eMIPS uses the low word).
+That is why MIPS32 code runs unchanged on a MIPS64: it never sees bits 63..32.
+An <em>unsigned</em> word — a size, a count above 2<sup>31</sup> — needs <code>lwu</code>, which
+loads it zero-extended (<a href="05-understanding.html#lab-58--unsigned-words-in-a-64-bit-register">Lab 58</a>).  Logical
+instructions (<code>and</code>, <code>or</code>, <code>xor</code>, <code>nor</code>), compares (<code>slt</code>,
+<code>sltu</code>) and branches have no doubleword twin: they always use all 64 bits.</p>
+<table>
+<thead>
+<tr><th>a word (32 bits, sign-extended)</th><th>a doubleword (64 bits)</th></tr>
+</thead>
+<tbody>
+<tr><td><code>addu</code>, <code>addiu</code>, <code>subu</code>, <code>add</code>, <code>addi</code>, <code>sub</code></td><td><code>daddu</code>, <code>daddiu</code>, <code>dsubu</code>, <code>dadd</code>, <code>daddi</code>, <code>dsub</code></td></tr>
+<tr><td><code>lw</code> (<code>lwu</code>: zero-extended), <code>sw</code>, <code>lwl</code> / <code>lwr</code> / <code>swl</code> / <code>swr</code></td><td><code>ld</code>, <code>sd</code>, <code>ldl</code> / <code>ldr</code> / <code>sdl</code> / <code>sdr</code></td></tr>
+<tr><td><code>ll</code> / <code>sc</code></td><td><code>lld</code> / <code>scd</code></td></tr>
+<tr><td><code>sll</code>, <code>srl</code>, <code>sra</code>, <code>sllv</code>, <code>srlv</code>, <code>srav</code>, <code>rotr</code></td><td><code>dsll</code>, <code>dsrl</code>, <code>dsra</code> (by 0–31), <code>dsll32</code>, <code>dsrl32</code>, <code>dsra32</code> (by 32–63), <code>dsllv</code>, <code>dsrlv</code>, <code>dsrav</code>, <code>drotr</code>, <code>drotr32</code></td></tr>
+<tr><td><code>mult</code>, <code>multu</code>, <code>div</code>, <code>divu</code> (HI / LO: sign-extended words)</td><td><code>dmult</code>, <code>dmultu</code>, <code>ddiv</code>, <code>ddivu</code> (HI / LO: 64 bits)</td></tr>
+<tr><td><code>ext</code>, <code>ins</code>, <code>clz</code>, <code>clo</code>, <code>wsbh</code></td><td><code>dext</code>, <code>dins</code> (the assembler picks <code>dextm</code> / <code>dextu</code> / <code>dinsm</code> / <code>dinsu</code>), <code>dclz</code>, <code>dclo</code>, <code>dsbh</code>, <code>dshd</code></td></tr>
+<tr><td><code>.word</code>, <code>li</code>, <code>la</code></td><td><code>.dword</code>, <code>dli</code>, <code>dla</code></td></tr>
+</tbody>
+</table>
+<p>Release 6 adds <code>dmul</code> / <code>dmuh</code> / <code>dmulu</code> / <code>dmuhu</code>, <code>ddiv</code> / <code>dmod</code> /
+<code>ddivu</code> / <code>dmodu</code> (three registers, no HI / LO), <code>daui</code>, <code>dahi</code> and <code>dati</code>
+(16 bits added at bit 16, 32 or 48), <code>dlsa</code>, <code>dalign</code>, <code>dbitswap</code>,
+<code>ldpc</code> and <code>lwupc</code>.</p>
+<pre><code class="language-asm"># output: -2147483648\n2147483648\n4294967296\n0xffffffffffffffff\n0x00000000ffffffff\n
+# arch: mips64
+        .data
+w:      .word   0x80000000
+        .text
+main:   lw      $s0, w              # a word, sign-extended
+        move    $a0, $s0
+        jal     int                 # -2147483648
+        lwu     $s1, w              # the same word, zero-extended
+        move    $a0, $s1
+        jal     int                 # 2147483648
+        daddu   $a0, $s1, $s1       # a doubleword sum
+        jal     int                 # 4294967296
+        li      $a0, 0xffffffff     # li builds a word: -1
+        jal     hex
+        dli     $a0, 0xffffffff     # dli builds a doubleword
+        jal     hex
+        li      $v0, 10
+        syscall
+
+int:    li      $v0, 1              # print $a0 (all 64 bits), then a newline
+        syscall
+        b       nl
+hex:    li      $v0, 34             # print $a0 in hex (16 digits)
+        syscall
+nl:     li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        jr      $ra
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><strong>Register names.</strong>  The MIPS64 ABI (<em>n64</em>) passes eight arguments in
+registers, so <code>$8</code>–<code>$11</code> are <code>$a4</code>–<code>$a7</code> and only <code>$12</code>–<code>$15</code>
+are temporaries: <code>$t0</code>–<code>$t3</code>.  <code>$t4</code>–<code>$t7</code> do not exist on MIPS64 (the
+assembler says so and names the numbers); the other names are those of
+<a href="#22-registers">2.2</a>.  Every pane, the debugger and the trace use these names.</li>
+<li><strong>Constants.</strong>  <code>li</code> builds a word — <code>li $t0, 0xffffffff</code> gives -1,
+0xffffffffffffffff; <code>dli</code> builds any 64-bit value, in one to six instructions
+(the sequences of GNU <code>as</code>: <code>lui</code>, <code>ori</code>, <code>dsll</code>, <code>dsrl32</code> ...).
+<a href="05-understanding.html#lab-59--how-long-is-a-constant">Lab 59</a> counts them.</li>
+<li><strong>Addresses.</strong>  eMIPS keeps programs in the 32-bit <em>compatibility</em> part of
+the 64-bit address space, as GCC's <code>-msym32</code> does: a label is a sign-extended
+word — <code>.text</code> at 0x0000000000400000, <code>.ktext</code> at 0xffffffff80000180 (written
+<code>.ktext 0x80000180</code>) — so <code>la</code> is still <code>lui</code> + <code>daddiu</code>, and so is
+<code>dla</code>.  A pointer is a whole register: step it with <code>daddiu</code> / <code>daddu</code>.
+<code>ld</code> / <code>sd</code> need an address that is a multiple of 8 (else AdEL / AdES;
+Release 6 allows misaligned ones, as for words);
+<code>$sp</code> starts at 0x7fffeff0, 16-byte aligned for the ABI.  The rest of the 64-bit
+space — a terabyte of user addresses, xkphys, xkseg — needs a TLB
+(<a href="05-understanding.html#the-64-bit-address-space">Phase 5, the 64-bit address space</a>).</li>
+<li><strong>System calls</strong> take whole registers: <code>print_int</code> (1) prints a 64-bit
+signed number, 34 sixteen hex digits, 36 an unsigned 64-bit number, and
+<code>read_int</code> (5) reads one.</li>
+<li><strong>The pipeline.</strong>  A MIPS64 program runs instruction by instruction or on the
+5-stage pipeline (<code>--pipeline</code>); the 24K is a MIPS32 core, so <code>--model
+24k</code> becomes the 5-stage one.  <code>dmult</code> keeps the multiplier busy 9 cycles and
+<code>ddiv</code> 67, as on the 5K.</li>
+</ul>
+<p>The rest of eMIPS is there on MIPS64 too: C for the n64 ABI
+(<a href="#218-programs-in-c">2.18</a>, <a href="05-understanding.html#lab-62--c-on-64-bits">Lab 62</a>), MIPS16e and microMIPS
+(<a href="#219-mips16e-16-bit-instructions">2.19</a>, <a href="#220-micromips-16--and-32-bit-instructions">2.20</a>), the DSP and MT Modules
+(<a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>, <a href="#222-the-mt-module-threads-in-hardware">2.22</a>), several cores
+(<a href="05-understanding.html#59-more-than-one-core">5.9</a>), the Malta board (<a href="05-understanding.html#a-64-bit-cpu-on-the-malta">5.8</a>),
+GDB (<a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>), and the window's
+64-bit registers and memory (<a href="03-the-gui.html">Phase 3</a>).  Labs 58–62 add
+up unsigned words, count the instructions of a constant, use memory without
+the TLB, map pages above 4 GB and compare C for MIPS32 and MIPS64.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

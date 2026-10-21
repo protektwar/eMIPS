@@ -407,6 +407,11 @@ def _table(headers: list[str]) -> QtWidgets.QTableWidget:
     return t
 
 
+def _signed(value: int, bits: int) -> int:
+    """A ``bits``-wide register value as a signed number."""
+    return value - (1 << bits) if value >> (bits - 1) & 1 else value
+
+
 def _set(t: QtWidgets.QTableWidget, r: int, c: int, text: str,
          bg: str | None = None, bold: bool = False) -> None:
     item = t.item(r, c)
@@ -496,6 +501,7 @@ class RegisterView(QtWidgets.QTabWidget):
         lay.addStretch(1)
         self.debug_tab = self.addTab(self.debug, tr("Debug"))
         self._session: Session | None = None
+        self._digits = 8                        # (MIPS64: 16 — the columns follow)
         self.set_choice.currentIndexChanged.connect(self._show_set)
 
     def refresh(self, s: Session) -> None:
@@ -521,16 +527,22 @@ class RegisterView(QtWidgets.QTabWidget):
             box.setChecked(on)
             box.blockSignals(False)
         self.trap_box.setEnabled(s.probe is not None)
+        d = s.hex_digits()                      # a GPR's (MIPS64: 16 digits)
         for i, (name, value, changed) in enumerate(s.registers()):
             bg = T().current_line if changed else None
             _set(self.gpr, i, 0, name, bg, changed)
-            _set(self.gpr, i, 1, f"0x{value:08x}", bg, changed)
-            _set(self.gpr, i, 2, str(value - (1 << 32) if value >> 31 else value), bg)
+            _set(self.gpr, i, 1, f"0x{value:0{d}x}", bg, changed)
+            _set(self.gpr, i, 2, str(_signed(value, 4 * d)), bg)
         rows = s.special_registers()
         self.special.setRowCount(len(rows))
         for i, (name, value) in enumerate(rows):
             _set(self.special, i, 0, name)
-            _set(self.special, i, 1, f"0x{value:08x}")
+            _set(self.special, i, 1, f"0x{value:0{s.hex_digits(name)}x}")
+        if d != self._digits:                   # MIPS32 <-> MIPS64: the values' width
+            self._digits = d
+            for t in (self.gpr, self.special, self.set_table):
+                t.resizeColumnToContents(0)
+                t.resizeColumnToContents(1)
         import struct
         fpu = s.machine.has_fpu
         self.setTabToolTip(self.indexOf(self.fpr), "" if fpu else tr(
@@ -564,7 +576,8 @@ class RegisterView(QtWidgets.QTabWidget):
             hot = changed and self._dsp_prev[i] != value
             bg = T().current_line if hot else None
             _set(self.dsp, i, 0, name, bg, hot)
-            _set(self.dsp, i, 1, f"0x{value:08x}" if not name.startswith("  ")
+            digits = 16 if s.wide and name.startswith("ac") else 8
+            _set(self.dsp, i, 1, f"0x{value:0{digits}x}" if not name.startswith("  ")
                  else (f"{value:04b}" if "ccond" in name else
                        f"0x{value:02x}" if "ouflag" in name else str(value)), bg, hot)
             _set(self.dsp, i, 2, tr(note) if note else "", bg)
@@ -606,17 +619,19 @@ class RegisterView(QtWidgets.QTabWidget):
         k = self.set_choice.currentIndex()
         if s is None or s.machine is None or k < 0 or k >= len(s.machine.shadow):
             return
+        d = s.hex_digits()
         for i, (name, value) in enumerate(s.shadow_set(k)):
             _set(self.set_table, i, 0, name)
-            _set(self.set_table, i, 1, f"0x{value:08x}")
-            _set(self.set_table, i, 2, str(value - (1 << 32) if value >> 31 else value))
+            _set(self.set_table, i, 1, f"0x{value:0{d}x}")
+            _set(self.set_table, i, 2, str(_signed(value, 4 * d)))
 
 
 class MemoryView(QtWidgets.QWidget):
     """Hex dump (4 words per row) from an address or a segment, by
     virtual address (as the program sees it: through the data cache, when
     it holds the line) or physical address (the RAM, after the MMU,
-    bypassing the caches)."""
+    bypassing the caches).  MIPS64: 64-bit addresses, and doublewords (2
+    per row, as LD loads them) when *doublewords* is on."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -632,9 +647,15 @@ class MemoryView(QtWidgets.QWidget):
             "Show physical addresses: the RAM after the MMU translated the "
             "virtual address, without the caches (a typed address is then "
             "physical)"))
+        self.doubles = QtWidgets.QCheckBox(tr("doublewords"))
+        self.doubles.setToolTip(tr("MIPS64: show 64-bit doublewords (as LD loads them) "
+                                   "instead of words"))
+        self.doubles.setChecked(True)
+        self.doubles.setVisible(False)
         bar.addWidget(self.segment)
         bar.addWidget(self.address)
         bar.addWidget(self.physical)
+        bar.addWidget(self.doubles)
         lay.addLayout(bar)
         self.table = _table([tr("address"), "+0", "+4", "+8", "+c", "ascii"])
         lay.addWidget(self.table)
@@ -642,6 +663,8 @@ class MemoryView(QtWidgets.QWidget):
         self._session: Session | None = None
         self.address.returnPressed.connect(lambda: self._session and self.refresh(self._session))
         self.physical.toggled.connect(lambda _: self._session and self.refresh(self._session))
+        self.doubles.toggled.connect(lambda _: self._session and self.refresh(self._session))
+        self._layout: bool | None = None         # doublewords shown?
 
     def start(self, s: Session) -> int:
         text = self.address.text().strip()
@@ -665,15 +688,35 @@ class MemoryView(QtWidgets.QWidget):
             return
         rows = s.memory_words(self.start(s), 32 if self.segment.currentIndex() != 3 else 1,
                               physical=self.physical.isChecked())
+        self.doubles.setVisible(s.wide)
+        doubles = s.wide and self.doubles.isChecked()
+        fresh = doubles != self._layout
+        if fresh:                                # the columns: 4 words or 2 doublewords
+            self._layout = doubles
+            heads = ["+0", "+8"] if doubles else ["+0", "+4", "+8", "+c"]
+            self.table.setColumnCount(len(heads) + 2)
+            self.table.setHorizontalHeaderLabels([tr("address")] + heads + ["ascii"])
         self.table.setRowCount(len(rows))
+        big = s.machine.big_endian
         for r, (addr, words) in enumerate(rows):
-            _set(self.table, r, 0, f"0x{addr:08x}")
-            chars = ""
-            for c, w in enumerate(words):
-                _set(self.table, r, c + 1, "--------" if w is None else f"{w:08x}")
-                chars += ("    " if w is None else
-                          "".join(chr(b) if 32 <= b < 127 else "." for b in w.to_bytes(4, "big")))
-            _set(self.table, r, 5, chars)
+            _set(self.table, r, 0, f"0x{addr:016x}" if addr >> 32 else f"0x{addr:08x}")
+            chars = "".join("    " if w is None else
+                            "".join(chr(b) if 32 <= b < 127 else "." for b in w.to_bytes(4, "big"))
+                            for w in words)
+            if doubles:                          # as LD loads them (the byte order)
+                cells = []
+                for hi, lo in ((words[0], words[1]), (words[2], words[3])):
+                    if not big:
+                        hi, lo = lo, hi
+                    cells.append("-" * 16 if hi is None or lo is None else f"{hi:08x}{lo:08x}")
+            else:
+                cells = ["--------" if w is None else f"{w:08x}" for w in words]
+            for c, text in enumerate(cells):
+                _set(self.table, r, c + 1, text)
+            _set(self.table, r, len(cells) + 1, chars)
+        if fresh and rows:                       # (16-digit cells: wide enough)
+            for c in range(self.table.columnCount() - 1):
+                self.table.resizeColumnToContents(c)
 
 
 class ConsoleView(QtWidgets.QWidget):
@@ -863,9 +906,10 @@ class InstrPanel(QtWidgets.QTextBrowser):
                                                 "instruction.")) + "</i>")
             return
         e = html.escape
+        w = getattr(v, "digits", 8)                     # a register's (MIPS64: 16)
         slot = " — <b>delay slot</b>" if v.in_delay_slot else ""
         own = v.format in ("MIPS16e", "microMIPS")      # no MIPS32 twin
-        parts = [f"<h3><tt>0x{v.pc:08x}: {e(v.source_text or v.text)}</tt></h3>"]
+        parts = [f"<h3><tt>0x{v.pc:0{w}x}: {e(v.source_text or v.text)}</tt></h3>"]
         if v.compressed:
             parts.append(f"<p>{e(v.compressed)}{slot if own else ''}</p>")
         if not own:
@@ -875,15 +919,15 @@ class InstrPanel(QtWidgets.QTextBrowser):
         if v.alu:
             a = v.alu
             parts.append("<h4>ALU</h4><p>" + e(a.op) + "<br>"
-                         + (f"a = <tt>0x{a.a.value:08x}</tt> from {e(a.a.source)}<br>" if a.a else "")
-                         + (f"b = <tt>0x{a.b.value:08x}</tt> from {e(a.b.source)}<br>" if a.b else "")
-                         + (f"result = <tt>0x{a.result:08x}</tt>" if a.result is not None else "")
+                         + (f"a = <tt>0x{a.a.value:0{w}x}</tt> from {e(a.a.source)}<br>" if a.a else "")
+                         + (f"b = <tt>0x{a.b.value:0{w}x}</tt> from {e(a.b.source)}<br>" if a.b else "")
+                         + (f"result = <tt>0x{a.result:0{w}x}</tt>" if a.result is not None else "")
                          + (" (zero)" if a.zero else "") + (" <b>OVERFLOW</b>" if a.overflow else "")
                          + "</p>")
         if v.address:
             ad = v.address
-            parts.append(f"<h4>Address</h4><p>base <tt>0x{ad.base.value:08x}</tt> + {ad.offset}"
-                         f" = <tt>0x{ad.address:08x}</tt> — {ad.access} of {ad.size} byte(s), "
+            parts.append(f"<h4>Address</h4><p>base <tt>0x{ad.base.value:0{w}x}</tt> + {ad.offset}"
+                         f" = <tt>0x{ad.address:0{w}x}</tt> — {ad.access} of {ad.size} byte(s), "
                          f"{ad.segment} ({ad.privilege}, {'mapped' if ad.mapped else 'unmapped'})"
                          + ("" if ad.aligned else " <b>misaligned</b>")
                          + (f"<br>physical <tt>0x{ad.physical:08x}</tt> — {e(ad.how)}; "
@@ -891,16 +935,19 @@ class InstrPanel(QtWidgets.QTextBrowser):
                             if ad.physical is not None else "") + "</p>")
         if v.branch:
             br = v.branch
-            what = (f"taken → <tt>0x{br.target:08x}</tt>" if br.taken
+            what = (f"taken → <tt>0x{br.target:0{w}x}</tt>" if br.taken
                     else "not taken" + (", delay slot nullified" if br.likely else ""))
             parts.append(f"<h4>Branch</h4><p>{e(br.condition)}: {what}"
-                         + (f"; link $ra = <tt>0x{br.link:08x}</tt>" if br.link is not None else "")
+                         + (f"; link $ra = <tt>0x{br.link:0{w}x}</tt>" if br.link is not None else "")
                          + "</p>")
         eff = [f"memory read <tt>0x{a:08x}</tt> = <tt>0x{val:0{2 * n}x}</tt>"
                for a, n, val in v.mem_reads]
         eff += [f"memory write <tt>0x{a:08x}</tt>: <tt>0x{o:0{2 * n}x}</tt> → <tt>0x{nw:0{2 * n}x}</tt>"
                 for a, n, o, nw in v.mem_writes]
-        eff += [f"{e(name)}: <tt>0x{o:08x}</tt> → <tt>0x{nw:08x}</tt>" for name, o, nw in v.reg_writes]
+        eff += [f"{e(name)}: <tt>0x{o:0{d}x}</tt> → <tt>0x{nw:0{d}x}</tt>"
+                for name, o, nw in v.reg_writes
+                for d in (w if name[0] == "$" and name[1] != "f" or name in ("hi", "lo")
+                          else 8,)]
         if eff:
             parts.append("<h4>Effects</h4><p>" + "<br>".join(eff) + "</p>")
         if v.exception:

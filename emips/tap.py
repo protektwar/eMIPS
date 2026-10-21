@@ -28,6 +28,12 @@ Test Access Port" and chapter 7 "PC Sampling"; the 24K's TAP (MD00343
   the graduating instruction every 2^(5 + DCR.PCR) cycles into PCsample
   (New, PC, ASID); in WAIT the New bit is set again when the probe
   clears it.
+* A 64-bit (MIPS64) core (4.5): IMPCODE.MIPS32/64 = 1; the Data register
+  is 64 bits (ALL 128, Fastdata 65), PCsample 73 (Figure 7.2); a
+  processor access names its bytes in a doubleword with Psz and
+  Address[2:0] (Table 4.7: byte, halfword, word, 5 / 6 / 7 bytes from
+  either end, triple, doubleword); the Address register stays 32 bits
+  (eMIPS's physical addresses).
 """
 
 from __future__ import annotations
@@ -73,6 +79,7 @@ DR_LENGTH = {IDCODE: 32, IMPCODE: 32, ADDRESS: 32, DATA: 32, CONTROL: 32, ALL: 9
 # ----------------------------------------------- EJTAG Control register
 ECR_ROCC = 1 << 31
 ECR_PSZ_SHIFT = 29
+ECR_VPED = 1 << 23
 ECR_DOZE = 1 << 22
 ECR_HALT = 1 << 21
 ECR_PERRST = 1 << 20
@@ -89,6 +96,11 @@ ECR_DM = 1 << 3
 #: ASIDsize 2 with a TLB (bits 22:21), MIPS16e (bit 16) with the ASE, NoDMA
 IMPCODE_BASE = (3 << 29) | (1 << 24) | (1 << 14)
 IMPCODE_MIPS16 = 1 << 16
+#: IMPCODE.MIPS32/64 (bit 0, Table 4.4): a 64-bit processor
+IMPCODE_MIPS64 = 1
+#: data register lengths of a 64-bit core (4.5.3, Figure 7.2)
+DR_LENGTH64 = {**DR_LENGTH, DATA: 64, ALL: 128, FASTDATA: 65, PCSAMPLE: 73}
+M64 = (1 << 64) - 1
 #: the Device ID register: Version, PartNumber and ManufID are core inputs
 #: (EJ_Version / EJ_PartNumber / EJ_ManufID); eMIPS ties them to 0, bit 0 = 1
 DEVICE_ID = 0x00000001
@@ -213,10 +225,23 @@ class TAP:
 
     # -- the registers -----------------------------------------------------------------
 
+    @property
+    def wide(self) -> bool:
+        """A 64-bit core's TAP (MIPS64): a 64-bit Data register."""
+        return self.m is not None and bool(getattr(self.m, "wide", False))
+
     def _dr_length(self) -> int:
         if self.ir in PDT.TCB_INSTRUCTIONS:
             return self.tcb.length(self.ir)
-        return DR_LENGTH.get(self.ir, 1)
+        n = (DR_LENGTH64 if self.wide else DR_LENGTH).get(self.ir, 1)
+        if self.ir == PCSAMPLE and self.mt:
+            n += 8                              # the TC field (MD00047 4.5.7: 49 / 81)
+        return n
+
+    @property
+    def mt(self) -> bool:
+        """A VPE of the MT Module: PCsample has a TC field, the ECR VPED."""
+        return self.m is not None and getattr(self.m, "mt", None) is not None
 
     def ecr(self) -> int:
         """The EJTAG Control register as the probe reads it (Capture-DR)."""
@@ -236,6 +261,8 @@ class TAP:
                 v |= ECR_DM
             if self.ejtagbrk and m.dint_pending:
                 v |= ECR_EJTAGBRK
+            if self.mt and m.mt.vpe_disabled(m.vpe):
+                v |= ECR_VPED                   # (MD00534 Table 11.25)
         if self.per_rst:
             v |= ECR_PERRST
         if self.pr_rst:
@@ -259,7 +286,8 @@ class TAP:
         m = self.m
         tlb = m is not None and getattr(m.mmu, "mt", 3) in (1, 4)
         m16 = m is not None and getattr(m, "compressed", None) == "mips16e"
-        return IMPCODE_BASE | ((2 << 21) if tlb else 0) | (IMPCODE_MIPS16 if m16 else 0)
+        return IMPCODE_BASE | ((2 << 21) if tlb else 0) | (IMPCODE_MIPS16 if m16 else 0) \
+            | (IMPCODE_MIPS64 if self.wide else 0)
 
     def pcsample(self) -> int:
         ej = self.m.ejtag if self.m is not None else None
@@ -278,7 +306,7 @@ class TAP:
         if ir == CONTROL:
             return self.ecr()
         if ir == ALL:
-            return (self.address << 64) | (self.data << 32) | self.ecr()
+            return (self.address << (96 if self.wide else 64)) | (self.data << 32) | self.ecr()
         if ir == FASTDATA:
             return (self.data << 1) | int(self._fastdata_ok())
         if ir == PCSAMPLE:
@@ -296,12 +324,13 @@ class TAP:
 
     def _update_dr(self, value: int) -> None:
         ir = self.ir
+        dmask = M64 if self.wide else M32
         if ir == DATA:
-            self.data = value & M32
+            self.data = value & dmask
         elif ir == CONTROL:
             self._write_ecr(value & M32)
         elif ir == ALL:
-            self.data = (value >> 32) & M32
+            self.data = (value >> 32) & dmask
             self._write_ecr(value & M32)
         elif ir == FASTDATA:
             self._fastdata(value)
@@ -345,7 +374,7 @@ class TAP:
         shifted in)."""
         if not value & 1 and self._fastdata_ok():
             if not self.pending["write"]:
-                self.data = (value >> 1) & M32
+                self.data = (value >> 1) & (M64 if self.wide else M32)
             self.pending["done"] = True
 
     def processor_access(self, kind: str, va: int, size: int, value: int = 0) -> int:
@@ -358,20 +387,28 @@ class TAP:
                 "memory, the access waits forever (MD00047 2.2.2.1)",
                 name=None, word=None, addr=va)
         big = self.m.big_endian
-        k = va & 3
-        shift = 8 * (4 - size - k) if big else 8 * k
-        if size == 1:
-            psz, addr = 0, va
-        elif size == 2:
-            psz, addr = 1, va & ~1
-        elif size == 4:
-            psz, addr = 2, va & ~3
-        else:                                   # 3 bytes (LWL / LWR / SWL / SWR): triple
-            psz, addr = 3, (va & ~3) | (1 if k else 0)
+        if self.wide:                           # a doubleword bus (Table 4.7)
+            k = va & 7
+            shift = 8 * (8 - size - k) if big else 8 * k
+            psz, low = psz64(size, k)
+            addr = (va & ~7) | low
+            dmask = M64
+        else:
+            k = va & 3
+            shift = 8 * (4 - size - k) if big else 8 * k
+            if size == 1:
+                psz, addr = 0, va
+            elif size == 2:
+                psz, addr = 1, va & ~1
+            elif size == 4:
+                psz, addr = 2, va & ~3
+            else:                               # 3 bytes (LWL / LWR / SWL / SWR): triple
+                psz, addr = 3, (va & ~3) | (1 if k else 0)
+            dmask = M32
         write = kind == "store"
         self.address = addr & M32
         if write:
-            self.data = (value << shift) & M32
+            self.data = (value << shift) & dmask
         self.pending = {"kind": kind, "va": va, "size": size, "psz": psz, "write": write,
                         "done": False}
         if self.probe is not None:
@@ -459,7 +496,9 @@ class Probe:
         psz = (ecr >> ECR_PSZ_SHIFT) & 3
         tap.scan_ir(ADDRESS)
         addr = tap.scan_dr(0)
-        size, offsets = _psz_bytes(psz, addr)
+        wide = tap.wide                                  # a doubleword Data register
+        bus, dmask = (8, M64) if wide else (4, M32)
+        size, offsets = (_psz_bytes64 if wide else _psz_bytes)(psz, addr)
         big = tap.m.big_endian
         va = tap.pending["va"]
         fast = DMSEG <= va <= FASTDATA_END
@@ -467,28 +506,28 @@ class Probe:
             tap.scan_ir(FASTDATA)
             if write:
                 out = tap.scan_dr(0)                     # SPrAcc 0: complete
-                self.upload.append((out >> 1) & M32)
-                self.log.append(("store", va, size, (out >> 1) & M32, "fastdata"))
+                self.upload.append((out >> 1) & dmask)
+                self.log.append(("store", va, size, (out >> 1) & dmask, "fastdata"))
             else:
                 if not self.download:
                     return                               # nothing to give: the core waits
-                value = self.download.popleft() & M32
+                value = self.download.popleft() & dmask
                 tap.scan_dr(value << 1)
                 self.log.append(("load", va, size, value, "fastdata"))
             self.accesses += 1
             return
-        base = (addr & ~3) - DMSEG
+        base = (addr & ~(bus - 1)) - DMSEG
         tap.scan_ir(DATA)
         if write:
             data = tap.scan_dr(0)
-            for k in offsets:                            # Figure 11.20: the lanes by
-                lane = 3 - k if big else k               # byte order
+            for k in offsets:                            # Figure 11.20 / Table 4.7:
+                lane = bus - 1 - k if big else k         # the lanes by byte order
                 self.mem[base + k] = (data >> 8 * lane) & 0xFF
             self.log.append(("store", va, size, data))
         else:
             data = 0                                     # unused lanes: 0 (11.4.3.1)
             for k in offsets:
-                lane = 3 - k if big else k
+                lane = bus - 1 - k if big else k
                 data |= self.mem.get(base + k, 0) << 8 * lane
             tap.scan_dr(data)
             self.log.append(("fetch" if tap.pending["kind"] == "fetch" else "load", va,
@@ -497,13 +536,55 @@ class Probe:
         tap.scan_dr(self._ecr_value(pracc=False))        # finish: PrAcc = 0
         self.accesses += 1
 
-    def read_sample(self, tap: TAP) -> tuple[int, int] | None:
-        """A PCSAMPLE scan: (PC, ASID) if New, clearing New."""
+    def read_sample(self, tap: TAP) -> tuple[int, int, int | None] | None:
+        """A PCSAMPLE scan: (PC, ASID, TC — None without the MT Module) if
+        New, clearing New."""
         tap.scan_ir(PCSAMPLE)
         v = tap.scan_dr(0)                               # New written 0
         if not v & 1:
             return None
-        return (v >> 1) & M32, (v >> 33) & 0xFF
+        top = 65 if tap.wide else 33                     # Figure 7.2 (MIPS64) / 7.1
+        return ((v >> 1) & (M64 if tap.wide else M32), (v >> top) & 0xFF,
+                (v >> (top + 8)) & 0xFF if tap.mt else None)
+
+
+def psz64(size: int, k: int) -> tuple[int, int]:
+    """Psz and Address[2:0] of a ``size``-byte access at offset ``k`` of a
+    doubleword (MD00047 Table 4.7): byte / halfword at their offset, a
+    word at 0 / 4, 5-7 bytes from offset 0 (001-011) or ending at 7
+    (101-111), a triple at 0 / 1 / 4 / 5 (000 / 010 / 100 / 110), a
+    doubleword at 111."""
+    if size == 1:
+        return 0, k
+    if size == 2:
+        return 1, k
+    if size == 3:
+        return 3, {0: 0, 1: 2, 4: 4, 5: 6}[k]
+    if size == 8:
+        return 3, 7
+    if size == 4:
+        return 2, k
+    return 2, size - 4 if k == 0 else size        # 5 / 6 / 7 bytes
+
+
+def _psz_bytes64(psz: int, addr: int) -> tuple[int, tuple[int, ...]]:
+    """The inverse of :func:`psz64`: size and the bytes (offsets in the
+    doubleword) of a pending processor access."""
+    a = addr & 7
+    if psz == 0:
+        return 1, (a,)
+    if psz == 1:
+        return 2, (a, a + 1)
+    if psz == 2:
+        if a in (0, 4):
+            return 4, tuple(range(a, a + 4))
+        if a < 4:
+            return a + 4, tuple(range(0, a + 4))
+        return a, tuple(range(8 - a, 8))
+    if a == 7:
+        return 8, tuple(range(8))
+    lo = {0: 0, 2: 1, 4: 4, 6: 5}[a & 6]
+    return 3, (lo, lo + 1, lo + 2)
 
 
 def _psz_bytes(psz: int, addr: int) -> tuple[int, tuple[int, ...]]:

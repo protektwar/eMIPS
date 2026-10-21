@@ -27,7 +27,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import BOOT_MODES, COMPRESSED, DSP_LEVELS, Options
+from .options import BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, Options
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
 from .syntax import parse_gpr
@@ -145,13 +145,13 @@ class Debugger(cmd.Cmd):
                 raise CliError("no instruction is about to execute")
             return pc
         if t.startswith("$"):
-            n = parse_gpr(t)
+            n = self._gpr(t)
             if n is None:
                 raise CliError(f"not a register: {t}")
             return s.machine.read_reg(n)
         if t.lower().startswith(("0x", "0b", "0o")):
             try:
-                return int(t, 0) & M32
+                return int(t, 0) & s.machine.amask      # (MIPS64: 64-bit addresses)
             except ValueError:
                 raise CliError(f"not an address: {t}") from None
         if t.isdigit():
@@ -209,7 +209,8 @@ class Debugger(cmd.Cmd):
 
     def _exception_line(self, e: dict) -> str:
         """``exception TLBL (TLB refill: ...) at PC, BadVAddr -> vector``."""
-        what = e["error"] + (" (TLB refill)" if e.get("refill") else "")
+        what = e["error"] + ((" (XTLB refill)" if e.get("xtlb") else " (TLB refill)")
+                             if e.get("refill") else "")
         why = f": {e['why']}" if e.get("why") else ""
         bad = f", BadVAddr 0x{e['badvaddr']:08x}" if e.get("badvaddr") is not None else ""
         core = f"{self.s.cpu_name(e['cpu'])}: " if e.get("cpu") is not None else ""
@@ -469,19 +470,21 @@ class Debugger(cmd.Cmd):
         s = self.s
         rows = s.registers()
         if arg.strip():
-            want = {parse_gpr(t) for t in arg.split()}
+            want = {self._gpr(t) for t in arg.split()}
             if None in want:
                 raise CliError("regs takes register names: regs $t0 $sp")
             rows = [r for i, r in enumerate(rows) if i in want]
+            w = s.hex_digits()
             for name, value, changed in rows:
-                self.say(f"{name:>6} = 0x{value:08x}  {self._signed(value)}"
+                self.say(f"{name:>6} = 0x{value:0{w}x}  {self._signed(value, 4 * w)}"
                          + ("  *" if changed else ""))
             return
+        w = s.hex_digits()
         for i in range(0, 32, 4):
-            self.say("  ".join(f"{n:>5}{'*' if ch else ' '}0x{v:08x}"
+            self.say("  ".join(f"{n:>5}{'*' if ch else ' '}0x{v:0{w}x}"
                                for n, v, ch in rows[i:i + 4]))
         m = s.machine
-        self.say(f"   pc  0x{m.pc:08x}    hi  0x{m.hi:08x}    lo  0x{m.lo:08x}"
+        self.say(f"   pc  0x{m.pc:0{w}x}    hi  0x{m.hi:0{w}x}    lo  0x{m.lo:0{w}x}"
                  + (f"    shadow set {m.srs_field(C.SRS_CSS)} of 0-{m.hss}"
                     if m.srs_field(C.SRS_CSS) else ""))
 
@@ -509,13 +512,16 @@ class Debugger(cmd.Cmd):
         0xFF300000), the debug vector, the hardware breakpoints and watch
         registers.  The debugger sets them as a probe would:
           ejtag dint                     a debug interrupt (the DINT input)
-          ejtag ib N LOC [mask M] [asid A] [trigger]
+          ejtag ib N LOC [mask M] [asid A] [tc T] [trigger]
                                          instruction breakpoint N (0-3): a DIB
                                          exception there (trigger: only IBS.BS)
-          ejtag db N LOC [load|store] [mask M] [value V] [asid A] [trigger]
+          ejtag db N LOC [load|store] [mask M] [value V] [asid A] [tc T]
+                [trigger]
                                          data breakpoint N (0-1): DDBL / DDBS
                                          (precise); with a value: DDBLImpr /
                                          DDBSImpr after the access (imprecise)
+                                         (tc T: only thread context T, the
+                                         MT Module's TCuse)
           ejtag watch N LOC [i|r|w|rw] [mask M] [asid A]
                                          watch registers N (0, 1: fetches; 2,
                                          3: loads / stores): a Watch exception
@@ -893,7 +899,7 @@ class Debugger(cmd.Cmd):
         rest = words[2:]
         while rest:
             w = rest.pop(0)
-            if w in ("mask", "value", "asid"):
+            if w in ("mask", "value", "asid", "tc"):
                 if not rest:
                     raise CliError(f"{w} needs a number")
                 try:
@@ -907,8 +913,12 @@ class Debugger(cmd.Cmd):
         asid = opts.get("asid")
         if asid is not None and kind != "watch" and not s.machine.ejtag.asid_sup:
             raise CliError("ASID compares need a TLB (IBS / DBS.ASIDsup = 0 with this MMU)")
+        tc = opts.get("tc")
+        if tc is not None and (kind == "watch" or s.machine.mt is None):
+            raise CliError("tc T: a hardware breakpoint of a core with the MT Module (TCuse)")
         enable = EJ.BC_TE if opts.get("trigger") else EJ.BC_BE
-        use = EJ.BC_ASIDUSE if asid is not None else 0
+        use = (EJ.BC_ASIDUSE if asid is not None else 0) | (
+            EJ.BC_TCUSE | (tc & 0xFF) << EJ.BC_TC_SHIFT if tc is not None else 0)
         if kind == "ib":
             s.debug_write("drseg", base + EJ.IBA, addr)
             s.debug_write("drseg", base + EJ.IBM, opts.get("mask", 0))
@@ -945,7 +955,7 @@ class Debugger(cmd.Cmd):
         """cp0   PC, HI, LO and the CP0 registers (Status, Cause, EPC ...), FCSR"""
         self._need_program()
         for name, value in self.s.special_registers():
-            self.say(f"{name:>9} = 0x{value:08x}")
+            self.say(f"{name:>9} = 0x{value:0{self.s.hex_digits(name)}x}")
 
     def do_fpu(self, arg: str) -> None:
         """fpu   the 32 FPU registers (as single / double) and FCSR"""
@@ -994,6 +1004,22 @@ class Debugger(cmd.Cmd):
         for line in self.s.mt_lines():
             self.say(f"  {line}")
 
+    def do_vp(self, arg: str) -> None:
+        """vp [itu]   Release 6 virtual processors (a CM3 system: --vps N, the
+        I6400): per core VP_RUNNING, the DVP that holds the others, SAAR, and
+        every VP (GlobalNumber, VPControl, PC); itu lists the selected VP's
+        core's ITU cells (gating storage)"""
+        self._need_program()
+        parts = arg.split()
+        if parts == ["itu"]:
+            lines = self.s.itu_lines()
+        elif parts:
+            raise CliError("vp [itu]")
+        else:
+            lines = self.s.vp_lines()
+        for line in lines:
+            self.say(f"  {line}")
+
     def do_tc(self, arg: str) -> None:
         """tc N   thread context N: its TC registers and its GPRs (MFTR's view)"""
         self._need_program()
@@ -1038,8 +1064,10 @@ class Debugger(cmd.Cmd):
         from .mmu import cca_name
         t = self.s.machine.translate(self.resolve(arg.strip()))
         if t.pa is None:
+            what = ("an Address Error" if t.fault == "address error"
+                    else f"a TLB {t.fault}")
             self.say(f"0x{t.va:08x} {t.segment} -> no physical address  ({t.how}: "
-                     f"an access would take a TLB {t.fault} exception)")
+                     f"an access would take {what} exception)")
             return
         self.say(f"0x{t.va:08x} {t.segment} -> physical 0x{t.pa:08x}  ({t.how}; "
                  f"attribute {t.cca} = {cca_name(t.cca)})")
@@ -1129,7 +1157,7 @@ class Debugger(cmd.Cmd):
         self._need_program()
         s = self.s
         if s.cps is None:
-            raise CliError("one core: no Coherence Manager (set cores 2..4)")
+            raise CliError("one core: no Coherence Manager (set cores 2..6)")
         cm = s.cps.cm
         if not arg.strip():
             self.say("\n".join(cm.describe()))
@@ -1151,7 +1179,7 @@ class Debugger(cmd.Cmd):
         from .cpsview import format_cps
         self._need_program()
         if self.s.cps is None:
-            raise CliError("one core: no CPS registers (set cores 2..4)")
+            raise CliError("one core: no CPS registers (set cores 2..6)")
         self.say(format_cps(self.s))
 
     def do_gic(self, arg: str) -> None:
@@ -1162,7 +1190,7 @@ class Debugger(cmd.Cmd):
         self._need_program()
         s = self.s
         if s.cps is None:
-            raise CliError("one core: no GIC (set cores 2..4)")
+            raise CliError("one core: no GIC (set cores 2..6)")
         self.say("\n".join(s.cps.gic.describe()))
 
     def do_tlb(self, arg: str) -> None:
@@ -1322,10 +1350,11 @@ class Debugger(cmd.Cmd):
                 raise CliError(str(exc) if "core" in str(exc) else
                                f"not a core number: {arg.strip()}") from None
         if len(s.machines) < 2:
-            self.say("one core (core 0); set cores 2..4 for a multi-core system")
+            self.say(f"one core (core 0); set cores 2..{MAX_CORES} for a multi-core system")
             return
+        d = s.hex_digits("pc")
         for c in s.cores():
-            where = (f", pc 0x{c['pc']:08x}" if c["pc"] is not None else "") + (
+            where = (f", pc 0x{c['pc']:0{d}x}" if c["pc"] is not None else "") + (
                 f" (line {c['line']})" if c["line"] else "") + (
                 " (exited)" if c["halted"] else " (waiting)" if c["waiting"] else "")
             self.say(("=> " if c["selected"] else "   ") + f"{s.cpu_name(c['cpu'])}: "
@@ -1546,13 +1575,16 @@ class Debugger(cmd.Cmd):
         exceptions cp0|stop | syscalls on|off | names abi|numeric |
         icache|dcache|l2|l3 SIZE[:WAYS[:LINE]]|none | write-buffer on|off |
         mmu fixed|bat|tlb[:N]|ftlb[:N[:SxW]][+sc][+pw] | model 5-stage|24k |
-        cores 1..4 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
+        cores 1..6 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
         disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off |
         compressed auto|none|mips16e|micromips|micromips-only | fpu on|off |
         dsp auto|none|dsp|dspr2 (the DSP Module) |
         mt auto|none|VPES:TCS (the MT Module: 1-2 VPEs, up to 9 TCs) |
         mt-pm rr|wrr|wrr2 (its policy manager) | itc auto|none|FIFOS:SEMAPHORES |
-        core NAME|generic (a real core's settings: python3 -m emips cores)
+        vps 1..4 (Release 6 VPs a core: a CM3 system) |
+        itu auto|none|FIFOS:SINGLES[:DEPTH] (a CM3 core's ITU) |
+        core NAME|generic (a real core's settings: python3 -m emips cores) |
+        arch mips32|mips64 (MIPS64: 64-bit registers, the doubleword instructions)
         (changes reassemble or restart the program; a setting the chosen core
         is not built with makes it the generic core)"""
         parts = arg.split()
@@ -1598,8 +1630,24 @@ class Debugger(cmd.Cmd):
             if on and (o.cores < 2 or o.board.split(":")[0] != "malta"):
                 raise CliError("an IOCU needs a multi-core Malta: set board malta, set cores 2")
             o.iocu = on
-        elif key == "cores" and value in ("1", "2", "3", "4"):
+        elif key == "cores" and value.isdigit() and 1 <= int(value) <= MAX_CORES:
             o.cores = int(value)
+        elif key == "vps":
+            if not (value.isdigit() and 1 <= int(value) <= 4):
+                raise CliError("set vps 1..4")
+            if int(value) > 1 and self.s.release != "R6":
+                raise CliError("virtual processors are Release 6's (set release R6)")
+            o.vps = int(value)
+        elif key == "itu":
+            from .itu import parse_spec as itu_spec
+            v = value.lower()
+            if v != "auto":
+                try:
+                    spec = itu_spec(v)
+                except ValueError as exc:
+                    raise CliError(str(exc)) from None
+                v = "none" if spec is None else ":".join(map(str, spec))
+            o.itu = v
         elif key == "shadow-sets" and value.isdigit() and 1 <= int(value) <= 16:
             o.shadow_sets = int(value)
         elif key == "compressed" and value.lower() in COMPRESSED:
@@ -1669,6 +1717,8 @@ class Debugger(cmd.Cmd):
             except ValueError as exc:
                 raise CliError(str(exc)) from None
             o.board = value.lower()
+        elif key == "arch" and value.lower() in ("mips32", "mips64"):
+            o.arch = value.lower()
         elif key == "disks":
             from .malta import parse_disks
             value = "" if value.lower() == "none" else value
@@ -1745,9 +1795,19 @@ class Debugger(cmd.Cmd):
             raise CliError("the count must be at least 1")
         return n
 
+    def _gpr(self, tok: str) -> int | None:
+        """A GPR name (MIPS64: the n64 names, $t0 = $12)."""
+        if self.s.wide:
+            from .assembler import n64_operand
+            try:
+                tok = n64_operand(tok)
+            except ValueError:
+                return None
+        return parse_gpr(tok)
+
     @staticmethod
-    def _signed(v: int) -> int:
-        return v - (1 << 32) if v >> 31 else v
+    def _signed(v: int, bits: int = 32) -> int:
+        return v - (1 << bits) if v >> (bits - 1) else v
 
 
 HELP = """\
@@ -1833,7 +1893,10 @@ def options_from_args(args) -> Options:
                    dsp=getattr(args, "dsp", None) or "auto",
                    mt=getattr(args, "mt", None) or "auto",
                    mt_pm=getattr(args, "mt_pm", None) or "rr",
-                   itc=getattr(args, "itc", None) or "auto")
+                   itc=getattr(args, "itc", None) or "auto",
+                   vps=getattr(args, "vps", None) or 1,
+                   itu=getattr(args, "itu", None) or "auto",
+                   arch=getattr(args, "arch", None) or "mips32")
 
 
 def explicit_fields(args) -> set[str]:
@@ -1841,7 +1904,7 @@ def explicit_fields(args) -> set[str]:
     on purpose: a core preset (``--core``) sets only the others."""
     out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
     for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
-                 "compressed", "dsp", "mt", "mt_pm", "itc"):
+                 "compressed", "dsp", "mt", "mt_pm", "itc", "vps", "itu", "arch"):
         if getattr(args, name, None) is not None:
             out.add(name)
     for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer")):
@@ -1895,7 +1958,7 @@ def session_from_args(args) -> Session:
     given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
                             ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"),
                             ("model", "model"), ("compressed", "compressed"), ("dsp", "dsp"),
-                            ("mt", "mt"))
+                            ("mt", "mt"), ("vps", "vps"), ("arch", "arch"), ("board", "board"))
              if getattr(args, a, None) not in (None, "kernel")}
     if options.core:
         given |= {"core"} | explicit_fields(args)

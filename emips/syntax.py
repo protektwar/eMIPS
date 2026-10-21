@@ -62,7 +62,16 @@ def parse_fcc(tok: str) -> int | None:
     return int(t) if t.isdigit() and int(t) < 8 else None
 
 
-def gpr_name(i: int, abi: bool = True) -> str:
+#: the n64 / n32 ABI names (MIPS64, PLAN M22): $a4-$a7 = 8-11, $t0-$t3 = 12-15
+GPR_NAMES_N64 = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+                 "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
+                 *GPR_NAMES[16:]]
+
+
+def gpr_name(i: int, abi: bool | str = True) -> str:
+    """``$t0``; ``abi=False``: ``$8``; ``abi="n64"``: the n64 name."""
+    if abi == "n64":
+        return f"${GPR_NAMES_N64[i]}"
     return f"${GPR_NAMES[i]}" if abi else f"${i}"
 
 
@@ -192,6 +201,7 @@ _EXPLICIT: dict[str, tuple[str, ...]] = {
     "WAIT": ("[code19]",), "SYNC": ("[stype]",),
     "MFC0": ("rt", "c0rd", "[sel]"), "MTC0": ("rt", "c0rd", "[sel]"),
     "DI": ("[rt]",), "EI": ("[rt]",), "RDHWR": ("rt", "hwr"),
+    "DVP": ("[rt]",), "EVP": ("[rt]",),
     "RDPGPR": ("rd", "rt"), "WRPGPR": ("rd", "rt"),
     "CACHE": ("hint", "mem"), "PREF": ("hint", "mem"),
     "CACHEE": ("hint", "mem9"), "PREFE": ("hint", "mem9"),
@@ -318,7 +328,7 @@ def _dsp_specs() -> dict[str, tuple[str, ...]]:
     put(("rd", "ac21"), "MFHI@DSP MFLO@DSP")
     put(("rt", "rs"), "INSV")
     put(("rd", "rs"), "RADDU.W.QB")
-    put(("rd", "idx"), "LWX LHX LBUX")
+    put(("rd", "idx"), "LWX LHX LBUX LDX")
     put(("rt", "rs", "dsa"), "APPEND PREPEND PRECR_SRA.PH.W PRECR_SRA_R.PH.W")
     put(("rt", "rs", "bp2"), "BALIGN")
     put(("rd", "dimm10"), "REPL.PH")

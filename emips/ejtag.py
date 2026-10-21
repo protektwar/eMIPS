@@ -35,6 +35,12 @@ exception priorities Table 5.1, vectors Tables 5.5 / 5.6).
 * The DCR (Chapter 3; 24K Table 11.1): IntE / NMIE mask interrupts / NMI
   in Non-Debug Mode, NMIpend shows a held NMI, ENM the endianness, IB /
   DB the hardware breakpoints, PCR the PC sampling rate, SRstE, ProbEn.
+* A 64-bit (MIPS64) core (MD00047 2.2.2.2, 5.2, 7.2): every drseg register
+  is 64 bits wide (IBA / IBM / DBA / DBM / DBV compare 64-bit addresses and
+  data; no DBVH — 0x2124 is DBV's upper half), drseg takes doubleword
+  transactions (other sizes UNDEFINED: eMIPS reads / writes those bytes of
+  the doubleword), the data breakpoints see the 8 byte lanes of a
+  doubleword bus, and PCsample holds a 64-bit PC (Figure 7.2).
 """
 
 from __future__ import annotations
@@ -134,6 +140,11 @@ DBC_BLM_SHIFT = 4
 IBC_WRITE = BC_TE | BC_BE
 DBC_WRITE = (0xFF << DBC_BAI_SHIFT) | DBC_NOSB | DBC_NOLB | (0xFF << DBC_BLM_SHIFT) \
     | BC_TE | BC_BE
+#: with the MT Module (the 34K, MD00534 Tables 11.12 / 11.18; MD00047 5.3):
+#: the TC to match (31:24) and TCuse
+BC_TCUSE = 1 << 22
+BC_TC_SHIFT = 24
+BC_TC_WRITE = (0xFF << BC_TC_SHIFT) | BC_TCUSE
 
 
 def _ib_names() -> dict[int, str]:
@@ -167,6 +178,10 @@ class EJTAG:
 
     def __init__(self, m) -> None:
         self.m = m
+        #: a 64-bit core: 64-bit registers, doubleword drseg transactions
+        self.wide = bool(getattr(m, "wide", False))
+        self.mask = (1 << 64) - 1 if self.wide else M32
+        self.bus = 8 if self.wide else 4
         self.reset()
 
     def reset(self) -> None:
@@ -178,7 +193,8 @@ class EJTAG:
         #: the core's TAP (emips.tap.TAP; set by TAP.processor_reset), or None
         self.tap = None
         #: PC sampling (MD00047 ch. 7, 24K 11.6): the PCsample register
-        #: (New, PC 32:1, ASID 40:33), the cycle counter, a sample due
+        #: (New, PC 32:1, ASID 40:33; MIPS64: PC 64:1, ASID 72:65), the
+        #: cycle counter, a sample due
         self.pc_sample = 0
         self.pc_count = 0
         self.sample_due = False
@@ -235,10 +251,15 @@ class EJTAG:
             self.sample_due = True
 
     def sample(self, pc: int) -> None:
-        """The graduating instruction at ``pc`` is sampled: New = 1."""
+        """The graduating instruction at ``pc`` is sampled: New = 1; with
+        the MT Module its TC above the ASID (MD00047 Figures 7.1 / 7.2:
+        48:41, MIPS64 80:73 — the 34K always includes it, MD00534 11.6)."""
         self.sample_due = False
-        asid = self.m.cp0[(10, 0)]["value"] & 0xFF
-        self.pc_sample = 1 | ((pc & M32) << 1) | (asid << 33)
+        m = self.m
+        asid = m.cp0[(10, 0)]["value"] & 0xFF
+        top = 1 + 8 * self.bus
+        self.pc_sample = 1 | ((pc & self.mask) << 1) | (asid << top) | (
+            m._tc_id() << (top + 8) if m.mt is not None else 0)
 
     def read_dcr(self) -> int:
         """The DCR as software reads it: ENM from the core's byte order,
@@ -289,15 +310,15 @@ class EJTAG:
 
     def set_register(self, offset: int, value: int) -> None:
         """A write to drseg; unimplemented registers ignore it."""
-        value &= M32
+        value &= self.mask
         if offset == 0x0000:
             if (self.dcr ^ value) & (7 << DCR_PCR_SHIFT):
                 self.pc_count = 0               # a new rate restarts the count (7.2)
             self.dcr = (self.dcr & ~DCR_WRITE) | (value & DCR_WRITE)
             return
         sup = self.asid_sup
-        asid = BC_ASIDUSE if sup else 0
-        if offset == IBS:                       # BS: R/W on the 24K (Table 11.8)
+        asid = (BC_ASIDUSE if sup else 0) | (BC_TC_WRITE if self.m.mt is not None else 0)
+        if offset == IBS:                     # BS: R/W on the 24K (Table 11.8)
             self.ibs_bs = value & ((1 << IB_COUNT) - 1)
         elif offset == DBS:                     # BS: R/W0 (Table 11.14)
             self.dbs_bs &= value | ~((1 << DB_COUNT) - 1)
@@ -331,11 +352,12 @@ class EJTAG:
 
     # -- matching (MD00047 5.3; MD00343 11.2.5) ------------------------------------
 
-    def instruction_match(self, pc: int, asid: int) -> tuple[int, bool]:
+    def instruction_match(self, pc: int, asid: int, tc: int = 0) -> tuple[int, bool]:
         """IB_match of every enabled instruction breakpoint for the
-        instruction at ``pc``: (the matching ones as a BS mask, does one
-        of them break (BE)).  No MIPS16e: ISAMode is 0, so IBA / IBM bit
-        0 (ISA / ISAM) take part as an ordinary address bit."""
+        instruction at ``pc`` (of thread context ``tc``: the MT Module's
+        TCuse): (the matching ones as a BS mask, does one of them break
+        (BE)).  No MIPS16e: ISAMode is 0, so IBA / IBM bit 0 (ISA / ISAM)
+        take part as an ordinary address bit."""
         hits, brk = 0, False
         for n in range(IB_COUNT):
             c = self.ibc[n]
@@ -343,17 +365,20 @@ class EJTAG:
                 continue
             if c & BC_ASIDUSE and asid != self.ibasid[n]:
                 continue
-            if (self.ibm[n] | ~(pc ^ self.iba[n])) & M32 != M32:
+            if c & BC_TCUSE and tc != c >> BC_TC_SHIFT & 0xFF:
+                continue
+            if (self.ibm[n] | ~(pc ^ self.iba[n])) & self.mask != self.mask:
                 continue
             hits |= 1 << n
             brk = brk or bool(c & BC_BE)
         return hits, brk
 
     def data_match(self, addr: int, lanes: int, width: int, store: bool,
-                   asid: int) -> tuple[int, bool, int]:
-        """DB_addr_match of every enabled data breakpoint for an access:
-        (the precise ones — no value compare — as a BS mask, does one of
-        them break, the ones that still need the data value)."""
+                   asid: int, tc: int = 0) -> tuple[int, bool, int]:
+        """DB_addr_match of every enabled data breakpoint for an access (of
+        thread context ``tc``): (the precise ones — no value compare — as a
+        BS mask, does one of them break, the ones that still need the data
+        value)."""
         full = (1 << width) - 1
         precise, brk, value = 0, False, 0
         for n in range(DB_COUNT):
@@ -362,7 +387,9 @@ class EJTAG:
                 continue
             if c & BC_ASIDUSE and asid != self.dbasid[n]:
                 continue
-            if (self.dbm[n] | ~(addr ^ self.dba[n])) & M32 != M32:
+            if c & BC_TCUSE and tc != c >> BC_TC_SHIFT & 0xFF:
+                continue
+            if (self.dbm[n] | ~(addr ^ self.dba[n])) & self.mask != self.mask:
                 continue
             bai = (c >> DBC_BAI_SHIFT) & full
             if not ~bai & lanes:
@@ -389,24 +416,30 @@ class EJTAG:
 
     def _lanes(self, va: int, size: int) -> int:
         """Shift of the low byte of a ``size``-byte access at ``va`` in its
-        word (the core's byte order)."""
-        k = va & 3
-        return 8 * (4 - size - k) if self.m.big_endian else 8 * k
+        word (a 64-bit core: doubleword) in the core's byte order."""
+        bus = self.bus
+        k = va & (bus - 1)
+        return 8 * (bus - size - k) if self.m.big_endian else 8 * k
+
+    def _reg_offset(self, va: int) -> int:
+        """The drseg register an access at ``va`` reaches (word / doubleword
+        aligned)."""
+        return (va - DRSEG_BASE) & 0xFFFFF & ~(self.bus - 1)
 
     # -- accesses (Debug Mode, dseg) --------------------------------------------
 
     def load(self, va: int, size: int) -> int:
         """A load from dseg (``Debug.LSNM = 0``).  drseg: only word
-        transactions are allowed (other sizes are UNDEFINED; eMIPS reads
-        the bytes of the word)."""
+        transactions are allowed — doubleword on a 64-bit core (other sizes
+        are UNDEFINED; eMIPS reads those bytes of the register)."""
         if va >= DRSEG_BASE:
-            word = self.register((va - DRSEG_BASE) & 0xFFFFC)
+            word = self.register(self._reg_offset(va))
             return (word >> self._lanes(va, size)) & ((1 << 8 * size) - 1)
         return self._probe("load", va, size)
 
     def store(self, va: int, value: int, size: int) -> None:
         if va >= DRSEG_BASE:
-            off = (va - DRSEG_BASE) & 0xFFFFC
+            off = self._reg_offset(va)
             shift = self._lanes(va, size)
             mask = ((1 << 8 * size) - 1) << shift
             old = self.register(off)
@@ -427,7 +460,7 @@ class EJTAG:
         registers; dmseg from a connected probe's memory (None without
         one: nothing would answer)."""
         if va >= DRSEG_BASE:
-            word = self.register((va - DRSEG_BASE) & 0xFFFFC)
+            word = self.register(self._reg_offset(va))
             return (word >> self._lanes(va, size)) & ((1 << 8 * size) - 1)
         tap = self.tap
         if tap is None or not tap.prob_en or tap.probe is None:

@@ -49,7 +49,7 @@ def _addr(value: int, symbols: Mapping[int, str] | None) -> str:
     return f"0x{value:08x}"
 
 
-def operand_text(kind: str, word: int, pc: int, *, abi: bool = True,
+def operand_text(kind: str, word: int, pc: int, *, abi: bool | str = True,
                  symbols: Mapping[int, str] | None = None) -> str:
     """Text of one operand of ``word``."""
     g = lambda lsb: gpr_name(_bits(word, lsb, 5), abi)   # noqa: E731
@@ -161,7 +161,7 @@ def _is_default(kind: str, name: str, word: int) -> bool:
 
 
 def disassemble(word: int, pc: int = 0, *, isa: ISA | None = None,
-                abi: bool = True, symbols: Mapping[int, str] | None = None,
+                abi: bool | str = True, symbols: Mapping[int, str] | None = None,
                 style: str = "mars", release: str | None = None,
                 dsp: int = 0, mt: bool = False) -> str:
     """Assembly text of one instruction word at address ``pc``.
@@ -172,6 +172,8 @@ def disassemble(word: int, pc: int = 0, *, isa: ISA | None = None,
     MT Module's (``isa``'s when given).
     """
     isa = isa or ISA.for_release(release, dsp, mt)
+    if abi is True and isa.arch == "mips64":    # MIPS64: the n64 names (PLAN M22)
+        abi = "n64"
     try:
         dec = isa.decode(word & M32)
     except ISADecodeError:

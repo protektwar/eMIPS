@@ -73,11 +73,32 @@ def acc(m, n: int) -> int:
 
 
 def set_acc(m, n: int, v: int) -> None:
+    """Write accumulator ``n`` from a 64-bit value: HI = bits 63..32, LO =
+    bits 31..0 (MIPS64, MD00375: each sign-extended)."""
     v &= M64
+    hi, lo = m._sxw(v >> 32), m._sxw(v)
     if n == 0:
-        m.hi, m.lo = v >> 32, v & M32
+        m.hi, m.lo = hi, lo
     else:
-        m.dsp_hi[n], m.dsp_lo[n] = v >> 32, v & M32
+        m.dsp_hi[n], m.dsp_lo[n] = hi, lo
+
+
+def _half(m, n: int, high: bool) -> int:
+    """HI[ac] / LO[ac] as the register holds it (MIPS64: all 64 bits)."""
+    if n == 0:
+        return m.hi if high else m.lo
+    return (m.dsp_hi if high else m.dsp_lo)[n]
+
+
+def _set_half(m, n: int, high: bool, v: int) -> None:
+    v &= m.amask
+    if n == 0:
+        if high:
+            m.hi = v
+        else:
+            m.lo = v
+    else:
+        (m.dsp_hi if high else m.dsp_lo)[n] = v
 
 
 def _flag(m, bit: int) -> None:
@@ -106,7 +127,9 @@ def _qb(d: int, c: int, b: int, a: int) -> int:
 
 
 def _r(m, w: int, which: Callable[[int], int]) -> int:
-    return m.read_reg(which(w))
+    """GPR[x]31..0: what every DSP operation reads (MIPS64, MD00375: the
+    low word; a NotWordValue operand is UNPREDICTABLE)."""
+    return m.read_reg(which(w)) & M32
 
 
 def _sat(m, v: int, lo: int, hi: int, bit: int) -> int:
@@ -467,7 +490,9 @@ def _maq(left: bool, sat: bool) -> Executor:
         n = _ac(w)
         i = 0 if left else 1
         p = _mul_q15(m, _halves(_r(m, w, _rs))[i], _halves(_r(m, w, _rt))[i], 16 + n)
-        v = acc(m, n) + p
+        # MIPS64 (MD00375 sat32AccumulateQ31: HI[acc]63..0 || LO[acc]63..0
+        # + a): bits 32 / 31 of the sum are those of the 64-bit LO + a
+        v = (_half(m, n, False) if sat and m.wide else acc(m, n)) + p
         if sat:                                          # sat32AccumulateQ31
             # only bits 32 and 31 of the sum are compared; the page has the
             # limits swapped (temp32 = 0 -> 0x80000000): eMIPS saturates as
@@ -500,21 +525,21 @@ def _base_ac(op: str) -> Executor:
 
 
 def _e_mfhi(m, w: int) -> None:
-    m.write_reg(_rd(w), acc(m, (w >> 21) & 3) >> 32)
+    """MFHI rd, ac (MIPS64: GPR[rd]63..0 <- HI[ac]63..0)."""
+    m.write_dreg(_rd(w), _half(m, (w >> 21) & 3, True))
 
 
 def _e_mflo(m, w: int) -> None:
-    m.write_reg(_rd(w), acc(m, (w >> 21) & 3))
+    m.write_dreg(_rd(w), _half(m, (w >> 21) & 3, False))
 
 
 def _e_mthi(m, w: int) -> None:
-    n = _ac(w)
-    set_acc(m, n, (_r(m, w, _rs) << 32) | (acc(m, n) & M32))
+    """MTHI rs, ac (MIPS64: HI[ac]63..0 <- GPR[rs]63..0)."""
+    _set_half(m, _ac(w), True, m.read_reg(_rs(w)))
 
 
 def _e_mtlo(m, w: int) -> None:
-    n = _ac(w)
-    set_acc(m, n, (acc(m, n) & ~M32) | _r(m, w, _rs))
+    _set_half(m, _ac(w), False, m.read_reg(_rs(w)))
 
 
 # ------------------------------------------------------ accumulator: extract
@@ -563,7 +588,10 @@ def _extp(var: bool, dp: bool) -> Executor:
         pos = m.dspctl & POS
         if pos - (size + 1) >= -1:
             v = (acc(m, n) >> (pos - size)) & ((1 << (size + 1)) - 1)
-            m.write_reg(_rt(w), v)
+            if var or dp:                   # MIPS64 (MD00375): zero-extended,
+                m.write_dreg(_rt(w), v)     # EXTP alone sign-extends (rev. 2.40)
+            else:
+                m.write_reg(_rt(w), v)
             m.dspctl &= ~(1 << EFI_BIT)
             if dp:
                 m.dspctl = (m.dspctl & ~POS) | ((pos - (size + 1)) & POS)
@@ -725,17 +753,21 @@ def _precr_sra(rnd: bool) -> Executor:
 # -------------------------------------------------------- loads and branches
 
 def _lx(size: int, signed: bool) -> Executor:
-    """LWX / LHX / LBUX: rd <- memory[base + index], aligned (AdEL)."""
+    """LWX / LHX / LBUX / LDX (MIPS64, MD00375): rd <- memory[base + index],
+    aligned (AdEL)."""
     def ex(m, w: int) -> None:
-        addr = (_r(m, w, _rs) + _r(m, w, _rt)) & M32
+        addr = (m.read_reg(_rs(w)) + m.read_reg(_rt(w))) & m.amask
         v = m.load(m.data_address(addr, size, store=False, aligned=True), size)
-        m.write_reg(_rd(w), _sx(v, 8 * size) if signed else v)
+        if size == 8:
+            m.write_dreg(_rd(w), v)
+        else:
+            m.write_reg(_rd(w), _sx(v, 8 * size) if signed else v)
     return ex
 
 
 def _bposge32(compact: bool) -> Executor:
     def ex(m, w: int) -> int | None:
-        target = (m.pc + 4 + (_sx(w, 16) << 2)) & M32
+        target = (m.pc + 4 + (_sx(w, 16) << 2)) & m.amask
         taken = (m.dspctl & POS) >= 32
         if compact:                                 # BPOSGE32C: no delay slot
             if taken:
@@ -828,6 +860,7 @@ EXECUTORS: dict[str, Executor] = {
     "PRECRQU_S.QB.PH": _e_precrqu_s_qb_ph,
     "PRECR_SRA.PH.W": _precr_sra(False), "PRECR_SRA_R.PH.W": _precr_sra(True),
     "LWX": _lx(4, False), "LHX": _lx(2, True), "LBUX": _lx(1, False),
+    "LDX": _lx(8, False),                               # MIPS64 (MD00375)
     "BPOSGE32": _bposge32(False), "BPOSGE32C": _bposge32(True),
 }
 
@@ -871,7 +904,7 @@ DSPCONTROL_READERS = _names("""RDDSP BPOSGE32 BPOSGE32C EXTP EXTPV EXTPDP EXTPDP
     ADDWC PICK.QB PICK.PH MTHLIP""")
 #: rows whose destination is rt (the others: rd), and those that also read it
 RT_DEST = ACC_READERS | _names("INSV APPEND PREPEND BALIGN PRECR_SRA.PH.W PRECR_SRA_R.PH.W")
-LOADS = _names("LWX LHX LBUX")
+LOADS = _names("LWX LHX LBUX LDX")
 
 
 def accumulator(n: int, half: str) -> object:

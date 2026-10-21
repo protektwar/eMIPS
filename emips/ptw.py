@@ -31,6 +31,17 @@ maps them (no nested refill); PTEW 0 / 1 (4- or 8-byte PTEs) are
 implemented, other widths are written as 0; with 8-byte PTEs and huge
 pages the directory entries are 8 bytes too (Table 9.34); pages larger
 than 256 MB or smaller than 4 KB abort the walk.
+
+MIPS64 (Vol. III MIPS64 4.14, 9.16-9.20; the P6600's choices, MD01138
+2.2.2.12-15 / 3.7): PWBase / PWField / PWSize are 64 bits; PWSize.PS
+picks the pointer size — 0: 32-bit pointers (compatibility addresses,
+sign-extended), only refills that would use the TLB Refill vector; 1:
+64-bit pointers and PTEs, only XTLB Refills, and PWCtl.XK / XS / XU say
+which of xuseg / xsseg / xkseg the walker serves, VA 63:62 joining the
+Global Directory index (Table 9.26).  No Base Directory (PWCtl.PWDirExt
+reads 0, PWField.BDI / PWSize.BDW read 0: the P6600's); PTEW = 1 only with
+PS = 0 (setting PS clears it, the P6600's rule).  The PTE's 64-bit rotate
+puts RI / XI at 63:62 — what the TLB keeps at 31:30 (``sim64.lo64``).
 """
 
 from __future__ import annotations
@@ -43,6 +54,10 @@ REGISTERS = frozenset({PWBASE, PWFIELD, PWSIZE, PWCTL})
 #: Config3.PW
 CFG3_PW = 1 << 24
 PWCTL_EN, PWCTL_DPH, PWCTL_HUGEPG = 1 << 31, 1 << 7, 1 << 6
+#: MIPS64: PWCtl.XK / XS / XU (28 / 27 / 26), PWSize.PS (30)
+PWCTL_X = 7 << 26
+PWSIZE_PS = 1 << 30
+M64 = (1 << 64) - 1
 
 
 class _Abort(Exception):
@@ -61,11 +76,13 @@ def reset(m, release: str, p5600: bool = False) -> None:
 
 
 def write(m, key: tuple[int, int], value: int, release: str) -> int:
-    """The value MTC0 leaves in a walker register (Vol. III 9.18-9.22)."""
+    """The value MTC0 leaves in a walker register (Vol. III 9.18-9.22;
+    MIPS64: see the module docstring)."""
     r6 = release == "R6"
+    wide = getattr(m.mmu, "wide", False)
     old = m.cp0[key]["value"]
     if key == PWBASE:
-        return value & M32
+        return value & (M64 if wide else M32)
     if key == PWFIELD:
         new = value & 0x3FFFFFFF
         if r6 and any((new >> s) & 0x3F < 12 for s in (24, 18, 12, 6)):
@@ -75,14 +92,15 @@ def write(m, key: tuple[int, int], value: int, release: str) -> int:
                 new = (new & ~0x3F) | (old & 0x3F)
         return new
     if key == PWSIZE:
-        new = value & 0x3FFFFFFF & ~(1 << 30)            # PS = 0 (32-bit)
+        new = value & 0x7FFFFFFF & ~(0 if wide else PWSIZE_PS)  # PS: MIPS64 only
         if r6 and (new >> 6) & 0x3F == 0:
             return old                       # R6: PTW = 0 drops the write
-        if (new & 0x3F) > 1:                 # PTEW: 0 and 1 are implemented
-            new &= ~0x3F
+        if (new & 0x3F) > 1 or (new & PWSIZE_PS and new & 0x3F):
+            new &= ~0x3F                     # PTEW: 0 and 1 (1 only with PS = 0)
         return new
     if key == PWCTL:
-        return value & (PWCTL_EN | PWCTL_DPH | PWCTL_HUGEPG | 0x3F)
+        return value & (PWCTL_EN | PWCTL_DPH | PWCTL_HUGEPG | 0x3F
+                        | (PWCTL_X if wide else 0))
     return old
 
 
@@ -91,6 +109,12 @@ def _rotate(t: int, ptei: int) -> int:
     t >>= max(ptei - 2, 0)
     t &= M32
     return ((t >> 2) | ((t & 3) << 30)) & M32
+
+
+def _hi(mmu, va: int) -> int:
+    """The EntryHi a walk writes: the faulting address's R / VPN2 (and bit
+    12, for the 1 KB-page layout of the TLB entry)."""
+    return va & (mmu._hi_vpn | 0x1000)
 
 
 def _mask(page: int) -> int:
@@ -116,11 +140,39 @@ def walk(mmu, m, va: int) -> bool:
     pti, ptei = (fld >> 6) & 0x3F, fld & 0x3F
     huge = bool(ctl & PWCTL_HUGEPG)
     psn = ctl & 0x3F
-    dshift = 2 + (1 if huge and ptew == 1 else 0)
+    wide = mmu.wide
+    ps = wide and bool(size & PWSIZE_PS)
+    prefix, pbits = 0, 0                     # VA 63:62 above the Global index
+    if wide:
+        if mmu._xtlb(m, va) != ps:           # PS: 32-bit regions or 64-bit, not both
+            return False
+        if ps:                               # PWCtl.XK / XS / XU (Table 9.26)
+            sel, region = (ctl >> 26) & 7, va >> 62
+            if sel == 0b001 and region:
+                return False                 # xuseg only
+            if sel == 0b011 and region == 3:
+                return False                 # xuseg and xsseg
+            if sel == 0b101 and region == 1:
+                return False                 # xuseg and xkseg
+            if sel not in (0b001, 0b011, 0b101, 0b111):
+                return False                 # no segment (or a reserved setting)
+            pbits = {0b001: 0, 0b011: 1, 0b101: 1, 0b111: 2}[sel]
+            prefix = {0b011: region & 1, 0b101: region >> 1, 0b111: region}.get(sel, 0)
+    nshift = 3 if ps else 2                  # the native pointer: 8 or 4 bytes
+    dshift = nshift + (1 if huge and ptew == 1 else 0)
+    pmask = M64 if wide else M32
     asid = cp[(10, 0)]["value"] & 0xFF
 
+    def pointer(t: int) -> int:
+        """A directory entry as the next table's address: 64-bit with PS,
+        else a 32-bit (on MIPS64: compatibility, sign-extended) one."""
+        if ps:
+            return t & M64
+        t &= M32
+        return t | 0xFFFFFFFF00000000 if wide and t & 0x80000000 else t
+
     def read(addr: int, nbytes: int) -> int:
-        addr &= M32
+        addr &= pmask
         hit = mmu.walker_translation(m, addr)
         if hit is None:
             raise _Abort
@@ -133,10 +185,13 @@ def walk(mmu, m, va: int) -> bool:
 
     try:
         ptr = cp[PWBASE]["value"]
-        for width, lsb in ((gdw, gdi), (udw, udi), (mdw, mdi)):
+        for level, (width, lsb) in enumerate(((gdw, gdi), (udw, udi), (mdw, mdi))):
             if not width:
                 continue
-            entry = (ptr | (((va >> lsb) & ((1 << width) - 1)) << dshift)) & M32
+            index = (va >> lsb) & ((1 << width) - 1)
+            if level == 0 and pbits:          # (MIPS64, PS = 1: VA 63:62 prepended)
+                index |= prefix << width
+            entry = (ptr | (index << dshift)) & pmask
             t = read(entry, 1 << dshift)
             if huge and t >> psn & 1:        # a huge page PTE in a directory
                 lo = _rotate(t, ptei)
@@ -155,18 +210,18 @@ def walk(mmu, m, va: int) -> bool:
                     lo0, lo1 = (other, lo) if (va >> lsb) & 1 else (lo, other)
                 else:
                     raise _Abort
-                mmu.write_random(m, _mask(page), (va & ~0xFFF) | asid, lo0, lo1,
+                mmu.write_random(m, _mask(page), _hi(mmu, va) | asid, lo0, lo1,
                                  how="page walk (huge page)")
                 return True
-            ptr = t & M32
+            ptr = pointer(t)
         index = (va >> pti) & ((1 << ptw) - 1)
-        off0 = (index >> 1) << (2 + ptew + 1)
-        off1 = off0 | (1 << (2 + ptew))
-        nbytes = 4 << ptew
+        off0 = (index >> 1) << (nshift + ptew + 1)
+        off1 = off0 | (1 << (nshift + ptew))
+        nbytes = (1 << nshift) << ptew
         lo0 = _rotate(read(ptr | off0, nbytes), ptei)
         lo1 = _rotate(read(ptr | off1, nbytes), ptei)
         page = 1 << (pti if pti % 2 == 0 else pti - 1)   # down to a power of 4
-        mmu.write_random(m, _mask(page), (va & ~0xFFF) | asid, lo0, lo1, how="page walk")
+        mmu.write_random(m, _mask(page), _hi(mmu, va) | asid, lo0, lo1, how="page walk")
         return True
     except _Abort:
         return False

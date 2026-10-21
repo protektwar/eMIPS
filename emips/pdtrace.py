@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 M32 = 0xFFFFFFFF
+M64 = (1 << 64) - 1
 
 # ------------------------------------------------- InsComp / TType (ch. 3)
 NI, I, IL, IS, IPC, IB, ILB, ISB = range(8)
@@ -136,11 +137,11 @@ _LOADS = frozenset({"LWC1", "LDC1", "LWXC1", "LDXC1", "LUXC1", "LWC2", "LDC2", "
 _STORES = frozenset({"SWC1", "SDC1", "SWXC1", "SDXC1", "SUXC1", "SWC2", "SDC2"})
 
 
-def static_target(name: str, word: int, pc: int) -> int | None:
+def static_target(name: str, word: int, pc: int, mask: int = M32) -> int | None:
     """The target a branch or jump encodes (None: a register jump or not
-    a control instruction)."""
+    a control instruction); ``mask``: the PC's width (MIPS64: 64 bits)."""
     if name in ("J", "JAL", "JALX"):
-        return ((pc + 4) & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
+        return ((pc + 4) & mask & ~0x0FFFFFFF) | ((word & 0x3FFFFFF) << 2)
     if name in ("BC", "BALC"):
         off, bits = word & 0x3FFFFFF, 26
     elif name in ("BEQZC", "BNEZC"):
@@ -149,7 +150,7 @@ def static_target(name: str, word: int, pc: int) -> int | None:
         off, bits = word & 0xFFFF, 16
     if off >> (bits - 1):
         off -= 1 << bits
-    return (pc + 4 + (off << 2)) & M32
+    return (pc + 4 + (off << 2)) & mask
 
 
 def _is_likely(name: str) -> bool:
@@ -215,6 +216,11 @@ class PDtrace:
 
     def __init__(self, m) -> None:
         self.m = m
+        #: a 64-bit core (MIPS64): 64-bit PCs and addresses — full values of
+        #: two 32-bit AD parts, or one when the value is a sign-extended word
+        #: (MD00439 6.4, early TEnd); TMOAS.ISAM = 01
+        self.wide = bool(getattr(m, "wide", False))
+        self.mask = M64 if self.wide else M32
         #: the TCB on the core's TAP (set by TAP.processor_reset), or None
         self.tcb: TCB | None = None
         self.fifo: deque[Record] = deque()
@@ -336,25 +342,25 @@ class PDtrace:
         records: list[Record] = []
         if self.restart:                           # start / restart (3.4, 3.6)
             records.append(Record(TMOAS, self._tmoas(pom, sync=False)))
-            records.append(Record(TPC, pc, tmode=1))
+            records += self._full(TPC, pc)
             branched = True
             self.restart = False
             self.last_la = self.last_sa = None
             self.sync_left = self.sync_period
             self.sync_due = False
         else:
-            branched = self.last_pc is None or pc != (self.last_pc + 4) & M32
+            branched = self.last_pc is None or pc != (self.last_pc + 4) & self.mask
             if pom != self.mode or self.tmoas_due:      # a mode / ASID change (3.8)
                 records.append(Record(TMOAS, self._tmoas(pom, sync=False)))
             if branched and (tb or not self._predicted(pc)):
-                records.append(self._pc_record(pc))
+                records += self._pc_record(pc)
         self.tmoas_due = False
         self.mode = pom
         if self.sync_due and not branched and not is_load and not is_store \
                 and name not in FUNCTION_CR and not self._is_cti_name(name):
             inscomp = IPC                          # periodic synchronisation (3.5)
             records.append(Record(TMOAS, self._tmoas(pom, sync=True)))
-            records.append(Record(TPC, pc, tmode=1))
+            records += self._full(TPC, pc)
             self.sync_due = False
             self.sync_left = self.sync_period
             self.last_la = self.last_sa = None
@@ -365,10 +371,11 @@ class PDtrace:
         else:
             inscomp = IB if branched else I
         for kind, addr, size, value in accesses:
+            addr = self.m._bp_va(addr)             # (MIPS64: the 64-bit address)
             if kind == "load" and tmode & MODE_LA:
-                records.append(self._addr_record(TLA, addr))
+                records += self._addr_record(TLA, addr)
             elif kind == "store" and tmode & MODE_SA:
-                records.append(self._addr_record(TSA, addr))
+                records += self._addr_record(TSA, addr)
             if kind == "load" and tmode & MODE_LD or kind == "store" and tmode & MODE_SD:
                 records += _split(TD, value, size)
         self.last_pc = pc
@@ -380,23 +387,35 @@ class PDtrace:
 
     def _tmoas(self, pom: tuple[int, int], *, sync: bool) -> int:
         """A TMOAS record (Figure 3.3): SYNC, PendL 0 (loads complete in
-        order here), ISAM 00 (MIPS32), POM, ASID (0 without a TLB)."""
+        order here), ISAM 00 (MIPS32; 01 MIPS64), POM, ASID (0 without a
+        TLB)."""
         asid = pom[1] if getattr(self.m.mmu, "mt", 3) in (1, 4) else 0
-        return (int(sync) << 15) | (pom[0] << 8) | asid
+        return (int(sync) << 15) | (int(self.wide) << 11) | (pom[0] << 8) | asid
 
-    def _pc_record(self, pc: int) -> Record:
+    def _full(self, ttype: int, value: int, tmode: int = 1) -> list[Record]:
+        """A full PC / address (TMode = 1), or a signed delta (TMode = 0),
+        on the 32-bit AD bus: low bits first (6.1); a 64-bit value that is
+        a sign-extended word goes as one part, its TEnd early (6.4)."""
+        value &= self.mask
+        if not self.wide or value < 0x80000000 or value >= 0xFFFFFFFF80000000:
+            return [Record(ttype, value & M32, tmode=tmode)]
+        return [Record(ttype, value & M32, tmode=tmode, tend=0),
+                Record(ttype, value >> 32, tmode=tmode)]
+
+    def _pc_record(self, pc: int) -> list[Record]:
         """TPC: the delta from the last traced PC, halved (6.1), when it
         fits in 16 bits, else the full PC."""
         if self.last_pc is not None:
-            delta = ((pc - self.last_pc) & M32)
-            if delta >> 31:
-                delta -= 1 << 32
+            bits = 64 if self.wide else 32
+            delta = ((pc - self.last_pc) & self.mask)
+            if delta >> (bits - 1):
+                delta -= 1 << bits
             delta >>= 1
             if -(1 << 15) <= delta < (1 << 15):
-                return Record(TPC, delta & M32, tmode=0)
-        return Record(TPC, pc, tmode=1)
+                return [Record(TPC, delta & M32, tmode=0)]
+        return self._full(TPC, pc)
 
-    def _addr_record(self, ttype: int, addr: int) -> Record:
+    def _addr_record(self, ttype: int, addr: int) -> list[Record]:
         """TLA / TSA: the first after a start or a sync full, then the
         delta from the last address of that kind (6.2)."""
         last = self.last_la if ttype == TLA else self.last_sa
@@ -405,8 +424,8 @@ class PDtrace:
         else:
             self.last_sa = addr
         if last is None:
-            return Record(ttype, addr, tmode=1)
-        return Record(ttype, (addr - last) & M32, tmode=0)
+            return self._full(ttype, addr)
+        return self._full(ttype, addr - last, tmode=0)
 
     def _predicted(self, pc: int) -> bool:
         """Can trace regeneration work out ``pc`` from the program?  After
@@ -432,7 +451,8 @@ class PDtrace:
         if not name or name in _RETURNS:
             self.ctx = None
             return
-        target = None if name in _REGISTER_TARGET else static_target(name, word, pc)
+        target = None if name in _REGISTER_TARGET else static_target(name, word, pc,
+                                                                      self.mask)
         if name.startswith(("BC", "BEQZC", "BNEZC", "BEQC", "BNEC", "BLTC", "BGEC", "BLTUC",
                             "BGEUC", "BOVC", "BNVC", "BLEZC", "BGTZC", "BLTZC", "BGEZC",
                             "BEQZALC", "BNEZALC", "BLEZALC", "BGEZALC", "BGTZALC",
@@ -441,9 +461,9 @@ class PDtrace:
         elif name in ("JIC", "JIALC"):
             self.ctx = None
         elif _is_likely(name) or name in ("BC1FL", "BC1TL", "BC2FL", "BC2TL"):
-            self.ctx = ("likely", target, (pc + 8) & M32, (pc + 4) & M32)
+            self.ctx = ("likely", target, (pc + 8) & self.mask, (pc + 4) & self.mask)
         elif self._is_cti_name(name) and name not in _RETURNS:
-            self.ctx = ("slot", target, None, (pc + 4) & M32)
+            self.ctx = ("slot", target, None, (pc + 4) & self.mask)
         else:
             self.ctx = None
 
@@ -992,13 +1012,17 @@ class Step:
 
 def regenerate(formats: list[Format], code_word: Callable[[int], int | None], isa,
                *, tb: bool = False, mode: int = MODE_PC,
-               vector: Callable[[int], bool] = lambda a: False) -> list[Any]:
+               vector: Callable[[int], bool] = lambda a: False,
+               wide: bool = False) -> list[Any]:
     """Trace regeneration: the formats + the static program image ->
     the executed instructions (:class:`Step`) and events (strings: user
     data, triggers, overflows).  ``tb`` / ``mode``: the trace settings
     used; ``vector``: the exception vectors (an exception entry in a
     place the program predicts is recognised by its TPC — a decoder
-    rule, PDtrace does not mark exceptions)."""
+    rule, PDtrace does not mark exceptions); ``wide``: a 64-bit core's
+    trace (64-bit PCs and addresses; a value sent in one 32-bit part is
+    sign-extended, 6.4)."""
+    mask = M64 if wide else M32
     ins: list[tuple[int, Format]] = []          # (position in the stream, format)
     recs: list[Format] = []
     where: list[int] = []                       # each record's position
@@ -1010,6 +1034,10 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
             where.append(n)
     out: list[Any] = []
     q = 0                                       # the next record
+    #: an overflow (TF5) drops the records still in the FIFO: an instruction
+    #: before it never takes a record from after it (``bound``)
+    overflows = [n for n, f in enumerate(formats) if f.tf == 5]
+    bound = len(formats)
     pc: int | None = None
     ctx: tuple | None = None
     cur_mode: tuple[int, int] | None = None
@@ -1018,7 +1046,7 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
     def take(kinds: tuple[int, ...]) -> Format | None:
         """The next record of these kinds, applying TMOAS / TU on the way."""
         nonlocal q, cur_mode
-        while q < len(recs):
+        while q < len(recs) and where[q] < bound:
             r = recs[q]
             if r.ttype in kinds:
                 q += 1
@@ -1046,6 +1074,24 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
             shift += 32
         return v
 
+    def parts(r: Format, kinds: tuple[int, ...]) -> tuple[int, int]:
+        """A PC / address value and its width in bits (32 per part)."""
+        v, shift = r.ad, 32
+        while not r.tend:
+            r = take(kinds)
+            if r is None:
+                break
+            v |= r.ad << shift
+            shift += 32
+        return v, shift
+
+    def full(v: int, bits: int) -> int:
+        """A full value: on a 64-bit core sign-extended from its width."""
+        return _sbits(v, bits) & mask if wide else v
+
+    def delta(v: int, bits: int) -> int:
+        return _sbits(v, bits)
+
     def peek_pc(at: int) -> Format | None:
         """The next TPC if this instruction (at position ``at``) sent it.
         The FIFO pops one record a cycle, in order, in the cycle of the
@@ -1065,7 +1111,11 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
         return recs[k]
 
     for idx, f in ins:
+        bound = next((n for n in overflows if n > idx), len(formats))
         if f.tf == 5:
+            while q < len(recs) and where[q] < idx:     # what the overflow dropped the
+                if take(()) is None:                    # rest of: TMOAS / TU still apply
+                    q += 1
             out.append("overflow: trace lost, restarts")
             pc, ctx = None, None
             continue
@@ -1084,9 +1134,9 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
         if f.inscomp == IPC:                    # never a branch: sequential, then
             r = take((TPC,))                    # checked by the full PC (3.5)
             if r is not None:
-                pc = value(r, (TPC,))
+                pc = full(*parts(r, (TPC,)))
             elif pc is not None:
-                pc = (pc + 4) & M32
+                pc = (pc + 4) & mask
             step = Step(pc if pc is not None else 0, f.inscomp, sync=True)
         elif branched:
             predicted = None
@@ -1098,18 +1148,19 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
             r = None
             if predicted is not None and pc is not None:
                 head = peek_pc(idx)
-                if head is not None:
-                    guess = head.ad if head.tmode else (pc + (_s32(head.ad) << 1)) & M32
-                    if vector(guess):
+                if head is not None:                # (one part: early TEnd or MIPS32)
+                    guess = full(head.ad, 32) if head.tmode else \
+                        (pc + (_s32(head.ad) << 1)) & mask
+                    if vector(guess) or not head.tend:
                         r = take((TPC,))
             else:
                 r = take((TPC,))
             if r is not None:
-                v = value(r, (TPC,))
+                v, bits = parts(r, (TPC,))
                 if r.tmode:
-                    pc = v
+                    pc = full(v, bits)
                 elif pc is not None:            # a delta needs a known PC
-                    pc = (pc + (_s32(v) << 1)) & M32
+                    pc = (pc + (delta(v, bits) << 1)) & mask
             elif predicted is not None:
                 pc = predicted
             elif pc is not None:                # its TPC is not in the trace (yet: the
@@ -1117,7 +1168,7 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
                 out.append("PC not in the trace: lost until the next full PC")
             step = Step(pc if pc is not None else 0, f.inscomp)
         else:
-            pc = (pc + 4) & M32 if pc is not None else None
+            pc = (pc + 4) & mask if pc is not None else None
             step = Step(pc if pc is not None else 0, f.inscomp)
         step.fcr, step.im = f.fcr, f.im
         if cur_mode is not None:
@@ -1125,10 +1176,13 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
         if f.inscomp in (IL, ILB) or f.inscomp in (IS, ISB):
             load = f.inscomp in (IL, ILB)
             if mode & (MODE_LA if load else MODE_SA):
-                r = take((TLA if load else TSA,))
+                kind = TLA if load else TSA
+                r = take((kind,))
                 if r is not None:
                     last = last_la if load else last_sa
-                    a = r.ad if r.tmode else None if last is None else (last + r.ad) & M32
+                    v, bits = parts(r, (kind,))
+                    a = full(v, bits) if r.tmode else None if last is None else \
+                        (last + delta(v, bits)) & mask
                     if load:
                         step.load = last_la = a
                     else:
@@ -1149,9 +1203,10 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
                     name = isa.decode(word).name
                 except Exception:               # noqa: BLE001
                     name = ""
-            ctx = _next_ctx(ctx, pc, name, word or 0)
+            ctx = _next_ctx(ctx, pc, name, word or 0, mask)
         if f.inscomp == IPC:
             last_la = last_sa = None
+    bound = len(formats)
     while q < len(recs):                        # TMOAS / TU left at the end
         if take(()) is None:
             q += 1
@@ -1161,17 +1216,20 @@ def regenerate(formats: list[Format], code_word: Callable[[int], int | None], is
 def exception_vectors(m) -> Callable[[int], bool]:
     """The places an exception can enter on ``m`` (Vol. III 6.2.1; the
     debug vector; vectored interrupts up to 64 x 0x200): what
-    :func:`regenerate` takes as ``vector``."""
-    ebase = m.cp0_read(15, 1) & 0xFFFFF000
-    bases = {ebase, ebase ^ 0x20000000, 0x80000000, 0xA0000000,
-             getattr(m, "bev_base", 0xBFC00200) & M32}
-    fixed = {m.debug_vector(), (getattr(m, "bev_base", 0xBFC00200) - 0x200) & M32}
+    :func:`regenerate` takes as ``vector`` (as the PC holds them: MIPS64
+    sign-extended)."""
+    mask = getattr(m, "amask", M32)
+    ebase = m.cp0_read(15, 1) & ~0xFFF & mask
+    bev = getattr(m, "bev_base", 0xBFC00200) & M32
+    bases = {m.to_pc(b) if b <= M32 else b
+             for b in (ebase, ebase ^ 0x20000000, 0x80000000, 0xA0000000, bev)}
+    fixed = {m.to_pc(m.debug_vector() & M32), m.to_pc((bev - 0x200) & M32)}
 
     def vector(a: int) -> bool:
         if a in fixed:
             return True
         for b in bases:
-            off = (a - b) & M32
+            off = (a - b) & mask
             if off in (0, 0x100, 0x180) or 0x200 <= off < 0x200 + 64 * 0x200 and not off & 31:
                 return True
         return False
@@ -1182,9 +1240,16 @@ def _s32(v: int) -> int:
     return v - (1 << 32) if v >> 31 else v
 
 
-def _next_ctx(ctx: tuple | None, pc: int, name: str, word: int) -> tuple | None:
+def _sbits(v: int, bits: int) -> int:
+    """``v`` (``bits`` wide) as a signed number."""
+    return v - (1 << bits) if v >> (bits - 1) & 1 else v
+
+
+def _next_ctx(ctx: tuple | None, pc: int, name: str, word: int,
+              mask: int = M32) -> tuple | None:
     """The decoder's twin of :meth:`PDtrace._follow`."""
     probe = PDtrace.__new__(PDtrace)
     probe.ctx = ctx
+    probe.mask = mask
     PDtrace._follow(probe, pc, name, word, None, False)
     return probe.ctx

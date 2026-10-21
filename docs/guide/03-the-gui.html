@@ -102,15 +102,17 @@ to know exactly what something does.</p>
 (Generic, or a real one: the 24Kf, the 1004K, the P5600, the M14K ...
 — its release, ISA, FPU, MMU, caches and pipeline as its manuals allow,
 the choices it is not built with greyed out with the reason;
-<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>), the <strong>MIPS32
-release</strong> (R1–R6), the <strong>board</strong> (flat memory or the MIPS Malta), the
+<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>), the <strong>architecture
+and release</strong> (MIPS32 R1–R6, or MIPS64 R1–R6: 64-bit registers and the
+doubleword instructions), the <strong>board</strong> (flat memory or the MIPS Malta), the
 <strong>MMU</strong> (fixed mapping, BAT, the 24K's TLB, VTLB + FTLB), the number of
 <strong>cores</strong> and the 24K's L1 <strong>caches</strong>; the mode box beside the run
 buttons chooses Instruction, the 5-stage pipeline or the <strong>24K
 pipeline</strong>.  More shapes (L2 / L3, other cache sizes, segmentation
 control, the walker) are in Configure → Settings.  Only what goes
 together is offered: choosing Release 1 makes a single core with no
-shadow register sets (the message says so), the Malta is greyed out for a
+shadow register sets (the message says so), MIPS64 makes a single core
+on flat memory with the generic core, the Malta is greyed out for a
 C program (its tooltip says why) — see <a href="features.html#settings-that-go-together">What's in eMIPS</a>.  A
 feature you switch on brings up its pane: the caches the Caches tab, a
 TLB the TLB tab, cores the System tab, the Malta the Board tab, the MT
@@ -509,6 +511,14 @@ with a 4-bit ALUOp, since the textbook's 2 bits name only add, subtract
 and "look at funct".  The gate values are worked out from the operands
 the trace recorded and always give the result it recorded.  (With the
 24K model, RF shows the main control and EX the ALU.)</p>
+<p>On a <strong>MIPS64</strong> core the logic is MIPS64's: the main control decodes
+the doubleword instructions too, and the ALU has 64 slices (bit 63 makes
+Overflow and Set) and a six-stage shifter.  Its ALU control has two
+more lines: <strong>Word</strong> — a 32-bit operation such as <code>addu</code>, <code>sll</code> or
+<code>lui</code>, whose result bit 31 is copied into bits 63–32 (an overflow is
+then bit 31's) — and <strong>Sh32</strong>, which adds 32 to the shift amount
+(<code>dsll32</code> …).  ALUOp 1001 asks for a word add (<code>addiu</code>), 0000 for a
+64-bit one (<code>daddiu</code>, the address of a load or store).</p>
 <p><img alt="The main control: the opcode decoder for addiu" src="img/03-datapath-control.png"></p>
 <p><img alt="The ALU control for addu" src="img/03-datapath-alu-control.png"></p>
 <p><img alt="Inside the ALU: addu, bit 0" src="img/03-datapath-alu.png"></p>
@@ -629,12 +639,15 @@ pseudo-instruction's several instructions at once).</p>
 <p>Five tabs (six with the DSP Module):</p>
 <ul>
 <li><strong>GPRs</strong> — the 32 registers in hex and decimal; those changed by the
-  last step are <strong>highlighted</strong>.</li>
+  last step are <strong>highlighted</strong>.  On a MIPS64 core they are 64 bits
+  (16 hex digits) and named as the n64 ABI names them (<code>$a4</code>–<code>$a7</code>,
+  <code>$t0</code>–<code>$t3</code> are registers 8–15).</li>
 <li><strong>PC / CP0</strong> — <code>pc</code>, <code>hi</code>, <code>lo</code>, and the coprocessor-0 registers
   <strong>Status</strong>, <strong>Cause</strong>, <strong>EPC</strong>, <strong>BadVAddr</strong>, <strong>Count</strong>, <strong>Compare</strong>,
   <strong>IntCtl</strong>, <strong>SRSCtl</strong>, <strong>SRSMap</strong>, the MMU's registers, the performance counters <strong>PerfCtl0/1</strong> and
   <strong>PerfCnt0/1</strong> (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>),
-  and the FPU's <strong>FCSR</strong>.</li>
+  and the FPU's <strong>FCSR</strong>.  MIPS64: <code>pc</code>, <code>hi</code>, <code>lo</code>, EPC, BadVAddr and
+  the TLB's address registers in 16 digits, the 32-bit ones in 8.</li>
 <li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
   double.</li>
 <li><strong>DSP</strong> (a core with the DSP Module) — DSPControl and its fields (pos,
@@ -699,7 +712,10 @@ pseudo-instruction's several instructions at once).</p>
   (<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>).</li>
 </ul>
 <p><img alt="Memory" src="img/03-memory.png"></p>
-<p>Words are shown as the processor reads them in the current byte order.</p>
+<p>Words are shown as the processor reads them in the current byte order.
+On a MIPS64 core <strong>doublewords</strong> (ticked by default) shows two 64-bit
+values per row, as <code>ld</code> loads them, and a typed address may have 64 bits
+(<code>0x9000000000001000</code>, xkphys, with a TLB).</p>
 <h3 id="caches">Caches</h3>
 <p>The <strong>Caches</strong> pane (a tab of the bottom area) shows one cache at a
 time — pick it in the box: I-cache, D-cache, L2, L3, whichever the
@@ -921,8 +937,12 @@ other change restarts it.</p>
 </thead>
 <tbody>
 <tr>
+<td>Architecture</td>
+<td>MIPS32 (default) or MIPS64: 64-bit registers, the doubleword instructions, the n64 register names (<code>--arch mips64</code>)</td>
+</tr>
+<tr>
 <td>Release</td>
-<td>MIPS32 R1, R2, R3, R5 (default) or R6 (<a href="02-writing-programs.html#214-mips32-releases-r1-to-r6">Phase 2, 2.14</a>)</td>
+<td>Release 1, 2, 3, 5 (default) or 6 (<a href="02-writing-programs.html#214-mips32-releases-r1-to-r6">Phase 2, 2.14</a>)</td>
 </tr>
 <tr>
 <td>Byte order</td>
@@ -1249,7 +1269,7 @@ Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
 Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers
 <code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
 <p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
-<p><strong>Configure</strong> — Settings…; MIPS32 Release; Byte Order; Theme; Language.</p>
+<p><strong>Configure</strong> — Settings…; Architecture and Release (MIPS32 / MIPS64 R1–R6); Byte Order; Theme; Language.</p>
 <p><strong>Help</strong> — User Guide (F1: this guide in a window of its own — see
 <a href="#the-user-guide">The user guide</a>), What's in eMIPS (every feature and where it
 is), Quick Start, Keyboard Shortcuts (the complete list, as

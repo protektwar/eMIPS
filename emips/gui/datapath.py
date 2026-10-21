@@ -550,7 +550,7 @@ class DatapathView(QtWidgets.QGraphicsView):
                      "add_ifid", "imem_ifid"], c)
         if not self._taken(d, ev):
             self._light(["add_pcmux"], c)
-        self.values["pc"].set(f"PC {d['pc']:08x}")
+        self.values["pc"].set(f"PC {d['pc']:0{s.hex_digits('pc')}x}")
         word = _word(s, d)
         if d.get("compressed"):                 # MIPS16e / microMIPS: the encoding, recoded
             raw = d["compressed"].split()[-1][2:]
@@ -570,7 +570,8 @@ class DatapathView(QtWidgets.QGraphicsView):
         word = _word(s, d)
         if word is not None:
             rs, rt, imm = (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
-            self.values["regs"].set(f"rs={gpr_name(rs)}  rt={gpr_name(rt)}")
+            abi = "n64" if s.wide else True     # (MIPS64: the n64 names)
+            self.values["regs"].set(f"rs={gpr_name(rs, abi)}  rt={gpr_name(rt, abi)}")
             if ctl.get("ALUSrc") == "imm" or ctl.get("Branch"):
                 self._light(["sext", "ifid_sext", "sext_idex"], c)
                 simm = imm - 0x10000 if imm & 0x8000 else imm
@@ -583,7 +584,7 @@ class DatapathView(QtWidgets.QGraphicsView):
             if v is not None and v.branch is not None:
                 br = v.branch
                 self.values["branch"].set(
-                    _clip(br.condition, 26) + ("\ntaken -> " + f"{br.target:08x}"
+                    _clip(br.condition, 26) + ("\ntaken -> " + f"{br.target:0{s.hex_digits()}x}"
                                                if br.taken else "\nnot taken"))
         if any("-> ID" in e for e in ev.get("events") or []):
             self._light(["fwd_ex_id"], T().red)
@@ -599,15 +600,15 @@ class DatapathView(QtWidgets.QGraphicsView):
             a, b = v.alu.a, v.alu.b
             self.values["aluop"].set(_clip(v.alu.op, 30))
             if a is not None:
-                self.values["a"].set(f"a {a.value:08x} ({_src(a.source)})")
+                self.values["a"].set(f"a {a.value:0{s.hex_digits()}x} ({_src(a.source)})")
                 self._forward("a", a.source)
             if b is not None:
-                self.values["b"].set(f"b {b.value:08x} ({_src(b.source)})")
+                self.values["b"].set(f"b {b.value:0{s.hex_digits()}x} ({_src(b.source)})")
                 if "immediate" in b.source or "offset" in b.source:
                     self._light(["imm_src"], c)
                 self._forward("b", b.source)
             if v.alu.result is not None:
-                self.values["res"].set(f"= {v.alu.result:08x}"
+                self.values["res"].set(f"= {v.alu.result:0{s.hex_digits()}x}"
                                        + ("\nOVERFLOW" if v.alu.overflow else ""))
         if v.mem_writes:
             self._light(["store_data"], c)
@@ -656,7 +657,7 @@ class DatapathView(QtWidgets.QGraphicsView):
         self._light(["wbmux", "wb_data", "wb_reg",
                      "memwb_mem" if load else "memwb_alu"], c)
         name, value = dest
-        self.values["wb"].set(f"{name} <- {value:08x}" if value is not None
+        self.values["wb"].set(f"{name} <- {value:0{s.hex_digits()}x}" if value is not None
                               else f"{name} written")
 
 

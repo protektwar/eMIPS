@@ -120,13 +120,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self._constraining = True
         self.set_values(release, endian, forwarding, options)
         self._constraining = False
-        for box in (self.release, self.board, self.mmu, self.model, self.icache, self.dcache,
-                    self.l2, self.l3, self.compressed, self.c_isa, self.dsp, self.mt):
+        for box in (self.arch, self.release, self.board, self.mmu, self.model, self.icache,
+                    self.dcache, self.l2, self.l3, self.compressed, self.c_isa, self.dsp,
+                    self.mt):
             box.currentIndexChanged.connect(self._constrain)
         self.fpu.toggled.connect(self._constrain)
         for box in (self.icache, self.dcache, self.l2, self.l3):
             box.editTextChanged.connect(self._constrain)
-        for spin in (self.cores, self.shadow_sets):
+        for spin in (self.cores, self.vps, self.shadow_sets):
             spin.valueChanged.connect(self._constrain)
         self.boot.buttonToggled.connect(self._constrain)
         self._constrain(note=False)
@@ -149,9 +150,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.core_note = _note("")
         form.addRow("", self.core_note)
         self.core.currentIndexChanged.connect(self._core_chosen)
+        self.arch = QtWidgets.QComboBox()
+        self.arch.addItem(tr("MIPS32"), "mips32")
+        self.arch.addItem(tr("MIPS64: 64-bit registers, the doubleword instructions"),
+                          "mips64")
+        form.addRow(tr("Architecture"), self.arch)
         self.release = QtWidgets.QComboBox()
         for r in RELEASES:
-            self.release.addItem(f"MIPS32 {r}", r)
+            self.release.addItem(tr("Release {n}").format(n=r[1:]), r)
         self.release_note = _note("")
         self.release.currentIndexChanged.connect(
             lambda _: self.release_note.setText(html.escape(tr(
@@ -222,6 +228,15 @@ class SettingsDialog(QtWidgets.QDialog):
                                "gating storage cells whose loads and stores block a thread "
                                "until the cell is full / empty"))
         form.addRow(tr("ITC storage"), self.itc)
+        self.itu = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("4 FIFO cells of 4 entries + 8 single-entry cells")),
+                          ("none", tr("None")), ("16:16:4", tr("16 FIFO + 16 single-entry cells")),
+                          ("8:24:8", tr("8 FIFO cells of 8 entries + 24 single-entry cells"))):
+            self.itu.addItem(text, key)
+        self.itu.setToolTip(tr("The ITU of a Release 6 core with VPs (the I6400, MD01196 "
+                               "ch. 11): gating storage placed by CP0 SAAR, shared by the "
+                               "core's VPs"))
+        form.addRow(tr("ITU storage"), self.itu)
         self.model = QtWidgets.QComboBox()
         self.model.addItem(tr("5-stage (textbook)"), "5-stage")
         self.model.addItem(tr("MIPS 24K (8 stages, branch prediction)"), "24k")
@@ -299,6 +314,12 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cores = QtWidgets.QSpinBox()
         self.cores.setRange(1, MAX_CORES)
         form.addRow(tr("Cores"), self.cores)
+        self.vps = QtWidgets.QSpinBox()
+        self.vps.setRange(1, 4)
+        self.vps.setToolTip(tr("Release 6 virtual processors a core (DVP / EVP; the CPC "
+                               "starts and stops them): more than one makes a CM3 system, "
+                               "as the I6400's"))
+        form.addRow(tr("Virtual processors a core"), self.vps)
         self.iocu = QtWidgets.QCheckBox(tr("I/O Coherence Unit (IOCU): the Malta's DMA is "
                                            "coherent with the data caches"))
         form.addRow("", self.iocu)
@@ -546,6 +567,7 @@ class SettingsDialog(QtWidgets.QDialog):
     # -- values ----------------------------------------------------------------
 
     def set_values(self, release: str, endian: str, forwarding: bool, o: Options) -> None:
+        self.arch.setCurrentIndex(max(0, self.arch.findData(o.arch)))
         self.release.setCurrentIndex(max(0, RELEASES.index(release)
                                          if release in RELEASES else 3))
         self.release_note.setText(html.escape(tr(RELEASE_NOTES[self.release.currentData()])))
@@ -562,12 +584,16 @@ class SettingsDialog(QtWidgets.QDialog):
         if self.itc.findData(o.itc) < 0:        # another FIFOS:SEMAPHORES
             self.itc.addItem(o.itc, o.itc)
         self.itc.setCurrentIndex(max(0, self.itc.findData(o.itc)))
+        if self.itu.findData(o.itu) < 0:        # another FIFOS:SINGLES[:DEPTH]
+            self.itu.addItem(o.itu, o.itu)
+        self.itu.setCurrentIndex(max(0, self.itu.findData(o.itu)))
         self.core.blockSignals(True)
         self.core.setCurrentIndex(max(0, self.core.findData(o.core)))
         self.core.blockSignals(False)
         self._core_text()
         self.c_isa.setCurrentIndex(max(0, self.c_isa.findData(o.c_isa)))
         self.cores.setValue(o.cores)
+        self.vps.setValue(o.vps)
         self.iocu.setChecked(o.iocu)
         self.shadow_sets.setValue(o.shadow_sets)
         self.count_rate.setCurrentIndex(0 if o.count_rate == 1 else 1)
@@ -633,13 +659,14 @@ class SettingsDialog(QtWidgets.QDialog):
             mem_timing={k: s.value() for k, s in self.mem_timing.items()},
             nonblocking=self.nonblocking.isChecked(), mmu=self.mmu.currentData(),
             model=self.model.currentData(), cores=self.cores.value(),
+            vps=self.vps.value(), itu=self.itu.currentData(),
             iocu=self.iocu.isChecked(),
             shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
             disks=self._disks_spec(), c_optimize=self.c_optimize.currentData(),
             compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData(),
             fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), mt=self.mt.currentData(),
             mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
-            core=self.core.currentData())
+            core=self.core.currentData(), arch=self.arch.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 
@@ -683,6 +710,7 @@ class SettingsDialog(QtWidgets.QDialog):
             if notes:
                 self.shadow_sets.setValue(fixed.shadow_sets)
                 self.cores.setValue(fixed.cores)
+                self.vps.setValue(fixed.vps)
                 i = self.mmu.findData(fixed.mmu)
                 if i < 0:
                     self.mmu.addItem(fixed.mmu, fixed.mmu)
@@ -692,6 +720,7 @@ class SettingsDialog(QtWidgets.QDialog):
                     b.setChecked(b.property("key") == fixed.boot)
                 self._set_cache(self.l3, fixed.l3)
                 for box, value in ((self.compressed, fixed.compressed),
+                                   (self.board, fixed.board.split(":")[0]),
                                    (self.c_isa, fixed.c_isa), (self.model, fixed.model),
                                    (self.dsp, fixed.dsp), (self.mt, fixed.mt),
                                    (self.core, fixed.core)):
@@ -716,7 +745,7 @@ class SettingsDialog(QtWidgets.QDialog):
                     box.setEditText(text)       # (an item change resets the typed text)
             from ..cores import get as get_core
             core = get_core(fixed.core)
-            for spin, field, top in ((self.cores, "cores", MAX_CORES),
+            for spin, field, top in ((self.cores, "cores", MAX_CORES), (self.vps, "vps", 4),
                                      (self.shadow_sets, "shadow_sets", 16)):
                 if core is not None:            # the core's build options
                     allowed = getattr(core, field)
@@ -775,9 +804,9 @@ class SettingsDialog(QtWidgets.QDialog):
             self.core_note.setText(html.escape(tr(
                 "Any combination eMIPS can model; PRId 0 (no licensed core).")))
             return
-        lines = [tr("MIPS32 Release {r}, PRId 0x{p:08x}; the settings below offer what "
+        lines = [tr("{arch} Release {r}, PRId 0x{p:08x}; the settings below offer what "
                     "its manuals allow (the others are greyed out).").format(
-                        r=core.release[1:], p=core.prid)]
+                        arch=core.arch.upper(), r=core.release[1:], p=core.prid)]
         if core.missing:
             lines.append(tr("Not modelled: {what}.").format(what="; ".join(core.missing)))
         lines += list(core.notes)

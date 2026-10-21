@@ -13,8 +13,8 @@
       "R5",
       "R6"
     ],
-    "corrections_applied": 430,
-    "row_count": 673,
+    "corrections_applied": 433,
+    "row_count": 676,
     "releases": [
       "Release",
       "Release2",
@@ -26,7 +26,7 @@
       "Release8"
     ],
     "status_counts": {
-      "core": 582,
+      "core": 585,
       "overlay": 30,
       "unimpl": 61
     },
@@ -63585,6 +63585,291 @@
         "R6"
       ],
       "arch": "mips64"
+    },
+    {
+      "name": "LDX",
+      "mnemonic": "LDX",
+      "constraint": null,
+      "opcode": "011111",
+      "function": "001010",
+      "instrType": "R",
+      "desc": "Load Doubleword Indexed",
+      "encode": "011111bbbbbxxxxxddddd01000001010",
+      "decode": {
+        "mask": 4227860479,
+        "value": 2080375306,
+        "specificity": 17,
+        "lead": true,
+        "anchor_clean": true
+      },
+      "fields": [
+        {
+          "name": "op",
+          "msb": 0,
+          "lsb": 5,
+          "length": 6,
+          "fixed": true,
+          "value": "011111",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "base",
+          "msb": 6,
+          "lsb": 10,
+          "length": 5,
+          "fixed": false,
+          "value": "?",
+          "anchor": null
+        },
+        {
+          "name": "index",
+          "msb": 11,
+          "lsb": 15,
+          "length": 5,
+          "fixed": false,
+          "value": "?",
+          "anchor": null
+        },
+        {
+          "name": "rd",
+          "msb": 16,
+          "lsb": 20,
+          "length": 5,
+          "fixed": false,
+          "value": "?",
+          "anchor": null
+        },
+        {
+          "name": "sa",
+          "msb": 21,
+          "lsb": 25,
+          "length": 5,
+          "fixed": true,
+          "value": "01000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "fct",
+          "msb": 26,
+          "lsb": 31,
+          "length": 6,
+          "fixed": true,
+          "value": "001010",
+          "anchor": "left@pos"
+        }
+      ],
+      "slots": [
+        {
+          "msb": 6,
+          "lsb": 20,
+          "length": 15,
+          "name": "base"
+        }
+      ],
+      "family": "load",
+      "status": "core",
+      "pic32": false,
+      "provenance": "added",
+      "corrections": [
+        "M22-068"
+      ],
+      "releases": [],
+      "releases64": [
+        "R2",
+        "R3",
+        "R5",
+        "R6"
+      ],
+      "ase": "dsp",
+      "arch": "mips64"
+    },
+    {
+      "name": "DVP",
+      "mnemonic": "DVP",
+      "constraint": null,
+      "opcode": "010000",
+      "function": "100100",
+      "instrType": "R",
+      "desc": "Disable Virtual Processor",
+      "encode": "01000001011ttttt0000000000100100",
+      "decode": {
+        "mask": 4292935679,
+        "value": 1096810532,
+        "specificity": 27,
+        "lead": true,
+        "anchor_clean": true
+      },
+      "fields": [
+        {
+          "name": "op",
+          "msb": 0,
+          "lsb": 5,
+          "length": 6,
+          "fixed": true,
+          "value": "010000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "rs",
+          "msb": 6,
+          "lsb": 10,
+          "length": 5,
+          "fixed": true,
+          "value": "01011",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "rt",
+          "msb": 11,
+          "lsb": 15,
+          "length": 5,
+          "fixed": false,
+          "value": "?",
+          "anchor": null
+        },
+        {
+          "name": "rd",
+          "msb": 16,
+          "lsb": 20,
+          "length": 5,
+          "fixed": true,
+          "value": "00000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "sa",
+          "msb": 21,
+          "lsb": 25,
+          "length": 5,
+          "fixed": true,
+          "value": "00000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "fct",
+          "msb": 26,
+          "lsb": 31,
+          "length": 6,
+          "fixed": true,
+          "value": "100100",
+          "anchor": "left@pos"
+        }
+      ],
+      "slots": [
+        {
+          "msb": 11,
+          "lsb": 15,
+          "length": 5,
+          "name": "rt"
+        }
+      ],
+      "family": "cop0",
+      "status": "core",
+      "pic32": false,
+      "provenance": "added",
+      "corrections": [
+        "M22-069"
+      ],
+      "releases": [
+        "R6"
+      ],
+      "releases64": [
+        "R6"
+      ]
+    },
+    {
+      "name": "EVP",
+      "mnemonic": "EVP",
+      "constraint": null,
+      "opcode": "010000",
+      "function": "000100",
+      "instrType": "R",
+      "desc": "Enable Virtual Processor",
+      "encode": "01000001011ttttt0000000000000100",
+      "decode": {
+        "mask": 4292935679,
+        "value": 1096810500,
+        "specificity": 27,
+        "lead": true,
+        "anchor_clean": true
+      },
+      "fields": [
+        {
+          "name": "op",
+          "msb": 0,
+          "lsb": 5,
+          "length": 6,
+          "fixed": true,
+          "value": "010000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "rs",
+          "msb": 6,
+          "lsb": 10,
+          "length": 5,
+          "fixed": true,
+          "value": "01011",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "rt",
+          "msb": 11,
+          "lsb": 15,
+          "length": 5,
+          "fixed": false,
+          "value": "?",
+          "anchor": null
+        },
+        {
+          "name": "rd",
+          "msb": 16,
+          "lsb": 20,
+          "length": 5,
+          "fixed": true,
+          "value": "00000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "sa",
+          "msb": 21,
+          "lsb": 25,
+          "length": 5,
+          "fixed": true,
+          "value": "00000",
+          "anchor": "left@pos"
+        },
+        {
+          "name": "fct",
+          "msb": 26,
+          "lsb": 31,
+          "length": 6,
+          "fixed": true,
+          "value": "000100",
+          "anchor": "left@pos"
+        }
+      ],
+      "slots": [
+        {
+          "msb": 11,
+          "lsb": 15,
+          "length": 5,
+          "name": "rt"
+        }
+      ],
+      "family": "cop0",
+      "status": "core",
+      "pic32": false,
+      "provenance": "added",
+      "corrections": [
+        "M22-070"
+      ],
+      "releases": [
+        "R6"
+      ],
+      "releases64": [
+        "R6"
+      ]
     }
   ],
   "audit": {
@@ -67168,11 +67453,35 @@
         "encode": "111011sssss10yyyyyyyyyyyyyyyyyyy",
         "since": "R6",
         "ref": "II-64 6.06 LWUPC"
+      },
+      {
+        "id": "M22-068",
+        "op": "add",
+        "name": "LDX",
+        "encode": "011111bbbbbxxxxxddddd01000001010",
+        "since": "R2",
+        "ref": "IV-e64 3.02 LDX"
+      },
+      {
+        "id": "M22-069",
+        "op": "add",
+        "name": "DVP",
+        "encode": "01000001011ttttt0000000000100100",
+        "since": "R6",
+        "ref": "II-A (R6) 6.06 DVP; II-64 6.06 DVP"
+      },
+      {
+        "id": "M22-070",
+        "op": "add",
+        "name": "EVP",
+        "encode": "01000001011ttttt0000000000000100",
+        "since": "R6",
+        "ref": "II-A (R6) 6.06 EVP; II-64 6.06 EVP"
       }
     ],
     "unclassified": [],
     "status_counts": {
-      "core": 582,
+      "core": 585,
       "overlay": 30,
       "unimpl": 61
     },
@@ -67188,9 +67497,9 @@
         "fpu_cvt": 26,
         "cop1_move": 34,
         "muldiv": 43,
-        "cop0": 10,
+        "cop0": 12,
         "jump": 7,
-        "load": 21,
+        "load": 22,
         "misc": 7,
         "store": 12,
         "shift": 20,

@@ -125,13 +125,14 @@ def cell_rows(s) -> list[CellRow]:
     if itc is None:
         return []
     out = []
+    d = itc.digits
     for r in itc.rows():
         flags = "".join(f for f, on in (("E", r["empty"]), ("F", r["full"]),
                                         ("T", r["trap"])) if on) or "-"
         if r["kind"] == "FIFO":
-            data = " ".join(f"{w:08x}" for w in r["data"][:r["count"]]) or "(empty)"
+            data = " ".join(f"{w:0{d}x}" for w in r["data"][:r["count"]]) or "(empty)"
         else:
-            data = f"{r['data'][0]:08x}"
+            data = f"{r['data'][0]:0{d}x}"
         out.append(CellRow(r["cell"], r["kind"], r["address"], flags, data))
     return out
 

@@ -34,16 +34,26 @@
 #
 # @NAME@ are board values filled in by emips.monitor; lines between
 # "#@if NAME" / "#@else" / "#@endif" are kept or dropped by it.
+#
+# On a 64-bit CPU (a MIPS64 core on the CoreLV: "#@if WIDE") the same code
+# runs — MIPS32 code is MIPS64 code — with these differences: the
+# exception frame keeps whole 64-bit registers (sd / ld, HI / LO too), the
+# addresses below are sign-extended (kseg0 / kseg1 are the 32-bit
+# compatibility segments), an unhandled exception prints the 64-bit EPC /
+# BadVAddr, the application starts with Status.FR (the n64 FPU) and, with
+# 64-bit addresses (Config.AT = 2), KX / SX / UX, and the XTLB refill
+# handler goes to 0x80000080 too.  emips.monitor assembles it for MIPS64
+# with the o32 temporaries ($t0-$t9) written as register numbers.
 
         .set reorder
-        .eqv  MON_DESC, 0x8000c000      # the application descriptor (the loader)
-        .eqv  CPU_ISR, 0x8000c100       # 8 x (isr, data) + the default
-        .eqv  IC_ISR, 0x8000c180        # 16 x (isr, data) + the default
-        .eqv  ESR, 0x8000c210           # 32 x esr + the default
-        .eqv  MON_FLAGS, 0x8000c2a0     # bit 0: the 8259s are initialised
-        .eqv  FRAME, 0x8000c300         # an exception's saved registers
-        .eqv  EXC_STACK, 0x8000fff0     # the exception handler's stack
-        .eqv  DEFAULT_ID, 0xfffffff0    # YAMON_DEFAULT_HANDLER
+        .eqv  MON_DESC, @MON_DESC@      # the application descriptor (the loader)
+        .eqv  CPU_ISR, @CPU_ISR@        # 8 x (isr, data) + the default
+        .eqv  IC_ISR, @IC_ISR@          # 16 x (isr, data) + the default
+        .eqv  ESR, @ESR@                # 32 x esr + the default
+        .eqv  MON_FLAGS, @MON_FLAGS@    # bit 0: the 8259s are initialised
+        .eqv  FRAME, @FRAME@            # an exception's saved registers
+        .eqv  EXC_STACK, @EXC_STACK@    # the exception handler's stack
+        .eqv  DEFAULT_ID, @DEFAULT_ID@  # YAMON_DEFAULT_HANDLER
 
 # ------------------------------------------------------------------ the reset vector
 
@@ -403,12 +413,40 @@ go:     mfc0  $t0, $16, 0
         addiu $t0, $t0, 4
         addiu $t2, $t2, 4
         bne   $t0, $t1, 4b
+#@if WIDE
+        mfc0  $t0, $16, 0               # 64-bit addresses (Config.AT = 2): the
+        srl   $t0, $t0, 13              # XTLB refill handler at 0x80000080
+        andi  $t0, $t0, 3
+        li    $t1, 2
+        bne   $t0, $t1, 2f
+        la    $t0, xrefill_start
+        la    $t1, xrefill_end
+        lui   $t2, 0xa000
+        addiu $t2, $t2, 0x80
+5:      lw    $t3, 0($t0)
+        sw    $t3, 0($t2)
+        addiu $t0, $t0, 4
+        addiu $t2, $t2, 4
+        bne   $t0, $t1, 5b
+#@endif
 2:
         la    $a0, msg_banner           # 13. the sign-on message on tty0
         bal   mon_puts
         mtc0  $zero, $15, 1             # 14. the application (Table 5.1): EBase 0x80000000
         li    $t0, @STATUS@             # kernel mode, BEV = ERL = 0, EXL = 1 (for
-        mtc0  $t0, $12                  # the eret), interrupts off
+                                        # the eret), interrupts off; a 64-bit CPU:
+#@if WIDE
+        li    $t1, 1 << 26              # FR (the n64 FPU) and, with 64-bit
+        or    $t0, $t0, $t1             # addresses (Config.AT = 2), KX / SX / UX
+        mfc0  $t1, $16, 0               # (as a 64-bit Linux, traps.c)
+        srl   $t1, $t1, 13
+        andi  $t1, $t1, 3
+        li    $t2, 2
+        bne   $t1, $t2, 6f
+        ori   $t0, $t0, 0xe0
+6:
+#@endif
+        mtc0  $t0, $12
         lw    $t0, 4($s0)               # the entry
         mtc0  $t0, $14                  # EPC
         lw    $a0, 12($s0)              # argc
@@ -461,6 +499,11 @@ appl_return:                            # the application returned (jr ra): v0
 refill_start:
 @REFILL@
 refill_end:
+#@if WIDE
+xrefill_start:
+@XREFILL@
+xrefill_end:
+#@endif
 
 # ------------------------------------------------------------------ the exception handler
 
@@ -468,6 +511,43 @@ mon_exception:                          # every exception and interrupt (BEV = 0
         .set noat
         lui   $k0, %hi(FRAME)
         addiu $k0, $k0, %lo(FRAME)
+#@if WIDE
+        sd    $1, 8($k0)
+        sd    $2, 16($k0)
+        sd    $3, 24($k0)
+        sd    $4, 32($k0)
+        sd    $5, 40($k0)
+        sd    $6, 48($k0)
+        sd    $7, 56($k0)
+        sd    $8, 64($k0)
+        sd    $9, 72($k0)
+        sd    $10, 80($k0)
+        sd    $11, 88($k0)
+        sd    $12, 96($k0)
+        sd    $13, 104($k0)
+        sd    $14, 112($k0)
+        sd    $15, 120($k0)
+        sd    $16, 128($k0)
+        sd    $17, 136($k0)
+        sd    $18, 144($k0)
+        sd    $19, 152($k0)
+        sd    $20, 160($k0)
+        sd    $21, 168($k0)
+        sd    $22, 176($k0)
+        sd    $23, 184($k0)
+        sd    $24, 192($k0)
+        sd    $25, 200($k0)
+        sd    $28, 224($k0)
+        sd    $29, 232($k0)
+        sd    $30, 240($k0)
+        sd    $31, 248($k0)
+#@if HILO
+        mfhi  $t0
+        sd    $t0, 256($k0)
+        mflo  $t0
+        sd    $t0, 264($k0)
+#@endif
+#@else
         sw    $1, 4($k0)
         sw    $2, 8($k0)
         sw    $3, 12($k0)
@@ -502,6 +582,7 @@ mon_exception:                          # every exception and interrupt (BEV = 0
         sw    $t0, 128($k0)
         mflo  $t0
         sw    $t0, 132($k0)
+#@endif
 #@endif
         .set at
         lui   $sp, %hi(EXC_STACK)
@@ -607,12 +688,22 @@ unhandled:                              # no ESR: say so, end the application
         bal   mon_puthex
         la    $a0, msg_epc
         bal   mon_puts
+#@if WIDE
+        dmfc0 $a0, $14                  # (64 bits)
+        bal   mon_puthex64
+#@else
         mfc0  $a0, $14
         bal   mon_puthex
+#@endif
         la    $a0, msg_bad
         bal   mon_puts
+#@if WIDE
+        dmfc0 $a0, $8
+        bal   mon_puthex64
+#@else
         mfc0  $a0, $8
         bal   mon_puthex
+#@endif
         la    $a0, msg_nl
         bal   mon_puts
         addiu $a0, $s1, 0x100           # the exit code: 0x100 + ExcCode
@@ -622,6 +713,43 @@ exc_done:                               # back to the interrupted code
         .set noat
         lui   $k0, %hi(FRAME)
         addiu $k0, $k0, %lo(FRAME)
+#@if WIDE
+#@if HILO
+        ld    $t0, 256($k0)
+        mthi  $t0
+        ld    $t0, 264($k0)
+        mtlo  $t0
+#@endif
+        ld    $1, 8($k0)
+        ld    $2, 16($k0)
+        ld    $3, 24($k0)
+        ld    $4, 32($k0)
+        ld    $5, 40($k0)
+        ld    $6, 48($k0)
+        ld    $7, 56($k0)
+        ld    $8, 64($k0)
+        ld    $9, 72($k0)
+        ld    $10, 80($k0)
+        ld    $11, 88($k0)
+        ld    $12, 96($k0)
+        ld    $13, 104($k0)
+        ld    $14, 112($k0)
+        ld    $15, 120($k0)
+        ld    $16, 128($k0)
+        ld    $17, 136($k0)
+        ld    $18, 144($k0)
+        ld    $19, 152($k0)
+        ld    $20, 160($k0)
+        ld    $21, 168($k0)
+        ld    $22, 176($k0)
+        ld    $23, 184($k0)
+        ld    $24, 192($k0)
+        ld    $25, 200($k0)
+        ld    $28, 224($k0)
+        ld    $29, 232($k0)
+        ld    $30, 240($k0)
+        ld    $31, 248($k0)
+#@else
 #@if HILO
         lw    $t0, 128($k0)
         mthi  $t0
@@ -657,6 +785,7 @@ exc_done:                               # back to the interrupted code
         lw    $29, 116($k0)
         lw    $30, 120($k0)
         lw    $31, 124($k0)
+#@endif
         sll   $zero, $zero, 3           # ehb
         eret
         .set at
@@ -708,6 +837,17 @@ mon_puthex:                             # a0: a word in hexadecimal (t0-t3, t9)
         addiu $t2, $t2, -4
         bgez  $t2, 1b
         jr    $ra
+
+#@if WIDE
+mon_puthex64:                           # a0: a doubleword: its high, its low word
+        move  $v1, $ra                  # (t0-t3, t9, s4)
+        move  $s4, $a0
+        dsra32 $a0, $s4, 0
+        bal   mon_puthex
+        sll   $a0, $s4, 0
+        bal   mon_puthex
+        jr    $v1
+#@endif
 
 f_getchar:                              # getchar(port, *ch): 1 = a character
         lui   $t9, 0xb800

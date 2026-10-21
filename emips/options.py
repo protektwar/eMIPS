@@ -26,14 +26,19 @@ PIPELINE_MODELS = ("5-stage", "24k")
 #: Cache contents after reset: "random" (undefined, as on silicon) or
 #: "hardware" (invalid: the 24K's Config7.HCI, simulation models)
 CACHE_INIT_MODES = ("random", "hardware")
-#: the most cores a system has (emips.cps)
-MAX_CORES = 4
+#: the most cores a system has (emips.cps: the P5600 / P6600's six,
+#: MD01024 / MD01137)
+MAX_CORES = 6
 #: the most GPR sets (Vol. III: SRSCtl.HSS is 4 bits)
 MAX_SHADOW_SETS = 16
 #: the compressed instruction sets a core may have
 COMPRESSED = ("auto", "none", "mips16e", "micromips", "micromips-only")
 #: the DSP Module a core may have (emips.dsp, MD00374)
 DSP_LEVELS = ("auto", "none", "dsp", "dspr2")
+#: the architecture (PLAN M22): MIPS32, or MIPS64 (emips.sim64: 64-bit
+#: registers; the 32-bit compatibility segments with the fixed mapping —
+#: Config.AT = 1 —, the 64-bit address space with a TLB — AT = 2)
+ARCHES = ("mips32", "mips64")
 #: the instruction set C programs are compiled to (emips.cc)
 C_ISAS = ("mips32", "mips16e", "micromips")
 
@@ -60,7 +65,7 @@ class Options:
     latency: dict[str, int] = field(default_factory=lambda: dict(LATENCY))
     #: the pipeline model of pipeline mode, see PIPELINE_MODELS
     model: str = "5-stage"
-    #: cores (1 to 4): more than one is a Coherent Processing System
+    #: cores (1 to 6): more than one is a Coherent Processing System
     #: (emips.cps: the GCRs, the CPC, shared memory and devices)
     cores: int = 1
     #: an I/O Coherence Unit in the CPS (GCR_CONFIG.NUMIOCU = 1): DMA on a
@@ -95,9 +100,20 @@ class Options:
     #: ch. 12): "auto" = 4 FIFO + 8 semaphore cells, "none",
     #: "FIFOS:SEMAPHORES" (0, 1, 2, 4, 8 or 16 each)
     itc: str = "auto"
+    #: Release 6 virtual processors a core (emips.vp: Vol. III 9.8, the
+    #: I6400's 1, 2 or 4 — 4 at most, the VP numbers of a core); more than
+    #: one makes a CM3 system (emips.cps: the CPC starts the VPs, DVP / EVP)
+    vps: int = 1
+    #: the ITU of a CM3 core (the I6400's gating storage, emips.itu): "auto"
+    #: = 4 FIFO cells of 4 entries + 8 single-entry cells, "none",
+    #: "FIFOS:SINGLES[:DEPTH]" (32 cells at most; FIFOs of 2, 4 or 8)
+    itu: str = "auto"
     #: the core preset (emips.cores: "24kf", "m14k" ...): the release and the
     #: settings its manuals allow, its PRId; "" = the generic eMIPS core
     core: str = ""
+    #: the architecture, see ARCHES: "mips64" = a MIPS64 core (64-bit GPRs,
+    #: the doubleword instructions; the program is assembled for MIPS64)
+    arch: str = "mips32"
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -211,6 +227,8 @@ class Options:
             self.compressed = d.compressed
         if self.dsp not in DSP_LEVELS:
             self.dsp = d.dsp
+        if self.arch not in ARCHES:
+            self.arch = d.arch
         self.mt = (self.mt or "").strip().lower()
         if self.mt != "auto":
             from .mt import parse_spec
@@ -230,6 +248,17 @@ class Options:
                 self.itc = "none" if spec is None else f"{spec[0]}:{spec[1]}"
             except ValueError:
                 self.itc = d.itc
+        from .vp import MAX_VP
+        if not 1 <= self.vps <= MAX_VP:
+            self.vps = d.vps
+        self.itu = (self.itu or "").strip().lower()
+        if self.itu != "auto":
+            from .itu import parse_spec as itu_spec
+            try:
+                spec = itu_spec(self.itu)
+                self.itu = "none" if spec is None else ":".join(map(str, spec))
+            except ValueError:
+                self.itu = d.itu
         from .cores import CORES
         self.core = (self.core or "").lower()
         if self.core and self.core not in CORES:
@@ -298,6 +327,6 @@ class Options:
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
         return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
-                self.c_isa, self.fpu) != \
+                self.c_isa, self.fpu, self.arch) != \
             (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa,
-             other.fpu)
+             other.fpu, other.arch)

@@ -83,6 +83,21 @@ ST_TS = 1 << 21                          # Status.TS: TLB shutdown (Machine Chec
 CTX_PTEBASE = 0xFF800000                 # Context 31:23
 CTX_BADVPN2 = 0x007FFFF0                 # Context 22:4
 
+# MIPS64 (PLAN M22 phase 3; Vol. III 9.27 / 9.7 / 9.52): a TLB with 64-bit
+# virtual addresses — EntryHi R (63:62) | Fill | VPN2 (SEGBITS-1:13),
+# Context PTEBase 63:23, XContext PTEBase | R | BadVPN2 (SEGBITS-1:13)
+M64 = (1 << 64) - 1
+XCONTEXT = (20, 0)
+HI_R = 3 << 62
+#: the TLB MMU's registers that are 64 bits wide on MIPS64 (EntryHi, Context,
+#: XContext; Segmentation Control's SegCtl0-2 and EBase; the walker's PWBase /
+#: PWField / PWSize)
+WIDE_KEYS = frozenset({(10, 0), (4, 0), XCONTEXT, (5, 2), (5, 3), (5, 4), (15, 1),
+                       (5, 5), (5, 6), (5, 7)})
+#: eMIPS's MIPS64 TLB: SEGBITS = 40 (the manual's default VPN2 width) and
+#: PABITS = 32 (the EntryLo PFN of the 24K; xkphys windows of 4 GB)
+SEGBITS, PABITS = 40, 32
+
 #: Config3 bits (Vol. III Figure 9-50)
 CFG3_M, CFG3_BP, CFG3_BI, CFG3_RXI, CFG3_SP = 1 << 31, 1 << 27, 1 << 26, 1 << 12, 1 << 4
 
@@ -135,6 +150,9 @@ class TLBEntry:
     small: bool = False                  # 1 KB pages enabled when written
     written: bool = False
     ehinv: bool = False
+    #: the EntryHi bits a match compares (VPN2 | VPN2X; MIPS64: also R and
+    #: VPN2 up to SEGBITS - 1)
+    vmask: int = HI_VPN2 | HI_VPN2X
 
     @property
     def mask(self) -> int:
@@ -143,7 +161,7 @@ class TLBEntry:
 
     @property
     def vpn2(self) -> int:
-        return self.hi & (HI_VPN2 | HI_VPN2X) & ~self.mask
+        return self.hi & self.vmask & ~self.mask
 
     @property
     def asid(self) -> int:
@@ -167,7 +185,7 @@ class TLBEntry:
 
     def matches(self, va: int, asid: int) -> bool:
         return (self.written and not self.ehinv
-                and not (va ^ self.hi) & 0xFFFFF800 & ~self.mask
+                and not (va ^ self.hi) & self.vmask & ~self.mask
                 and (self.g or self.hi & HI_ASID == asid))
 
     def frame(self, half: int) -> int:
@@ -191,7 +209,8 @@ class TLBEntry:
             flags = "".join(f for f, b in (("V", LO_V), ("D", LO_D), ("RI", LO_RI),
                                            ("XI", LO_XI)) if lo & b) or "-"
             halves.append(f"PA 0x{self.frame(h):08x} C{(lo >> LO_C_SHIFT) & 7} {flags}")
-        return (f"VA 0x{va:08x}-0x{(va + span - 1) & M32:08x} ({own}, "
+        top = (va + span - 1) & (M64 if va > M32 else M32)
+        return (f"VA 0x{va:08x}-0x{top:08x} ({own}, "
                 f"{size_name(self.page_size)} pages): " + " | ".join(halves))
 
 
@@ -376,7 +395,9 @@ class TLBAccess:
         if self.walk:
             parts.append(self.walk)
         if self.entry is None:
-            parts.append(f"no TLB entry maps VPN2 0x{self.vpn2:05x} for ASID {self.asid}")
+            vpn = (f"R {self.va >> 62}, VPN2 0x{(self.va >> 13) & ((1 << (SEGBITS - 13)) - 1):05x}"
+                   if self.va > M32 else f"VPN2 0x{self.vpn2:05x}")
+            parts.append(f"no TLB entry maps {vpn} for ASID {self.asid}")
         else:
             parts.append(f"{self.name} ({self.how})" if self.how else self.name)
         if self.fault:
@@ -417,9 +438,10 @@ class TLBStats:
         self.faults[name] = self.faults.get(name, 0) + 1
 
 
-def _arch(code: int, va: int, *, refill: bool = False, why: str = ""):
+def _arch(code: int, va: int, *, refill: bool = False, why: str = "", xtlb: bool = False):
     from .sim import _Arch
-    return _Arch(code, badvaddr=va, info={"tlb": True, "refill": refill, "why": why})
+    return _Arch(code, badvaddr=va, info={"tlb": True, "refill": refill, "why": why,
+                                          "xtlb": xtlb})
 
 
 #: The boot firmware's TLB refill handler (``Program.load(boot=True)``
@@ -491,6 +513,103 @@ __tlb_set:
         tlbwr                    # a random entry (Wired .. N-1)
         eret
 """
+
+
+#: The MIPS64 boot firmware's XTLB refill handler (EBase + 0x080, Vol. III
+#: Table 6.9: a refill of a reference with 64-bit addresses enabled): the
+#: same mapping by the low word of the address — R = 0b11 (the kernel
+#: regions, bit 63 set): PA = VA 31:0, uncached; else PA = VA 31:0 + 1 GB,
+#: cacheable (firmware_map64).
+FIRMWARE_XTLB_REFILL = """\
+        .set noreorder
+        .ktext 0x80000080
+__xtlb_refill:
+        dmfc0  $k1, $10          # EntryHi: R | VPN2 of the miss | ASID
+        dsll32 $k0, $k1, 0       # its low word ...
+        dsrl32 $k0, $k0, 13      # ... VA 31:13
+        dsll   $k0, $k0, 7       # EntryLo PFN of the even page: (VA 31:12) << 6
+        bltz   $k1, __xtlb_set   # R = 0b11 (bit 63): PA = VA 31:0
+        ori    $k0, $k0, 0x17    # (delay slot) C = 2 uncached, D, V, G
+        lui    $k1, 0x0100       # else PA = VA 31:0 + 0x40000000
+        addu   $k0, $k0, $k1
+        xori   $k0, $k0, 0x08    # C = 3: cacheable, write-back
+__xtlb_set:
+        mtc0   $k0, $2           # EntryLo0: the even page
+        addiu  $k0, $k0, 0x40    # the odd page: PFN + 1
+        mtc0   $k0, $3           # EntryLo1
+        mtc0   $zero, $5         # PageMask: 4 KB pages
+        sll    $zero, $zero, 3   # ehb (Release 1: a nop)
+        tlbwr                    # a random entry (Wired .. N-1)
+        eret
+"""
+
+
+def firmware_xtlb_refill(cca: int = 3, window: tuple[int, int] | None = None) -> str:
+    """:data:`FIRMWARE_XTLB_REFILL` with attribute ``cca`` for the
+    cacheable pages; ``window`` (a board's memory for the user pages, as
+    :func:`firmware_refill`'s): PA = base + (VA 31:0 mod size)."""
+    if window is not None:
+        base, size = window
+        mask = (size - 1) & ~0x1FFF
+        lo = 0x07 | cca << 3                        # C, D, V, G
+        return f"""\
+        .set noreorder
+        .ktext 0x80000080
+__xtlb_refill:
+        dmfc0  $k1, $10          # EntryHi: R | VPN2 of the miss | ASID
+        bltz   $k1, __xtlb_k     # R = 0b11 (bit 63): PA = VA 31:0, uncached
+        lui    $k0, 0x{mask >> 16:04x}       # (delay slot) the window: VA 31:0 mod 0x{size:x}
+        ori    $k0, $k0, 0x{mask & 0xFFFF:04x}
+        and    $k0, $k0, $k1     # the page pair's offset in the window
+        lui    $k1, 0x{base >> 16:04x}       # + its base 0x{base:08x}
+        addu   $k0, $k0, $k1
+        srl    $k0, $k0, 12
+        sll    $k0, $k0, 6       # EntryLo PFN of the even page
+        b      __xtlb_set
+        ori    $k0, $k0, 0x{lo:02x}    # (delay slot) C = {cca}, D, V, G
+__xtlb_k:
+        dsll32 $k0, $k1, 0       # its low word ...
+        dsrl32 $k0, $k0, 13      # ... VA 31:13
+        dsll   $k0, $k0, 7       # EntryLo PFN of the even page
+        ori    $k0, $k0, 0x17    # C = 2 uncached, D, V, G
+__xtlb_set:
+        mtc0   $k0, $2           # EntryLo0: the even page
+        addiu  $k0, $k0, 0x40    # the odd page: PFN + 1
+        mtc0   $k0, $3           # EntryLo1
+        mtc0   $zero, $5         # PageMask: 4 KB pages
+        sll    $zero, $zero, 3   # ehb (Release 1: a nop)
+        tlbwr                    # a random entry (Wired .. N-1)
+        eret
+"""
+    return FIRMWARE_XTLB_REFILL.replace(
+        "xori   $k0, $k0, 0x08    # C = 3: cacheable, write-back",
+        f"xori   $k0, $k0, 0x{(2 ^ cca) << 3:02x}    # C = {cca}: cacheable, write-back")
+
+
+def firmware_map64(va: int, cca: int = 3, window: tuple[int, int] | None = None
+                   ) -> tuple[int, int, str]:
+    """What the MIPS64 boot firmware's refill handlers map ``va`` to: bit
+    63 set (the kernel regions: kseg2 / kseg3, xkseg): PA = VA 31:0,
+    uncached; else PA = VA 31:0 + 1 GB (``window``: base + VA 31:0 mod
+    size), cacheable."""
+    if va >> 63:
+        return va & M32, CCA_UNCACHED, "boot firmware refill handler: PA = VA 31:0, uncached"
+    if window is not None:
+        base, size = window
+        return (base + (va & (size - 1)), cca,
+                f"boot firmware refill handler: PA = 0x{base:08x} + (VA 31:0 mod 0x{size:x}), "
+                "cacheable" + (" coherent" if cca in (4, 5) else ""))
+    return (((va & M32) + 0x40000000) & M32, cca,
+            "boot firmware refill handler: PA = VA 31:0 + 0x40000000, cacheable")
+
+
+def segment64(va: int) -> str:
+    """The MIPS64 segment of a 64-bit virtual address (Vol. III Table
+    4.1): the 32-bit compatibility ones by their names, else xuseg /
+    xsseg / xkphys / xkseg."""
+    if va < 0x80000000 or va >= 0xFFFFFFFF80000000:
+        return segment(va & M32)
+    return ("xuseg", "xsseg", "xkphys", "xkseg")[va >> 62]
 
 
 def user_window(m) -> tuple[int, int] | None:
@@ -610,6 +729,26 @@ class TLBMMU:
         #: whose Index entry a TLBWR here never overwrites
         self.index_p = False
         self.peer: "TLBMMU | None" = None
+        #: the other VPs' MMUs of a Release 6 core (emips.vp): one FTLB for
+        #: the core, each VP its own VTLB (MD01196 12.2)
+        self.ftlb_peers: list["TLBMMU"] = []
+        self._width(False)
+
+    #: translates 64-bit virtual addresses on a MIPS64 core (Config.AT = 2)
+    va64 = True
+
+    def _width(self, wide: bool) -> None:
+        """The address width of the core it is bound to: MIPS32, or MIPS64
+        with 64-bit addresses (R, VPN2 up to SEGBITS - 1, XContext)."""
+        self.wide = wide
+        vpn = ((1 << SEGBITS) - 1) & ~0x1FFF if wide else HI_VPN2
+        #: EntryHi's R / VPN2 bits; the bits a TLB match compares
+        self._hi_vpn = (HI_R | vpn) if wide else HI_VPN2
+        self._vmask = self._hi_vpn | HI_VPN2X
+        #: the virtual address width the TLB sees
+        self._vamask = M64 if wide else M32
+        for e in self.entries:
+            e.vmask = self._vmask
 
     def _features(self, release: str) -> None:
         """The optional features, by default those of ``release``."""
@@ -654,6 +793,12 @@ class TLBMMU:
         optional features follow its release)."""
         self.m = m
         self._features(m.release)
+        wide = bool(getattr(m, "wide", False))
+        self._width(wide)
+        if wide:                            # XContext (20.0): the XTLB refill's pointer
+            self.REGISTERS = self.REGISTERS | {XCONTEXT}
+            m.cp0.setdefault(XCONTEXT, {"name": "XContext", "value": 0})
+            m.cp0[XCONTEXT]["value"] = 0
         self.random = self.n - 1
         cp = m.cp0
         if self.ftlb:                       # Config6: the FTLB off after reset
@@ -799,8 +944,12 @@ class TLBMMU:
             if self.rxi and pg & PG_XIE:
                 mask |= LO_XI
             new = value & mask
-        elif key == CONTEXT:
-            new = (old & ~CTX_PTEBASE) | (value & CTX_PTEBASE)
+        elif key == CONTEXT:                 # (MIPS64: PTEBase 63:23)
+            base = (M64 & ~0x7FFFFF) if self.wide else CTX_PTEBASE
+            new = (old & ~base) | (value & base)
+        elif key == XCONTEXT:                # PTEBase 63:SEGBITS-7 (Vol. III 9.52)
+            base = M64 & ~((1 << (SEGBITS - 7)) - 1)
+            new = (old & ~base) | (value & base)
         elif key == PAGEMASK:
             new = self._pagemask(value, old)
         elif key == PAGEGRAIN:
@@ -826,8 +975,8 @@ class TLBMMU:
             if (new ^ old) & CFG6_FTLBEN:
                 cell["value"] = new
                 self._ftlb_config(m)
-        elif key == ENTRYHI:
-            mask = HI_VPN2 | HI_ASID
+        elif key == ENTRYHI:                 # (MIPS64: R | VPN2; Fill reads 0)
+            mask = self._hi_vpn | HI_ASID
             if self._esp:
                 mask |= HI_VPN2X
             if self.invalidate:
@@ -849,21 +998,24 @@ class TLBMMU:
             new = (old & ~mask) | (value & mask)
         elif key in (segctl.SEGCTL0, segctl.SEGCTL1, segctl.SEGCTL2):
             new = value & 0xFE7FFE7F         # bits 8:7 of each CFG read 0
+            if self.wide:                    # MIPS64 (Vol. III 9.14 / 9.15): SegCtl1.XAM
+                new |= value & {segctl.SEGCTL1: segctl.XAM_MASK,     # 61:59,
+                                segctl.SEGCTL2: segctl.XR_MASK}.get(key, 0)   # SegCtl2.XR
             if r6:                           # R6: unsupported C values ignored
                 for shift in (0, 16):
                     if (value >> shift) & 7 not in m.supported_cca:
                         new = (new & ~(7 << shift)) | (old & (7 << shift))
             self._memo.clear()
-        elif key == C.EBASE:                 # the write gate (Vol. III 9.41)
-            mask = 0x3FFFF000 | (1 << 11)
+        elif key == C.EBASE:                 # the write gate (Vol. III 9.41; MIPS64
+            mask = 0x3FFFF000 | (1 << 11)    # 9.39: with WG bits 63:30)
             if value & (1 << 11):
-                mask |= 0xC0000000
+                mask |= (M64 if self.wide else M32) & ~0x3FFFFFFF
             new = (old & ~mask) | (value & mask)
         elif key in ptw.REGISTERS:
             new = ptw.write(m, key, value, self.release)
         else:                                # Random, BadInstr, BadInstrP: read-only
             new = old
-        cell["value"] = new & M32
+        cell["value"] = new & (M64 if self.wide and key in WIDE_KEYS else M32)
 
     def _pagemask(self, value: int, old: int) -> int:
         """PageMask: the 24K stores one bit per pair of Mask bits (MD00343
@@ -925,8 +1077,19 @@ class TLBMMU:
     def _unmapped(self, m, va: int, lvl: str | None = None) -> tuple[int, int] | None:
         """``(pa, cca)`` when ``va`` is not translated by the TLB: kseg0 /
         kseg1 and kuseg with ERL = 1 (legacy), or the unmapped Segment
-        Configurations (Segmentation Control, 4.10); else None."""
+        Configurations (Segmentation Control, 4.10); else None.  MIPS64:
+        the same compatibility segments (sign-extended), and xkphys — the
+        attribute from VA 61:59, PA = VA PABITS-1:0 (Vol. III 4.7)."""
         status = m.cp0[C.STATUS]["value"]
+        if self.wide and 0x7FFFFFFF < va < 0xFFFFFFFF80000000:
+            if va >> 62 == 2:                # xkphys; Segmentation Control: a region
+                if self.sc and m.cp0[segctl.SEGCTL2]["value"] >> (56 + ((va >> 59) & 7)) & 1:
+                    am = (m.cp0[segctl.SEGCTL1]["value"] >> 59) & 7   # of SegCtl2.XR
+                    if segctl.mapped(am, lvl or segctl.level(m)):     # by SegCtl1.XAM
+                        return None          # (4.12 xkphysRegionLookup: mapped)
+                return va & ((1 << PABITS) - 1), (va >> 59) & 7
+            return None                      # xuseg / xsseg / xkseg: mapped
+        va &= M32
         if self.sc:
             n = segctl.region(va)
             c = segctl.cfg(m, n)
@@ -978,10 +1141,31 @@ class TLBMMU:
 
     def _changed(self, index: int | None = None) -> None:
         """A TLB entry was written or invalidated: the micro-TLBs drop
-        their copies of it (MD00343 2.2.3 / 2.3.1)."""
+        their copies of it (MD00343 2.2.3 / 2.3.1); an FTLB entry of a core
+        with VPs: every VP sees it."""
         self._memo.clear()
         self.itlb.drop(index)
         self.dtlb.drop(index)
+        if self.ftlb_peers and (index is None or index >= self.n):
+            shared = self.entries[self.n:]
+            for p in self.ftlb_peers:
+                p.entries[p.n:] = shared
+                p._memo.clear()
+                p.itlb.drop(index)
+                p.dtlb.drop(index)
+
+    def share_ftlb(self, others: list["TLBMMU"]) -> None:
+        """This MMU joins the FTLB of ``others`` (the VPs of its core, MD01196
+        12.2: "The 512 dual-entry Fixed TLB (FTLB) is shared between all
+        VPs"): it takes their FTLB entries, they see its writes."""
+        group = [o for o in others if o.ftlb and o.n == self.n
+                 and len(o.entries) == len(self.entries)] if self.ftlb else []
+        if group:
+            self.entries[self.n:] = group[0].entries[self.n:]
+            self._memo.clear()
+        for o in group:
+            o.ftlb_peers = [p for p in o.ftlb_peers if p in group] + [self]
+        self.ftlb_peers = group
 
     def xlate(self, m, va: int, kind: str) -> tuple[int, int]:
         """Translate an access (``fetch``, ``load``, ``pcload`` — a PC-relative
@@ -989,7 +1173,7 @@ class TLBMMU:
         TLB exception.  Goes through the micro-TLB, filling it from the TLB
         on a miss (Vol. III 4.9.4 pseudo code; 24K 2.2.3, 2.3.1); a miss in
         the TLB first runs the page table walker when there is one."""
-        va &= M32
+        va &= self._vamask
         fixed = self._unmapped(m, va)
         if fixed is not None:
             if kind != "fetch":
@@ -1018,7 +1202,8 @@ class TLBMMU:
             if ix is None:
                 self.stats.misses += 1
                 self.stats.jtlb_misses["fetch" if kind == "fetch" else "data"] += 1
-                raise self._fault(rec, "refill", code, va, "no TLB entry matches", refill=True)
+                raise self._fault(rec, "refill", code, va, "no TLB entry matches", refill=True,
+                                  xtlb=self._xtlb(m, va))
             self.stats.hits += 1
             e = self.entries[ix]
             half = (va >> e.evenodd) & 1
@@ -1053,15 +1238,29 @@ class TLBMMU:
         """Note the entry ``ix`` and the half a translation used."""
         rec.entry, rec.source, rec.half = ix, e, half
 
+    def _xtlb(self, m, va: int) -> bool:
+        """A refill of ``va`` uses the XTLB Refill vector (0x080): 64-bit
+        addresses are enabled for the reference (Vol. III 6.2.10, Table
+        4.2) — useg / xuseg by UX, sseg / kseg3 / xkseg by KX (note 2:
+        not SX), xsseg by SX."""
+        if not self.wide:
+            return False
+        status = m.cp0[C.STATUS]["value"]
+        if va < 0x80000000:
+            return bool(status & (1 << 5))                       # UX
+        if va >= 0xFFFFFFFF80000000:
+            return bool(status & (1 << 7))                       # KX
+        return True                         # xuseg / xsseg / xkseg (enabled to get here)
+
     def _fault(self, rec: TLBAccess | None, what: str, code: int, va: int, why: str,
-               *, refill: bool = False, ix: int | None = None):
+               *, refill: bool = False, ix: int | None = None, xtlb: bool = False):
         """The exception of a failed translation (counted and recorded)."""
         name = FAULT_NAMES[what]
         self.stats.fault(name)
         if rec is not None:
             rec.fault, rec.why, rec.pa = name, why, None
         where = "" if ix is None else f"TLB entry {ix}: "
-        return _arch(code, va, refill=refill, why=where + why)
+        return _arch(code, va, refill=refill, why=where + why, xtlb=xtlb)
 
     def _protect(self, m, u: MicroEntry, va: int, kind: str,
                  rec: TLBAccess | None = None) -> None:
@@ -1097,11 +1296,17 @@ class TLBMMU:
 
     def _note(self, kind: str, va: int, note: str, entry: int | None = None) -> None:
         if self.log is not None:
-            self.log.append(TLBAccess(kind, va & M32, entry=entry, note=note, mmu=self))
+            self.log.append(TLBAccess(kind, va & self._vamask, entry=entry, note=note,
+                                      mmu=self))
 
     def walker_translation(self, m, va: int) -> tuple[int, int] | None:
         """``(pa, cca)`` of a page table walker read (kernel privilege, no
-        exception, no micro-TLB): unmapped, or a valid TLB entry; else None."""
+        exception, no micro-TLB): unmapped, or a valid TLB entry; else None.
+        MIPS64: an address Kernel Mode may not use (Table 4.2: KX / SX /
+        UX, the holes) is None too (the walk is aborted, 4.14)."""
+        va &= self._vamask
+        if self.wide and not self._kernel_ok(m, va):
+            return None
         fixed = self._unmapped(m, va, segctl.KERNEL)
         if fixed is not None:
             return fixed
@@ -1114,12 +1319,29 @@ class TLBMMU:
             return None
         return (e.frame(half) | (va & (e.page_size - 1))) & M32, (e.lo[half] >> LO_C_SHIFT) & 7
 
+    def _kernel_ok(self, m, va: int) -> bool:
+        """MIPS64: may a Kernel Mode load use ``va`` (Vol. III Table 4.2;
+        Segmentation Control's xkphys regions, 4.12)?"""
+        from .sim64 import ST_KX, ST_SX, ST_UX, compat, hole
+        if compat(va):
+            return True                      # (every Segment Configuration lets kernel in)
+        if hole(va, SEGBITS, PABITS):
+            return False
+        st = m.cp0[C.STATUS]["value"]
+        top = va >> 62
+        if top == 2 and self.sc and m.cp0[segctl.SEGCTL2]["value"] >> (56 + ((va >> 59) & 7)) & 1:
+            am = (m.cp0[segctl.SEGCTL1]["value"] >> 59) & 7
+            need = ST_KX if am in (segctl.UK, segctl.MK, 6) else \
+                ST_SX if am in (segctl.MSK, segctl.USK) else ST_UX
+            return bool(st & need)
+        return bool(st & (ST_UX if top == 0 else ST_SX if top == 1 else ST_KX))
+
     def peek(self, m, va: int) -> tuple[int, int] | None:
         """``(pa, cca)`` for a view (no micro-TLB, no counter, no
         exception); ``None`` when no valid entry maps it (the boot
         firmware's mapping when it would refill it).  The same answer as
         :meth:`describe`, without its text."""
-        va &= M32
+        va &= self._vamask
         fixed = self._unmapped(m, va)
         if fixed is not None:
             return fixed
@@ -1135,17 +1357,19 @@ class TLBMMU:
 
     def describe(self, m, va: int, kind: str = "load") -> Translation:
         """How ``va`` translates now, as the views show it."""
-        va &= M32
-        seg = segment(va)
+        va &= self._vamask
+        seg = segment64(va) if self.wide else segment(va)
         fixed = self._unmapped(m, va)
         if fixed is not None:
             pa, cca = fixed
-            if self.sc:
+            if seg == "xkphys":
+                how = (f"unmapped: PA = VA {PABITS - 1}:0, attribute {cca} from VA 61:59")
+            elif self.sc:
                 n = segctl.region(va)
                 how = f"unmapped by {segctl.describe(n, segctl.cfg(m, n))}"
             elif seg == "kuseg":
                 how = "Status.ERL = 1: kuseg unmapped, PA = VA, uncached"
-            elif seg == "kseg0":
+            elif seg in ("kseg0", "ckseg0"):
                 how = "unmapped: PA = VA - 0x80000000 (Config.K0)"
             else:
                 how = "unmapped: PA = VA - 0xA0000000, uncached"
@@ -1199,8 +1423,13 @@ class TLBMMU:
         cp[CONTEXT]["value"] = (ctx & ~CTX_BADVPN2) | ((va >> 13) << 4 & CTX_BADVPN2)
         hi = cp[ENTRYHI]["value"]
         keep = HI_ASID | HI_EHINV
-        vpn = va & (HI_VPN2 | (HI_VPN2X if self._esp else 0))
+        vpn = va & (self._hi_vpn | (HI_VPN2X if self._esp else 0))
         cp[ENTRYHI]["value"] = (hi & keep) | vpn
+        if self.wide:                        # MIPS64 (Vol. III 9.52): XContext.R =
+            xc = cp[XCONTEXT]["value"]       # VA 63:62, BadVPN2 = VA SEGBITS-1:13
+            low = (1 << (SEGBITS - 7)) - 1
+            cp[XCONTEXT]["value"] = ((xc & ~low) | (va >> 62) << (SEGBITS - 9)
+                                     | ((va >> 13) & ((1 << (SEGBITS - 13)) - 1)) << 4)
 
     def machine_check(self, m, cause: int = 1) -> None:
         """Machine Check taken: Status.TS, PageGrain.MCCause = ``cause``
@@ -1217,7 +1446,7 @@ class TLBMMU:
         """TLBP: Index = the entry matching EntryHi (VPN2, ASID), or P = 1
         (the Index field is then UNPREDICTABLE: unchanged)."""
         hi = m.cp0[ENTRYHI]["value"]
-        ix = self.match(hi & (HI_VPN2 | HI_VPN2X), hi & HI_ASID, check=True)
+        ix = self.match(hi & self._vmask, hi & HI_ASID, check=True)
         what = f"TLBP: EntryHi VPN2 0x{hi >> 13:05x} ASID {hi & HI_ASID}"
         if ix is not None:
             m.cp0[INDEX]["value"] = ix
@@ -1239,7 +1468,7 @@ class TLBMMU:
             cp[ENTRYLO0]["value"] = cp[ENTRYLO1]["value"] = 0
             return
         cp[PAGEMASK]["value"] = e.pagemask & (PM_MASK | (PM_MASKX if e.small else 0))
-        cp[ENTRYHI]["value"] = e.hi & (HI_VPN2 | (HI_VPN2X if e.small else 0) | HI_ASID)
+        cp[ENTRYHI]["value"] = e.hi & (self._hi_vpn | (HI_VPN2X if e.small else 0) | HI_ASID)
         g = LO_G if e.g else 0
         cp[ENTRYLO0]["value"] = e.lo[0] | g
         cp[ENTRYLO1]["value"] = e.lo[1] | g
@@ -1322,7 +1551,7 @@ class TLBMMU:
                how: str = "TLBWI") -> None:
         new = TLBEntry(pagemask=pagemask, hi=hi & ~HI_EHINV,
                        g=bool(lo0 & lo1 & LO_G), lo=[lo0 & ~LO_G, lo1 & ~LO_G],
-                       small=self._esp, written=True)
+                       small=self._esp, written=True, vmask=self._vmask)
         if self.ftlb:
             self._write_p5600(m, i, new, hi, how)
             return
@@ -1331,7 +1560,7 @@ class TLBMMU:
             if j == i or not e.live:
                 continue
             mask = e.mask | new.mask
-            if (e.hi ^ new.hi) & 0xFFFFF800 & ~mask:
+            if (e.hi ^ new.hi) & self._vmask & ~mask:
                 continue
             if not (e.g or new.g or e.asid == new.asid):
                 continue
@@ -1373,7 +1602,7 @@ class TLBMMU:
             if j == i or not e.live:
                 continue
             mask = e.mask | new.mask
-            if (e.hi ^ new.hi) & 0xFFFFF800 & ~mask:
+            if (e.hi ^ new.hi) & self._vmask & ~mask:
                 continue
             if not (e.g or new.g or e.asid == new.asid):
                 continue
@@ -1444,20 +1673,26 @@ class TLBMMU:
         a mapped address (Vol. III 4.9.3 InitTLB) —, Wired = 0, PageMask =
         0, ASID 0; with ``handler`` its refill handler
         (:data:`FIRMWARE_REFILL`) is the page table."""
+        kseg0 = 0xFFFFFFFF80000000 if self.wide else 0x80000000   # (MIPS64: ckseg0)
         for i in range(self.total):
             if self.invalidate:
-                self.entries[i] = TLBEntry(written=True, ehinv=True)
+                self.entries[i] = TLBEntry(written=True, ehinv=True, vmask=self._vmask)
             else:
-                self.entries[i] = TLBEntry(hi=0x80000000 + (i << 13), written=True)
+                self.entries[i] = TLBEntry(hi=(kseg0 + (i << 13)) & self._hi_vpn,
+                                           written=True, vmask=self._vmask)
         self._changed()
-        for key in (PAGEMASK, ENTRYHI, ENTRYLO0, ENTRYLO1, INDEX, CONTEXT):
+        for key in (PAGEMASK, ENTRYHI, ENTRYLO0, ENTRYLO1, INDEX, CONTEXT) + (
+                (XCONTEXT,) if self.wide else ()):
             m.cp0[key]["value"] = 0
         self.cp0_write(m, WIRED, 0)
         if self.ftlb:                        # the OS turns the FTLB on (Linux:
             self.cp0_write(m, CONFIG6, CFG6_FTLBEN)   # Config6.FTLBEn on a P5600)
         cca = boot_cca(m)
         window = user_window(m)
-        self.fallback = (lambda va: firmware_map(va, cca, window)) if handler else None
+        if self.wide:                        # the XTLB handler's mapping too
+            self.fallback = (lambda va: firmware_map64(va, cca, window)) if handler else None
+        else:
+            self.fallback = (lambda va: firmware_map(va, cca, window)) if handler else None
 
     def take(self) -> tuple[int, list[str]]:
         """The micro-TLB miss cycles since the last call (the pipeline)."""

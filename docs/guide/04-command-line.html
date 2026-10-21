@@ -111,7 +111,12 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--release R1|R2|R3|R5|R6</code></td>
 <td>all</td>
-<td>the MIPS32 release (default R5)</td>
+<td>the MIPS32 / MIPS64 release (default R5)</td>
+</tr>
+<tr>
+<td><code>--arch mips32|mips64</code></td>
+<td>all</td>
+<td>the architecture (default <code>mips32</code>): <code>mips64</code> = a MIPS64 core — 64-bit registers, HI / LO and PC, the doubleword instructions (<code>daddu</code>, <code>ld</code>, <code>dsll32</code>, <code>dmult</code> ...), <code>dli</code> / <code>dla</code>, the n64 register names (<code>$a4</code>–<code>$a7</code> = <code>$8</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>); with the fixed mapping it addresses the 32-bit compatibility segments (Config.AT = 1: any other 64-bit address is an Address Error), with a TLB (<code>--mmu tlb</code>, <code>ftlb</code>, <code>+sc</code>, <code>+pw</code>) the whole 64-bit address space (Config.AT = 2: xuseg, xsseg, xkphys, xkseg; the boot firmware sets Status.KX / SX / UX and handles the XTLB Refills); it runs in instruction mode and on the 5-stage pipeline (the 24K is a MIPS32 core: <code>--model 24k</code> becomes 5-stage; DMULT / DDIV take the MIPS64 5K's 9 / 67 cycles); the boot sets Status.FR (64-bit FPRs), the user boot Status.PX (64-bit operations in User Mode)</td>
 </tr>
 <tr>
 <td><code>--little</code></td>
@@ -216,7 +221,7 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--cores N</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>a multi-core system of N cores (2–4): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's); with <code>--board malta</code> a multi-core Malta (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
+<td>a multi-core system of N cores (2–6; MIPS32 or MIPS64): one memory, the Coherence Manager (coherent data caches, the shared L2), the Cluster Power Controller; the kernel / user boot starts every core at the entry, <code>--boot reset</code> core 0 only (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); <code>run</code> prints the cores at the end, <code>pipe</code> (and <code>run --pipeline</code>) also every other core's cycles and CPI (the chart is core 0's); with <code>--board malta</code> a multi-core Malta (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
 </tr>
 <tr>
 <td><code>--iocu</code></td>
@@ -231,7 +236,7 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--compressed auto|none|mips16e|micromips|micromips-only</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the core's compressed ISA: <code>auto</code> (default) = MIPS16e from Release 1 to 5, as the 24K, none in Release 6; <code>none</code> = a MIPS32 core without one (<code>jalx</code> is Reserved, a <code>jr</code> to an odd address an address error); <code>mips16e</code> (Config1.CA, <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a>); <code>micromips</code> = microMIPS32 and MIPS32, Release 2+ (Config3.ISA = 2; the M14K is a Release 2 core with microMIPS); <code>micromips-only</code> = no MIPS32 (Config3.ISA = 1; <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program with MIPS16e / microMIPS code gets it anyway</td>
+<td>the core's compressed ISA: <code>auto</code> (default) = MIPS16e from Release 1 to 5, as the 24K, none in Release 6; <code>none</code> = a MIPS32 core without one (<code>jalx</code> is Reserved, a <code>jr</code> to an odd address an address error); <code>mips16e</code> (Config1.CA, <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19</a>); <code>micromips</code> = microMIPS32 and MIPS32, Release 2+ (Config3.ISA = 2; the M14K is a Release 2 core with microMIPS); <code>micromips-only</code> = no MIPS32 (Config3.ISA = 1; <a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>); a program with MIPS16e / microMIPS code gets it anyway (with <code>--arch mips64</code>, <code>auto</code> gives one only then)</td>
 </tr>
 <tr>
 <td><code>--no-fpu</code></td>
@@ -259,6 +264,16 @@ output — the test suite re-runs them.</p>
 <td>the MT Module's ITC gating storage: <code>auto</code> (default) = 4 FIFO + 8 semaphore cells; <code>none</code>; FIFO and semaphore cells 0, 1, 2, 4, 8 or 16 each</td>
 </tr>
 <tr>
+<td><code>--vps N</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>Release 6 virtual processors a core (1–4; the I6400's 1, 2 or 4): more than one makes the I6400's CM3 system, even of one core — DVP / EVP, the CPC starts and stops the VPs, VP numbers core × 4 + VP (<a href="05-understanding.html#release-6-threads-virtual-processors">Phase 5</a>); Release 6 only</td>
+</tr>
+<tr>
+<td><code>--itu auto|none|FIFOS:SINGLES[:DEPTH]</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>a CM3 core's ITU (the I6400's gating storage, placed by CP0 SAAR): <code>auto</code> (default) = 4 FIFO cells of 4 entries + 8 single-entry cells; <code>none</code>; up to 32 cells, FIFOs of 2, 4 or 8 entries</td>
+</tr>
+<tr>
 <td><code>--core NAME</code></td>
 <td>run, pipe, debug, gdb</td>
 <td>a real MIPS core (<code>24kf</code>, <code>m14k</code>, <code>p5600</code> ...; <a href="#413-cores--real-mips-cores">4.13</a>): its release, compressed ISA, FPU, MMU, caches, cores, shadow sets, pipeline model and PRId; the other flags choose among what the core can be built with, a flag it cannot have is refused (<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>)</td>
@@ -281,7 +296,7 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--mmu SPEC</code></td>
 <td>run, pipe, debug</td>
-<td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code> (<a href="05-understanding.html#the-tlb">Phase 5</a>)</td>
+<td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code>; on a MIPS64 core (<code>--arch mips64</code>) <code>fixed</code> and <code>bat</code> keep 32-bit addresses, a TLB gives the 64-bit address space — with <code>+sc</code> the xkphys regions of SegCtl1.XAM / SegCtl2.XR and a 64-bit EBase, with <code>+pw</code> 64-bit page tables (PWSize.PS, PWCtl.XK / XS / XU) (<a href="05-understanding.html#the-tlb">Phase 5</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -632,7 +647,7 @@ condition and increment) gets a breakpoint on each.</p>
 <td>scan the TAP by hand: an instruction (IDCODE, IMPCODE, CONTROL ... or a number), a data register (prints what came out), Test-Logic-Reset</td>
 </tr>
 <tr>
-<td><code>ejtag ib N LOC [mask M] [asid A] [trigger]</code> / <code>ejtag db N LOC [load|store] [mask M] [value V] [asid A] [trigger]</code> / <code>ejtag watch N LOC i|r|w|rw [mask M] [asid A]</code> / <code>ejtag ib|db|watch N off</code> / <code>ejtag clear</code></td>
+<td><code>ejtag ib N LOC [mask M] [asid A] [tc T] [trigger]</code> / <code>ejtag db N LOC [load|store] [mask M] [value V] [asid A] [tc T] [trigger]</code> / <code>ejtag watch N LOC i|r|w|rw [mask M] [asid A]</code> / <code>ejtag ib|db|watch N off</code> / <code>ejtag clear</code></td>
 <td>set an EJTAG instruction (0–3) / data (0–1) breakpoint or a watch register pair (0, 1 fetches; 2, 3 loads / stores) as a probe would; turn one off; clear the match bits (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
 </tr>
 <tr>
@@ -642,6 +657,10 @@ condition and increment) gets a breakpoint on each.</p>
 <tr>
 <td><code>mt</code> / <code>mt itc</code></td>
 <td>the MT Module: MVPControl, each VPE (VPEControl, VPEConf0, YQMask), the policy manager and every TC — its state, PC, flags (DA, IXMT, DT), group, the instructions it issued and what it waits for (<code>&gt;</code> = the TC that issues next); <code>mt itc</code> lists the ITC cells</td>
+</tr>
+<tr>
+<td><code>vp</code> / <code>vp itu</code></td>
+<td>Release 6 virtual processors (<code>--vps N</code>, the I6400): every core's VP_RUNNING, the DVP that holds the others, SAAR, and every VP — its state, GlobalNumber, VPControl, PC; <code>vp itu</code> lists the selected VP's core's ITU cells</td>
 </tr>
 <tr>
 <td><code>mt yq BITS</code> / <code>mt sys N</code></td>
@@ -947,8 +966,16 @@ the program exited
 <td>the DSP Module (like <code>--dsp</code>)</td>
 </tr>
 <tr>
+<td><code>set arch mips32|mips64</code></td>
+<td>the architecture (like <code>--arch</code>): the program is assembled again for it</td>
+</tr>
+<tr>
 <td><code>set mt auto|none|VPES:TCS</code> / <code>set mt-pm rr|wrr|wrr2</code> / <code>set itc auto|none|FIFOS:SEMS</code></td>
 <td>the MT Module, its policy manager, its ITC (like <code>--mt</code>, <code>--mt-pm</code>, <code>--itc</code>)</td>
+</tr>
+<tr>
+<td><code>set vps 1..4</code> / <code>set itu auto|none|FIFOS:SINGLES[:DEPTH]</code></td>
+<td>Release 6 VPs a core, a CM3 core's ITU (like <code>--vps</code>, <code>--itu</code>)</td>
 </tr>
 <tr>
 <td><code>set fpu on|off</code></td>
@@ -1059,8 +1086,8 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--little] [-O 0|1|2|3|s] [--mips16 | --micromips] [--no-fpu]
-                    [--dsp | --dspr2] [--core NAME] [-v]
+                    [--arch mips32|mips64] [--little] [-O 0|1|2|3|s] [--mips16 | --micromips]
+                    [--no-fpu] [--dsp | --dspr2] [--core NAME] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
 ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
@@ -1071,6 +1098,8 @@ GCC), <code>--micromips</code> as microMIPS
 (<a href="02-writing-programs.html#220-micromips-16--and-32-bit-instructions">2.20</a>; Release 2,
 3 or 5, the default with it is R5).  In both, crt0 stays MIPS32 and the
 linker turns the calls between the two ISAs into <code>jalx</code>.
+<code>--arch mips64</code> builds for MIPS64, the n64 ABI: an ELF64 (64-bit
+<code>long</code> and pointers; GNU ld's <code>elf64btsmip</code> / <code>elf64ltsmip</code>).
 <code>--no-fpu</code> builds for a core without an FPU (<code>-msoft-float</code>):
 integer code needs nothing more, float arithmetic calls the soft-float
 routines (<code>__addsf3</code> ...) of a MIPS GCC's soft-float libgcc — a
@@ -1083,7 +1112,8 @@ flags, and the core that runs it gets the DSP Module.  A C program in
 the window or given to <code>run</code> is built with <code>-mdspr2</code> when it
 calls these builtins.  <code>--core NAME</code> builds for that core's
 release and DSP Module, soft-float when it has no FPU.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
-<code>.c</code> file too (built for the session's release and byte order) and every
+<code>.c</code> file too (built for the session's release, byte order and
+architecture) and every
 command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
 disassembly with each C line above its instructions.</p>
 <h2 id="412-gdb--debugging-with-gdb">4.12 gdb — debugging with GDB</h2>
@@ -1275,6 +1305,14 @@ FPU registers (its MIPS description needs them) but shows them as
 <code>&lt;unavailable&gt;</code>.  With the DSP Module GDB also has
 <code>$hi1</code>, <code>$lo1</code> ... <code>$hi3</code>, <code>$lo3</code> and <code>$dspctl</code>
 (its <code>org.gnu.gdb.mips.dsp</code> registers, 72-78).</p>
+<p>A <strong>MIPS64</strong> program (<code>--arch mips64</code>, or an ELF64 from <code>cc --arch
+mips64</code>) gets GDB's 64-bit description: every register 64 bits wide,
+the architecture <code>mips:isa64</code> / <code>mips:isa64r2</code> / <code>mips:isa64r6</code>.  The
+ELF eMIPS writes for an assembly program is an ELF64 then, so GDB uses
+the n64 ABI (<code>show mips abi</code>).  Its addresses are 64-bit: a kseg0 one reads
+<code>0xffffffff80001000</code>, and with a TLB the whole 64-bit space works —
+<code>x/1gx</code>, <code>watch</code> on a <code>long</code>, <code>set var $t0 = 0x1111222233334444</code>.  With
+Status.FR = 0 each FPR shows its 32-bit word.</p>
 <h2 id="413-cores--real-mips-cores">4.13 cores — real MIPS cores</h2>
 <pre><code class="language-text">python3 -m emips cores [NAME]
 </code></pre>
@@ -1294,6 +1332,7 @@ m14k:  MIPS M14K: MIPS32 Release 2, PRId 0x00019b00
   l2: no L2
   l3: no L3
   cores: 1
+  vps: one VP a core (no Release 6 multi-threading)
   shadow sets: 1, 2, 4, 8, 16
   model: 5-stage
 ...

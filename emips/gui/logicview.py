@@ -208,10 +208,11 @@ class SliceView(_Canvas):
             self.text(x - 4, y - 13, label + ("" if value is None else f" = {value}"), 7,
                       False, self.lit if on else None)
 
-    def show_slice(self, sl, ctl, msb: bool, lit: str) -> None:
+    def show_slice(self, sl, ctl, msb: bool, lit: str, top: int = 31,
+                   width: int = 32) -> None:
         """Bit ``sl`` (an :class:`emips.alulogic.Slice`) under ALU control
-        ``ctl``; ``msb``: bit 31, with Overflow and Set.  A wire is lit when
-        it carries a 1."""
+        ``ctl``; ``msb``: bit ``top`` (31; MIPS64: 63, a Word operation 31),
+        with Overflow and Set.  A wire is lit when it carries a 1."""
         self.scene_.clear()
         c = T()
         self.lit = lit
@@ -259,7 +260,7 @@ class SliceView(_Canvas):
                   False, self.lit if sl.cin else None)
         self.wire([(gx + 32, fy + 64), (gx + 32, fy + 90)], sl.cout)
         self.text(gx + 38, fy + 76, f"CarryOut = {sl.cout}"
-                  + (f" (to bit {sl.i + 1})" if sl.i < 31 else ""), 7, False,
+                  + (f" (to bit {sl.i + 1})" if sl.i < width - 1 else ""), 7, False,
                   self.lit if sl.cout else None)
         outs["sum"] = (gx + 64, fy + 32, sl.sum_)
         # the result mux: 0 AND, 1 OR, 2 sum, 3 Less, 4 XOR, 5 shifter
@@ -272,7 +273,7 @@ class SliceView(_Canvas):
             self.wire([(x0, y0), (xv, y0), (xv, ins[k]), (mx, ins[k])], val)
         less_y, sh_y = 380, 410
         self.wire([(240, less_y), (420, less_y), (420, ins[3]), (mx, ins[3])], sl.less)
-        self.text(240, less_y - 13, f"Less = {sl.less}" + (" (Set, from bit 31)" if sl.i == 0
+        self.text(240, less_y - 13, f"Less = {sl.less}" + (f" (Set, from bit {top})" if sl.i == 0
                                                            else " (0)"), 7, False,
                   self.lit if sl.less else None)
         self.wire([(240, sh_y), (428, sh_y), (428, ins[5]), (mx, ins[5])], sl.shift)
@@ -290,12 +291,13 @@ class SliceView(_Canvas):
         self.wire([(mx + 34, ry), (mx + 140, ry)], sl.result)
         self.text(mx + 44, ry - 15, f"Result{sl.i} = {sl.result}", 8, True,
                   self.lit if sl.result else None)
-        if msb:                                 # Overflow and Set (bit 31 only),
+        if msb:                                 # Overflow and Set (bit top only),
             ox, oy = 600, 360                   # fed by named stubs (net labels)
             ovf = sl.cin ^ sl.cout
             setv = (1 - sl.cout) if ctl.unsigned else sl.sum_ ^ ovf
-            for name, val, y in (("CarryIn31", sl.cin, oy + 8), ("CarryOut31", sl.cout, oy + 26),
-                                 ("Sum31", sl.sum_, oy + 88), ("Overflow", ovf, oy + 106)):
+            for name, val, y in ((f"CarryIn{top}", sl.cin, oy + 8),
+                                 (f"CarryOut{top}", sl.cout, oy + 26),
+                                 (f"Sum{top}", sl.sum_, oy + 88), ("Overflow", ovf, oy + 106)):
                 self.wire([(ox - 34, y), (ox, y)], val)
                 self.text(ox - 34 - 7 * len(name), y - 7, name, 7, False,
                           self.lit if val else None)
@@ -306,7 +308,8 @@ class SliceView(_Canvas):
             self._gate("xor", ox, sy, 42, 34, sl.sum_ ^ ovf)
             self.wire([(ox + 42, sy + 17), (ox + 120, sy + 17)], setv)
             self.text(ox + 48, sy + 2, f"Set = {setv}", 8, True, self.lit if setv else None)
-            self.text(ox - 34, sy + 44, "Set = Sum31 XOR Overflow (Unsigned: NOT CarryOut31)",
+            self.text(ox - 34, sy + 44, f"Set = Sum{top} XOR Overflow (Unsigned: NOT "
+                                        f"CarryOut{top})",
                       7, False, c.muted_text)
             self.text(ox - 34, sy + 56, "-> bit 0's Less", 7, False, c.muted_text)
         self._fit()

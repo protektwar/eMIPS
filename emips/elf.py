@@ -1,7 +1,7 @@
-"""ELF32 MIPS executables (PLAN M13): the loadable segments, the entry, the
-symbols, the MIPS32 release the code was built for, and — from the DWARF
-line table — the source line of every instruction.  Qt-free, no
-dependencies.
+"""MIPS executables (PLAN M13; ELF64 for MIPS64: M22 phase 4b): the
+loadable segments, the entry, the symbols, the release the code was built
+for, and — from the DWARF line table — the source line of every
+instruction.  Qt-free, no dependencies.
 
 References: the *System V ABI* (ELF header, program / section headers,
 symbol table), its *MIPS RISC Processor Supplement* (EM_MIPS = 8, the
@@ -13,14 +13,21 @@ Information Format* versions 2-5, section 6.2 "Line Number Information"
 (the line number program and its state machine; version 5's directory /
 file tables with their content descriptions).
 
-What eMIPS loads: an executable (``ET_EXEC``) of 32 bits, either byte
-order; every ``PT_LOAD`` segment — ``p_filesz`` bytes from the file, the
-rest of ``p_memsz`` zeros (``.bss``) — at its virtual address (the
-loader puts each byte where the MMU maps it, as for assembled programs);
-``e_entry``.  Relocatable objects (``ET_REL``: link them first), shared
-objects and 64-bit files are refused with the reason; MIPS16e and
+What eMIPS loads: an executable (``ET_EXEC``) of either byte order —
+ELFCLASS32 (o32: MIPS32) or ELFCLASS64 (the n64 ABI: MIPS64; EF_MIPS_ARCH
+64 / 64R2 / 64R6, and MIPS III / IV / V code as MIPS64 Release 1, its
+superset; the 64-bit headers of the ABI's ELF-64 Object File Format) —;
+every ``PT_LOAD`` segment — ``p_filesz`` bytes from the file, the rest of
+``p_memsz`` zeros (``.bss``) — at its virtual address (the loader puts
+each byte where the MMU maps it, as for assembled programs); ``e_entry``.
+A 64-bit address in the 32-bit compatibility space is kept as its 32-bit
+form (``0xFFFF_FFFF_8000_0180`` -> ``0x8000_0180``), as the MIPS64
+assembler (``-msym32``) keeps program addresses.  Relocatable objects
+(``ET_REL``: link them first), shared objects and n32 executables (an
+ELF32 with 64-bit code) are refused with the reason; MIPS16e and
 microMIPS code is listed and run in its ISA mode (``Symbol.isa``,
-:meth:`ElfImage.isa_ranges`).
+:meth:`ElfImage.isa_ranges`).  DWARF 2-5, 32- or 64-bit, with 4- or
+8-byte addresses.
 """
 
 from __future__ import annotations
@@ -49,9 +56,27 @@ EF_MIPS_ARCH = 0xF0000000
 #: EF_MIPS_ARCH -> eMIPS release (MIPS32 Release 2 binaries run on the
 #: full pre-R6 set, R5: every later release keeps their instructions)
 ARCH_RELEASE = {0x50000000: "R1", 0x70000000: "R5", 0x90000000: "R6"}
+#: ... of a 64-bit (ELFCLASS64) executable: MIPS III / IV / V and MIPS64 run
+#: on MIPS64 Release 1 (MIPS64 includes them), 64R2 on R2-R5, 64R6 on R6
+ARCH_RELEASE64 = {0x20000000: "R1", 0x30000000: "R1", 0x40000000: "R1",
+                  0x60000000: "R1", 0x80000000: "R5", 0xA0000000: "R6"}
 ARCH_NAMES = {0x50000000: "MIPS32", 0x70000000: "MIPS32 Release 2",
               0x90000000: "MIPS32 Release 6", 0x60000000: "MIPS64",
-              0x80000000: "MIPS64 Release 2", 0xA0000000: "MIPS64 Release 6"}
+              0x80000000: "MIPS64 Release 2", 0xA0000000: "MIPS64 Release 6",
+              0x20000000: "MIPS III", 0x30000000: "MIPS IV", 0x40000000: "MIPS V"}
+_ABOVE_4G = ("code or data above the 32-bit compatibility space: it needs 64-bit "
+             "addressing (Config.AT = 2: a TLB MMU, --mmu tlb)")
+#: e_flags EF_MIPS_ABI2: the n32 ABI (64-bit registers, 32-bit pointers)
+EF_MIPS_ABI2 = 0x20
+M32, M64 = 0xFFFFFFFF, (1 << 64) - 1
+
+
+def va32(addr: int) -> int:
+    """A 64-bit address in the 32-bit compatibility space as its 32-bit
+    form (what the MIPS64 assembler's -msym32 programs use); any other
+    address as it is."""
+    addr &= M64
+    return addr & M32 if addr < 0x80000000 or addr >= 0xFFFFFFFF80000000 else addr
 
 
 class ElfError(ValueError):
@@ -98,10 +123,13 @@ class ElfImage:
     #: the DSP Module level its code needs (.MIPS.abiflags ases: AFL_ASE_DSP
     #: 1, AFL_ASE_DSPR2 / DSPR3 2; binutils include/elf/mips.h)
     dsp: int = 0
+    #: "mips32" (ELFCLASS32, o32) or "mips64" (ELFCLASS64, n64)
+    arch: str = "mips32"
 
     @property
     def release(self) -> str:
-        return ARCH_RELEASE.get(self.flags & EF_MIPS_ARCH, "R5")
+        table = ARCH_RELEASE64 if self.arch == "mips64" else ARCH_RELEASE
+        return table.get(self.flags & EF_MIPS_ARCH, "R5")
 
     @property
     def arch_name(self) -> str:
@@ -194,17 +222,29 @@ def read_elf(path: str | Path) -> ElfImage:
 
 
 def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
+    """Parse the executable ``data`` (see the module docstring); raises
+    :class:`ElfError` with the reason (a cut or damaged file too)."""
+    try:
+        return _parse(data, path)
+    except (struct.error, IndexError, ValueError) as exc:
+        if isinstance(exc, ElfError):
+            raise
+        raise ElfError(f"a damaged or cut ELF file ({exc})") from None
+
+
+def _parse(data: bytes, path: str) -> ElfImage:
     if data[:4] != b"\x7fELF":
         raise ElfError("not an ELF file")
-    if data[4] != 1:
-        raise ElfError("a 64-bit ELF (eMIPS runs MIPS32: ELFCLASS32)")
+    if data[4] not in (1, 2):
+        raise ElfError("unknown ELF class (EI_CLASS)")
+    wide = data[4] == 2                              # ELFCLASS64: the n64 ABI
     if data[5] not in (1, 2):
         raise ElfError("unknown byte order (EI_DATA)")
     end = "<" if data[5] == 1 else ">"
     endian = "little" if data[5] == 1 else "big"
     (e_type, e_machine, _ver, e_entry, e_phoff, e_shoff, e_flags, _ehsize,
      e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx) = struct.unpack_from(
-        end + "HHIIIIIHHHHHH", data, 16)
+        end + ("HHIQQQIHHHHHH" if wide else "HHIIIIIHHHHHH"), data, 16)
     if e_machine != EM_MIPS:
         raise ElfError(f"not a MIPS executable (e_machine {e_machine})")
     if e_type != ET_EXEC:
@@ -213,11 +253,15 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
             e_type, f"ELF type {e_type}")
         raise ElfError(f"{kind} — eMIPS loads executables (ET_EXEC)")
     arch = e_flags & EF_MIPS_ARCH
-    if arch in (0x60000000, 0x80000000, 0xA0000000, 0x00000000 + 0x30000000,
-                0x40000000):
-        raise ElfError(f"{ARCH_NAMES.get(arch, 'a MIPS III / IV / 64-bit')} code: "
-                       "eMIPS runs MIPS32")
-    img = ElfImage(path, endian, e_entry, e_flags)
+    if not wide and (arch in ARCH_RELEASE64 or e_flags & EF_MIPS_ABI2):
+        raise ElfError(f"{ARCH_NAMES.get(arch, '64-bit')} code in a 32-bit ELF (the n32 "
+                       "ABI: 64-bit registers, 32-bit pointers): eMIPS runs o32 (ELF32, "
+                       "MIPS32) and n64 (ELF64, MIPS64) executables")
+    if wide and arch not in ARCH_RELEASE64:
+        raise ElfError(f"{ARCH_NAMES.get(arch, f'EF_MIPS_ARCH 0x{arch >> 28:x}')} code in a "
+                       "64-bit ELF: eMIPS runs MIPS64 (and MIPS III / IV / V) code there")
+    img = ElfImage(path, endian, va32(e_entry) if wide else e_entry, e_flags,
+                   arch="mips64" if wide else "mips32")
     if e_flags & EF_MIPS_M16:
         img.notes.append("MIPS16e code (EF_MIPS_ARCH_ASE_M16): the core gets MIPS16e")
     if e_flags & EF_MIPS_MICROMIPS:
@@ -227,23 +271,37 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
         img.notes.append("position-independent (abicalls) code: it expects $gp / $t9 "
                          "set up by a dynamic loader — build with -mno-abicalls -fno-pic")
     for i in range(e_phnum):
-        (p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags,
-         _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
+        if wide:                                     # Elf64_Phdr
+            (p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, p_memsz,
+             _align) = struct.unpack_from(end + "IIQQQQQQ", data, e_phoff + i * e_phentsize)
+            if p_type == PT_LOAD and p_memsz and 0x80000000 <= p_vaddr <= M32:
+                raise ElfError(f"a segment at 0x{p_vaddr:016x}: eMIPS keeps 32-bit "
+                               "addresses for the compatibility space (0x80000000 is "
+                               "kseg0, 0xFFFFFFFF80000000): xuseg 0x0000000080000000-"
+                               "0x00000000FFFFFFFF cannot be loaded — link below "
+                               "0x80000000 or above 4 GB")
+            p_vaddr = va32(p_vaddr)
+        else:
+            (p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags,
+             _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
         if p_type != PT_LOAD or not p_memsz:
             continue
+        if wide and p_vaddr > M32 and not img.notes.count(_ABOVE_4G):
+            img.notes.append(_ABOVE_4G)
         chunk = data[p_offset:p_offset + p_filesz]
+        amask = M64 if p_vaddr > M32 else M32
         for k in range(p_memsz):
-            img.image[(p_vaddr + k) & 0xFFFFFFFF] = chunk[k] if k < len(chunk) else 0
+            img.image[(p_vaddr + k) & amask] = chunk[k] if k < len(chunk) else 0
         rwx = "".join(c for c, bit in (("R", 4), ("W", 2), ("X", 1)) if p_flags & bit)
         img.segments.append((p_vaddr, p_memsz, rwx))
     if not img.segments:
         raise ElfError("no loadable segment (PT_LOAD)")
-    sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx)
+    sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx, wide)
     for name, sh_type, flags, addr, off, size, link, _info, entsize in sections:
         if flags & 2 and size:                         # SHF_ALLOC (SHF_EXECINSTR 4)
-            img.sections.append((name, addr, size, bool(flags & 4)))
+            img.sections.append((name, va32(addr) if wide else addr, size, bool(flags & 4)))
         if sh_type == SHT_SYMTAB:
-            img.symbols = _symbols(data, end, off, size, entsize, sections[link])
+            img.symbols = _symbols(data, end, off, size, entsize, sections[link], wide)
     by_name = {s[0]: s for s in sections}
     flags = next((s for s in sections if s[1] == SHT_MIPS_ABIFLAGS and s[5] >= 24), None)
     if flags is not None:                          # Elf_MIPS_ABIFlags_v0.ases
@@ -262,6 +320,9 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
                 data[s[4]:s[4] + s[5]], end,
                 data[line_str[4]:line_str[4] + line_str[5]] if line_str else b"",
                 data[dstr[4]:dstr[4] + dstr[5]] if dstr else b"")
+            if wide:
+                for row in img.lines:
+                    row.address = va32(row.address)
         except (struct.error, IndexError, ValueError) as exc:
             img.notes.append(f"the DWARF line table could not be read ({exc})")
     else:
@@ -269,8 +330,10 @@ def parse_elf(data: bytes, path: str = "<elf>") -> ElfImage:
     return img
 
 
-def _sections(data: bytes, end: str, off: int, entsize: int, n: int, strndx: int) -> list:
-    raw = [struct.unpack_from(end + "IIIIIIIIII", data, off + i * entsize) for i in range(n)]
+def _sections(data: bytes, end: str, off: int, entsize: int, n: int, strndx: int,
+              wide: bool = False) -> list:
+    fmt = end + ("IIQQQQIIQQ" if wide else "IIIIIIIIII")    # Elf64_Shdr / Elf32_Shdr
+    raw = [struct.unpack_from(fmt, data, off + i * entsize) for i in range(n)]
     if not raw:
         return []
     names = raw[strndx] if strndx < len(raw) else None
@@ -286,11 +349,18 @@ def _cstr(data: bytes, at: int) -> str:
     return data[at:stop].decode("utf-8", "replace")
 
 
-def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab) -> list[Symbol]:
+def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab,
+             wide: bool = False) -> list[Symbol]:
     out = []
-    for k in range(size // (entsize or 16)):
-        name, value, sz, info, other, shndx = struct.unpack_from(
-            end + "IIIBBH", data, off + k * (entsize or 16))
+    step = entsize or (24 if wide else 16)
+    for k in range(size // step):
+        if wide:                                     # Elf64_Sym
+            name, info, other, shndx, value, sz = struct.unpack_from(
+                end + "IBBHQQ", data, off + k * step)
+            value = va32(value)
+        else:
+            name, value, sz, info, other, shndx = struct.unpack_from(
+                end + "IIIBBH", data, off + k * step)
         kind = {STT_FUNC: "func", STT_OBJECT: "object"}.get(info & 0xF, "other")
         if not name or shndx == 0 or (info & 0xF) in (3, 4):   # SECTION, FILE
             continue
@@ -329,26 +399,31 @@ def _sleb(b: bytes, i: int) -> tuple[int, int]:
 def read_line_table(sec: bytes, end: str, line_str: bytes = b"",
                     debug_str: bytes = b"") -> list[LineRow]:
     """Every row of every line-number program in ``.debug_line`` (DWARF
-    6.2; versions 2-5, 32-bit DWARF)."""
+    6.2; versions 2-5, 32- or 64-bit DWARF: 7.4)."""
     rows: list[LineRow] = []
     i = 0
     while i + 4 <= len(sec):
         unit_len, = struct.unpack_from(end + "I", sec, i)
-        if unit_len == 0xFFFFFFFF:
-            raise ValueError("64-bit DWARF")
-        start, unit_end = i + 4, i + 4 + unit_len
-        rows += _line_program(sec[start:unit_end], end, line_str, debug_str)
+        off = 4                                      # 32-bit DWARF: 4-byte offsets
+        i += 4
+        if unit_len == 0xFFFFFFFF:                   # 64-bit DWARF (7.4)
+            unit_len, = struct.unpack_from(end + "Q", sec, i)
+            off = 8
+            i += 8
+        start, unit_end = i, i + unit_len
+        rows += _line_program(sec[start:unit_end], end, line_str, debug_str, off)
         i = unit_end
     return rows
 
 
-def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes) -> list[LineRow]:
+def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes,
+                  off: int = 4) -> list[LineRow]:
     version, = struct.unpack_from(end + "H", u, 0)
     i = 2
     if version >= 5:
         i += 2                                       # address_size, seg_sel_size
-    header_len, = struct.unpack_from(end + "I", u, i)
-    i += 4
+    header_len, = struct.unpack_from(end + ("Q" if off == 8 else "I"), u, i)
+    i += off
     prog = i + header_len
     min_inst = u[i]
     i += 1
@@ -360,8 +435,8 @@ def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes) -> list
     std_lengths = list(u[i:i + opcode_base - 1])
     i += opcode_base - 1
     if version >= 5:
-        dirs, i = _entries(u, i, end, line_str, debug_str)
-        files, i = _entries(u, i, end, line_str, debug_str)
+        dirs, i = _entries(u, i, end, line_str, debug_str, off)
+        files, i = _entries(u, i, end, line_str, debug_str, off)
         dirnames = [d.get(1, "") for d in dirs]
         filenames = [_join(dirnames, f.get(1, "?"), f.get(2, 0)) for f in files]
         base = 0                                     # DWARF 5: file 0 is the unit's
@@ -412,8 +487,9 @@ def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes) -> list
             if sub == 1:                             # end_sequence
                 emit(True)
                 st = reset()
-            elif sub == 2:                           # set_address
-                st["address"], = struct.unpack_from(end + "I", body, 0)
+            elif sub == 2:                           # set_address (4 or 8 bytes)
+                st["address"], = struct.unpack_from(end + ("Q" if len(body) >= 8 else "I"),
+                                                    body, 0)
             elif sub == 3:                           # define_file (v2-4)
                 stop = body.index(b"\0")
                 filenames.append(body[:stop].decode("utf-8", "replace"))
@@ -460,7 +536,7 @@ _FORMS = {0x08: "string", 0x0E: "strp", 0x1F: "line_strp", 0x0F: "udata",
 
 
 def _entries(u: bytes, i: int, end: str, line_str: bytes,
-             debug_str: bytes) -> tuple[list[dict], int]:
+             debug_str: bytes, size: int = 4) -> tuple[list[dict], int]:
     """A DWARF 5 directory / file table: its entry format, then the
     entries (content type -> value: 1 path, 2 directory index, ...)."""
     nfmt = u[i]
@@ -481,8 +557,8 @@ def _entries(u: bytes, i: int, end: str, line_str: bytes,
                 value = u[i:stop].decode("utf-8", "replace")
                 i = stop + 1
             elif kind in ("strp", "line_strp"):
-                off, = struct.unpack_from(end + "I", u, i)
-                i += 4
+                off, = struct.unpack_from(end + ("Q" if size == 8 else "I"), u, i)
+                i += size                            # an offset: 4 or 8 bytes (DWARF 7.4)
                 value = _cstr(line_str if kind == "line_strp" else debug_str, off)
             elif kind == "udata":
                 value, i = _uleb(u, i)

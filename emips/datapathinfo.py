@@ -19,10 +19,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .syntax import GPR_NAMES, gpr_name
+from .syntax import GPR_NAMES, GPR_NAMES_N64, gpr_name
 
 STAGES = ("IF", "ID", "EX", "MEM", "WB")
-_GPRS = {f"${n}" for n in GPR_NAMES}
+_GPRS = {f"${n}" for n in GPR_NAMES} | {f"${n}" for n in GPR_NAMES_N64}
+#: hex digits of a register value in the descriptions (MIPS64: 16; set by
+#: part_info from the session)
+_DIGITS = [8]
 
 
 @dataclass
@@ -235,7 +238,7 @@ def dest_of(d: dict) -> tuple[str, int | None] | None:
     if reg == 0:
         return None
     value = None if ctl.get("MemtoReg") else (v.alu.result if v.alu is not None else None)
-    return gpr_name(reg), value
+    return gpr_name(reg, "n64" if getattr(v, "digits", 8) == 16 else True), value
 
 
 def taken(d: dict, ev: dict) -> bool:
@@ -293,11 +296,16 @@ def _field(fields: list, *names: str):
 
 
 def _h(v: int | None) -> str:
-    return "?" if v is None else f"0x{v:08x}"
+    return "?" if v is None else f"0x{v:0{_DIGITS[0]}x}"
+
+
+def _mask() -> int:
+    return (1 << 4 * _DIGITS[0]) - 1
 
 
 def part_info(s, key: str) -> PartInfo:
     """What part ``key`` is and does in the cycle on the screen."""
+    _DIGITS[0] = s.hex_digits() if s.machine is not None else 8
     if key.startswith("24k:"):
         return _24k(s, key)
     part = PARTS[key]
@@ -357,7 +365,7 @@ def _pc(s, d, det, ev, pipeline):
 
 def _add4(s, d, det, ev, pipeline):
     pc = d.get("pc")
-    return [f"{_h(pc)} + 4 = {_h((pc + 4) & 0xFFFFFFFF)}",
+    return [f"{_h(pc)} + 4 = {_h((pc + 4) & _mask())}",
             "to the PC mux (input 0) and to IF/ID (PC + 4 for ID)"]
 
 
@@ -446,7 +454,7 @@ def _sext(s, d, det, ev, pipeline):
         how, val = "sign-extended (bit 15 = " + str(raw >> 15) + ")", \
             raw - 0x10000 if raw & 0x8000 else raw
     return [f"{imm.name} (bits {imm.msb}..{imm.lsb}) = {imm.bits} = 0x{raw:04x}",
-            f"{how}: {_h(val & 0xFFFFFFFF)} = {val}"]
+            f"{how}: {_h(val & _mask())} = {val}"]
 
 
 def _btarget(s, d, det, ev, pipeline):
@@ -455,7 +463,7 @@ def _btarget(s, d, det, ev, pipeline):
         return [f"not used: {d.get('text')} is not a branch or jump"]
     v = d.get("view")
     pc = d.get("pc")
-    out = [f"PC + 4 = {_h((pc + 4) & 0xFFFFFFFF)}"]
+    out = [f"PC + 4 = {_h((pc + 4) & _mask())}"]
     f = _field(fields_of(s, d), "offset", "instr_index")
     if f is not None:
         out.append(f"{f.name} = {f.meaning}")
@@ -557,7 +565,9 @@ def _alu(s, d, det, ev, pipeline):
     if a.b is not None:
         out.append(f"b = {_h(a.b.value)} ({a.b.source})")
     if a.result is not None:
-        out.append(f"result = {_h(a.result)} ({a.result if a.result < 1 << 31 else a.result - (1 << 32)})")
+        bits = 4 * _DIGITS[0]
+        out.append(f"result = {_h(a.result)} "
+                   f"({a.result - (1 << bits) if a.result >> (bits - 1) & 1 else a.result})")
     if a.zero is not None:
         out.append(f"Zero = {int(a.zero)}")
     if a.overflow:

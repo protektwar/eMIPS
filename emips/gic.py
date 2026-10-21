@@ -82,6 +82,11 @@ SRC_CONSOLE_TX, SRC_CONSOLE_RX = 0, 1
 SRC_CM_ERROR = 2
 #: Boot-MIPS: sources 24 + n and 32 + n interrupt VPE n (IPIs)
 FIRST_IPI = 24
+#: the I6400's GIC (a CM3, MD01196 ch. 7): eMIPS builds 64 sources ("in
+#: multiples of 8", 7.2.2) — room for the guide's IPI per VP number,
+#: 32 + VPNum (7.2.7: FIRST_IPI 32 + cpu_num, cleared by EBase.CPUNum + 0x20)
+SOURCES_CM3 = 64
+FIRST_IPI_CM3 = 32
 
 SHARED, LOCAL, OTHER, USER = 0x0, 0x8000, 0xC000, 0x10000
 SH_CONFIG, SH_COUNTER_LO, SH_COUNTER_HI, SH_REVISION = 0x00, 0x10, 0x14, 0x20
@@ -154,7 +159,10 @@ class GIC(_Registers):
 
     def __init__(self, cps, routable: bool = True) -> None:
         self.cps = cps
-        self.n = SOURCES
+        #: a CM3's GIC: 64-bit shared registers (a doubleword reaches 64
+        #: sources, a word the low / high 32), VP numbers core x 4 + VP
+        self.wide = cps.cm3
+        self.n = SOURCES_CM3 if cps.cm3 else SOURCES
         #: GIC_VPEi_CTL's routable bits (a build option): the cores'
         #: timer, performance counter and software interrupts
         self.ctl_routable = (CTL_TIMER | CTL_PERFCNT | CTL_SWINT) if routable else 0
@@ -238,6 +246,8 @@ class GIC(_Registers):
         cps = self.cps
         if v >= len(cps.vps) or cps.state[cps.vp_core(v)] not in _AWAKE:
             return False
+        if cps.cm3 and not cps.vp_mask[cps.vp_core(v)] >> (v % cps.vpes) & 1:
+            return False                         # a stopped VP (CPC VP_STOP)
         return not cps.vps[v].waiting
 
     def _wd_run(self, vp: _VP, cycles: int) -> tuple[bool, bool]:
@@ -274,9 +284,10 @@ class GIC(_Registers):
         cps = self.cps
         for vp in self.vps:
             vp.wd_config |= WD_RESET
+        from .cps import CAUSE_WATCHDOG
         for core in range(cps.n):
             if cps.state[core] in _AWAKE:
-                cps.start(core)
+                cps.start(core, cause=CAUSE_WATCHDOG)
 
     # -- sources -----------------------------------------------------------------------------
 
@@ -414,6 +425,35 @@ class GIC(_Registers):
         self.yq[core] = 0
         self.update()
 
+    def reattach_vp(self, v: int) -> None:
+        """One VP was started again (a CM3's CPC VP_RUN): its pins start low."""
+        self.vps[v].pins, self.vps[v].nmi = 0, False
+        self.update()
+
+    def _other(self, m) -> int | None:
+        """The VP the accessing VP's GIC_VL_OTHER names (its hardware
+        number: a CM3's core x 4 + VP), None if there is none."""
+        return self.cps.vp_index(self.vps[m.cpu_num].other)
+
+    def _map_vp_out(self, mask: int) -> int:
+        """MAPn_VP as software reads it: a bit per hardware VP number."""
+        cps = self.cps
+        if not cps.cm3:
+            return mask
+        return sum(1 << cps.vp_id(v) for v in range(len(self.vps)) if mask >> v & 1)
+
+    def _map_vp_in(self, value: int) -> int:
+        cps = self.cps
+        if not cps.cm3:
+            return value & ((1 << len(self.vps)) - 1)
+        out = 0
+        for vid in range(24):                    # MAP_VP 23:0 (MD01196 Table 7.3)
+            if value >> vid & 1:
+                v = cps.vp_index(vid)
+                if v is not None:
+                    out |= 1 << v
+        return out
+
     # -- registers ---------------------------------------------------------------------------
 
     def get(self, m, off: int) -> int:
@@ -421,8 +461,8 @@ class GIC(_Registers):
             o = off - USER
             return self._counter_word(o == 4) if o in (0, 4) else 0
         if off >= LOCAL:
-            v = m.cpu_num if off < OTHER else self.vps[m.cpu_num].other
-            return self._get_vp(v, off & 0x3FFF) if v < len(self.vps) else 0
+            v = m.cpu_num if off < OTHER else self._other(m)
+            return self._get_vp(v, off & 0x3FFF) if v is not None and v < len(self.vps) else 0
         if off == SH_CONFIG:
             return ((COUNTSTOP if self.countstop else 0) | (8 << 24)
                     | ((self.n // 8 - 1) << 16) | (len(self.vps) - 1))
@@ -439,7 +479,7 @@ class GIC(_Registers):
             return self.map_pin[(off - SH_MAP_PIN) // 4]
         if SH_MAP_VP <= off < SH_MAP_VP + 0x20 * self.n:
             src, word = divmod(off - SH_MAP_VP, 0x20)
-            return self.map_vp[src] if word == 0 else 0
+            return self._map_vp_out(self.map_vp[src]) if word == 0 else 0
         return 0                          # WEDGE, RMASK, SMASK: write-only
 
     def _counter_word(self, high: bool) -> int:
@@ -458,7 +498,7 @@ class GIC(_Registers):
         if o == VL_OTHER:
             return vp.other
         if o == VL_IDENT:
-            return v
+            return self.cps.vp_id(v)
         if o == VL_COMPARE_LO:
             return vp.compare & M32
         if o == VL_COMPARE_HI:
@@ -478,8 +518,8 @@ class GIC(_Registers):
         if off >= USER:
             return                        # read-only
         if off >= LOCAL:
-            v = m.cpu_num if off < OTHER else self.vps[m.cpu_num].other
-            if v < len(self.vps):
+            v = m.cpu_num if off < OTHER else self._other(m)
+            if v is not None and v < len(self.vps):
                 self._put_vp(v, off & 0x3FFF, value)
             return
         if off == SH_CONFIG:
@@ -515,7 +555,7 @@ class GIC(_Registers):
         if SH_MAP_VP <= off < SH_MAP_VP + 0x20 * self.n:
             src, word = divmod(off - SH_MAP_VP, 0x20)
             if word == 0:
-                self.map_vp[src] = value & ((1 << len(self.vps)) - 1)
+                self.map_vp[src] = self._map_vp_in(value)
 
     def _put_vp(self, v: int, o: int, value: int) -> None:
         vp = self.vps[v]
@@ -529,8 +569,8 @@ class GIC(_Registers):
             vp.mask |= value & 0x7F
         elif VL_MAP <= o < VL_MAP + 0x1C:
             vp.maps[(o - VL_MAP) // 4] = value & (MAP_TO_PIN | MAP_TO_NMI | MAP_TO_YQ | 0x3F)
-        elif o == VL_OTHER:
-            vp.other = value & 0xFFFF               # VPENUM 15:0 (Table 12.50)
+        elif o == VL_OTHER:                         # VPENUM 15:0 (Table 12.50); a CM3's
+            vp.other = value & (0x3F if self.cps.cm3 else 0xFFFF)   # VPNUM 5:0 (Linux)
         elif o in (VL_COMPARE_LO, VL_COMPARE_HI):
             shift = 32 if o == VL_COMPARE_HI else 0
             vp.compare = (vp.compare & ~(M32 << shift)) | (value << shift)
@@ -560,13 +600,22 @@ class GIC(_Registers):
         console, its TX / RX sources level active-high, enabled, to core
         0's pins 0 / 1 (Cause.IP2 / IP3, as without a GIC)."""
         self.base = GIC_BASE_PA
-        ipis = ((1 << 16) - 1) << FIRST_IPI
-        self.pol |= ipis
-        self.trig |= ipis
-        self.mask |= ipis
-        for n in range(8):
-            for src in (FIRST_IPI + n, FIRST_IPI + 8 + n):
-                self.map_vp[src] = (1 << n) & ((1 << len(self.vps)) - 1)
+        cps = self.cps
+        if cps.cm3:                     # the I6400: 32 + VPNum (MD01196 7.2.7) to it
+            for v in range(len(self.vps)):
+                src = FIRST_IPI_CM3 + cps.vp_id(v)
+                self.pol |= 1 << src
+                self.trig |= 1 << src
+                self.mask |= 1 << src
+                self.map_vp[src] = 1 << v
+        else:
+            ipis = ((1 << 16) - 1) << FIRST_IPI
+            self.pol |= ipis
+            self.trig |= ipis
+            self.mask |= ipis
+            for n in range(8):
+                for src in (FIRST_IPI + n, FIRST_IPI + 8 + n):
+                    self.map_vp[src] = (1 << n) & ((1 << len(self.vps)) - 1)
         self.pol |= 1 << SRC_CM_ERROR      # the CM's error interrupt: level, active
         for src, pin in ((SRC_CONSOLE_TX, 0), (SRC_CONSOLE_RX, 1)):  # high (masked)
             self.pol |= 1 << src
@@ -597,7 +646,7 @@ class GIC(_Registers):
                        f"{'enabled' if self.mask & bit else 'masked'}, "
                        f"{'PENDING' if pend & bit else 'idle'}, "
                        f"{_target(self.map_pin[src], self._eic_vps(self.map_vp[src]))} of VP(s) "
-                       f"{_vps(self.map_vp[src])}")
+                       f"{_vps(self._map_vp_out(self.map_vp[src]))}")
         for v, vp in enumerate(self.vps):
             pend = self.local_pending(v)
             local = ", ".join(f"{LOCAL_NAMES[i]}{' PENDING' if pend >> i & 1 else ''}"
@@ -606,7 +655,7 @@ class GIC(_Registers):
             lines = (f"EIC mode, RIPL {vp.pins}" + (f" (shadow set {vp.eic_ss[vp.pins]})"
                                                     if vp.pins else "")
                      if vp.eic else f"pins {_bits(vp.pins)}")
-            out.append(f"  VP {v}: {lines}"
+            out.append(f"  VP {self.cps.vp_id(v)}: {lines}"
                        + (", NMI" if vp.nmi else "")
                        + f"; local enabled: {local or 'none'}; COMPARE "
                        + (f"{vp.compare}" if vp.compare != (1 << 64) - 1 else "max"))
@@ -634,7 +683,7 @@ def _target(mapping: int, eic: bool = False) -> str:
 
 
 def _vps(mask: int) -> str:
-    return ", ".join(str(i) for i in range(8) if mask >> i & 1) or "none"
+    return ", ".join(str(i) for i in range(24) if mask >> i & 1) or "none"
 
 
 def _bits(mask: int) -> str:

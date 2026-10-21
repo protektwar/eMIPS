@@ -184,6 +184,9 @@ class SyscallServices:
 
     ``read_line()`` supplies input lines (default: none -> empty input);
     ``write(text)`` receives output (default: appended to :attr:`output`).
+    On a MIPS64 core (PLAN M22) the integer services use the whole 64-bit
+    register: print_int (1) prints it signed, read_int (5) reads 64 bits,
+    34 / 35 / 36 print 16 hex / 64 binary digits / the unsigned value.
     """
 
     HEAP_BASE = 0x10040000                    # MARS heap
@@ -205,8 +208,9 @@ class SyscallServices:
         v0 = m.read_reg(2)
         a0, a1 = m.read_reg(4), m.read_reg(5)
         s32 = lambda x: x - (1 << 32) if x & 0x80000000 else x   # noqa: E731
+        wide = m.wide                         # MIPS64: 64-bit registers
         if v0 == 1:                           # print_int
-            self.write(str(s32(a0)))
+            self.write(str(m.sgn(a0)))
         elif v0 == 2:                         # print_float ($f12)
             self.write(_fmt(struct.unpack(">f", (m.fpr[12] & M32).to_bytes(4, "big"))[0],
                             single=True))
@@ -216,7 +220,10 @@ class SyscallServices:
         elif v0 == 4:                         # print_string
             self.write(_cstring(m, a0))
         elif v0 == 5:                         # read_int
-            m.write_reg(2, _int(self.read_line()) & M32)
+            if wide:
+                m.write_dreg(2, _int(self.read_line()))
+            else:
+                m.write_reg(2, _int(self.read_line()) & M32)
         elif v0 == 6:                         # read_float -> $f0
             bits = struct.unpack(">I", struct.pack(">f", _float(self.read_line())))[0]
             m.fpr[0] = (m.fpr[0] & ~M32) | bits
@@ -234,7 +241,7 @@ class SyscallServices:
                     m.write_byte(a0 + i, b)
         elif v0 == 9:                         # sbrk
             m.write_reg(2, self.heap)
-            self.heap = (self.heap + a0 + 3) & ~3
+            self.heap = (self.heap + (a0 & M32) + 3) & ~3
         elif v0 in (10, 17):                  # exit / exit2
             self.exit_code = s32(a0) if v0 == 17 else 0
             m.halted = True
@@ -244,9 +251,9 @@ class SyscallServices:
             line = self.read_line()
             m.write_reg(2, ord(line[0]) if line else 0)
         elif v0 == 34:                        # MARS: print hex
-            self.write(f"0x{a0:08x}")
+            self.write(f"0x{a0:016x}" if wide else f"0x{a0:08x}")
         elif v0 == 35:                        # MARS: print binary
-            self.write(f"{a0:032b}")
+            self.write(f"{a0:064b}" if wide else f"{a0:032b}")
         elif v0 == 36:                        # MARS: print unsigned
             self.write(str(a0))
         else:

@@ -347,13 +347,14 @@ def vector(status: int, ebase: int, *, interrupt_iv: bool = False,
     0x000 (0xBFC00200 / EBase + 0x000; Vol. III Table 6.9).  A core of a
     CPS has its BEV vectors at its reset base + 0x200 (``bev_base``,
     GCR_Cx_RESET_BASE, emips.cps).  ``offset``: a vectored interrupt's
-    (:func:`vi_offset`)."""
-    base = bev_base if status & ST_BEV else (ebase & 0xFFFFF000)
+    (:func:`vi_offset`).  A MIPS64 EBase written with WG may hold a
+    64-bit base (Vol. III MIPS64 9.39): bits 63:30 stay as they are."""
+    base = bev_base if status & ST_BEV else (ebase & ~0xFFF)
     if offset is None:
         offset = (REFILL_OFFSET if refill else
                   INTERRUPT_OFFSET if interrupt_iv else GENERAL_OFFSET)
     # "inhibiting a carry between bit 29 and bit 30" (EBase, Vol. III 9.41)
-    return (base & 0xC0000000) | ((base + offset) & 0x3FFFFFFF)
+    return (base & ~0x3FFFFFFF) | ((base + offset) & 0x3FFFFFFF)
 
 
 def cache_error_vector(status: int, ebase: int, release: str = "R5", *,
@@ -367,8 +368,8 @@ def cache_error_vector(status: int, ebase: int, release: str = "R5", *,
     if release == "R1":
         return 0xA0000000 + CACHE_ERROR_OFFSET
     if cv:
-        return (ebase & 0xFFFFF000) + CACHE_ERROR_OFFSET
-    return ((ebase & 0xDFFFF000) | (1 << 29)) + CACHE_ERROR_OFFSET
+        return (ebase & ~0xFFF) + CACHE_ERROR_OFFSET
+    return ((ebase & ~0x20000FFF) | (1 << 29)) + CACHE_ERROR_OFFSET
 
 
 def cache_config2(l2, l3) -> int:

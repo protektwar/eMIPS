@@ -25,13 +25,22 @@ choice open, it says which one it made.
   IEEE 754 FPU, Release 6 compact branches; big and little endian; the
   compressed instruction sets MIPS16e and microMIPS (Releases 2 to 6), in
   the assembler, the pipelines, C and GDB.
+- **MIPS64, first steps** — 64-bit registers and every doubleword
+  instruction of Releases 1 to 6, `dli` / `dla`, the n64 register names,
+  run instruction by instruction or on the 5-stage pipeline, in the 32-bit
+  compatibility address space or with a TLB in the whole 64-bit one — xuseg, xsseg, xkphys,
+  xkseg, the XTLB Refill; every MMU: the BAT, the FTLB, Segmentation
+  Control and EVA, the page table walker (`--arch mips64 [--mmu ...]`);
+  C for the n64 ABI and ELF64 executables (`cc --arch mips64`), GDB with
+  64-bit registers; microMIPS64, MIPS16e64, the DSP and MT Modules on
+  MIPS64; a 64-bit CPU on the MIPS Malta board (`--board malta --core 5kc`).
 - **The DSP Module** — SIMD on bytes and halfwords, saturating and
   fixed-point arithmetic, four accumulators (Revisions 1 to 3), in
   MIPS32 and microMIPS, on both pipelines, from C and in GDB.
 - **The MT Module** — hardware threads: thread contexts and VPEs, FORK /
   YIELD, the policy managers, the ITC's gating storage, on the 34K's
-  pipeline and on multi-core 1004K / interAptiv systems; a GDB thread per
-  thread context.
+  pipeline and on multi-core 1004K / interAptiv systems, on MIPS64 too;
+  EJTAG breakpoints for one thread; a GDB thread per thread context.
 - **The privileged architecture** — CP0, exceptions, interrupts
   (compatibility, vectored, EIC), shadow register sets, kernel /
   supervisor / user mode, the timer.
@@ -39,15 +48,18 @@ choice open, it says which one it made.
   timing; the TLB and the other MMUs (BAT, VTLB + FTLB, segmentation
   control, the page table walker).
 - **Real MIPS cores** — presets for the 4Kc, 24Kc / 24Kf, 34Kc / 34Kf,
-  1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc and microAptiv UC / UP:
+  1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc, microAptiv UC / UP and
+  the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600:
   each core's release, compressed ISA, FPU, DSP Module, MT Module, MMU,
   caches and PRId as its manuals allow.
 - **A real core's pipeline** — a model of the MIPS 24K's 8-stage pipeline
   with branch prediction, CP0 hazards and performance counters, and the
   34K's, which adds the thread contexts.
-- **More than one core** — up to four cores with coherent caches (MESI),
-  memory ordering, the Cluster Power Controller and the Global Interrupt
-  Controller.
+- **More than one core** — up to six MIPS32 or MIPS64 cores with coherent
+  caches (MESI), memory ordering, the Cluster Power Controller and the
+  Global Interrupt Controller; the I6400's CM3 with Release 6 virtual
+  processors (DVP / EVP, VPs started by the CPC, the ITU's gating
+  storage).
 - **Debugging hardware** — EJTAG Debug Mode, hardware breakpoints, watch
   registers, a probe on the TAP, PC sampling and MIPS Trace.
 - **Exercise checks** — what a program must do (its output, registers,
@@ -132,7 +144,8 @@ python3 -m emips --help                  # everything else
 
 (Installed with pip or pipx, `emips` is the same command: `emips run
 prog.asm`.)  Options shared by the commands include `--release R1..R6`,
-`--little`, `--model 5-stage|24k`, `--caches`, `--mmu tlb`, `--cores N`.
+`--arch mips64`, `--little`, `--model 5-stage|24k`, `--caches`, `--mmu tlb`,
+`--cores N`.
 
 ### From Python
 
@@ -159,7 +172,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 57 labs
+computer architecture behind every number on the screen (with 62 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

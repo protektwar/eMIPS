@@ -189,9 +189,10 @@ def format_cache(c: Cache, *, limit: int = 16) -> str:
 def locate(m, caches: Caches, va: int) -> str:
     """Where the line of ``va`` is right now (no side effects)."""
     xl = m.translate(va)
+    va &= m.vamask                              # (MIPS64 with 64-bit addresses: whole)
     if xl.pa is None:
-        return f"0x{va & M32:08x}: no physical address ({xl.how})"
-    out = [f"0x{va & M32:08x}: PA 0x{xl.pa:08x}, attribute {xl.cca}"
+        return f"0x{va:08x}: no physical address ({xl.how})"
+    out = [f"0x{va:08x}: PA 0x{xl.pa:08x}, attribute {xl.cca}"
            + ("" if xl.cacheable else " (uncached: the caches are bypassed)")]
     for c in caches.all:
         sp = split(c, va, xl.pa)

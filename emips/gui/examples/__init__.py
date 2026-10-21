@@ -58,4 +58,6 @@ EXAMPLES = [
             output="42 99"),
     Example("copy_on_write.asm", "TLB: copy-on-write with the TLB Modified exception",
             output="1 1 2 "),
+    Example("mips64_factorial.asm", "MIPS64: 64-bit registers (factorial of 20)",
+            output="2432902008176640000"),
 ]

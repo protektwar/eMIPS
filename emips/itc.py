@@ -146,9 +146,15 @@ class ITC:
     """The ITU of one MT processor (MD00534 ch. 12): ``fifos`` FIFO cells
     at cell numbers 0..N-1, then ``semaphores`` semaphore cells."""
 
-    def __init__(self, fifos: int, semaphores: int) -> None:
+    def __init__(self, fifos: int, semaphores: int, width: int = 32) -> None:
         self.cells = [Cell(True) for _ in range(fifos)] + [Cell(False) for _ in range(semaphores)]
         self.fifos = fifos
+        #: the cell width: 32 bits (the 34K's ITU, MD00534 12.2: bit 2 of the
+        #: address ignored) or 64 (a MIPS64 processor: MD00378 A.1's 64-bit
+        #: cells, LD / SD whole, a word one of its halves as in memory)
+        self.width = width
+        self.mask = (1 << width) - 1
+        self.bytes = width // 8
         #: ITCAddressMap0 (BaseAddress, En: reset 0) and Map1's R/W fields
         self.map0 = 0
         self.map1_rw = 0
@@ -223,9 +229,9 @@ class ITC:
         cell = self.cells[access.cell]
         return cell.trap or not self.would_block(cell, access.view, access.store)
 
-    def load(self, m, pa: int) -> int:
-        """A load (any size: the cell's 32-bit value, MD00534 12.2 —
-        partial accesses are undefined)."""
+    def load(self, m, pa: int, size: int = 4) -> int:
+        """A load (any size: the cell's value, MD00534 12.2 — partial
+        accesses are undefined: the Machine takes the bytes it reads)."""
         where = self.decode(pa)
         if where is None:
             return 0
@@ -250,7 +256,7 @@ class ITC:
             return v
         return 0                                # reserved views
 
-    def store(self, m, pa: int, value: int) -> bool:
+    def store(self, m, pa: int, value: int, size: int = 4) -> bool:
         """A store; returns whether it succeeded (SC: the E/F try view
         fails on a full cell — MD00378 7.2, A.2)."""
         where = self.decode(pa)
@@ -258,7 +264,7 @@ class ITC:
             return True
         n, view = where
         cell = self.cells[n]
-        value &= M32
+        value &= self.mask
         if view == CONTROL:
             cell.write_tag(value)
             return True
@@ -326,18 +332,25 @@ class ITC:
         off = n << (7 + (self.map1_rw & 7))
         return self.base() + off if off <= self.span else None
 
+    @property
+    def digits(self) -> int:
+        """Hex digits of a cell's value (8 / 16)."""
+        return self.width // 4
+
     def lines(self) -> list[str]:
         state = (f"on at 0x{self.base():08x}, {self.span + 1} bytes, cells every "
                  f"{128 << (self.map1_rw & 7)} bytes" if self.enabled else "off (ITCAddressMap0.En = 0)")
-        out = [f"ITC: {self.fifos} FIFO + {len(self.cells) - self.fifos} semaphore cells; "
-               f"{state}; Map0 0x{self.map0:08x} Map1 0x{self.map1:08x}; "
+        out = [f"ITC: {self.fifos} FIFO + {len(self.cells) - self.fifos} semaphore cells"
+               + (f" of {self.width} bits" if self.width != 32 else "")
+               + f"; {state}; Map0 0x{self.map0:08x} Map1 0x{self.map1:08x}; "
                f"{self.loads} loads, {self.stores} stores"]
+        d = self.digits
         for r in self.rows():
             addr = f"0x{r['address']:08x}" if r["address"] is not None else "-"
             flags = "".join(f for f, on in (("E", r["empty"]), ("F", r["full"]),
                                             ("T", r["trap"])) if on) or "-"
-            data = (" ".join(f"{w:08x}" for w in r["data"][:r["count"]]) if r["kind"] == "FIFO"
-                    else f"{r['data'][0]:08x}")
+            data = (" ".join(f"{w:0{d}x}" for w in r["data"][:r["count"]])
+                    if r["kind"] == "FIFO" else f"{r['data'][0]:0{d}x}")
             extra = f" ({r['count']} entries)" if r["kind"] == "FIFO" else ""
             out.append(f"  cell {r['cell']:>2} {r['kind']:<9} at {addr}  {flags:<3} "
                        f"{data}{extra}")

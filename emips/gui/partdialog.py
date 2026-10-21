@@ -82,7 +82,11 @@ class PartDialog(QtWidgets.QDialog):
                  if info.instruction else tr("{stage} holds a bubble").format(
                      stage=E(info.part.stage)))
         now = "".join(f"<li style='font-family:{mono}'>{E(line)}</li>" for line in info.now)
-        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release)
+        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release, s.options.arch)
+        if logic is not None:                   # (MIPS64: 64 slices)
+            self.bit.setRange(0, logic.width - 1)
+            self.bit.setToolTip(tr("Which of the {n} one-bit ALU slices to show gate by "
+                                   "gate").format(n=logic.width))
         inside = self._alu_html(logic, mono) if logic is not None else ""
         inside = self._drawings(s, logic) + inside
         has_slices = logic is not None and bool(logic.slices)
@@ -107,7 +111,7 @@ class PartDialog(QtWidgets.QDialog):
         html_ = ""
         word = dpi.control_word(s, self.key)
         if word is not None:
-            mc = cl.main_control(s.release)
+            mc = cl.main_control(s.release, s.options.arch)
             ev = cl.evaluate_main(mc, word)
             lit = c.stage["ID"][1]
             self.pla_main.show_pla(mc.opcode, word >> 26,
@@ -125,10 +129,10 @@ class PartDialog(QtWidgets.QDialog):
             html_ = (f"<p><b>{E(tr('The control signals'))}</b> (the opcode decoder's "
                      + (f"OR the {E(ev.escape.escape)} decoder's " if ev.escape else "")
                      + f"outputs): <code>{E(sig)}</code>; ALUOp = {ev.aluop:04b} "
-                     f"({E(al.ALUOP_WHY.get(ev.aluop, ''))})</p>")
+                     f"({E(al.aluop_why(ev.aluop, s.wide))})</p>")
         if logic is not None and logic.control is not None:
             ctl = logic.control
-            pla = cl.alu_control(s.release)
+            pla = cl.alu_control(s.release, s.options.arch)
             lit = c.stage["EX"][1]
             view = dpi.alu_view(s, self.key)
             self.pla_alu.show_pla(pla, cl.alu_input(ctl.aluop, view.word),
@@ -137,7 +141,8 @@ class PartDialog(QtWidgets.QDialog):
             tabs.addTab(self.pla_alu, tr("ALU control"))
             if logic.slices:
                 i = self.bit.value()
-                self.slice.show_slice(logic.slices[i], ctl, i == 31, lit)
+                self.slice.show_slice(logic.slices[i], ctl, i == logic.top, lit, logic.top,
+                                      logic.width)
                 tabs.addTab(self.slice, tr("ALU bit slice"))
         self.drawings.setVisible(tabs.count() > 0)
         if 0 <= current < tabs.count():
@@ -156,6 +161,9 @@ class PartDialog(QtWidgets.QDialog):
                        f"&rarr; Ainvert {ctl.ainvert}, Bnegate {ctl.bnegate}, Operation "
                        f"{ctl.operation:03b} = {E(al.OPERATION.get(ctl.operation, '?'))}"
                        + (f", Unsigned {ctl.unsigned}" if ctl.operation == 3 else "")
+                       + (f", Word {ctl.word}" if lg.width == 64 else "")
+                       + (f", Sh32 {ctl.sh32}" if lg.width == 64 and ctl.operation == 5
+                          else "")
                        + " (the ALU control PLA above)</p>")
         rows = al.rows(lg)
         if rows:
@@ -164,33 +172,40 @@ class PartDialog(QtWidgets.QDialog):
                 style = (f" style='background:{c.hit_fill};color:{c.highlight_text}'"
                          if chosen else "")
                 bold = ("<b>", "</b>") if label == "result" or chosen else ("", "")
+                n = lg.width
                 cells.append(f"<tr{style}><td>{bold[0]}{E(label)}{bold[1]}</td>"
-                             f"<td style='font-family:{mono}'>{bold[0]}{al.binary(value)}"
+                             f"<td style='font-family:{mono}'>{bold[0]}{al.binary(value, n)}"
                              f"{bold[1]}</td><td style='font-family:{mono}'>"
-                             f"0x{value & 0xFFFFFFFF:08x}</td></tr>")
+                             f"0x{value & ((1 << n) - 1):0{n // 4}x}</td></tr>")
+            t = lg.top
             out.append("<table cellspacing=0 cellpadding=2>"
-                       "<tr><td></td><td><i>bit 31 &hellip; bit 0</i></td><td></td></tr>"
-                       + "".join(cells) + "</table>")
+                       f"<tr><td></td><td><i>bit {lg.width - 1} &hellip; bit 0</i></td>"
+                       "<td></td></tr>" + "".join(cells) + "</table>")
             out.append(f"<p>{E(tr('The highlighted row is what the Operation mux passes on.'))}"
-                       f" Zero = NOR of the 32 result bits = {lg.zero}; Overflow = carry "
-                       f"into bit 31 XOR carry out = {lg.overflow}; Set = {lg.set_} (bit 31's "
-                       "sum corrected by overflow, wired to bit 0's Less)</p>")
-            out.append(self._slice_html(lg.slices[self.bit.value()], ctl, mono))
+                       f" Zero = NOR of the {lg.width} result bits = {lg.zero}; Overflow = "
+                       f"carry into bit {t} XOR carry out = {lg.overflow}; Set = {lg.set_} "
+                       f"(bit {t}'s sum corrected by overflow, wired to bit 0's Less)</p>")
+            out.append(self._slice_html(lg.slices[self.bit.value()], ctl, mono, lg.top,
+                                        lg.width))
         if lg.shifter:
+            n = lg.width
             cells = "".join(f"<tr><td>{E(label)}</td><td style='font-family:{mono}'>"
-                            f"{al.binary(v)}</td></tr>" for label, v in lg.shifter)
-            out.append(f"<p>Barrel shifter (5 stages of 32 2:1 muxes), input "
-                       f"<code>{al.binary(lg.a if lg.instruction.split()[0] != 'lui' else lg.b)}"
+                            f"{al.binary(v, n)}</td></tr>" for label, v in lg.shifter)
+            stages = (f"5 stages of {n} 2:1 muxes" if n == 32 else
+                      "6 stages of 64 2:1 muxes; a Word shift: the low word's 5, then bit 31 "
+                      "sign-extended")
+            out.append(f"<p>Barrel shifter ({stages}), input "
+                       f"<code>{al.binary(lg.a if lg.instruction.split()[0] != 'lui' else lg.b, n)}"
                        f"</code>:</p><table cellpadding=2>{cells}</table>")
         out += [f"<p>{E(n)}</p>" for n in lg.notes]
         if lg.result is not None and not lg.matches:
-            out.append(f"<p style='color:{c.red}'>The gates give 0x{lg.result:08x}, the "
-                       f"trace recorded 0x{(lg.traced or 0):08x}.</p>")
+            out.append(f"<p style='color:{c.red}'>The gates give 0x{lg.result:0{lg.width // 4}x}, "
+                       f"the trace recorded 0x{(lg.traced or 0):0{lg.width // 4}x}.</p>")
         return "".join(out)
 
     @staticmethod
-    def _slice_html(sl: al.Slice, ctl, mono: str) -> str:
-        less = (f"Less = {sl.less}" + (" (Set, from bit 31)" if sl.i == 0 else " (0)"))
+    def _slice_html(sl: al.Slice, ctl, mono: str, top: int = 31, width: int = 32) -> str:
+        less = (f"Less = {sl.less}" + (f" (Set, from bit {top})" if sl.i == 0 else " (0)"))
         op = ctl.operation
         lines = [
             f"a{sl.i} = {sl.a}, b{sl.i} = {sl.b}",
@@ -201,15 +216,15 @@ class PartDialog(QtWidgets.QDialog):
             f"XOR gate: a' XOR b' = {sl.xor_}",
             f"full adder: sum = a' XOR b' XOR carry-in ({sl.cin}) = {sl.sum_}",
             f"            carry out = a'b' OR a'c OR b'c = {sl.cout}"
-            + ("  (into bit {})".format(sl.i + 1) if sl.i < 31 else "  (out of the ALU)"),
+            + ("  (into bit {})".format(sl.i + 1) if sl.i < width - 1 else "  (out of the ALU)"),
             less,
             f"shifter bit {sl.i} = {sl.shift}",
             f"mux (Operation {op:03b}: {al.OPERATION.get(op, '?')}) -> result bit {sl.i} "
             f"= {sl.result}",
         ]
-        if sl.i == 31:
+        if sl.i == top:
             ovf = sl.cin ^ sl.cout
-            lines.append(f"bit 31 only: Overflow = carry-in {sl.cin} XOR carry-out {sl.cout}"
+            lines.append(f"bit {top} only: Overflow = carry-in {sl.cin} XOR carry-out {sl.cout}"
                          f" = {ovf}")
             lines.append(f"             Set = sum {sl.sum_} XOR Overflow {ovf} = "
                          f"{sl.sum_ ^ ovf}  -> bit 0's Less (Unsigned: NOT carry-out = "

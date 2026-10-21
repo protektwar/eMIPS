@@ -37,11 +37,13 @@ from . import cp0 as C
 from .disasm import text_at
 from .isa import ISA, Decode
 from .mmu import cca_name, segment
+from .tlb import segment64
 from .pipeline import analyze
 from .sim import NULLIFY
 from .syntax import KINDS, gpr_name, kind_of, operand_spec
 
 M32 = 0xFFFFFFFF
+M64 = (1 << 64) - 1
 
 
 @dataclass
@@ -143,6 +145,8 @@ class InstrView:
     def __init__(self, pc: int, word: int, name: str, in_slot: bool, raw: tuple) -> None:
         self.pc, self.word, self.name, self.in_delay_slot = pc, word, name, in_slot
         self.exception = None
+        #: hex digits of a register / address (MIPS64: 16)
+        self.digits = 8
         self.fetch, self.cache, self.fetch_tlb, self.tlb = [], [], [], []
         self._raw = raw              # (dec, sources, _Frozen, before) + finish's
 
@@ -163,15 +167,15 @@ class _Frozen:
     built the machine has moved on."""
 
     __slots__ = ("regs", "supervisor", "isa", "twin", "compressed", "isa_mode", "mm", "m16",
-                 "release", "post", "lo", "redirect")
+                 "release", "post", "lo", "redirect", "mask", "abi", "ea32")
 
     def read_reg(self, n: int) -> int:
         n &= 31
-        return self.regs[n] & M32 if n else 0
+        return self.regs[n] & self.mask if n else 0
 
     def read_post(self, n: int) -> int:
         n &= 31
-        return self.post[n] & M32 if n else 0
+        return self.post[n] & self.mask if n else 0
 
 
 # ------------------------------------------------------------------ decode
@@ -198,20 +202,21 @@ def instruction_format(word: int) -> str:
 _FIELDS: dict[tuple[int, str], list[Field]] = {}
 
 
-def decode_fields(dec: Decode) -> list[Field]:
+def decode_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
     """Bit fields of the word, MSB first: fixed runs split at the standard
     field boundaries, operand fields named by their role (cached: they
-    depend on the word and its row only)."""
-    key = (dec.word, dec.name)
+    depend on the word and its row only — and the register names, ``abi``
+    "n64" on MIPS64)."""
+    key = (dec.word, dec.name, abi)
     hit = _FIELDS.get(key)
     if hit is None:
         if len(_FIELDS) >= 1 << 16:
             _FIELDS.clear()
-        hit = _FIELDS[key] = _decode_fields(dec)
+        hit = _FIELDS[key] = _decode_fields(dec, abi)
     return list(hit)
 
 
-def _decode_fields(dec: Decode) -> list[Field]:
+def _decode_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
     e, w = dec.entry, dec.word
     mask = e["decode"]["mask"]
     owner: dict[int, str] = {}
@@ -238,7 +243,7 @@ def _decode_fields(dec: Decode) -> list[Field]:
         value = (w >> lo) & ((1 << (hi - lo + 1)) - 1)
         bits = format(value, f"0{hi - lo + 1}b")
         out.append(Field(name, hi, lo, bits, value,
-                         _meaning(name, value, hi - lo + 1, dec)))
+                         _meaning(name, value, hi - lo + 1, dec, abi)))
         bit = lo - 1
     return out
 
@@ -263,13 +268,19 @@ _DSP_CLASSES = {0x0A: "LX", 0x0C: "INSV", 0x10: "ADDU.QB", 0x11: "CMPU.EQ.QB",
                 0x31: "APPEND", 0x38: "EXTR.W"}
 
 
+def _word(v: int) -> bool:
+    """A sign-extended 32-bit value (MIPS64)."""
+    v &= M64
+    return v < 0x80000000 or v >= 0xFFFFFFFF80000000
+
+
 def _sx(v: int, bits: int) -> int:
     return v - (1 << bits) if v >> (bits - 1) & 1 else v
 
 
-def _meaning(name: str, v: int, width: int, dec: Decode) -> str:
+def _meaning(name: str, v: int, width: int, dec: Decode, abi: bool | str = True) -> str:
     if name in ("rs", "rt", "rd", "base", "index") and width == 5:
-        return gpr_name(v)
+        return gpr_name(v, abi)
     if name in ("fs", "ft", "fd", "fr"):
         return f"$f{v}"
     if name == "op" and width == 5:          # the DSP Module's op field
@@ -320,20 +331,43 @@ _ALU_OPS: dict[str, str] = {
     "MOVN": "b != 0 ? a : rd", "SEB": "sign-extend byte of a",
     "SEH": "sign-extend halfword of a", "WSBH": "swap bytes in halfwords of a",
     "EXT": "extract bit field of a", "INS": "insert bit field of a into rt",
+    # MIPS64 (PLAN M22)
+    "DADD": "a + b (64 bits, trap on overflow)", "DADDU": "a + b (64 bits)",
+    "DSUB": "a - b (64 bits, trap on overflow)", "DSUBU": "a - b (64 bits)",
+    "DADDI": "a + b (64 bits, trap on overflow)", "DADDIU": "a + b (64 bits)",
+    "DSLL": "a << b (64 bits)", "DSRL": "a >> b (64 bits, logical)",
+    "DSRA": "a >> b (64 bits, arithmetic)", "DROTR": "a rotated right by b (64 bits)",
+    "DSLL32": "a << (b + 32)", "DSRL32": "a >> (b + 32) (logical)",
+    "DSRA32": "a >> (b + 32) (arithmetic)", "DROTR32": "a rotated right by b + 32",
+    "DSLLV": "a << (b & 63)", "DSRLV": "a >> (b & 63) (logical)",
+    "DSRAV": "a >> (b & 63) (arithmetic)", "DROTRV": "a rotated right by (b & 63)",
+    "DMULT": "HI:LO = a * b (signed, 128 bits)", "DMULTU": "HI:LO = a * b (unsigned, 128 bits)",
+    "DDIV": "LO = a / b, HI = a % b (signed, 64 bits)",
+    "DDIVU": "LO = a / b, HI = a % b (unsigned, 64 bits)",
+    "DCLZ": "count leading zeros of a (64 bits)", "DCLO": "count leading ones of a (64 bits)",
+    "DSBH": "swap bytes in halfwords of a (64 bits)", "DSHD": "swap the halfwords of a",
+    **{n: "extract bit field of a (64 bits)" for n in ("DEXT", "DEXTM", "DEXTU")},
+    **{n: "insert bit field of a into rt (64 bits)" for n in ("DINS", "DINSM", "DINSU")},
 }
 
 _ZEXT_IMM = {"ANDI", "ORI", "XORI", "LUI"}
-_SHIFT_IMM = {"SLL", "SRL", "SRA", "ROTR"}
-_SHIFT_VAR = {"SLLV", "SRLV", "SRAV", "ROTRV"}
+_SHIFT_IMM = {"SLL", "SRL", "SRA", "ROTR", "DSLL", "DSRL", "DSRA", "DROTR", "DSLL32",
+              "DSRL32", "DSRA32", "DROTR32"}
+_SHIFT_VAR = {"SLLV", "SRLV", "SRAV", "ROTRV", "DSLLV", "DSRLV", "DSRAV", "DROTRV"}
 
 
 def _reg_operand(st: _Frozen, name: str, n: int, sources: dict | None) -> Operand:
     src = (sources or {}).get(("r", n), "register file")
-    return Operand(name, st.read_reg(n), f"{gpr_name(n)} ({src})")
+    return Operand(name, st.read_reg(n), f"{gpr_name(n, st.abi)} ({src})")
 
 
 def _segment(st: _Frozen, addr: int) -> tuple[str, str, bool]:
-    """(segment, privilege, mapped) of a virtual address."""
+    """(segment, privilege, mapped) of a virtual address (MIPS64: the
+    64-bit segments too, Vol. III Table 4.1)."""
+    if st.mask == M64 and 0x7FFFFFFF < addr < 0xFFFFFFFF80000000:
+        seg = segment64(addr)
+        return seg, {"xuseg": "user", "xsseg": "supervisor"}.get(seg, "kernel"), \
+            seg != "xkphys"
     seg = segment(addr)
     if seg == "kuseg":
         return seg, "user", True
@@ -345,7 +379,10 @@ def _segment(st: _Frozen, addr: int) -> tuple[str, str, bool]:
 _SIZES = {"LB": 1, "LBU": 1, "SB": 1, "LH": 2, "LHU": 2, "SH": 2, "LW": 4,
           "SW": 4, "LL": 4, "SC": 4, "LWL": 4, "LWR": 4, "SWL": 4, "SWR": 4,
           "LWC1": 4, "SWC1": 4, "LDC1": 8, "SDC1": 8, "LWXC1": 4,
-          "SWXC1": 4, "LDXC1": 8, "SDXC1": 8, "LUXC1": 8, "SUXC1": 8}
+          "SWXC1": 4, "LDXC1": 8, "SDXC1": 8, "LUXC1": 8, "SUXC1": 8,
+          # MIPS64 (PLAN M22)
+          "LD": 8, "SD": 8, "LWU": 4, "LLD": 8, "SCD": 8, "LDL": 8, "LDR": 8, "SDL": 8,
+          "SDR": 8, "LLD@R6": 8, "SCD@R6": 8, "LDPC": 8, "LWUPC": 4}
 
 
 # ------------------------------------------------------------- begin/finish
@@ -354,9 +391,9 @@ def _compressed_text(m, i, pc: int) -> str:
     """The disassembly of the MIPS16e / microMIPS instruction ``i``."""
     if m.compressed == "micromips":
         from . import micromips
-        return micromips.text(i, pc, release=m.release)
+        return micromips.text(i, pc, release=m.release, arch=m.arch)
     from . import mips16
-    return mips16.text(i, pc)
+    return mips16.text(i, pc, arch=m.arch)
 
 
 def _compressed(st: _Frozen, pc: int) -> tuple[str, str, int, int] | None:
@@ -369,12 +406,15 @@ def _compressed(st: _Frozen, pc: int) -> tuple[str, str, int, int] | None:
         if i is None:
             return None
         from . import micromips
-        return "microMIPS", micromips.text(i, pc, release=st.release), i.raw, i.size
+        return "microMIPS", micromips.text(i, pc, release=st.release, abi=st.abi,
+                                           arch="mips64" if st.abi == "n64" else "mips32"), \
+            i.raw, i.size
     i = st.m16
     if i is None:
         return None
     from . import mips16
-    return "MIPS16e", mips16.text(i, pc), i.raw, i.size
+    return "MIPS16e", mips16.text(i, pc, abi=st.abi,
+                                  arch="mips64" if st.abi == "n64" else "mips32"), i.raw, i.size
 
 
 def begin(m, pc: int, word: int, dec: Decode, in_slot: bool = False,
@@ -386,11 +426,15 @@ def begin(m, pc: int, word: int, dec: Decode, in_slot: bool = False,
     st.isa_mode = getattr(m, "isa_mode", 0)
     st.compressed, st.mm, st.m16 = m.compressed, m._mm, getattr(m, "_m16", None)
     st.isa, st.release, st.supervisor = m.isa, m.release, m.mmu.supervisor
+    st.mask, st.abi = m.amask, "n64" if m.wide else True    # (MIPS64: 64 bits, n64)
+    st.ea32 = m.data_wrap()                 # (MIPS64: data addresses sign-extended)
     st.twin = _twin_isa(m) if st.isa_mode else None
     special = dec.entry.get("isa") in ("mips16e", "micromips")   # no MIPS32 twin
     before = _snapshot(m, special or dec.entry["family"] not in _NO_CP0)
     st.regs = before[0][1]
     v = InstrView(pc, word, dec.name, in_slot, (dec, sources, st, before))
+    if m.wide:
+        v.digits = 16
     m._mem_log = []
     if m.caches is not None:
         v.fetch = list(m.fetch_accesses)
@@ -442,14 +486,14 @@ def _build(v: InstrView) -> None:
     else:
         isa = st.isa if c is None else st.twin
         d.update(text=text_at(word, pc, isa), format=instruction_format(word),
-                 fields=decode_fields(dec))
+                 fields=decode_fields(dec, st.abi))
         if c is not None:
             label, text, raw16, size = c
             v.compressed = (f"{label} {text} (0x{raw16:0{2 * size}x}), "
                             "recoded as this MIPS32 instruction")
             v.source_text = text
         _operands(v, st, word, name, fam, sources)
-    v.reg_writes = _diff(before, after) if after is not None else []
+    v.reg_writes = _diff(before, after, st.mask, st.abi) if after is not None else []
     if code == C.OV and v.alu is not None:
         v.alu.overflow = True
     for entry in log:
@@ -491,14 +535,14 @@ def _operands(v: InstrView, st: _Frozen, word: int, name: str, fam: str,
         elif name in _SHIFT_VAR:
             a, b = _reg_operand(st, "a", rt, sources), _reg_operand(st, "b", rs, sources)
         elif fam == "imm":
-            val = imm if name in _ZEXT_IMM else _sx(imm, 16) & M32
+            val = imm if name in _ZEXT_IMM else _sx(imm, 16) & st.mask
             how = "zero-extended" if name in _ZEXT_IMM else "sign-extended"
             a = None if name == "LUI" else _reg_operand(st, "a", rs, sources)
             b = Operand("b", val, f"immediate 0x{imm:04x} ({how})")
-        elif name in ("CLZ", "CLO", "SEB", "SEH", "WSBH"):
-            src = rs if name in ("CLZ", "CLO") else rt
+        elif name in ("CLZ", "CLO", "SEB", "SEH", "WSBH", "DCLZ", "DCLO", "DSBH", "DSHD"):
+            src = rs if name in ("CLZ", "CLO", "DCLZ", "DCLO") else rt
             a, b = _reg_operand(st, "a", src, sources), None
-        elif name in ("EXT", "INS"):
+        elif name in ("EXT", "INS", "DEXT", "DEXTM", "DEXTU", "DINS", "DINSM", "DINSU"):
             a, b = _reg_operand(st, "a", rs, sources), Operand("b", (rd << 5) | sa, "pos/size fields")
         else:
             a, b = _reg_operand(st, "a", rs, sources), _reg_operand(st, "b", rt, sources)
@@ -513,16 +557,19 @@ def _operands(v: InstrView, st: _Frozen, word: int, name: str, fam: str,
         else:
             off = _sx(imm, 16)
             base = _reg_operand(st, "base", rs, sources)
-        addr = (base.value + off) & M32
-        eva = word >> 26 == 0x1F
-        size = _SIZES.get(name[:-1] if eva else name, 4)
+        addr = (base.value + off) & st.mask
+        if st.ea32 and (st.release != "R6" or _word(base.value)):
+            addr = _sx(addr, 32) & st.mask              # MIPS64, Vol. III 4.10 / 4.11
+        eva = word >> 26 == 0x1F                        # (and Release 6 LL / SC ...)
+        size = _SIZES.get(name) or (_SIZES.get(name[:-1], 4) if eva else 4)
         seg, priv, mapped = _segment(st, addr)
         access = "store" if (fam == "store" or name.startswith("S")) else "load"
-        unaligned_ok = name[:3] in ("LWL", "LWR", "SWL", "SWR") or name in ("LUXC1", "SUXC1")
+        unaligned_ok = name[:3] in ("LWL", "LWR", "SWL", "SWR", "LDL", "LDR", "SDL", "SDR") \
+            or name in ("LUXC1", "SUXC1")
         v.address = AddressView(base, off, addr, size, access, seg, priv,
                                 mapped, False, unaligned_ok or addr % size == 0)
         v.alu = AluView("a + b (effective address)", base,
-                        Operand("b", off & M32, "offset (sign-extended)"), addr, addr == 0)
+                        Operand("b", off & st.mask, "offset (sign-extended)"), addr, addr == 0)
 
 
 def _twin_isa(m):
@@ -569,10 +616,11 @@ def _branch_view(st: _Frozen, v: InstrView, result: int | None) -> None:
         return
     rs, rt = (w >> 21) & 31, (w >> 16) & 31
     name = v.name
+    a, b = gpr_name(rs, st.abi), gpr_name(rt, st.abi)
     cond = {
-        "BEQ": f"{gpr_name(rs)} == {gpr_name(rt)}", "BNE": f"{gpr_name(rs)} != {gpr_name(rt)}",
-        "BGEZ": f"{gpr_name(rs)} >= 0", "BLTZ": f"{gpr_name(rs)} < 0",
-        "BGTZ": f"{gpr_name(rs)} > 0", "BLEZ": f"{gpr_name(rs)} <= 0",
+        "BEQ": f"{a} == {b}", "BNE": f"{a} != {b}",
+        "BGEZ": f"{a} >= 0", "BLTZ": f"{a} < 0",
+        "BGTZ": f"{a} > 0", "BLEZ": f"{a} <= 0",
     }
     base = name.rstrip("L") if name not in ("BAL", "NAL", "B") else name
     base = base.replace("AL", "") if base.startswith(("BGEZAL", "BLTZAL")) else base
@@ -610,11 +658,12 @@ def _snapshot(m, cp0: bool = True) -> tuple:
             (m.dspctl, m.dsp_hi[:], m.dsp_lo[:]))
 
 
-def _gpr_changes(old: list, cur: list, suffix: str = "") -> list:
+def _gpr_changes(old: list, cur: list, suffix: str = "", mask: int = M32,
+                 abi: bool | str = True) -> list:
     if old == cur:
         return []
-    return [(gpr_name(i) + suffix, a & M32, b & M32)
-            for i, (a, b) in enumerate(zip(old, cur)) if i and a != b and (a ^ b) & M32]
+    return [(gpr_name(i, abi) + suffix, a & mask, b & mask)
+            for i, (a, b) in enumerate(zip(old, cur)) if i and a != b and (a ^ b) & mask]
 
 
 def _after(m, before: tuple) -> tuple:
@@ -630,14 +679,16 @@ def _after(m, before: tuple) -> tuple:
             prev[0][:] if prev is not None else None, (m.dspctl, m.dsp_hi[:], m.dsp_lo[:]))
 
 
-def _diff(before: tuple, after: tuple) -> list[tuple[str, int, int]]:
+def _diff(before: tuple, after: tuple, mask: int = M32,
+          abi: bool | str = True) -> list[tuple[str, int, int]]:
     """``(name, old, new)`` of everything that differs, sorted by name;
-    Count (CP0 9.0) ticks by itself and is left out."""
+    Count (CP0 9.0) ticks by itself and is left out (``mask`` / ``abi``:
+    the GPRs' width and names, MIPS64: 64 bits, n64)."""
     (_cur, regs), hi, lo, fpr, fcsr, cp0_keys, cp0_vals, (pss, prev), dsp = before
     cur, hi2, lo2, fpr2, fcsr2, now, bank, (dspctl2, dhi2, dlo2) = after
-    out = _gpr_changes(regs, cur)
+    out = _gpr_changes(regs, cur, "", mask, abi)
     if prev is not None:
-        out += _gpr_changes(prev[1], bank, f" (set {pss})")
+        out += _gpr_changes(prev[1], bank, f" (set {pss})", mask, abi)
     if hi != hi2:
         out.append(("hi", hi, hi2))
     if lo != lo2:
@@ -666,7 +717,7 @@ def _diff(before: tuple, after: tuple) -> list[tuple[str, int, int]]:
 
 def _changes(m, before: tuple) -> list[tuple[str, int, int]]:
     """:func:`_diff` of ``before`` and the machine now."""
-    return _diff(before, _after(m, before))
+    return _diff(before, _after(m, before), m.amask, "n64" if m.wide else True)
 
 
 _NAME = itemgetter(0)
@@ -676,7 +727,8 @@ _NAME = itemgetter(0)
 
 def format_view(v: InstrView) -> str:
     """Multi-line, human-readable rendering of a view."""
-    lines = [f"0x{v.pc:08x}: {v.text}" + ("   [delay slot]" if v.in_delay_slot else "")
+    w = v.digits                        # (MIPS64: 16)
+    lines = [f"0x{v.pc:0{w}x}: {v.text}" + ("   [delay slot]" if v.in_delay_slot else "")
              + f"   ({v.format}-format, 0x{v.word:08x})"]
     if v.compressed:
         lines.append(f"  {v.compressed}")
@@ -684,15 +736,16 @@ def format_view(v: InstrView) -> str:
         f"{f.name}[{f.msb}:{f.lsb}]={f.bits} {f.meaning}" if f.msb != f.lsb
         else f"{f.name}[{f.msb}]={f.bits} {f.meaning}" for f in v.fields))
     if v.alu:
-        a = f"a = 0x{v.alu.a.value:08x} from {v.alu.a.source}" if v.alu.a else ""
-        b = f"b = 0x{v.alu.b.value:08x} from {v.alu.b.source}" if v.alu.b else ""
-        res = (f" -> 0x{v.alu.result:08x}" if v.alu.result is not None else "")
+        a = f"a = 0x{v.alu.a.value:0{w}x} from {v.alu.a.source}" if v.alu.a else ""
+        b = f"b = 0x{v.alu.b.value:0{w}x} from {v.alu.b.source}" if v.alu.b else ""
+        res = (f" -> 0x{v.alu.result:0{w}x}" if v.alu.result is not None else "")
         flags = " zero" if v.alu.zero else ""
         flags += " OVERFLOW" if v.alu.overflow else ""
         lines.append(f"  ALU: {v.alu.op}; " + "; ".join(x for x in (a, b) if x) + res + flags)
     if v.address:
         ad = v.address
-        lines.append(f"  address: base 0x{ad.base.value:08x} + {ad.offset} = 0x{ad.address:08x}"
+        lines.append(f"  address: base 0x{ad.base.value:0{w}x} + {ad.offset} = "
+                     f"0x{ad.address:0{w}x}"
                      f" ({ad.access} {ad.size} byte(s); {ad.segment}, {ad.privilege}"
                      f"{'' if ad.aligned else ', MISALIGNED'})")
         if ad.physical is not None:
@@ -700,10 +753,10 @@ def format_view(v: InstrView) -> str:
                          f"attribute {ad.cca} = {cca_name(ad.cca)})")
     if v.branch:
         br = v.branch
-        what = f"taken -> 0x{br.target:08x}" if br.taken else (
+        what = f"taken -> 0x{br.target:0{w}x}" if br.taken else (
             "not taken, delay slot nullified" if br.likely else "not taken")
         lines.append(f"  branch: {br.condition}: {what}"
-                     + (f"; link $ra = 0x{br.link:08x}" if br.link is not None else ""))
+                     + (f"; link $ra = 0x{br.link:0{w}x}" if br.link is not None else ""))
     for addr, size, value in v.mem_reads:
         lines.append(f"  memory read  0x{addr:08x} ({size} byte(s)) = 0x{value:0{2 * size}x}")
     for addr, size, old, new in v.mem_writes:
@@ -718,7 +771,8 @@ def format_view(v: InstrView) -> str:
     for acc in v.cache:
         lines.append(f"  cache: {acc.describe()}")
     for name, old, new in v.reg_writes:
-        lines.append(f"  {name}: 0x{old:08x} -> 0x{new:08x}")
+        d = w if name[0] == "$" and name[1] != "f" or name in ("hi", "lo") else 8
+        lines.append(f"  {name}: 0x{old:0{d}x} -> 0x{new:0{d}x}")
     if v.exception:
         lines.append(f"  EXCEPTION: {v.exception}")
     return "\n".join(lines)

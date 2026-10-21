@@ -74,6 +74,14 @@ ERR_INTVN_WR, ERR_INTVN_RD = 17, 18
 #: the error types of requests that need a response (Table 11.11: "Return
 #: SResp = ERROR if CM_ERROR_MASK[n] = 0")
 ERR_NEEDS_RESPONSE = frozenset({2, 4, 6, 18, 24})
+#: a CM3's error types (MD01196 Table 5.4; ERR_TYPE in GCR_ERROR_CAUSE 63:58)
+CM3_ERROR_NAMES = {1: "MP_CORRECTABLE_ECC_ERR", 2: "MP_REQUEST_DECODE_ERR",
+                   3: "MP_UNCORRECTABLE_ECC_ERR", 4: "MP_PARITY_ERR", 5: "MP_FNL_ERR",
+                   6: "CMBIU_REQUEST_DECODE_ERR", 7: "CMBIU_PARITY_ERR",
+                   8: "CMBIU_AXI_RESP_ERR", 9: "CMBIU_WID_ERR", 10: "RBI_BUS_ERR",
+                   11: "IOC_REQUEST_ERR", 12: "IOC_PARITY_ERR", 13: "IOC_RESP_ERR",
+                   14: "HALF_PIPE_ERR", 15: "RBI_REGTC_REQ_ERR"}
+CM3_REQUEST_DECODE = 2
 ERROR_NAMES = {1: "GC_WR_ERR", 2: "GC_RD_ERR", 3: "COH_WR_ERR", 4: "COH_RD_ERR",
                5: "MMIO_WR_ERR", 6: "MMIO_RD_ERR", 17: "INTVN_WR_ERR",
                18: "INTVN_RD_ERR", 24: "L2_RD_UNCORR", 25: "L2_WR_UNCORR",
@@ -215,7 +223,18 @@ class CoherenceManager:
         return self.l3 if self.l3 is not None else self.memory
 
     def _coherence(self, core: int) -> int:
-        return self.cps.gcr.core[core][0x08]
+        """GCR_Cx_COHERENCE as domain bits (a CM3's COHEN: emips.cps)."""
+        return self.cps.gcr.domain(core)
+
+    def l2_config(self) -> int:
+        """A CM3's GCR_L2_CONFIG (Linux mips-cm.h; Config2's encodings):
+        ASSOC 7:0 = ways - 1, LINE_SIZE 11:8 (2 << n bytes), SET_SIZE 15:12
+        (64 << n sets); BYPASS (20) without an L2."""
+        if self.l2 is None:
+            return 1 << 20
+        g = self.l2.geometry
+        return ((((g.sets // 64).bit_length() - 1) << 12)
+                | (((g.line // 2).bit_length() - 1) << 8) | (g.ways - 1))
 
     def coherent_mode(self, core: int) -> bool:
         """GCR_Cx_COHERENCE has the core's own bit."""
@@ -547,9 +566,11 @@ class CoherenceManager:
         """``(attributes, is the default region)`` of ``pa``'s address
         region (GCR_REGn_MASK, lowest-numbered match first) or GCR_BASE."""
         gcr = self.cps.gcr
+        up = gcr.upper
         for b in GCR_REGS_BASE:
             mask = gcr.regs[b + 8]
-            if mask & REG_CMTGT and (pa & mask & 0xFFFF0000) == (gcr.regs[b] & mask & 0xFFFF0000):
+            if mask & REG_CMTGT and (pa & mask & 0xFFFF0000) == (gcr.regs[b] & mask & 0xFFFF0000) \
+                    and not up[b + 4] & up[b + 0xC]:     # (PA 39:32 = 0: the _UPPER halves)
                 return mask, False
         return gcr.base_attr, True
 
@@ -570,7 +591,8 @@ class CoherenceManager:
         """An uncached write to the L2-only SYNC region (CM2): a barrier
         in the L2, not a write."""
         base = self.l2_sync_base
-        return bool(base & 1) and (pa & 0xFFFFF000) == (base & 0xFFFFF000)
+        return (bool(base & 1) and (pa & 0xFFFFF000) == (base & 0xFFFFF000)
+                and not self.cps.gcr.upper[0x74])        # (GCR_L2_ONLY_SYNC_BASE_UPPER)
 
     # -- errors ---------------------------------------------------------------------
 
@@ -580,6 +602,8 @@ class CoherenceManager:
         Returns True when the request gets an ERROR response (it needs a
         response and its GCR_ERROR_MASK bit is 0, Table 11.11: the core
         takes a bus error); with the bit set the CM interrupts instead."""
+        if self.cps.cm3:
+            return self._error_cm3(kind, info, addr)
         if self.error_cause >> 27 == 0:
             self.error_cause = (kind << 27) | (info & 0x7FFFFFF)
             self.error_addr = addr & M32 & ~7
@@ -588,11 +612,29 @@ class CoherenceManager:
         self.error_changed()
         return kind in ERR_NEEDS_RESPONSE and not self.error_mask >> kind & 1
 
+    def _error_cm3(self, kind: int, info: int, addr: int) -> bool:
+        """A CM3 error (MD01196 5.10): the request's decoding error is
+        MP_REQUEST_DECODE_ERR (2; the CM2's register-access types map to
+        it), ERR_TYPE 63:58 + ERR_INFO 57:0 (eMIPS keeps the CM2's request
+        bits there); a second one: GCR_ERROR_MULT.ERR_TYPE (unless the
+        first was correctable: it is overwritten).  "The error response is
+        independent of the mask setting": an ERROR response always, the
+        mask decides the interrupt."""
+        kind = CM3_REQUEST_DECODE
+        first = self.error_cause >> 58
+        if not first or first == 1:
+            self.error_cause = (kind << 58) | (info & ((1 << 58) - 1))
+            self.error_addr = addr & ((1 << 48) - 1) & ~7
+        elif not self.error_mult >> 58:
+            self.error_mult = kind << 58
+        self.error_changed()
+        return True
+
     @property
     def error_irq(self) -> bool:
         """The CM's error interrupt: a recorded error whose type is enabled
         in GCR_ERROR_MASK."""
-        kind = self.error_cause >> 27
+        kind = self.error_cause >> (58 if self.cps.cm3 else 27)
         return bool(kind) and bool(self.error_mask >> kind & 1)
 
     def error_changed(self) -> None:
@@ -621,7 +663,10 @@ class CoherenceManager:
     def _check(self, req, pa: int, holders: list[_Holder], intent: str) -> None:
         """Inconsistent copies (two owners, an owner beside a sharer —
         software that changed attributes or domains without flushing):
-        an intervention error (17 write / 18 read)."""
+        an intervention error (17 write / 18 read).  (A CM3's directory
+        reports no such error: MD01196 Table 5.4 has none.)"""
+        if self.cps.cm3:
+            return
         owners = [h for h in holders if not h.line.shared]
         mine = None
         d = req.d
@@ -654,6 +699,13 @@ class CoherenceManager:
             req.m.bus_error_pending = True
 
     def describe_error(self) -> str:
+        if self.cps.cm3:
+            kind = self.error_cause >> 58
+            if not kind:
+                return "no CM error"
+            text = f"CM error {CM3_ERROR_NAMES.get(kind, kind)} at 0x{self.error_addr:08x}"
+            second = self.error_mult >> 58
+            return text + (f" (then {CM3_ERROR_NAMES.get(second, second)})" if second else "")
         kind = self.error_cause >> 27
         if not kind:
             return "no CM error"

@@ -103,7 +103,7 @@ class SystemView(QtWidgets.QTabWidget):
     def refresh(self, s: Session) -> None:
         self._session = s
         if s.machine is None or s.cps is None:
-            self.note.setText(tr("One core: no Coherent Processing System. Choose 2 to 4 "
+            self.note.setText(tr("One core: no Coherent Processing System. Choose 2 to 6 "
                                  "cores in Configure > Settings > Processor."))
             for t in (self.cores, self.domain, self.copies, self.sources, self.locals,
                       self.regs):
@@ -119,7 +119,8 @@ class SystemView(QtWidgets.QTabWidget):
         self.note.setText(tr("{n} cores; every running core steps together, core 0 "
                              "first. The highlighted one is shown in the other panes.")
                           .format(n=len(rows)))
-        _fill(self.cores, [[str(r.cpu), r.state, f"0x{r.pc:08x}" if r.pc is not None else "-",
+        d = s.hex_digits("pc")
+        _fill(self.cores, [[str(r.cpu), r.state, f"0x{r.pc:0{d}x}" if r.pc is not None else "-",
                             str(r.line) if r.line else "-", r.mode, r.pins] for r in rows],
               [colors.valid_fill if r.selected else None for r in rows])
         dom = cv.domain_rows(cps)

@@ -62,7 +62,7 @@ from .memory import PMemory
 from .cache import Geometry
 from .cores import CORES, describe as describe_core, get as get_core
 from .timing import MEMORY_TIMING
-from .options import BOOT_MODES, CACHE_INIT_MODES, Options
+from .options import BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, Options
 from .session import Session, StepResult
 from .sim import Machine
 from .trace import format_view
@@ -77,7 +77,8 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
     try:
         return assemble(Path(path).read_text(), endian=endian, release=release,
                         pseudo=pseudo, reorder=reorder,
-                        bases=Options(board=board).segment_bases())
+                        bases=Options(board=board).segment_bases(),
+                        arch=getattr(args, "arch", None) or "mips32")
     except AsmError as exc:
         sys.exit(f"{path}: {exc}")
 
@@ -98,6 +99,9 @@ def _cmd_cc(args) -> None:
     out = args.output or str(Path(args.sources[0]).with_suffix(".elf"))
     try:
         core = get_core(args.core)
+        if core is not None and args.arch and args.arch != core.arch:
+            sys.exit(f"the {core.title} is a {core.arch.upper()} core (not --arch {args.arch})")
+        arch = args.arch or (core.arch if core is not None else "mips32")
         release = args.release or (core.release if core is not None else
                                    "R5" if args.micromips else "R2")
         if core is not None and release != core.release:
@@ -108,7 +112,7 @@ def _cmd_cc(args) -> None:
             sys.exit(f"the {core.title} is built with {core.choices('dsp')}")
         log = build(args.sources, out, release=release, endian=args.endian,
                     optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips,
-                    fpu=fpu, dsp=dsp)
+                    fpu=fpu, dsp=dsp, arch=arch)
     except BuildError as exc:
         sys.exit(str(exc))
     if args.verbose:
@@ -125,7 +129,8 @@ def _cmd_dis(args) -> None:
         return
     mem = PMemory()
     DecodeFile(mem).load(args.file)
-    m = Machine(memory=mem, endian=args.endian, release=args.release)
+    m = Machine(memory=mem, endian=args.endian, release=args.release,
+                arch=args.arch or "mips32")
     seen = set()
     for a in sorted(int(k, 16) for k in mem.get_memory()):
         w = a & ~3
@@ -402,7 +407,8 @@ def _cmd_debug(args) -> None:
             sys.exit(1)
         s.type_keys(_keys(args))
     if not scripted:
-        d.intro = (f"eMIPS debugger — MIPS32 {s.release}, {s.endian}-endian, "
+        d.intro = (f"eMIPS debugger — {'MIPS64' if s.wide else 'MIPS32'} {s.release}, "
+                   f"{s.endian}-endian, "
                    f"{s.mode} mode. Type help.")
         if s.machine is not None:
             d.intro += "\n" + d._where(s.current_pc())
@@ -503,7 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--little", dest="endian", action="store_const",
                        const="little", default="big", help="little-endian")
         p.add_argument("--release", choices=RELEASES, default=None,
-                       help="MIPS32 release (default R5)")
+                       help="MIPS32 / MIPS64 release (default R5)")
+        p.add_argument("--arch", choices=("mips32", "mips64"), default=None,
+                       help="the architecture: mips32 (default) or mips64 (64-bit "
+                            "registers and the doubleword instructions; the 32-bit "
+                            "compatibility address space)")
         p.set_defaults(fn=fn)
         if name in ("asm", "dis", "debug"):
             p.add_argument("--numeric", action="store_true",
@@ -585,10 +595,20 @@ def build_parser() -> argparse.ArgumentParser:
                            help="pipeline model: 5-stage (the textbook pipeline, "
                                 "default) or 24k (the MIPS 24K's 8 stages, branch "
                                 "prediction, skewed ALU)")
-            p.add_argument("--cores", type=int, choices=(1, 2, 3, 4), default=None,
+            p.add_argument("--cores", type=int, choices=range(1, MAX_CORES + 1), default=None,
                            help="cores (a CPS: shared memory, the CM's GCRs, the "
                                 "CPC); kernel / user boot starts them all at the "
                                 "entry, reset boot core 0 only")
+            p.add_argument("--vps", type=int, choices=range(1, 5), default=None,
+                           help="Release 6 virtual processors a core (DVP / EVP, the "
+                                "CPC's VP_RUN / VP_STOP; the I6400's 1, 2 or 4): more "
+                                "than one makes a CM3 system, even of one core")
+            p.add_argument("--itu", default=None, type=str.lower,
+                           metavar="FIFOS:SINGLES[:DEPTH]",
+                           help="the ITU of a CM3 core (the I6400's gating storage, "
+                                "SAAR): auto (default) = 4 FIFO cells of 4 entries + 8 "
+                                "single-entry cells; none; up to 32 cells, FIFOs of 2, "
+                                "4 or 8 entries")
             p.add_argument("--iocu", action="store_true",
                            help="with --board malta --cores N: an I/O Coherence Unit "
                                 "(GCR_CONFIG.NUMIOCU = 1) — the PCI DMA is coherent "
@@ -605,7 +625,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 "address an address error); mips16e (Config1.CA); "
                                 "micromips = microMIPS32 and MIPS32 (Config3.ISA = 2, "
                                 "Release 3+); micromips-only (Config3.ISA = 1); a program "
-                                "with MIPS16e / microMIPS code gets it anyway")
+                                "with MIPS16e / microMIPS code gets it anyway (MIPS64: "
+                                "auto = only then)")
             p.add_argument("--core", default=None, type=str.lower,
                            choices=["generic"] + list(CORES),
                            help="a real MIPS core: its release, compressed ISA, FPU, MMU, "
@@ -691,7 +712,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("-o", "--output", help="the ELF to write (default: the first "
                                           "source's name .elf)")
     c.add_argument("--release", choices=RELEASES, default=None,
-                   help="MIPS32 release to build for (default R2; R5 with --micromips)")
+                   help="MIPS32 / MIPS64 release to build for (default R2; R5 with "
+                        "--micromips)")
+    c.add_argument("--arch", choices=("mips32", "mips64"), default=None,
+                   help="mips32 (default: o32, an ELF32) or mips64 (the n64 ABI: 64-bit "
+                        "long and pointers, an ELF64); --core: the core's")
     c.add_argument("--little", dest="endian", action="store_const", const="little",
                    default="big", help="little-endian")
     c.add_argument("-O", dest="opt", choices=["0", "1", "2", "3", "s"], default="1",

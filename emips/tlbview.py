@@ -21,8 +21,8 @@ from dataclasses import dataclass
 
 from .bat import BATMMU
 from .mmu import M32, cca_name, segment
-from .tlb import (ENTRYHI, HI_ASID, INDEX, LO_D, LO_RI, LO_V, LO_XI, PAGEMASK, RANDOM,
-                  TLBMMU, WIRED, TLBAccess, TLBEntry, size_name)
+from .tlb import (ENTRYHI, HI_ASID, INDEX, LO_D, LO_RI, LO_V, LO_XI, M64, PAGEMASK, RANDOM,
+                  SEGBITS, TLBMMU, WIRED, TLBAccess, TLBEntry, size_name)
 
 HALF = ("even", "odd")
 
@@ -97,12 +97,33 @@ def half_text(r: EntryRow, h: int) -> str:
     return f"PFN 0x{r.pfn[h]:05x} C{(lo >> 3) & 7} {lo_flags(lo)}"
 
 
+def vpn_text(va: int) -> str:
+    """``VPN2 0x00400`` (VA 31:13); MIPS64: ``R 3, VPN2 0x00001`` (VA 63:62,
+    VA SEGBITS-1:13)."""
+    if va > M32:
+        return f"R {va >> 62}, VPN2 0x{(va >> 13) & ((1 << (SEGBITS - 13)) - 1):05x}"
+    return f"VPN2 0x{va >> 13:05x}"
+
+
+def _top(va: int, span: int) -> int:
+    """The last address of a page pair (MIPS64: 64-bit VAs)."""
+    return (va + span - 1) & (M64 if va > M32 else M32)
+
+
+def _lo(mmu: TLBMMU, lo: int) -> int:
+    """EntryLo as the core's software reads it (MIPS64: RI / XI at 63 / 62)."""
+    if getattr(mmu, "wide", False):
+        from .sim64 import lo64
+        return lo64(lo)
+    return lo
+
+
 def row_text(r: EntryRow) -> str:
     marks = ("W" if r.wired else " ") + ("R" if r.random else " ")
     if not r.used:
         return f"{r.index:4d} {marks} {r.state}"
     owner = "G" if r.g else f"ASID {r.asid:3d}"
-    return (f"{r.index:4d} {marks} VA 0x{r.va:08x}-0x{(r.va + r.span - 1) & M32:08x} "
+    return (f"{r.index:4d} {marks} VA 0x{r.va:08x}-0x{_top(r.va, r.span):08x} "
             f"{owner:<8} {size_name(r.page):>6}  "
             f"{half_text(r, 0):<24} | {half_text(r, 1)}")
 
@@ -151,7 +172,7 @@ def format_entry(m, i: int) -> str:
     if not e.live:
         out.append(f"  {r.state}: matches nothing")
         return "\n".join(out)
-    out.append(f"  tag: VPN2 0x{r.vpn2:05x} (VA 0x{r.va:08x}-0x{(r.va + r.span - 1) & M32:08x}), "
+    out.append(f"  tag: {vpn_text(r.va)} (VA 0x{r.va:08x}-0x{_top(r.va, r.span):08x}), "
                + ("global (G = 1: every ASID)" if e.g else f"ASID {e.asid}"))
     out.append(f"  page size {size_name(e.page_size)} (PageMask 0x{e.pagemask:08x}): "
                f"VA bit {e.evenodd} picks the even / odd page")
@@ -159,11 +180,13 @@ def format_entry(m, i: int) -> str:
         lo = e.lo[h] | e.g
         va0 = r.va + h * e.page_size
         cca = (lo >> 3) & 7
-        out.append(f"  {HALF[h]:<4} EntryLo{h} 0x{lo:08x}: VA 0x{va0:08x} -> PFN 0x{r.pfn[h]:05x}"
+        out.append(f"  {HALF[h]:<4} EntryLo{h} 0x{_lo(mmu, lo):08x}: VA 0x{va0:08x} -> "
+                   f"PFN 0x{r.pfn[h]:05x}"
                    f" = PA 0x{r.frame[h]:08x}; C{cca} ({cca_name(cca)}), "
                    f"{lo_flags(lo)}")
-    out.append(f"  TLBR would read: PageMask 0x{e.pagemask:08x}, EntryHi 0x{e.hi & M32:08x}, "
-               f"EntryLo0 0x{e.lo[0] | e.g:08x}, EntryLo1 0x{e.lo[1] | e.g:08x}")
+    out.append(f"  TLBR would read: PageMask 0x{e.pagemask:08x}, EntryHi "
+               f"0x{e.hi & mmu._vamask:08x}, EntryLo0 0x{_lo(mmu, e.lo[0] | e.g):08x}, "
+               f"EntryLo1 0x{_lo(mmu, e.lo[1] | e.g):08x}")
     return "\n".join(out)
 
 
@@ -242,12 +265,17 @@ class VASplit:
 
     va: int
     page: int
+    #: MIPS64 (64-bit addresses): R VA[63:62], VPN2 up to VA[SEGBITS-1]
+    wide: bool = False
 
     def fields(self) -> list[tuple[str, int, int, int]]:
         b = self.page.bit_length() - 1             # offset bits
-        return [("VPN2", 31, b + 1, self.va >> (b + 1)),
-                ("even/odd", b, b, (self.va >> b) & 1),
-                ("offset", b - 1, 0, self.va & (self.page - 1))]
+        top = SEGBITS - 1 if self.wide else 31
+        vpn = [("VPN2", top, b + 1, (self.va >> (b + 1)) & ((1 << (top - b)) - 1))]
+        if self.wide:
+            vpn.insert(0, ("R", 63, 62, self.va >> 62))
+        return vpn + [("even/odd", b, b, (self.va >> b) & 1),
+                      ("offset", b - 1, 0, self.va & (self.page - 1))]
 
 
 def bits(value: int, msb: int, lsb: int) -> str:
@@ -258,13 +286,16 @@ def explain(m, va: int, access: str = "load") -> str:
     """How ``va`` translates right now, step by step: segment, the entry
     that matches, the half, PFN and PA — or the exception an access would
     take.  No side effects."""
-    va &= M32
-    t = m.translate(va)
+    t = m.translate(va & m.amask)
+    va = t.va                                   # (MIPS64: sign-extended)
     mmu = m.mmu
+    wide = getattr(mmu, "wide", False)
     asid = m.cp0[ENTRYHI]["value"] & HI_ASID
-    out = [f"0x{va:08x} ({segment(va)}): " + ("mapped" if t.mapped else "unmapped")]
+    out = [f"0x{va:08x} ({t.segment if wide else segment(va)}): "
+           + ("mapped" if t.mapped else "unmapped")]
     if not t.mapped:
-        out.append(f"  {t.how}")
+        out.append(f"  {t.how}" + (": an access takes an Address Error exception"
+                                   if t.fault == "address error" else ""))
         if t.pa is not None:
             out.append(f"  PA 0x{t.pa:08x}, C{t.cca} ({cca_name(t.cca)})")
         return "\n".join(out)
@@ -286,10 +317,14 @@ def explain(m, va: int, access: str = "load") -> str:
                    f"(VA[{mmu.ftlb_page.bit_length() + mmu.fsets.bit_length() - 2}:"
                    f"{mmu.ftlb_page.bit_length()}])")
     if ix is None:
-        out.append(f"  no entry matches VPN2 0x{va >> 13:05x} (4 KB pages) with ASID {asid}"
+        out.append(f"  no entry matches {vpn_text(va)} (4 KB pages) with ASID {asid}"
                    " or G = 1")
-        out.append("  an access takes a TLB Refill exception (vector offset 0x000 with "
-                   "Status.EXL = 0, else 0x180)")
+        if mmu._xtlb(m, va):
+            out.append("  an access takes a TLB Refill exception at the XTLB Refill vector "
+                       "(64-bit addresses: offset 0x080 with Status.EXL = 0, else 0x180)")
+        else:
+            out.append("  an access takes a TLB Refill exception (vector offset 0x000 with "
+                       "Status.EXL = 0, else 0x180)")
         if getattr(mmu, "pw", False):
             out.append("  (the hardware page table walker tries the page table first, "
                        "when PWCtl.PWEn = 1)")
@@ -298,18 +333,19 @@ def explain(m, va: int, access: str = "load") -> str:
                        f"C{t.cca} = {cca_name(t.cca)})")
         return "\n".join(out)
     e = mmu.entries[ix]
-    sp = VASplit(va, e.page_size)
+    sp = VASplit(va, e.page_size, wide)
     cells = []
     for name, msb, lsb, value in sp.fields():
         cells.append(f"{name} VA[{msb}:{lsb}] = 0x{value:x}" if msb != lsb
                      else f"{name} VA[{msb}] = {value}")
     out.append("  " + " | ".join(cells))
-    out.append(f"  {mmu.entry_name(ix)} matches: VPN2 0x{e.vpn2 >> 13:05x}, "
+    out.append(f"  {mmu.entry_name(ix)} matches: {vpn_text(e.vpn2)}, "
                + ("global" if e.g else f"ASID {e.asid}") + f", {size_name(e.page_size)} pages")
     half = (va >> e.evenodd) & 1
     lo = e.lo[half] | e.g                     # as TLBR reads it (G in both)
     cca = (lo >> 3) & 7
-    out.append(f"  {HALF[half]} page: EntryLo{half} = 0x{lo:08x}: PFN 0x{_pfn(e, half):05x}, "
+    out.append(f"  {HALF[half]} page: EntryLo{half} = 0x{_lo(mmu, lo):08x}: "
+               f"PFN 0x{_pfn(e, half):05x}, "
                f"C{cca} ({cca_name(cca)}), {lo_flags(lo)}")
     if t.pa is None:
         out.append("  V = 0: an access takes a TLB Invalid exception")

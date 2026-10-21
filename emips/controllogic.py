@@ -33,6 +33,14 @@ ALU control: a PLA from ALUOp, funct and the two rotate bits (ROTR: bit
 010 add, 011 Less, 100 XOR, 101 the shifter), Unsigned (sltu's Less),
 the shifter's ShRight / ShArith / ShRotate / ShVar / Lui, and OtherUnit
 (multiply / divide, bit fields, jumps ...).
+
+MIPS64 (``arch="mips64"``, PLAN M22): the same logic for the MIPS64 rows
+of the release, for a 64-bit ALU.  Its ALU control has two more lines:
+**Word** (a 32-bit operation — ADDU, SUBU, the word shifts, LUI: the
+result is bit 31 sign-extended, an overflow is bit 31's; MIPS64 Vol. II
+"the 32-bit result is sign-extended") and **Sh32** (DSLL32 ...: the
+shift amount + 32); ALUOp 1001 = add word (ADDI, ADDIU, AUI — the
+address of a load / store, DADDIU and DADDI add 64 bits: 0000).
 """
 
 from __future__ import annotations
@@ -63,12 +71,29 @@ _PATTERNS = (0x0A5294A5, 0x10842108, 0x07FFFFFF, 0x00000000)
 ALUOP_FUNCTION = {0b0000: "add", 0b0001: "sub", 0b0011: "slt", 0b0100: "sltu",
                   0b0101: "and", 0b0110: "or", 0b0111: "xor", 0b1000: "lui",
                   0b1111: "other"}
+#: ... of a MIPS64 core: 1001 = add word (ADDI / ADDIU / AUI)
+ALUOP_FUNCTION64 = {**ALUOP_FUNCTION, 0b1001: "addw"}
 _R_FUNCTION = {"ADD": "add", "ADDU": "add", "SUB": "sub", "SUBU": "sub", "AND": "and",
                "OR": "or", "XOR": "xor", "NOR": "nor", "SLT": "slt", "SLTU": "sltu",
                "SLL": "sll", "SRL": "srl", "SRA": "sra", "ROTR": "rotr",
                "SLLV": "sllv", "SRLV": "srlv", "SRAV": "srav", "ROTRV": "rotrv"}
 ALU_OUTPUTS = ["Ainvert", "Bnegate", "Op2", "Op1", "Op0", "Unsigned", "ShRight", "ShArith",
                "ShRotate", "ShVar", "Lui", "OtherUnit"]
+#: ... of a MIPS64 core's 64-bit ALU: + Word (a 32-bit operation, its result
+#: bit 31 sign-extended) and Sh32 (the shift amount + 32)
+ALU_OUTPUTS64 = ALU_OUTPUTS + ["Word", "Sh32"]
+#: R-type rows -> ALU function on MIPS64: the 32-bit operations are word
+#: ones ("addw", "sll.w" ...), the doubleword ones the 64-bit ALU's own
+_R_FUNCTION64 = {
+    **{k: v + ".w" if v in ("sll", "srl", "sra", "rotr", "sllv", "srlv", "srav", "rotrv")
+       else v for k, v in _R_FUNCTION.items()},
+    "ADD": "addw", "ADDU": "addw", "SUB": "subw", "SUBU": "subw",
+    "DADD": "add", "DADDU": "add", "DSUB": "sub", "DSUBU": "sub",
+    "DSLL": "sll", "DSRL": "srl", "DSRA": "sra", "DROTR": "rotr",
+    "DSLL32": "sll32", "DSRL32": "srl32", "DSRA32": "sra32", "DROTR32": "rotr32",
+    "DSLLV": "sllv", "DSRLV": "srlv", "DSRAV": "srav", "DROTRV": "rotrv"}
+#: the word forms of the ALU functions
+_WORD = {"addw": "add", "subw": "sub"}
 #: ALU function -> its control lines (Ainvert Bnegate Op2..0 Unsigned, shifter flags)
 _LINES = {
     "and": (0, 0, 0b000), "or": (0, 0, 0b001), "add": (0, 0, 0b010), "sub": (0, 1, 0b010),
@@ -79,9 +104,20 @@ _SHIFTS = {"sll": (0, 0, 0, 0), "srl": (1, 0, 0, 0), "sra": (1, 1, 0, 0), "rotr"
            "rotrv": (1, 0, 1, 1), "lui": (0, 0, 0, 0)}
 
 
-def alu_lines(function: str) -> dict[str, bool]:
-    """The ALU control's outputs for an ALU function."""
-    out = {o: False for o in ALU_OUTPUTS}
+def alu_lines(function: str, wide: bool = False) -> dict[str, bool]:
+    """The ALU control's outputs for an ALU function (``wide``: a MIPS64
+    core's, with Word and Sh32)."""
+    word = sh32 = False
+    if function in _WORD:
+        function, word = _WORD[function], True
+    elif function.endswith(".w"):
+        function, word = function[:-2], True
+    elif function.endswith("32") and function[:-2] in _SHIFTS:
+        function, sh32 = function[:-2], True
+    word = word or (wide and function == "lui")      # (lui: a word, sign-extended)
+    out = {o: False for o in (ALU_OUTPUTS64 if wide else ALU_OUTPUTS)}
+    if wide:
+        out.update(Word=word, Sh32=sh32)
     if function in _LINES:
         ainv, bneg, op = _LINES[function]
         out.update(Ainvert=bool(ainv), Bnegate=bool(bneg), Op2=bool(op & 4),
@@ -96,18 +132,23 @@ def alu_lines(function: str) -> dict[str, bool]:
 
 
 _ADD = {"ADDI", "ADDIU", "AUI"}
+#: MIPS64's 64-bit immediate adds (ALUOp add; the 32-bit ones are add word)
+_DADD = {"DADDI", "DADDIU", "DAUI"}
 _IMM_CODE = {"SLTI": 0b0011, "SLTIU": 0b0100, "ANDI": 0b0101, "ORI": 0b0110, "XORI": 0b0111,
              "LUI": 0b1000}
 
 
-def aluop_code(dec) -> int:
-    """The main control's ALUOp for a decoded instruction."""
+def aluop_code(dec, wide: bool = False) -> int:
+    """The main control's ALUOp for a decoded instruction (``wide``: on a
+    MIPS64 core, where ADDI / ADDIU / AUI add a word)."""
     name, fam = dec.name, dec.family
     if dec.word >> 26 == 0:
         return 0b0010
     if name in _IMM_CODE:
         return _IMM_CODE[name]
-    if name in _ADD or fam in ("load", "store") or name in (
+    if wide and name in _ADD:
+        return 0b1001
+    if name in _ADD or wide and name in _DADD or fam in ("load", "store") or name in (
             "LL", "SC", "LL@R6", "SC@R6", "PREF", "CACHE", "LWC1", "SWC1", "LDC1", "SDC1",
             "LWC2", "SWC2", "LDC2", "SDC2"):
         return 0b0000
@@ -153,7 +194,7 @@ def _row_signals(isa: ISA, name: str) -> dict[str, bool]:
     dec = isa.decode(_probe_word(isa, name))
     c = control_signals(dec, analyze(dec))
     dst = {"rt": 0, "rd": 1, "$ra": 2}[c["RegDst"]]
-    code = aluop_code(dec)
+    code = aluop_code(dec, isa.arch == "mips64")
     return {"RegDst1": bool(dst & 2), "RegDst0": bool(dst & 1),
             "ALUSrc": c["ALUSrc"] == "imm", "MemtoReg": bool(c["MemtoReg"]),
             "RegWrite": bool(c["RegWrite"]), "MemRead": bool(c["MemRead"]),
@@ -211,6 +252,7 @@ class MainControl:
     release: str
     opcode: PLA
     secondary: dict[str, Secondary]
+    arch: str = "mips32"
 
 
 #: the fields tried, in order, to tell an escape opcode's instructions apart
@@ -265,9 +307,10 @@ def _secondary_table(isa: ISA, op: int, fields: list[str], rows: list
 
 
 @lru_cache(maxsize=None)
-def main_control(release: str = "R5") -> MainControl:
-    """The main control unit of a release, as PLAs."""
-    isa = ISA.for_release(release)
+def main_control(release: str = "R5", arch: str = "mips32") -> MainControl:
+    """The main control unit of a release (``arch="mips64"``: of MIPS64,
+    the doubleword rows too), as PLAs."""
+    isa = ISA.for_release(release, arch=arch)
     rows = [e for e in isa.leads if isa.in_release(e["name"]) and e["name"] not in ALIASES]
     by_op: dict[int, list] = {}
     for e in rows:
@@ -312,7 +355,7 @@ def main_control(release: str = "R5") -> MainControl:
             raise ValueError(f"no field set tells opcode {op:06b} apart")
         pla = build(f"{name} decoder", input_names(list(fields)), SIGNALS, t)
         secondary[name] = Secondary(name, op, list(fields), pla)
-    return MainControl(release, opcode, secondary)
+    return MainControl(release, opcode, secondary, arch)
 
 
 @dataclass
@@ -354,21 +397,26 @@ def alu_input(aluop: int, word: int) -> int:
 
 def alu_function(isa: ISA, aluop: int, word: int) -> str | None:
     """The ALU function an (ALUOp, word) asks for (None: don't care)."""
+    wide = isa.arch == "mips64"
     if aluop == 0b0010:
         dec = _decode(isa, word)
         if dec is None:
             return None
-        return _R_FUNCTION.get(dec.name, "other")
-    return ALUOP_FUNCTION.get(aluop)
+        return (_R_FUNCTION64 if wide else _R_FUNCTION).get(dec.name, "other")
+    return (ALUOP_FUNCTION64 if wide else ALUOP_FUNCTION).get(aluop)
 
 
 @lru_cache(maxsize=None)
-def alu_control(release: str = "R5") -> PLA:
-    """The ALU control of a release, as a PLA."""
-    isa = ISA.for_release(release)
+def alu_control(release: str = "R5", arch: str = "mips32") -> PLA:
+    """The ALU control of a release (``arch="mips64"``: a MIPS64 core's,
+    with Word and Sh32), as a PLA."""
+    isa = ISA.for_release(release, arch=arch)
+    wide = arch == "mips64"
+    functions = ALUOP_FUNCTION64 if wide else ALUOP_FUNCTION
+    r_function = _R_FUNCTION64 if wide else _R_FUNCTION
     table: dict[int, dict[str, bool]] = {}
-    for aluop in ALUOP_FUNCTION:                 # independent of funct / B21 / B6
-        lines = alu_lines(ALUOP_FUNCTION[aluop])
+    for aluop in functions:                      # independent of funct / B21 / B6
+        lines = alu_lines(functions[aluop], wide)
         for rest in range(256):
             table[(aluop << 8) | rest] = lines
     special = [e for e in isa.leads if isa.in_release(e["name"]) and
@@ -384,11 +432,11 @@ def alu_control(release: str = "R5") -> PLA:
                 if dec is None or dec.name != e["name"]:
                     continue
                 x = alu_input(0b0010, w)
-                lines = alu_lines(_R_FUNCTION.get(dec.name, "other"))
+                lines = alu_lines(r_function.get(dec.name, "other"), wide)
                 if table.get(x, lines) != lines:              # pragma: no cover
                     raise ValueError(f"ALU control: {dec.name} is ambiguous")
                 table[x] = lines
-    return build("ALU control", ALU_INPUTS, ALU_OUTPUTS, table)
+    return build("ALU control", ALU_INPUTS, ALU_OUTPUTS64 if wide else ALU_OUTPUTS, table)
 
 
 def operation_name(out: dict[str, bool]) -> str:

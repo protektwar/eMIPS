@@ -23,6 +23,19 @@ Directives: ``.text/.data/.ktext/.kdata [addr]``, ``.word``, ``.half``,
 ``.word``/``.half``/``.float``/``.double`` align themselves (as in MARS
 and GNU ``as``).
 
+**MIPS64** (an ISA of ``arch="mips64"``, PLAN M22): GNU ``as`` with
+``-mabi=64 -msym32`` — the n64 register names (``$a4``-``$a7`` = ``$8``-
+``$11``, ``$t0``-``$t3`` = ``$12``-``$15``; ``$t4``-``$t7`` do not
+exist), symbols of 32 bits (every eMIPS segment is in the compatibility
+space), ``.dword`` (a label's address sign-extended), ``.set mips64*`` /
+``.set mips32*`` (the doubleword instructions allowed or not), and the
+doubleword macros: ``dli`` (gas's ``load_register``), ``dla`` / ``la``
+(``lui`` + ``daddiu``), ``dneg`` / ``dnegu``, the constant / short /
+variable forms of ``dadd`` / ``daddu`` / ``dsub`` / ``dsubu`` / ``dsll``
+/ ``dsrl`` / ``dsra`` / ``drotr`` (a shift by 32-63: the ``*32``
+instruction), ``dmul`` (Release 6: an instruction), label loads with a
+base register (``daddu``).
+
 Expressions: integers (``42``, ``-3``, ``0x2A``, ``0b101``, ``'a'``),
 symbols, ``+ - * / << >> & | ( )``, ``%hi(x)`` / ``%lo(x)`` (``%hi`` is
 carry-adjusted for the sign-extended ``%lo``).
@@ -80,6 +93,9 @@ SEGMENT_BASES = {
 }
 #: Register values set by :meth:`Program.load` with ``boot=True`` (MARS).
 BOOT_SP = 0x7FFFEFFC
+#: ... on a MIPS64 core: 16-byte aligned, as the n64 ABI wants it (sd / ld
+#: of a stack slot; MARS's 0x7FFFEFFC is not even doubleword-aligned)
+BOOT_SP64 = 0x7FFFEFF0
 BOOT_GP = 0x10008000
 
 
@@ -131,6 +147,9 @@ class Program:
     dsp: int = 0
     #: it uses the MT Module's instructions (emips.mt, MD00378)
     mt: bool = False
+    #: the architecture it was made for: "mips32", or "mips64" (assembled
+    #: for MIPS64, an ELF64)
+    arch: str = "mips32"
 
     def word(self, addr: int) -> int:
         data = bytes(self.image.get(addr + i, 0) for i in range(4))
@@ -153,13 +172,17 @@ class Program:
         KU = 3`` (kseg0 / kuseg cacheable), ``K23 = 2`` (kseg2 / kseg3
         uncached: devices), the caches initialized (every line invalid:
         what boot ROM code does with Index Store Tag and ``TagLo = 0``),
-        ``$sp`` = 0x7FFFEFFC, ``$gp`` = 0x10008000 (MARS defaults).  With
+        ``$sp`` = 0x7FFFEFFC, ``$gp`` = 0x10008000 (MARS defaults; MIPS64:
+        ``$sp`` = 0x7FFFEFF0, 16-byte aligned for n64).  With
         a TLB (:mod:`emips.tlb`) only ``Config.K0`` exists; the firmware
         initializes the TLB (every entry unique and invalid) and, unless
         the program brings its own (code at 0x80000000-0x800000FF),
         installs its TLB refill handler at EBase + 0x000
         (:data:`emips.tlb.FIRMWARE_REFILL`: kuseg at VA + 1 GB, kseg2 /
-        kseg3 at PA = VA, like the fixed mapping).  The image goes where
+        kseg3 at PA = VA, like the fixed mapping) — on a MIPS64 core with
+        64-bit addresses also the XTLB one at EBase + 0x080
+        (:data:`emips.tlb.FIRMWARE_XTLB_REFILL`) and Status.KX / SX / UX;
+        MIPS64: Status.FR = 1 (the n64 ABI).  The image goes where
         that mapping puts it even when the program has its own handler
         (whose page tables then know where the program is).
         ``boot=False`` keeps the hardware reset state (caches undefined,
@@ -181,7 +204,7 @@ class Program:
             raise ValueError("the program uses MT Module instructions: the core needs "
                              "the MT Module (--mt VPES:TCS)")
         if boot:
-            from .tlb import boot_cca, firmware_refill, user_window
+            from .tlb import boot_cca, firmware_refill, firmware_xtlb_refill, user_window
             cca = boot_cca(machine)                    # 3; a CPS core: 5, coherent
             # (Release 6: Status.FR is 1 and read-only — 64-bit FPRs only)
             fr = machine.status & C.ST_FR if machine.release == "R6" else 0
@@ -189,6 +212,8 @@ class Program:
             # Module is enabled like the FPU: Status.MX, MD00374 3.11)
             machine._cp0_set(C.STATUS, (C.ST_CU1 if machine.has_fpu else 0) | fr
                              | (C.ST_MX if getattr(machine, "dsp", 0) else 0))
+            if machine.wide:                           # MIPS64: FR (n64), KX / SX / UX
+                machine.boot64()
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
             ku_k23 = (2 << 28) | (cca << 25) if fixed else 0
             machine._cp0_set(C.CONFIG, config | ku_k23 | cca)
@@ -198,10 +223,12 @@ class Program:
                 own = any(0x80000000 <= a < 0x80000100 for a in self.image)
                 tlb = machine.mmu.mt in (1, 4)              # BAT: no refill handler
                 machine.mmu.boot(machine, handler=tlb and not own)
-                if tlb and not own:
-                    fw = assemble(firmware_refill(cca, user_window(machine)),
-                                  endian=self.endian,
-                                  release=machine.release)
+                if tlb and not own:                     # (MIPS64 with 64-bit addresses:
+                    text = firmware_refill(cca, user_window(machine))   # + the XTLB
+                    if getattr(machine, "at", 1) == 2:                  # Refill handler)
+                        text += firmware_xtlb_refill(cca, user_window(machine))
+                    fw = assemble(text, endian=self.endian, release=machine.release,
+                                  arch=machine.arch)
                     for addr, byte in fw.image.items():
                         machine.write_byte(addr, byte)
                     machine.firmware = fw
@@ -211,7 +238,7 @@ class Program:
                 machine.write_reg(29, board.stack_top())
                 machine.write_reg(28, self.segments.get("data", (0x80200000,))[0] + 0x8000)
             else:
-                machine.write_reg(29, BOOT_SP)
+                machine.write_reg(29, BOOT_SP64 if machine.wide else BOOT_SP)
                 machine.write_reg(28, BOOT_GP)
         for addr, byte in self.image.items():
             try:
@@ -236,9 +263,9 @@ class Program:
                 isa = "microMIPS" if self.mm else "MIPS16e"
                 raise ValueError(f"the program starts in {isa} code: the core needs "
                                  f"{isa} (--compressed {want})")
-            machine._jump(self.entry)
+            machine._jump(machine.to_pc(self.entry))   # (MIPS64: sign-extended)
         else:
-            machine.pc = self.entry
+            machine.pc = machine.to_pc(self.entry)  # (MIPS64: sign-extended)
 
     def to_ihex(self) -> str:
         """Intel HEX (types 04 / 00 / 05 / 01) of the image."""
@@ -275,13 +302,14 @@ class Program:
     def m16_insn(self, addr: int):
         """The MIPS16e instruction at ``addr`` (emips.mips16.M16)."""
         from . import mips16
-        return mips16.decode(self.half(addr), lambda: self.half(addr + 2))
+        return mips16.decode(self.half(addr), lambda: self.half(addr + 2), arch=self.arch)
 
     def mm_insn(self, addr: int):
         """The microMIPS instruction at ``addr`` (emips.micromips.MM)."""
         from . import micromips
         return micromips.decode(self.half(addr), lambda: self.half(addr + 2),
-                                release=self.release, dsp=self.dsp, mt=self.mt)
+                                release=self.release, dsp=self.dsp, mt=self.mt,
+                                arch=self.arch)
 
     def listing(self, *, abi: bool = True) -> list[tuple[int, int, str, str]]:
         """``(address, word, disassembly, source)`` for every instruction
@@ -289,17 +317,17 @@ class Program:
         from . import mips16
         from .disasm import disassemble
         labels = self.labels()
-        isa = ISA.for_release(self.release, self.dsp, self.mt)
+        isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch)
         out = []
         for a, s in sorted(self.source_map.items()):
             if a in self.m16:
                 i = self.m16_insn(a)
-                out.append((a, i.raw, mips16.text(i, a, abi=abi), s.text.strip()))
+                out.append((a, i.raw, mips16.text(i, a, abi=abi, arch=self.arch), s.text.strip()))
             elif a in self.mm:
                 from . import micromips
                 i = self.mm_insn(a)
-                out.append((a, i.raw, micromips.text(i, a, abi=abi, release=self.release),
-                            s.text.strip()))
+                out.append((a, i.raw, micromips.text(i, a, abi=abi, release=self.release,
+                                                     arch=self.arch), s.text.strip()))
             else:
                 out.append((a, self.word(a), disassemble(self.word(a), a, abi=abi, isa=isa,
                                                           symbols=labels), s.text.strip()))
@@ -513,6 +541,107 @@ def _sx16(v: int) -> int:
     return v - 0x10000 if v & 0x8000 else v
 
 
+M64 = (1 << 64) - 1
+
+
+def load_register(reg: str, value: int, dbl: bool) -> list[tuple[str, list[str]]]:
+    """GNU as's ``load_register`` (gas/config/tc-mips.c): the instructions
+    that put the constant ``value`` in ``reg`` — ``li`` (``dbl`` False: a
+    32-bit value, sign-extended; more is an error, as in gas) or ``dli``
+    (``dbl`` True: 64 bits)."""
+    if not dbl and 0 <= value <= M32:           # normalize_constant_expr
+        value = _sx32(value)
+    if -0x8000 <= value < 0x8000:
+        return [("addiu", [reg, "$zero", str(value)])]
+    if 0 <= value < 0x10000:
+        return [("ori", [reg, "$zero", str(value)])]
+    if -(1 << 31) <= value < (1 << 31):
+        out = [("lui", [reg, str((value >> 16) & 0xFFFF)])]
+        if value & 0xFFFF:
+            out.append(("ori", [reg, reg, str(value & 0xFFFF)]))
+        return out
+    if not dbl:
+        raise ValueError(f"number (0x{value & M64:x}) larger than 32 bits"
+                         + (" (dli loads 64 bits)" if -(1 << 63) <= value <= M64 else ""))
+    if not -(1 << 63) <= value <= M64:
+        raise ValueError(f"number {value:#x} larger than 64 bits")
+
+    def shift(mn: str, n: int, src: str) -> tuple[str, list[str]]:
+        return (mn + "32", [reg, src, str(n - 32)]) if n >= 32 else (mn, [reg, src, str(n)])
+
+    u = value & M64
+    hi32, lo32 = u >> 32, u & M32
+    out: list[tuple[str, list[str]]] = []
+    freg = "$zero"
+    if hi32:
+        if hi32 == M32:
+            if lo32 & 0xFFFF8000 == 0xFFFF8000:
+                return [("addiu", [reg, "$zero", str(_sx16(lo32))])]
+            if lo32 & 0x80000000:
+                out = [("lui", [reg, str(lo32 >> 16)])]
+                if lo32 & 0xFFFF:
+                    out.append(("ori", [reg, reg, str(lo32 & 0xFFFF)]))
+                return out
+        for n in range(17, 64 - 16 + 1):        # a 16-bit value shifted left
+            himask, lomask = ((0xFFFF >> (32 - n), (0xFFFF << n) & M32) if n < 32
+                              else (0xFFFF << (n - 32), 0))
+            if not hi32 & ~himask and not lo32 & ~lomask:
+                tmp = (hi32 << (32 - n)) | (lo32 >> n) if n < 32 else hi32 >> (n - 32)
+                return [("ori", [reg, "$zero", str(tmp & 0xFFFF)]), shift("dsll", n, reg)]
+        hi, lo = hi32, lo32                     # the lowest one bit
+        if lo:
+            bit = (lo & -lo).bit_length() - 1
+            if bit:
+                lo = (lo >> bit) | ((hi & ((1 << bit) - 1)) << (32 - bit))
+                hi >>= bit
+        else:
+            bit = 32 + (hi & -hi).bit_length() - 1
+            lo, hi = hi >> (bit - 32), 0
+        if (hi == 0 and not (lo + 1) & lo) or (lo == M32 and not (hi + 1) & hi):
+            top = 32 - hi32.bit_length()        # COUNT_TOP_ZEROES
+            if top:                             # a run of ones: -1, shifted
+                out = [("addiu", [reg, "$zero", "-1"])]
+                if bit:
+                    out.append(shift("dsll", bit + top, reg))
+                out.append(shift("dsrl", top, reg))
+                return out
+        out = load_register(reg, _sx32(hi32), False)
+        freg = reg
+    if not lo32 & 0xFFFF0000:
+        if freg != "$zero":
+            out.append(("dsll32", [reg, freg, "0"]))
+    else:
+        if freg == "$zero" and lo32 == M32:
+            return [("lui", [reg, "65535"]), ("dsrl32", [reg, reg, "0"])]
+        if freg != "$zero":
+            out.append(("dsll", [reg, freg, "16"]))
+        out.append(("ori", [reg, freg, str(lo32 >> 16)]))
+        out.append(("dsll", [reg, reg, "16"]))
+        freg = reg
+    if lo32 & 0xFFFF:
+        out.append(("ori", [reg, freg, str(lo32 & 0xFFFF)]))
+    return out
+
+
+#: the n64 register names that differ from o32's (GNU as N32N64_SYMBOLIC_
+#: REGISTER_NAMES): $a4-$a7 / $ta0-$ta3 = $8-$11, $t0-$t3 = $12-$15
+N64_NAMES = {**{f"a{i}": 4 + i for i in range(4, 8)}, **{f"ta{i}": 8 + i for i in range(4)},
+             **{f"t{i}": 12 + i for i in range(4)}}
+_N64_REG = re.compile(r"(?<![\w$])\$(t[0-7]|ta[0-3]|a[4-7])(?![\w$])", re.I)
+
+
+def n64_operand(tok: str) -> str:
+    """An operand with its n64 register names written as numbers; ``$t4`` -
+    ``$t7`` (o32 names only) are an error."""
+    def sub(m: re.Match) -> str:
+        name = m.group(1).lower()
+        if name not in N64_NAMES:
+            raise ValueError(f"${name} is not an n64 register name (the MIPS64 ABI "
+                             f"has $t0-$t3 = $12-$15, $a4-$a7 = $8-$11)")
+        return f"${N64_NAMES[name]}"
+    return _N64_REG.sub(sub, tok)
+
+
 # ------------------------------------------------------------ the assembler
 
 #: (mnemonic -> handler) for pseudo-instructions; each returns a list of
@@ -534,6 +663,10 @@ PSEUDO_HINTS = {
     "bnez": "bne rs, $zero, label",
     "li": "addiu rt, $zero, imm / ori rt, $zero, imm / lui rt, hi + ori rt, rt, lo",
     "la": "lui rt, %hi(label) + addiu rt, rt, %lo(label)",
+    "dli": "addiu / ori / lui and dsll / dsll32 / ori, as GNU as",
+    "dla": "lui rt, %hi(label) + daddiu rt, rt, %lo(label)",
+    "dneg": "dsub rd, $zero, rs",
+    "dnegu": "dsubu rd, $zero, rs",
     **{mn: f"{cmp} $at, ... + {br} $at, $zero, label"
        for mn, (cmp, _swap, br) in _BRANCH_MACROS.items()},
 }
@@ -543,17 +676,28 @@ PSEUDO_HINTS = {
 #: it fits, else the constant in $at (as ``li``) and the register form
 _ALU_IMMEDIATE = {"add": "addi", "addu": "addiu", "sub": "addi", "subu": "addiu",
                   "and": "andi", "or": "ori", "xor": "xori", "nor": "ori",
-                  "slt": "slti", "sltu": "sltiu"}
+                  "slt": "slti", "sltu": "sltiu",
+                  # MIPS64 (PLAN M22)
+                  "dadd": "daddi", "daddu": "daddiu", "dsub": "daddi", "dsubu": "daddiu"}
 #: shifts by a register written with the immediate mnemonic
-_SHIFT_VARIABLE = {"sll": "sllv", "srl": "srlv", "sra": "srav", "rotr": "rotrv"}
+_SHIFT_VARIABLE = {"sll": "sllv", "srl": "srlv", "sra": "srav", "rotr": "rotrv",
+                   "dsll": "dsllv", "dsrl": "dsrlv", "dsra": "dsrav", "drotr": "drotrv"}
 #: immediates GNU as also takes as a 16-bit pattern (0x8000-0xFFFF = negative)
-_SIGNED_IMMEDIATE = {"addi", "addiu", "slti", "sltiu"}
+_SIGNED_IMMEDIATE = {"addi", "addiu", "slti", "sltiu", "daddi", "daddiu"}
 #: ``op rd, rt`` = ``op rd, rd, rt`` (GNU as): register forms ...
-_SHORT_REGISTER = set(_ALU_IMMEDIATE) | set(_SHIFT_VARIABLE) | {"mul", "movn", "movz"}
+_SHORT_REGISTER = set(_ALU_IMMEDIATE) | set(_SHIFT_VARIABLE) | {"mul", "movn", "movz",
+                                                                  "dmul"}
 #: ... and immediate forms
 _SHORT_IMMEDIATE = set(_ALU_IMMEDIATE) | set(_SHIFT_VARIABLE) | {"mul", "addi", "addiu",
                                                                    "andi", "ori", "xori",
-                                                                   "slti", "sltiu"}
+                                                                   "slti", "sltiu", "dmul",
+                                                                   "daddi", "daddiu"}
+#: the constant GNU as puts in $at for these is 64 bits on a MIPS64 core
+#: (``load_register(..., HAVE_64BIT_GPRS)``); add / sub's is 32 bits
+_DBL_CONSTANT = {"and", "or", "xor", "nor", "slt", "sltu", "dadd", "daddu", "dsub",
+                 "dsubu", "dmul"}
+#: doubleword shifts by 32-63: the ``*32`` instruction (GNU as)
+_SHIFT32 = {"dsll", "dsrl", "dsra", "drotr"}
 
 _DIRECTIVES_IGNORED = {".globl", ".global", ".ent", ".end", ".type", ".size",
                        ".extern", ".file", ".section", ".previous", ".frame",
@@ -652,7 +796,7 @@ class Assembler:
     def __init__(self, *, endian: str = "big", isa: ISA | None = None,
                  bases: dict[str, int] | None = None,
                  release: str | None = None, pseudo: bool = True,
-                 reorder: bool = True) -> None:
+                 reorder: bool = True, arch: str = "mips32") -> None:
         if endian not in ("big", "little"):
             raise ValueError("endian must be 'big' or 'little'")
         self.endian = endian
@@ -660,7 +804,7 @@ class Assembler:
         self.pseudo = pseudo
         #: initial ``.set reorder`` state (nop in every delay slot)
         self.reorder = reorder
-        self.isa = isa or ISA.for_release(release)
+        self.isa = isa or ISA.for_release(release, arch=arch)
         self.bases = dict(SEGMENT_BASES, **(bases or {}))
         #: instructions of the target release only, by mnemonic (the DSP
         #: Module's accumulator forms by row name: ``mult@dsp``)
@@ -673,6 +817,10 @@ class Assembler:
                 self._by_name.setdefault(e["name"].lower(), e)
         self._all = {e.get("mnemonic", e["name"]).lower()
                      for e in self.isa.instructions}
+        #: a MIPS64 target (PLAN M22): n64 names, the doubleword macros
+        self.wide = self.isa.arch == "mips64"
+        #: the doubleword rows (``.set mips32*`` forbids them)
+        self._rows64 = {mn for mn, e in self._by_name.items() if e.get("arch") == "mips64"}
 
     # -- public -------------------------------------------------------------
 
@@ -699,7 +847,9 @@ class Assembler:
         self._seen_m16 = self._seen_mm = False
         self._dsp_set = 2                       # .set dsp / dspr2 / nodsp
         self._mt_set = True                     # .set mt / nomt
-        self.prog = Program(endian=self.endian, release=self.isa.release)
+        self._isa64 = True                      # .set mips64* / mips32* (MIPS64)
+        self.prog = Program(endian=self.endian, release=self.isa.release,
+                            arch=self.isa.arch)
         stmts = self._pass1(source)
         for st in stmts:
             self._emit(st)
@@ -747,6 +897,11 @@ class Assembler:
                 rest = more + " " + rest
             mnemonic, ops = head.lower(), _split_operands(rest.strip())
             try:
+                if self.wide and not mnemonic.startswith("."):
+                    ops = [n64_operand(o) for o in ops]
+                    if not self._isa64 and mnemonic in self._rows64:
+                        raise AsmError(n, f"{mnemonic} is a MIPS64 instruction: not "
+                                       "after .set mips32 (.set mips64)", raw)
                 if mnemonic.startswith("."):
                     seg, reorder, at_ok = self._directive_layout(
                         n, raw, mnemonic, ops, rest, lc, seg, reorder, at_ok, stmts)
@@ -822,7 +977,13 @@ class Assembler:
             self._pending = []
             seg = d[1:]
             if ops:
-                lc[seg] = self._const(ops[0], n)
+                v = self._const(ops[0], n)
+                if not -(1 << 31) <= v <= M32 and not (0xFFFFFFFF80000000 <= v <= M64):
+                    raise AsmError(n, f"segment address 0x{v & M64:x} is not a 32-bit "
+                                   "address (MIPS64 programs are -msym32: every address in "
+                                   "the 32-bit compatibility space, 0xFFFFFFFF80000000 = "
+                                   "0x80000000)", raw)
+                lc[seg] = v & M32
             return seg, reorder, at_ok
         if d == ".set":
             word = ops[0].lower() if ops else ""
@@ -844,6 +1005,8 @@ class Assembler:
                 if word == "micromips" and self.isa.release == "R1":
                     raise AsmError(n, "microMIPS32 needs Release 2+ (the M14K is a Release 2 "
                                    "core with microMIPS)", raw)
+                if word == "micromips" and self.wide and self.isa.release == "R2":
+                    raise AsmError(n, "microMIPS64 needs Release 3+ (MD00594 3.1)", raw)
                 if word == "micromips" and self._seen_m16:
                     raise AsmError(n, "microMIPS after MIPS16e code: no core has both", raw)
                 self._modemm = word == "micromips"
@@ -854,6 +1017,13 @@ class Assembler:
                     raise AsmError(n, "the DSP Module needs Release 2+ (MD00374 3.1)", raw)
                 self._dsp_set = (0 if word == "nodsp" else 1 if word.startswith("nodspr")
                                  else 1 if word == "dsp" else 2)
+            elif word.startswith(("mips32", "mips64")) or word == "mips0":
+                # GNU as: the ISA level; here the doubleword instructions'
+                if word.startswith("mips64") and not self.wide:
+                    raise AsmError(n, f".set {word}: this is a MIPS32 program; assemble "
+                                   "it for MIPS64 (--arch mips64, or a line "
+                                   "'# eMIPS: --arch mips64')", raw)
+                self._isa64 = not word.startswith("mips32")
             elif word in ("mt", "nomt"):        # GNU as: the MT Module's instructions
                 if word == "mt" and self.isa.release in ("R1", "R6"):
                     raise AsmError(n, "the MT Module needs Release 2-5 (MD00378 1.1; "
@@ -889,6 +1059,8 @@ class Assembler:
         elif d == ".float":
             stmt(4 * len(ops), 4)
         elif d == ".double":
+            stmt(8 * len(ops), 8)
+        elif d in (".dword", ".8byte"):
             stmt(8 * len(ops), 8)
         elif d in (".ascii", ".asciiz"):
             data = self._strings(rest, n, raw, d == ".asciiz")
@@ -961,6 +1133,9 @@ class Assembler:
         elif mn in ("neg", "negu"):
             self._nops(st, 2)
             out = [("sub" if mn == "neg" else "subu", [ops[0], "$zero", ops[1]])]
+        elif mn in ("dneg", "dnegu") and self.wide:
+            self._nops(st, 2)
+            out = [("dsub" if mn == "dneg" else "dsubu", [ops[0], "$zero", ops[1]])]
         elif mn == "not":
             self._nops(st, 2)
             out = [("nor", [ops[0], ops[1], "$zero"])]
@@ -976,9 +1151,12 @@ class Assembler:
         elif mn == "li":
             self._nops(st, 2)
             out = self._li(st, ops[0], ops[1])
-        elif mn == "la":
+        elif mn == "la" and not self.wide:
             self._nops(st, 2)
             out = self._li(st, ops[0], ops[1])
+        elif mn in ("la", "dla", "dli") and self.wide:
+            self._nops(st, 2)
+            out = self._dla(st, mn, ops[0], ops[1])
         elif ((mn in self._FP_MEM or mn in self._by_name
                and self._by_name[mn]["family"] in ("load", "store")
                and "mem" in operand_spec(self._by_name[mn]))
@@ -991,8 +1169,8 @@ class Assembler:
         elif mn in ("jr", "jr.hb") and mn not in self._by_name:
             # Release 6: JR is JALR with rd = $zero (GNU as does the same)
             out = [(mn.replace("jr", "jalr"), ["$zero"] + ops)]
-        elif mn in ("div", "divu") and len(ops) == 3 and \
-                self._by_name.get(mn, {}).get("name", "") in ("DIV", "DIVU"):
+        elif mn in ("div", "divu", "ddiv", "ddivu") and len(ops) == 3 and \
+                self._by_name.get(mn, {}).get("name", "") in ("DIV", "DIVU", "DDIV", "DDIVU"):
             if parse_gpr(ops[0]) != 0:
                 raise AsmError(st.line, f"{mn} rd form: first operand must be $zero", st.text)
             out = [(mn, ops[1:])]
@@ -1010,8 +1188,13 @@ class Assembler:
         elif mn in self._by_name:
             out = [(mn, ops)]
         elif mn in self._all:
-            raise AsmError(st.line, f"{mn} does not exist in MIPS32 "
-                           f"{self.isa.release}", st.text)
+            raise AsmError(st.line, f"{mn} does not exist in "
+                           f"{'MIPS64' if self.wide else 'MIPS32'} {self.isa.release}",
+                           st.text)
+        elif not self.wide and mn in _mips64_mnemonics():
+            raise AsmError(st.line, f"{mn} is a MIPS64 instruction: assemble the program "
+                           "for MIPS64 (--arch mips64, or a line '# eMIPS: --arch "
+                           "mips64')", st.text)
         else:
             raise AsmError(st.line, f"unknown instruction {mn!r}", st.text)
 
@@ -1030,8 +1213,11 @@ class Assembler:
         constant, modulo 32.  None: not one of them (the instruction as
         written)."""
         mn, ops = st.mnemonic, list(st.ops)
-        if mn not in self._by_name or not 2 <= len(ops) <= 3:
+        if (mn not in self._by_name and not (mn == "dmul" and self.wide)) \
+                or not 2 <= len(ops) <= 3:
             return None
+        if mn == "dmul" and "dmult" not in self._by_name:
+            return None                         # Release 6: DMUL, no macro (GNU as)
         if ops[-1].strip().startswith("$") and parse_gpr(ops[-1]) is None:
             return None                         # a bad register: the plain error
         short = len(ops) == 2
@@ -1046,22 +1232,43 @@ class Assembler:
             if mn in _SHIFT_VARIABLE and _SHIFT_VARIABLE[mn] in self._by_name:
                 self._strict(st, f"{_SHIFT_VARIABLE[mn]} {rd}, {rs}, {third}")
                 return [(_SHIFT_VARIABLE[mn], ops)]
+            if mn == "dmul" and "dmul" not in self._by_name:   # before Release 6
+                self._strict(st, f"dmultu {rs}, {third} + mflo {rd}")
+                return [("dmultu", [rs, third]), ("mflo", [rd])]     # (GNU as: dmultu)
             return [(mn, ops)] if short else None
         if mn == "rotr" and self._is_constant(third) and \
                 not 0 <= self._value(third, st) <= 31:          # GNU as: modulo 32
             v = self._value(third, st) & 31
             self._strict(st, f"rotr {rd}, {rs}, {v}")
             return [("rotr", [rd, rs, str(v)])]
+        if mn in _SHIFT32 and self._is_constant(third):
+            v = self._value(third, st)
+            if mn == "drotr":                   # GNU as: modulo 64
+                v &= 63
+            if 32 <= v <= 63:                   # the *32 instruction (GNU as)
+                self._strict(st, f"{mn}32 {rd}, {rs}, {v - 32}")
+                return [(mn + "32", [rd, rs, str(v - 32)])]
+            if mn == "drotr" or short:
+                return [(mn, [rd, rs, str(v)])]
+            return None
         if mn in _SIGNED_IMMEDIATE:
             if self._is_constant(third) and 0x8000 <= self._value(third, st) <= 0xFFFF:
                 return [(mn, [rd, rs, str(_sx16(self._value(third, st)))])]
             return [(mn, ops)] if short else None
-        if mn not in _ALU_IMMEDIATE and not (mn == "mul" and "mult" in self._by_name):
+        if mn not in _ALU_IMMEDIATE and not (mn == "mul" and "mult" in self._by_name) \
+                and not (mn == "dmul" and self.wide):
             return [(mn, ops)] if short else None
         if not self._is_constant(third):
             raise AsmError(st.line, f"{mn}: the third operand must be a register or a "
                            "constant", st.text)
-        v = _sx32(self._value(third, st))
+        dbl = self.wide and mn in _DBL_CONSTANT        # a 64-bit constant (GNU as)
+        v = raw = self._value(third, st)
+        if not dbl:
+            if not -(1 << 31) <= v <= M32:              # GNU as: "larger than 32 bits"
+                raise AsmError(st.line, f"{mn}: number {v:#x} larger than 32 bits",
+                               st.text)
+            if not self.wide:       # (MIPS64: gas fits the immediate to the number
+                v = _sx32(v)        # as written, and loads its 32 bits sign-extended)
         imm = _ALU_IMMEDIATE.get(mn)
         if mn in ("and", "or", "xor") and 0 <= v <= 0xFFFF:
             self._strict(st, f"{imm} {rd}, {rs}, {v}")
@@ -1069,19 +1276,27 @@ class Assembler:
         if mn == "nor" and 0 <= v <= 0xFFFF:
             self._strict(st, f"ori {rd}, {rs}, {v} + nor {rd}, {rd}, $zero")
             return [("ori", [rd, rs, str(v)]), ("nor", [rd, rd, "$zero"])]
-        if mn in ("add", "addu", "slt", "sltu") and imm in self._by_name \
+        if mn in ("add", "addu", "slt", "sltu", "dadd", "daddu") and imm in self._by_name \
                 and -0x8000 <= v <= 0x7FFF:
             self._strict(st, f"{imm} {rd}, {rs}, {v}")
             return [(imm, [rd, rs, str(v)])]
-        if mn in ("sub", "subu") and imm in self._by_name and -0x8000 <= -v <= 0x7FFF:
+        if mn in ("sub", "subu", "dsub", "dsubu") and imm in self._by_name \
+                and -0x8000 <= -v <= 0x7FFF:
             self._strict(st, f"{imm} {rd}, {rs}, {-v}")
             return [(imm, [rd, rs, str(-v)])]
-        self._strict(st, f"li $at, {third} + " +
-                     (f"mult {rs}, $at + mflo {rd}" if mn == "mul" else f"{mn} {rd}, {rs}, $at"))
+        mul = {"mul": "mult", "dmul": "dmult"}.get(mn)
+        if mul is not None and mul not in self._by_name:  # Release 6: MUL / DMUL rd, rs, rt
+            mul = None
+        self._strict(st, f"{'dli' if dbl else 'li'} $at, {third} + " +
+                     (f"{mul} {rs}, $at + mflo {rd}" if mul else f"{mn} {rd}, {rs}, $at"))
         need_at()
-        load = self._li(st, "$at", str(v & M32))
-        if mn == "mul":
-            return load + [("mult", [rs, "$at"]), ("mflo", [rd])]
+        try:
+            load = (load_register("$at", v, True) if dbl
+                    else self._li(st, "$at", str(raw & M32)))
+        except ValueError as exc:
+            raise AsmError(st.line, f"{mn}: {exc}", st.text) from None
+        if mul:
+            return load + [(mul, [rs, "$at"]), ("mflo", [rd])]
         return load + [(mn, [rd, rs, "$at"])]
 
     def _strict(self, st: _Stmt, real: str) -> None:
@@ -1119,7 +1334,11 @@ class Assembler:
                 expr = f"({expr}) + 1"
             return [("lui", [rt, f"%hi({expr})"]),
                     ("addiu", [rt, rt, f"%lo({expr})"])]
-        v = self._value(expr, st) & M32
+        v = self._value(expr, st)
+        if not -(1 << 31) <= v <= M32:          # GNU as: "larger than 32 bits"
+            raise AsmError(st.line, f"li: number {v:#x} larger than 32 bits" + (
+                " (dli loads 64 bits)" if self.wide else ""), st.text)
+        v &= M32
         if v < 0x8000 or v >= 0xFFFF8000:
             return [("addiu", [rt, "$zero", str(_sx16(v))])]
         if v <= 0xFFFF:
@@ -1128,6 +1347,21 @@ class Assembler:
         if v & 0xFFFF:
             out.append(("ori", [rt, rt, str(v & 0xFFFF)]))
         return out
+
+    def _dla(self, st: _Stmt, mn: str, rt: str, expr: str) -> list[tuple[str, list[str]]]:
+        """MIPS64 ``la`` / ``dla`` / ``dli`` (GNU as, ``-mabi=64 -msym32``):
+        a label ``lui %hi`` + ``daddiu %lo``; a constant the 64-bit value
+        (``load_register``)."""
+        if not self._is_constant(expr):
+            if mn == "dli":
+                raise AsmError(st.line, "dli takes a constant (a label: dla)", st.text)
+            if self._isa_bit(expr):              # microMIPS code: bit 0 = the ISA mode
+                expr = f"({expr}) + 1"
+            return [("lui", [rt, f"%hi({expr})"]), ("daddiu", [rt, rt, f"%lo({expr})"])]
+        try:
+            return load_register(rt, self._value(expr, st), True)
+        except ValueError as exc:
+            raise AsmError(st.line, f"{mn}: {exc}", st.text) from None
 
     def _mem_needs_macro(self, op: str, st: _Stmt) -> bool:
         m = re.fullmatch(r"(.*)\((\s*\$[\w]+\s*)\)", op.strip())
@@ -1146,7 +1380,7 @@ class Assembler:
 
     #: loads whose rt may serve as the address scratch (rt is overwritten
     #: anyway, and not merged like LWL/LWR) — GNU as does the same
-    _RT_SCRATCH = {"lb", "lbu", "lh", "lhu", "lw", "ll"}
+    _RT_SCRATCH = {"lb", "lbu", "lh", "lhu", "lw", "ll", "ld", "lwu", "lld"}
 
     def _mem_macro(self, mn: str, ops: list[str], st: _Stmt):
         m = re.fullmatch(r"(.*)\((\s*\$[\w]+\s*)\)", ops[1].strip())
@@ -1159,8 +1393,8 @@ class Assembler:
         elif not st.at_ok:
             raise AsmError(st.line, f"{mn} needs $at, but .set noat", st.text)
         out = [("lui", [tmp, f"%hi({expr})"])]
-        if base:
-            out.append(("addu", [tmp, tmp, base]))
+        if base:                                # (MIPS64: a 64-bit add, GNU as)
+            out.append(("daddu" if self.wide else "addu", [tmp, tmp, base]))
         out.append((mn, [ops[0], f"%lo({expr})({tmp})"]))
         return out
 
@@ -1207,11 +1441,12 @@ class Assembler:
         from . import mips16
         try:
             value = self._m16_value(final)
-            if st.mnemonic == "la":                 # a MIPS16e label: the ISA bit (GNU as)
+            if st.mnemonic in ("la", "dla"):        # a MIPS16e label: the ISA bit (GNU as)
                 plain = value
                 value = lambda e: plain(e) | self._isa_bit(e)     # noqa: E731
             return mips16.encode(st.mnemonic, st.ops, st.addr, value,
-                                 reorder=st.reorder, long=st.line in self._m16_long)
+                                 reorder=st.reorder, long=st.line in self._m16_long,
+                                 wide=self.wide)
         except _Unresolved as exc:
             raise AsmError(st.line, f"undefined symbol {exc}", st.text) from None
         except mips16.AsmError16 as exc:
@@ -1251,12 +1486,13 @@ class Assembler:
                   "bc1f", "bc1t", "bc2f", "bc2t", "j", "jal", "jals", "jalx", "jr", "jr.hb",
                   "jrs", "jrs.hb", "jalr", "jalr.hb", "jalrs", "jalrs.hb", "jrc", "jraddiusp",
                   "lwp", "swp", "lwm", "swm", "lwxs", "movep", "addiupc", "bposge32",
+                  "ldp", "sdp", "ldm", "sdm",          # microMIPS64 (MD00594)
                   # Release 6
                   "balc", "beqc", "bnec", "bltc", "bgec", "bltuc", "bgeuc", "bovc", "bnvc",
                   "bgtc", "blec", "bgtuc", "bleuc", "bltzc", "blezc", "bgezc", "bgtzc",
                   "beqzalc", "bnezalc", "bltzalc", "blezalc", "bgezalc", "bgtzalc", "bc1eqzc",
                   "bc1nezc", "bc2eqzc", "bc2nezc", "jalrc", "jalrc.hb", "jrc.hb", "jic",
-                  "jialc", "jrcaddiusp", "lwpc"}
+                  "jialc", "jrcaddiusp", "lwpc", "lwupc"}
     #: Release 6 also writes these as is
     _MM_DIRECT_R6 = {"cache"}
     #: delay slots of 32 bits (BD32) / 16 bits (BD16); the other branches
@@ -1292,9 +1528,12 @@ class Assembler:
                 st.reorder, self.pseudo = reorder, pseudo
         # GNU as builds its macros from 32-bit forms: an instruction that is
         # not the statement itself (or MOVE / NOT / NEG(U), real here) is 32 bits
+        # — but MFHI / MFLO / BREAK, which it builds with their 16-bit formats
+        # (tc-mips.c MFHL_FMT "mj", BRK_FMT "mF")
         real = mn in ("move", "not", "neg", "negu") or len(out) == 1 and out[0][0] == mn \
             and out[0][1] in (ops, ops[:1] + ops)
-        res = [(m, o, st.slot if k == 0 and (real or st.slot == 4) else 0 if real else 4)
+        res = [(m, o, st.slot if k == 0 and (real or st.slot == 4) else
+                0 if real or m in ("mfhi", "mflo", "break") else 4)
                for k, (m, o) in enumerate(out)]
         if not real and st.slot == 2:
             raise AsmError(st.line, f"{mn}: a macro in a 16-bit delay slot", st.text)
@@ -1335,14 +1574,15 @@ class Assembler:
     def _mm_encode(self, st: _Stmt, final: bool) -> list:
         from . import micromips as MM
         if self._mm_enc is None or self._mm_enc.release != self.isa.release:
-            self._mm_enc = MM.Encoder(self.isa.release)
+            self._mm_enc = MM.Encoder(self.isa.release, self.isa.arch)
         enc = self._mm_enc
         value = self._cvalue(final, MM.Unresolved)
         out, addr = [], st.addr
         long = st.line in self._m16_long
         for k, (mn, ops, force) in enumerate(self._mm_expand(st)):
             branch = mn in self._MM_DIRECT and mn not in (
-                "lwp", "swp", "lwm", "swm", "lwxs", "movep") or mn in ("beq", "bne")
+                "lwp", "swp", "lwm", "swm", "lwxs", "movep", "ldp", "sdp", "ldm", "sdm") \
+                or mn in ("beq", "bne")
             try:
                 if mn == "li16":
                     insn = enc._raw("LI16", d=MM.GPR3.index(parse_gpr(ops[0])),
@@ -1441,6 +1681,14 @@ class Assembler:
                 if not -(1 << (8 * size - 1)) <= v < (1 << (8 * size)):
                     raise AsmError(st.line, f"value {v} does not fit {d}", st.text)
                 self._put(addr + i * size, v & ((1 << (8 * size)) - 1), size)
+        elif d in (".dword", ".8byte"):          # (GNU as) 8 bytes each
+            for i, op in enumerate(st.ops):
+                v = self._value(op, st)
+                if self.wide and not self._is_constant(op):
+                    v = _sx32(v)                # an address, as a MIPS64 pointer
+                if not -(1 << 63) <= v <= M64:
+                    raise AsmError(st.line, f"value {v} does not fit {d}", st.text)
+                self._put(addr + i * 8, v & M64, 8)
         elif d in (".float", ".double"):
             fmt = ("f" if d == ".float" else "d")
             fmt = (">" if self.endian == "big" else "<") + fmt
@@ -1741,12 +1989,30 @@ def _dfield_row(base: str, pos: int, size: int) -> str | None:
     return None
 
 
+def _mips64_mnemonics() -> frozenset[str]:
+    """The doubleword mnemonics (and macros): a hint in a MIPS32 program."""
+    global _M64_MNEMONICS
+    if _M64_MNEMONICS is None:
+        isa = ISA.for_release("R5", arch="mips64")
+        _M64_MNEMONICS = frozenset(
+            {e.get("mnemonic", e["name"]).lower() for e in isa.instructions
+             if e.get("arch") == "mips64"} | {"dli", "dla", "dneg", "dnegu", "dmul"}
+            | {e.get("mnemonic", e["name"]).lower()
+               for e in ISA.for_release("R6", arch="mips64").instructions
+               if e.get("arch") == "mips64"})
+    return _M64_MNEMONICS
+
+
+_M64_MNEMONICS: frozenset[str] | None = None
+
+
 def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,
              bases: dict[str, int] | None = None,
              release: str | None = None, pseudo: bool = True,
-             reorder: bool = True) -> Program:
-    """Assemble ``source`` for a MIPS32 ``release`` (default R5); raises
-    :class:`AsmError` on the first error.  ``pseudo=False``: strict mode;
-    ``reorder=False``: start in ``.set noreorder``."""
+             reorder: bool = True, arch: str = "mips32") -> Program:
+    """Assemble ``source`` for a MIPS32 ``release`` (default R5; ``arch``
+    "mips64": MIPS64); raises :class:`AsmError` on the first error.
+    ``pseudo=False``: strict mode; ``reorder=False``: start in ``.set
+    noreorder``."""
     return Assembler(endian=endian, isa=isa, bases=bases, release=release,
-                     pseudo=pseudo, reorder=reorder).assemble(source)
+                     pseudo=pseudo, reorder=reorder, arch=arch).assemble(source)

@@ -45,6 +45,11 @@ CONFIG5 = (16, 5)
 CFG5_K, CFG5_CV, CFG5_EVA = 1 << 30, 1 << 29, 1 << 28
 #: Config3.SC
 CFG3_SC = 1 << 25
+#: MIPS64 (Vol. III MIPS64 9.14 / 9.15, 4.12): SegCtl1.XAM (61:59), the access
+#: mode of the xkphys regions SegCtl2.XR (63:56) enables, one bit per region
+#: (VA 61:59); reset: XR = 0 (the legacy xkphys), XAM undefined (0 here)
+XAM_MASK = 7 << 59
+XR_MASK = 0xFF << 56
 
 #: access modes (Table 9.28)
 UK, MK, MSK, MUSK, MUSUK, USK, UUSK = 0, 1, 2, 3, 4, 5, 7

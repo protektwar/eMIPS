@@ -17,7 +17,12 @@ lo (33), hi (34), badvaddr (35), cause (36), pc (37), f0-f31 (38-69: 32
 bits with Status.FR = 0, 64 with FR = 1), fcsr (70), fir (71); each in
 the target's byte order; with the DSP Module ``org.gnu.gdb.mips.dsp``
 too: hi1, lo1, hi2, lo2, hi3, lo3 (72-77), dspctl (78) — GDB's
-``features/mips-dsp.xml`` (M18).  Breakpoints (``Z0`` / ``Z1``) are the
+``features/mips-dsp.xml`` (M18).  A MIPS64 core (M22 phase 4c) has
+GDB's 64-bit description (``features/mips64-*.xml``): every register 64
+bits wide (dspctl 32), Status / Cause / FCSR / FIR sign-extended, an FPR
+of FR = 0 its word (as QEMU's stub), 64-bit addresses — a compatibility
+one sign-extended, kept 32-bit for the session's breakpoints.
+Breakpoints (``Z0`` / ``Z1``) are the
 session's: nothing is written into the program, as in QEMU's stub.  The
 stub runs the session in slices and looks for GDB's interrupt between
 them; what the program prints goes to GDB as ``O`` packets.
@@ -37,6 +42,7 @@ from .isa import ISADecodeError
 from .session import Watchpoint
 
 M32 = 0xFFFFFFFF
+M64 = (1 << 64) - 1
 #: GDB's signal numbers (include/gdb/signals.def)
 SIGINT, SIGILL, SIGTRAP, SIGFPE, SIGBUS, SIGSEGV = 2, 4, 5, 8, 10, 11
 #: the number of registers of the g packet (without / with the DSP Module)
@@ -213,7 +219,15 @@ class GdbStub:
         return self.s.machine
 
     def _size(self, n: int) -> int:
+        if self.m.wide:                         # MIPS64: features/mips64-*.xml
+            return 4 if n == 78 else 8
         return 8 if 38 <= n <= 69 and self.fr64 else 4
+
+    def _word(self, value: int) -> int:
+        """A 32-bit register in a 64-bit slot: sign-extended (QEMU's
+        ``(int32_t)``); on MIPS32 itself."""
+        value &= M32
+        return value | (M64 ^ M32) if self.m.wide and value & 0x80000000 else value
 
     @property
     def nregs(self) -> int:
@@ -238,27 +252,27 @@ class GdbStub:
         if n < 32:
             return m.read_reg(n)
         if n == 32:
-            return m.cp0_read(12, 0)
+            return self._word(m.cp0_read(12, 0))
         if n == 33:
-            return m.lo & M32
+            return m.lo & m.amask
         if n == 34:
-            return m.hi & M32
+            return m.hi & m.amask
         if n == 35:
-            return m.cp0_read(8, 0)
+            return m.cp0_read(8, 0)             # (MIPS64: 64 bits)
         if n == 36:
-            return m.cp0_read(13, 0)
+            return self._word(m.cp0_read(13, 0))
         if n == 37:
             return self._pc()
-        if 38 <= n <= 69:
+        if 38 <= n <= 69:                       # (MIPS64 with FR = 0: the word)
             v = m.fpr[n - 38]
             return v if self.fr64 else v & M32
         if n == 70:
-            return m.fcsr & M32
+            return self._word(m.fcsr)
         if n == 71:
-            return m.fir & M32
+            return self._word(m.fir)
         if 72 <= n <= 77 and m.dsp:              # hi1, lo1 ... hi3, lo3
             k = (n - 72) // 2 + 1
-            return (m.dsp_hi[k] if n % 2 == 0 else m.dsp_lo[k]) & M32
+            return (m.dsp_hi[k] if n % 2 == 0 else m.dsp_lo[k]) & m.amask
         if n == 78 and m.dsp:
             return m.dspctl & M32
         raise KeyError(n)
@@ -268,27 +282,27 @@ class GdbStub:
         if not self.available(n):
             raise KeyError(n)
         if n < 32:
-            m.write_reg(n, value)
+            m.write_dreg(n, value & m.amask)     # (the whole register)
         elif n == 32:
-            m.cp0_write(12, 0, value)
+            m.cp0_write(12, 0, value & M32)
         elif n == 33:
-            m.lo = value & M32
+            m.lo = value & m.amask
         elif n == 34:
-            m.hi = value & M32
+            m.hi = value & m.amask
         elif n == 35:
             m.cp0_write(8, 0, value)
         elif n == 36:
-            m.cp0_write(13, 0, value)
+            m.cp0_write(13, 0, value & M32)
         elif n == 37:                            # a jump (pipeline: a flush); bit 0 = the ISA
-            self.s.set_pc(value & M32)
+            self.s.set_pc(value & m.amask)
         elif 38 <= n <= 69:
             k = n - 38
-            m.fpr[k] = value if self.fr64 else (m.fpr[k] & ~M32) | (value & M32)
+            m.fpr[k] = value & M64 if self.fr64 else (m.fpr[k] & ~M32) | (value & M32)
         elif n == 70:
             m.fcsr = value & M32
         elif 72 <= n <= 77:
             k = (n - 72) // 2 + 1
-            (m.dsp_hi if n % 2 == 0 else m.dsp_lo)[k] = value & M32
+            (m.dsp_hi if n % 2 == 0 else m.dsp_lo)[k] = value & m.amask
         elif n == 78:
             from .dsp import DSPCONTROL_MASK
             m.dspctl = value & DSPCONTROL_MASK
@@ -303,7 +317,7 @@ class GdbStub:
         GDB's mips-tdep.c: is_compact_addr)."""
         s, m = self.s, self.m
         if s.pipeline is None:
-            return (m.pc | m.isa_mode) & M32
+            return (m.pc | m.isa_mode) & m.amask
         pc = s._stop_pc()
         nxt = s.pipeline.next_slot()
         if pc is None:
@@ -312,7 +326,7 @@ class GdbStub:
             isa = nxt.isa
         else:
             isa = 1 if s.compressed_at(pc) else 0
-        return (pc | isa) & M32
+        return (pc | isa) & m.amask
 
     def _hex(self, value: int, size: int) -> str:
         order = "big" if self.m.big_endian else "little"
@@ -324,32 +338,39 @@ class GdbStub:
 
     def target_xml(self) -> str:
         """The target description: GDB's three MIPS features (G.5.8; the
-        fpu one is required — without an FPU its registers are unavailable)."""
+        fpu one is required — without an FPU its registers are unavailable);
+        a MIPS64 core: their 64-bit forms (``features/mips64-*.xml``)."""
         from .sim import _fr64
         self.fr64 = _fr64(self.m)                           # Status.FR (R6: always 1)
-        arch = {"R1": "mips:isa32", "R6": "mips:isa32r6"}.get(self.s.release, "mips:isa32r2")
-        fbits = 64 if self.fr64 else 32
-        ftype = "ieee_double" if self.fr64 else "ieee_single"
+        wide = self.m.wide
+        arch = ({"R1": "mips:isa64", "R6": "mips:isa64r6"}.get(self.s.release, "mips:isa64r2")
+                if wide else
+                {"R1": "mips:isa32", "R6": "mips:isa32r6"}.get(self.s.release, "mips:isa32r2"))
+        bits = 64 if wide else 32
+        fbits = 64 if self.fr64 or wide else 32
+        ftype = "ieee_double" if fbits == 64 else "ieee_single"
         first = {0: ' regnum="0"'}
-        cpu = "".join(f'<reg name="r{i}" bitsize="32"{first.get(i, "")}/>' for i in range(32))
+        cpu = "".join(f'<reg name="r{i}" bitsize="{bits}"{first.get(i, "")}/>'
+                      for i in range(32))
         first = {0: ' regnum="38"'}
         fpu = "".join(f'<reg name="f{i}" bitsize="{fbits}" type="{ftype}"{first.get(i, "")}/>'
                       for i in range(32))
         return ('<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd">'
                 f'<target version="1.0"><architecture>{arch}</architecture>'
                 '<feature name="org.gnu.gdb.mips.cpu">' + cpu +
-                '<reg name="lo" bitsize="32" regnum="33"/>'
-                '<reg name="hi" bitsize="32" regnum="34"/>'
-                '<reg name="pc" bitsize="32" regnum="37"/></feature>'
+                f'<reg name="lo" bitsize="{bits}" regnum="33"/>'
+                f'<reg name="hi" bitsize="{bits}" regnum="34"/>'
+                f'<reg name="pc" bitsize="{bits}" regnum="37"/></feature>'
                 '<feature name="org.gnu.gdb.mips.cp0">'
-                '<reg name="status" bitsize="32" regnum="32"/>'
-                '<reg name="badvaddr" bitsize="32" regnum="35"/>'
-                '<reg name="cause" bitsize="32" regnum="36"/></feature>'
+                f'<reg name="status" bitsize="{bits}" regnum="32"/>'
+                f'<reg name="badvaddr" bitsize="{bits}" regnum="35"/>'
+                f'<reg name="cause" bitsize="{bits}" regnum="36"/></feature>'
                 '<feature name="org.gnu.gdb.mips.fpu">' + fpu +
-                '<reg name="fcsr" bitsize="32" group="float"/>'
-                '<reg name="fir" bitsize="32" group="float"/></feature>'
+                f'<reg name="fcsr" bitsize="{bits}" group="float"/>'
+                f'<reg name="fir" bitsize="{bits}" group="float"/></feature>'
                 + (('<feature name="org.gnu.gdb.mips.dsp">'
-                    + "".join(f'<reg name="{h}{k}" bitsize="32" regnum="{72 + 2 * (k - 1) + j}"/>'
+                    + "".join(f'<reg name="{h}{k}" bitsize="{bits}" '
+                              f'regnum="{72 + 2 * (k - 1) + j}"/>'
                               for k in (1, 2, 3) for j, h in enumerate(("hi", "lo")))
                     + '<reg name="dspctl" bitsize="32" regnum="78"/></feature>')
                    if self.m.dsp else "") + '</target>')
@@ -357,13 +378,41 @@ class GdbStub:
     # -- memory --------------------------------------------------------------------------
 
     def read_memory(self, addr: int, n: int) -> bytes:
-        """As a load would see it now (virtual addresses, no side effects)."""
-        return bytes(self.m.read_byte((addr + i) & M32) for i in range(n))
+        """As a load would see it now (virtual addresses, no side effects;
+        MIPS64: 64-bit ones)."""
+        mask = self.m.amask
+        return bytes(self.m.read_byte((addr + i) & mask) for i in range(n))
 
     def write_memory(self, addr: int, data: bytes) -> None:
+        mask = self.m.amask
         for i, b in enumerate(data):
-            self.m.write_byte((addr + i) & M32, b)
+            self.m.write_byte((addr + i) & mask, b)
         self.s._code = None
+
+    def code_address(self, addr: int) -> int:
+        """A breakpoint's address as the session keeps it: MIPS64's
+        sign-extended compatibility addresses in their 32-bit form (the
+        program's, the debugger's and the editor's)."""
+        if self.m.wide and addr >= 0xFFFFFFFF80000000:
+            return addr & M32
+        return addr
+
+    def gdb_address(self, addr: int) -> int:
+        """An address as GDB knows it (MIPS64: a 32-bit form sign-extended)."""
+        if self.m.wide and 0x80000000 <= addr <= M32:
+            return addr | (M64 ^ M32)
+        return addr
+
+    def data_address(self, addr: int) -> int:
+        """A watchpoint's address as the core compares it (MIPS64: what
+        Machine64._view makes of it — 32-bit with 32-bit addressing)."""
+        m = self.m
+        if not m.wide:
+            return addr & M32
+        try:
+            return m._view(addr)
+        except SimException:
+            return addr
 
     # -- running -------------------------------------------------------------------------
 
@@ -380,12 +429,12 @@ class GdbStub:
         if self._tcs() is not None:             # the TC that stopped (about to issue)
             self.tc = self._stopped_tc()
             with self._bound():
-                pc = self._hex(self.get_reg(37), 4)
-                sp = self._hex(self.get_reg(29), 4)
+                pc = self._hex(self.get_reg(37), self._size(37))
+                sp = self._hex(self.get_reg(29), self._size(29))
             return (f"T{sig:02x}25:{pc};1d:{sp};thread:{self.tc + 1:x};core:{self.s.cpu:x};"
                     + (f"{reason};" if reason else ""))
-        pc = self._hex(self.get_reg(37), 4)
-        sp = self._hex(self.get_reg(29), 4)
+        pc = self._hex(self.get_reg(37), self._size(37))
+        sp = self._hex(self.get_reg(29), self._size(29))
         cpu = self.s.cpu
         return (f"T{sig:02x}25:{pc};1d:{sp};thread:{cpu + 1:x};core:{cpu:x};"
                 + (f"{reason};" if reason else ""))
@@ -435,7 +484,7 @@ class GdbStub:
         if r.stopped == "watch":
             w = r.fault.watch
             kind = {"write": "watch", "read": "rwatch"}.get(w.kind, "awatch")
-            return self.stop_reply(SIGTRAP, f"{kind}:{r.fault.addr:x}")
+            return self.stop_reply(SIGTRAP, f"{kind}:{self.gdb_address(r.fault.addr):x}")
         if r.stopped or step:
             return self.stop_reply()
         return None
@@ -549,11 +598,11 @@ class GdbStub:
             kind, addr, length = (rest.split(";")[0].split(",") + ["", ""])[:3]
             a = int(addr, 16)
             if kind in ("0", "1"):               # software / hardware breakpoint
-                a &= ~1                          # (kinds 2 / 3 / 5: MIPS16e / microMIPS)
+                a = self.code_address(a & ~1)    # (kinds 2 / 3 / 5: MIPS16e / microMIPS)
                 (self.s.breakpoints.add if c == "Z" else self.s.breakpoints.discard)(a)
                 return "OK"
             if kind in ("2", "3", "4"):          # write / read / access watchpoint
-                w = Watchpoint(a, int(length, 16), WATCH_KINDS[kind])
+                w = Watchpoint(self.data_address(a), int(length, 16), WATCH_KINDS[kind])
                 wps = self.s.watchpoints
                 if c == "Z":
                     wps.append(w)
@@ -937,7 +986,7 @@ def exec_file_for(session, path: str | None = None) -> str:
         return str(Path(session.source or path).resolve())
     src = Path(path).resolve() if path else Path("program.asm")
     out = Path(tempfile.mkdtemp(prefix="emips-gdb-")) / (src.stem + ".elf")
-    out.write_bytes(write_elf(session.program, source=src))
+    out.write_bytes(write_elf(session.program, source=src, arch=session.options.arch))
     return str(out)
 
 

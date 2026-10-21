@@ -36,29 +36,37 @@ def _error(text: str) -> str:
     return f"<p style='color:{theme.colors().red}'>{E(text)}</p>"
 
 
-def encoding_html(row_name: str, release: str) -> str:
+def encoding_html(row_name: str, release: str, arch: str = "mips32") -> str:
     """A row's encoding as cells: field name [msb:lsb] over the bits
     (0 / 1 fixed, letters = the operand's bits)."""
     cells = "".join(
         _cell(f"<b>{E(name)}</b> [{msb}:{lsb}]<br><tt>{E(bits)}</tt>",
               theme.colors().fields[i % len(theme.colors().fields)])
         for i, (msb, lsb, name, bits) in enumerate(tools.template_fields(row_name,
-                                                                          release)))
+                                                                          release, arch)))
     return f"<table cellspacing=2><tr>{cells}</tr></table>"
 
 
 class _Pane(QtWidgets.QWidget):
-    """Common context: the session's release, register names, strict mode."""
+    """Common context: the session's release, architecture, register
+    names, strict mode."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.release, self.abi, self.pseudo = "R5", True, True
+        self.release, self.abi, self.pseudo, self.arch = "R5", True, True, "mips32"
 
-    def set_context(self, release: str, abi: bool = True, pseudo: bool = True) -> None:
-        changed = (release, abi, pseudo) != (self.release, self.abi, self.pseudo)
-        self.release, self.abi, self.pseudo = release, abi, pseudo
+    def set_context(self, release: str, abi: bool = True, pseudo: bool = True,
+                    arch: str = "mips32") -> None:
+        changed = (release, abi, pseudo, arch) != (self.release, self.abi, self.pseudo,
+                                                   self.arch)
+        self.release, self.abi, self.pseudo, self.arch = release, abi, pseudo, arch
         if changed:
             self.update_view()
+
+    @property
+    def isa_name(self) -> str:
+        """"MIPS32 R5" / "MIPS64 R6" ..."""
+        return f"{self.arch.upper()} {self.release}"
 
     def update_view(self) -> None:          # pragma: no cover - overridden
         pass
@@ -111,7 +119,7 @@ class ReferenceView(_Pane):
         self.update_view()
 
     def update_view(self) -> None:
-        self.rows = tools.reference(self.release)
+        self.rows = tools.reference(self.release, self.arch)
         self._filter()
 
     def _filter(self) -> None:
@@ -128,7 +136,7 @@ class ReferenceView(_Pane):
                 item.setText(text)
         t.resizeColumnToContents(0)
         self.count.setText(tr("{n} of {total} ({release})").format(
-            n=len(self.shown), total=len(self.rows), release=self.release))
+            n=len(self.shown), total=len(self.rows), release=self.isa_name))
         if self.shown:
             t.setCurrentCell(0, 0)
             self._show(0)
@@ -140,7 +148,7 @@ class ReferenceView(_Pane):
             return
         r = self.shown[row]
         facts = [tr("format {fmt}, family {family}").format(fmt=r.format, family=r.family),
-                 tr("since MIPS32 {since}").format(since=r.since)
+                 tr("since {arch} {since}").format(arch=self.arch.upper(), since=r.since)
                  + (", " + tr("removed in {rel}").format(rel=r.removed_in)
                     if r.removed_in else ""),
                  _exec_text(r.execution)]
@@ -151,7 +159,7 @@ class ReferenceView(_Pane):
             facts.append(tr("privileged: needs kernel mode (or Status.CU0)"))
         self.details.setHtml(
             f"<h3><tt>{E(r.syntax)}</tt></h3><p>{E(r.description)}</p>"
-            + encoding_html(r.name, self.release)
+            + encoding_html(r.name, self.release, self.arch)
             + "<p><small>" + E(tr("0 / 1: fixed bits (they select the instruction); "
                                   "letters: the bits of the operand named above "
                                   "them")) + "</small></p><ul>"
@@ -199,12 +207,13 @@ class EncoderView(_Pane):
             pc = 0x00400000
         try:
             mode, words = tools.encode_or_decode(text, release=self.release, pc=pc,
-                                                 abi=self.abi, pseudo=self.pseudo)
+                                                 abi=self.abi, pseudo=self.pseudo,
+                                                 arch=self.arch)
         except (AsmError, ValueError, ISADecodeError, KeyError) as exc:
             msg = str(exc)
             if isinstance(exc, ISADecodeError):
-                msg = tr("not a MIPS32 {release} instruction (Reserved Instruction "
-                         "exception)").format(release=self.release)
+                msg = tr("not a {release} instruction (Reserved Instruction "
+                         "exception)").format(release=self.isa_name)
             self.output.setHtml(_error(msg))
             return
         head = (tr("decoded") if mode == "decode" else

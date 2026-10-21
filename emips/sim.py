@@ -111,7 +111,179 @@ _ISA_R5 = ISA.for_release("R5")
 #: implementation-dependent, or where the simulator is knowingly partial.
 DEVIATIONS: dict[str, str] = {
     "DIV/DIVU by zero": "UNPREDICTABLE in the manual; HI = LO = 0xFFFFFFFF "
-                        "here (no exception, as on real cores).",
+                        "here (no exception, as on real cores); on MIPS64 all "
+                        "ones (sign-extended), and DDIV / DDIVU the same.",
+    "MIPS64 addressing": "the MIPS64 core (emips.sim64) with the fixed mapping "
+                         "has Config.AT = 1 (Vol. III A.1: a fixed-mapping MIPS64 "
+                         "is assumed to have 32-bit addresses): only the 32-bit "
+                         "compatibility segments; Status.KX / SX / UX read 0 and "
+                         "ignore writes (9.30), so any other 64-bit address is an "
+                         "Address Error. With a TLB it has Config.AT = 2: all of "
+                         "Table 4.2, SEGBITS = 40 (VPN2 39:13, the manual's "
+                         "example) and PABITS = 32 (the EntryLo PFN of the 24K "
+                         "TLB eMIPS models; physical addresses stay 32 bits, so "
+                         "each xkphys window is 4 GB). Code in Kernel / Supervisor "
+                         "Mode whose effective address carries out of bit 31 with "
+                         "64-bit addressing off is UNPREDICTABLE (4.10): an "
+                         "Address Error here (the address is not a compatibility "
+                         "one). xkuseg while Status.ERL = 1 is implementation "
+                         "dependent (Table 4.2, 4.8): only the 2 GB kuseg becomes "
+                         "unmapped, the rest of xuseg stays mapped.",
+    "MIPS64 TLB": "the 64-bit TLB keeps the 24K's MIPS32 TLB (entries, micro-"
+                  "TLBs, Random, PageMask) with 64-bit EntryHi (R 63:62, VPN2 "
+                  "39:13, Fill 61:40 reads 0), Context (PTEBase 63:23) and "
+                  "XContext (PTEBase 63:33, R 32:31, BadVPN2 30:4); EntryLo "
+                  "keeps RI / XI where MIPS32 has them (31 / 30, what MFC0 / "
+                  "MTC0 see) and DMFC0 / DMTC0 move them to 63 / 62; the PFN "
+                  "is PA 31:12 (bits 29:26 and PFNX are 0).",
+    "MIPS64 pipeline": "a MIPS64 program runs on the 5-stage pipeline; the 24K "
+                       "model is a MIPS32 core and becomes the 5-stage one. "
+                       "DMULT / DMULTU busy the MDU 9 cycles, DDIV / DDIVU 67: the "
+                       "MIPS64 5K's latencies (MD00109, the 5Kf datasheet, Table "
+                       "3: its 32-bit DIV is 35, eMIPS's DIV; GCC's 5k.md counts "
+                       "them one less); Release 6's DMUL / DMUH ... hold "
+                       "EX for DMULT's latency, DDIV / DMOD ... for DDIV's (the "
+                       "5K has no Release 6). The pipeline takes its next PC from "
+                       "the Machine (fetch_va / seq_pc / branch_pc: the "
+                       "compatibility fetch, Release 6's wrap).",
+    "MIPS64 ELF and C": "an ELF64 (the n64 ABI) runs on MIPS64, an ELF32 on "
+                        "MIPS32: the ELF's class sets the session's architecture "
+                        "(a real MIPS64 also runs o32 code). n32 (an ELF32 with "
+                        "64-bit code, EF_MIPS_ABI2) is refused. Addresses in the "
+                        "32-bit compatibility space are kept as their 32-bit "
+                        "form (as the -msym32 assembler's), so xuseg "
+                        "0x80000000-0xFFFFFFFF (which that form would make "
+                        "kseg0) cannot be loaded; above 4 GB needs a TLB "
+                        "(Config.AT = 2). C is n64 with -msym32 (GCC; clang has "
+                        "no -msym32 and builds 64-bit address sequences): "
+                        "crt0 loads addresses with lui + addiu, because -msym32's "
+                        "lui + daddiu of __stack_top 0x7FFFEFF0 (%hi = 0x8000) "
+                        "gives 0xFFFFFFFF7FFFEFF0.",
+    "MIPS64 EJTAG and trace": "a 64-bit core's drseg registers are 64 bits "
+                              "and take doublewords; another size (UNDEFINED, "
+                              "MD00047 2.2.2.2) reads / writes those bytes of "
+                              "the register. Its TAP's Address register stays "
+                              "32 bits (eMIPS's physical addresses; 4.5.4: the "
+                              "PA's width); PCsample is 73 bits (81 with the MT "
+                              "Module's TC: see MT Module). MIPS Trace sends a 64-bit "
+                              "PC / address that is a sign-extended word as one "
+                              "32-bit part with an early TEnd (MD00439 6.4, "
+                              "optional), any other in two; data values always "
+                              "whole (6.3: no compression). The decoder never "
+                              "lets an instruction before an overflow (TF5) "
+                              "take a record sent after it.",
+    "MIPS64 MMUs": "the BAT on MIPS64 keeps 32-bit addresses (Config.AT = 1: "
+                   "App. A.2 describes entries for useg / kseg2 / kseg3 only). "
+                   "The FTLB indexes the 64-bit VA by the P5600 / P6600 hash "
+                   "(MD01138 3.10: VPN2 26:20 ^ 19:13). Segmentation Control: "
+                   "SegCtl1.XAM = 6 (no encoding in Table 9.17; the pseudo "
+                   "code's XKP) is a kernel-only unmapped mode, as eMIPS's "
+                   "AM = 6; EBase is 64 bits (WG) only with Segmentation "
+                   "Control, as the write gate. The walker follows the "
+                   "P6600 (MD01138 2.2.2.12-15): no Base Directory "
+                   "(PWDirExt, BDI, BDW read 0), PTEW = 1 only with PS = 0; "
+                   "PS = 0 walks only refills that use the TLB Refill vector "
+                   "and PS = 1 only XTLB Refills (Table 9.22, the P6600) — "
+                   "the 4.14.3 pseudo code's early 'no segment to map' exit "
+                   "would stop every PS = 0 walk, against its own condition "
+                   "text; the XK / XS / XU selection and the VA 63:62 prefix "
+                   "apply with PS = 1; 32-bit pointers are compatibility "
+                   "addresses (sign-extended).",
+    "MIPS64 boot firmware": "on a MIPS64 core the boot firmware sets Status.FR "
+                            "(the n64 ABI's 64-bit FPRs) and, with a TLB, KX / "
+                            "SX / UX — what a 64-bit Linux kernel does (arch/"
+                            "mips/kernel/traps.c configure_status); its XTLB "
+                            "Refill handler (EBase + 0x080) maps as the TLB "
+                            "Refill one by VA 31:0: bit 63 set (kseg2 / kseg3, "
+                            "xkseg) PA = VA 31:0 uncached, else VA 31:0 + 1 GB "
+                            "cacheable (xuseg / xsseg addresses that differ "
+                            "above bit 31 share pages). $sp starts at "
+                            "0x7FFFEFF0, 16-byte aligned for the n64 ABI "
+                            "(MARS's 0x7FFFEFFC, MIPS32's, is not even "
+                            "doubleword-aligned: SD to the stack would fault).",
+    "MIPS64 NotWordValue": "a 32-bit instruction whose operand is not a sign-"
+                           "extended word (Vol. II-A64: ADD, ADDU, SUB, SRL, "
+                           "ROTR, CLZ, EXT, INS, SEB, WSBH, MULT, DIV, MUL ...) "
+                           "is UNPREDICTABLE; here it uses the low word. QEMU "
+                           "does too, except that its ADD / ADDI / SUB judge "
+                           "overflow on bit 63.",
+    "MIPS64 LWR": "an LWR that does not load bit 31 may keep GPR[rt][63:32] or "
+                  "sign-extend bit 31 (Vol. II-A64 LWR); it sign-extends here, "
+                  "as QEMU.",
+    "MIPS64 DMFC0 of a 32-bit register": "the manual does not say: DMFC0 "
+                                         "sign-extends it (as QEMU), DMTC0 "
+                                         "writes the low word.",
+    "MIPS64 Status.PX": "Undefined at reset (Vol. III 9.30): 0 here; the user-"
+                        "mode boot sets it (64-bit operations in User Mode).",
+    "microMIPS64": "Machine(arch=\"mips64\", compressed=\"micromips\") from "
+                   "Release 3 (MD00594 3.1: microMIPS came with Release 3; the "
+                   "M14K's Release 2 microMIPS is a microMIPS32 core).  The "
+                   "recoded instructions run as their MIPS64 twins; LDP / SDP "
+                   "/ LDM / SDM / LWUPC have their own executors (64-bit "
+                   "operations disabled: Reserved Instruction; LDP rd = $ra "
+                   "or = base, any of them in a delay slot: UNDEFINED — RI, "
+                   "as LWP).  Release 6 has no oracle: binutils has no "
+                   "microMIPS R6, LLVM's microMIPS64r6 back end (MicroMips64r6"
+                   "InstrInfo.td) was removed in 2018 — the 6.05 pages decide, and where "
+                   "the manual contradicts itself: DLSA is where Table 11.14 "
+                   "puts it (POOL32S bits 8:6 = 100, 5:0 = 000000; the page "
+                   "and LLVM give 5:0 = 000100, DINSM's minor), DALIGN has rt "
+                   "in 25:21 as the page and ALIGN (LLVM swaps rs / rt), LLD "
+                   "keeps the page's 12-bit offset (the twin is the Release "
+                   "5 LLD; SCD's page has 9 bits), LWUPC's address is (PC & "
+                   "~3) + offset as LWPC's (its page omits the & ~3 but "
+                   "calls the access naturally aligned).  The assembler: GNU "
+                   "as encodes addu rd, rs, $zero / addiu rd, rs, 0 as MOVE16, "
+                   "a 64-bit copy — eMIPS keeps ADDU / ADDIU (the low word, "
+                   "sign-extended).",
+    "MIPS16e64": "MD00077 (MIPS64 Vol. IV-a) rev. 2.60 with the MIPS64-only "
+                 "fix MD00076 rev. 2.61 records (an extended SD ra, offset(sp) "
+                 "has 0 in bits 7..5 — 2.60's page still shows ra there — else "
+                 "Reserved, as the other fixed-zero fields): "
+                 "Machine(arch=\"mips64\", compressed=\"mips16e\"), Releases 1-5. "
+                 "The MIPS64-only forms run as their MIPS64 twins (DSLL / DSRL / "
+                 "DSRA by 32-63 = the *32 forms) or M16.LDPC / DADDIUPC / SEW / "
+                 "ZEW (ZEW has no MIPS64 Release 1 instruction, SEW's SLL rx, "
+                 "rx, 0 is a 32-bit one), and need 64-bit operations enabled (⊥: "
+                 "Reserved Instruction in User Mode with Status.PX = UX = 0). "
+                 "The 32-bit forms as MIPS32's on a MIPS64 core: word results "
+                 "sign-extended, MOVE / AND / OR / XOR / NOT / CMP / LI / ZEB / "
+                 "MFHI ... whole registers; a NotWordValue operand "
+                 "(UNPREDICTABLE: ADDIU, ADDU, SUBU, NEG, SLL ..., MULT, DIV, "
+                 "SEW, ZEW) gives the result of its low word.  PC-relative "
+                 "bases are the 64-bit PC (ADDIUPC / LWPC: & ~3, then a word "
+                 "result; LDPC: & ~7; DADDIUPC: all 64 bits); JAL / JALX keep PC "
+                 "63..28; links are 64-bit.  SAVE / RESTORE move the low words "
+                 "(RESTORE sign-extends them), sp adds / subtracts all 64 bits. "
+                 "Options.compressed \"auto\" on MIPS64 gives MIPS16e only to a "
+                 "program with MIPS16e code (no MIPS64 core eMIPS models has "
+                 "it: the 5K's datasheet MD00109 lists none).  C: GCC builds "
+                 "MIPS16 n64 code soft-float only (cc --mips16 --arch mips64: "
+                 "the whole program -msoft-float).  No QEMU model has MIPS16e "
+                 "on MIPS64: the oracle is the GNU simulator (sim/mips, "
+                 "mipsisa64r2-elf), where it agrees with the manual.",
+    "DSP Module on MIPS64": "MD00375 rev. 3.02: MIPS32's DSP instructions on "
+                            "64-bit registers and LDX; the 64-bit SIMD "
+                            "instructions (octal bytes, quad halfwords, DSHILO, "
+                            "BPOSGE64 ...) were deprecated in rev. 2.40 and are "
+                            "not modelled (Reserved Instruction; binutils and "
+                            "QEMU still decode them).  Where the manual "
+                            "contradicts itself: DSPControl is Table 3.4's "
+                            "(ccond 27:24, pos 5:0; some pages' pseudocode and "
+                            "QEMU's MIPS64 still use the deprecated "
+                            "instructions' ccond 31:24 and pos 6:0, so MTHLIP "
+                            "from pos 32 gives 0 here), EXTP sign-extends its "
+                            "result (rev. 2.40) while EXTPV / EXTPDP / EXTPDPV "
+                            "keep their pages' zero extension, SHILO's page "
+                            "writes 192 bits — each half sign-extended, as "
+                            "MADD's.  MAQ_SA saturates against the 64-bit LO "
+                            "(sat32AccumulateQ31: HI 63..0 || LO 63..0 + a), as "
+                            "QEMU.  QEMU departs where the pages are clear: its "
+                            "MFHI / MFLO / MTHI / MTLO of ac1-ac3 keep only the "
+                            "low word (MD00375: the whole register), SUBUH.QB "
+                            "zero-extends, SHILO by 0 leaves the halves alone.  "
+                            "A NotWordValue operand is UNPREDICTABLE: the low "
+                            "word is used.",
     "branch in a delay slot": "UNPREDICTABLE; here the inner taken branch "
                               "replaces the outer target.",
     "INS/EXT with msb < lsb or pos + size > 32": "UNPREDICTABLE; computed "
@@ -145,8 +317,10 @@ DEVIATIONS: dict[str, str] = {
     "ABS/NEG NaN": "legacy ABS/NEG are arithmetic (manual; Linux "
                    "232b6ec5df87); this QEMU version treats them as sign-bit "
                    "operations.",
-    "R6 divide by zero": "DIV/MOD/DIVU/MODU by zero are UNPREDICTABLE; the "
-                         "result is 0 here (as QEMU).",
+    "R6 divide by zero": "DIV/MOD/DIVU/MODU (and MIPS64's DDIV/DMOD/DDIVU/"
+                         "DMODU) by zero are UNPREDICTABLE; the result is 0 "
+                         "here (QEMU: 0 for MOD/MODU, the dividend for DIV/"
+                         "DIVU — it divides by 1).",
     "R6 misaligned access": "ordinary loads/stores to misaligned addresses "
                             "are handled in hardware (the manual allows "
                             "hardware or an Address Error); LL/SC must be "
@@ -180,7 +354,8 @@ DEVIATIONS: dict[str, str] = {
                "\"mips16e\"; a program with MIPS16e code gets it anyway. Instructions with a "
                "MIPS32 twin run as it (emips.mips16.expand: T = GPR 24, LI = ORI, "
                "CMP = XOR, ZEB = ANDI ...), the others by M16.* executors. "
-               "Reserved: the MIPS64-only and reserved encodings, ASMACRO (no "
+               "Reserved: the MIPS64-only encodings on a MIPS32 core (MIPS64: "
+               "see MIPS16e64) and the reserved ones, ASMACRO (no "
                "implementation-defined macros), EXTEND before a non-extensible "
                "instruction, an extended instruction whose fixed-zero fields are "
                "not 0 (MIPS16e2 reuses them), SAVE / RESTORE aregs 1111 "
@@ -321,7 +496,30 @@ DEVIATIONS: dict[str, str] = {
                  "processor). The MARS console interrupts VPE 0. microMIPS (MD00768): "
                  "the eight instructions as the manual's pages; its FORK diagram gives "
                  "bits 6:0 a 6-bit value 100111 — eMIPS takes bit 6 = 0 (no binutils, "
-                 "LLVM or QEMU encodes microMIPS MT to compare with).",
+                 "LLVM or QEMU encodes microMIPS MT to compare with). EJTAG with the "
+                 "MT Module (MD00047 1.11 / 5.3 / 7.2, the 34K's MD00534 ch. 11): IBCn "
+                 "/ DBCn TC (31:24) and TCuse (22) are R/W and match the issuing TC's "
+                 "number; PCsample has the TC field above the ASID (48:41, MIPS64 "
+                 "80:73: 49 / 81 bits — always, the 34K's DCR has no PCnoTCID); "
+                 "ECR.VPED = the VPE cannot run (VPEConf0.VPA = 0, or EVP = 0 and the "
+                 "one TC that runs is another VPE's): Table 11.25's reset value 1 is "
+                 "not followed for VPE 0, which runs at reset. MIPS64 (MD00378 with "
+                 "GPRLEN = 64 — its MFTR / MTTR pseudocode knows Config.AT —; no MIPS64 "
+                 "core had the module, so no implementation decides): a TC's GPRs, "
+                 "HI / LO and accumulator halves are 64 bits; TCRestart and TCContext "
+                 "hold 64 bits (6.14 / 6.16: 'the same width as the processor GPRs'; "
+                 "DMFC0 / DMTC0 whole), the other MT registers 32 (DMFC0 sign-extends); "
+                 "MFTR sign-extends a narrower source (a 32-bit CP0 register, "
+                 "DSPControl, an FPCR), reads a CP0 register as DMFC0 (EntryLo's RI / "
+                 "XI at 63 / 62) and an FPR whole (AT = 1 / 2: the widths match); MTTR "
+                 "writes the GPR whole (not sign-extended), a CP0 register as DMTC0; "
+                 "h = 1 (UNPREDICTABLE when the widths match): an FPR's high word, a "
+                 "CP0 register 0 / no effect, as on MIPS32; YIELD and FORK take whole "
+                 "registers; Status.PX / KX / SX / UX stay per VPE (MD00378 3.1: only "
+                 "CU3..0, MX, KSU per TC); the ITC cells are 64 bits (see ITC). The "
+                 "MT Module on MIPS64 runs in instruction mode (pipeline mode asked "
+                 "for: a note) — eMIPS's multithreaded pipeline is the 34K's, a "
+                 "MIPS32 core.",
     "ITC": "emips.itc (MD00534 ch. 12, MD00378 9.1 / App. A): the reference ITU of "
            "one MT processor, 4 FIFO + 8 semaphore cells by default. The block decodes "
            "physical addresses ahead of the caches and the bus, whatever the CCA "
@@ -331,8 +529,13 @@ DEVIATIONS: dict[str, str] = {
            "AddrMask 0x3f = 128 KB: eMIPS follows the field's 7 bits (0x7f = 128 KB, "
            "MD00427). FIFOPtr = the entries (MD00534; MD00427 calls it the oldest's "
            "index). Reset (UNDEFINED): every cell's data and E / F / T bits 0, "
-           "ITCAddressMap0 / 1 0. A partial-word access acts as a word access and "
-           "returns / changes its bytes of the 32-bit value (undefined); an address "
+           "ITCAddressMap0 / 1 0. The cells are 32 bits (address bit 2 ignored, "
+           "MD00378 A.2) — 64 on MIPS64 (A.1's 64-bit cells: LD / SD move a whole "
+           "cell, a word is one half by address bit 2 in the CPU's byte order, as "
+           "the I6400's ITU, MD01196 11.2.4). An access narrower than the cell "
+           "(undefined) acts as a whole-cell access on its bytes: a load returns "
+           "them, a store writes them in their place with the other bytes 0 (one "
+           "size at one address reads back what it wrote, A.2); an address "
            "inside the block with no cell reads 0, writes are dropped (undefined); "
            "P/V views of a FIFO cell act on its oldest entry without changing E / F "
            "(undefined); the reserved views read 0, ignore writes; SC: success = the "
@@ -357,13 +560,18 @@ DEVIATIONS: dict[str, str] = {
                     "events); what a core has that eMIPS does not model is listed in "
                     "Core.missing (the MCU ASE, MIPS16e2, MSA, "
                     "VZ, XPA, the P5600's out-of-order pipeline: its preset offers the "
-                    "5-stage or the 24K model), and eMIPS builds a CPS only with 2-4 "
+                    "5-stage or the 24K model), and eMIPS builds a CPS only with 2-6 "
                     "cores (a 1-core 1004K / interAptiv / P5600 has no CM here). The "
                     "34K / 1004K / interAptiv use the 24K model, with the MT Module "
                     "the 34K pipeline (its thread-select stage IT; bypassed with one "
                     "thread context, MD00584). Not offered: the "
                     "M5100 / M5150 (VZ always present, a 2008 FPU), the M6250 (no PRId "
-                    "in its datasheet), the 74K / proAptiv (out of order). A core "
+                    "in its datasheet), the 74K / proAptiv (out of order). The MIPS64 "
+                    "presets (5Kc / 5Kf, 20Kc, I6400) keep eMIPS's SEGBITS 40 / PABITS "
+                    "32 (the 5K has 42 / 36, the I6400 48 / 48) and the 5-stage model; "
+                    "the 20Kc's build is QEMU's model's (its manual was not found), "
+                    "the I6400's FTLB the 64 x 4 of its Config4 (MD01196 1.3 says 512 "
+                    "dual entries), its PRIds QEMU's. A core "
                     "without an FPU (Config1.FP = 0): Status.CU1 / FR read 0 and ignore "
                     "writes (MD00343 Table 6.18 / 6.12), every FPU instruction is "
                     "Coprocessor Unusable 1, the boot firmware leaves CU1 0, GDB sees "
@@ -453,7 +661,23 @@ DEVIATIONS: dict[str, str] = {
                    "and never sends a parity / framing error or a break, RTS / CTS "
                    "flow control is not enforced; 1.5 stop bits count as 1. The "
                    "firmware sets the serial ports as YAMON does (38400 8N1, "
-                   "FIFOs on, OUT2 off) and routes PIRQA-D to IRQ 10, 10, 11, 11.",
+                   "FIFOs on, OUT2 off) and routes PIRQA-D to IRQ 10, 10, 11, 11. "
+                   "A 64-bit CPU (M22 phase 6g): the CoreLV carried MIPS64 5K LVs "
+                   "on its 64-bit SysAD bus (MD00007; YAMON's Table 1.1), so the "
+                   "5Kc / 5Kf presets are real; eMIPS also puts the generic MIPS64 "
+                   "cores (Releases 1-6) and the MIPS64 presets other than the 20Kc "
+                   "(the Core20K card's Bonito64 controller: refused) on it, as QEMU's "
+                   "64-bit Malta does — no such cards existed — and multi-core "
+                   "64-bit Maltas paired as the MIPS32 ones; REVISION keeps CORID 1 "
+                   "(CoreLV). A doubleword access to the board covers two 32-bit "
+                   "words, each as a word access sees it (the board registers on "
+                   "64-bit boundaries: the second word of a pair reads 0 and is "
+                   "dropped; GT-64120 registers: two registers); a doubleword to PCI "
+                   "I/O is two 32-bit PCI cycles, with the byte lanes reversed all 8 "
+                   "bytes swap (GT-64120 Table 7). Physical addresses stay 32-bit; "
+                   "the kseg0 / kseg1 segments are sign-extended (the -msym32 "
+                   "assembler); the user window is the same through the 32-bit and "
+                   "the XTLB refill handlers.",
     "DMA": "the PIIX4's bus master IDE (emips.busmaster) through the "
            "GT-64120's PCI target (MaltaBoard.dma_access): below every cache "
            "level and the write buffer — not coherent, as on the Malta (Linux "
@@ -508,7 +732,19 @@ DEVIATIONS: dict[str, str] = {
                     "has no code (0x80000180 / 0x80000200, the TLB refill at "
                     "0x80000000); $gp is set as for eMIPS programs (YAMON: not). "
                     "The kernel boot sets the same state in Python (the tests "
-                    "compare them); --boot reset runs the code.",
+                    "compare them); --boot reset runs the code. On a 64-bit CPU "
+                    "(phase 6g) the same MIPS32 code runs, assembled for MIPS64 "
+                    "with the o32 temporaries as register numbers: the exception "
+                    "frame keeps doublewords (sd / ld, HI / LO too; at 0x8000c600, "
+                    "above the strings), its RAM addresses are sign-extended, an "
+                    "unhandled exception prints the 64-bit EPC / BadVAddr, the "
+                    "application starts with Status.FR and, with 64-bit addresses "
+                    "(Config.AT = 2), KX / SX / UX as the kernel boot's boot64(), "
+                    "and the XTLB refill handler goes to 0x80000080 too; YAMON's "
+                    "interface stays 32-bit (the descriptor's words, the table's "
+                    "kseg0 pointers, a registered ISR / ESR: a compatibility "
+                    "address) — its functions use only o32's temporaries, all "
+                    "caller-saved in n64 too.",
     "IDE disks": "ATA/ATAPI-4 devices (T13 1153D rev. 18) on the PIIX4's IDE "
                  "channels (emips.ata). eMIPS choices where ATA-4 leaves it to "
                  "the device: the busy times (ata.TIMING_US: microseconds, not "
@@ -763,7 +999,102 @@ DEVIATIONS: dict[str, str] = {
            "cores) and starts them all at the entry with $sp 64 KB apart "
            "(eMIPS's MARS-like boot); the reset boot runs core 0 only. Each "
            "step runs every running core one instruction / cycle, core 0 "
-           "first; L1 caches per core, the L2 / L3 shared behind the CM.",
+           "first; L1 caches per core, the L2 / L3 shared behind the CM. 2-6 "
+           "cores (the P5600 / P6600: up to six, MD01024 / MD01137), at most 8 VPs "
+           "(cores x VPEs: the boot firmware routes Boot-MIPS's IPIs, sources 24 + "
+           "n / 32 + n, to 8 VPs; an MT CPS with 'auto' gets one VPE a core above "
+           "4). MIPS64 cores (the P6600, MD01138 ch. 6-8: the P5600's CM2): "
+           "GCR_Cx_RESET_BASE is a 32-bit virtual address, sign-extended; "
+           "CMGCRBase is 64 bits (PA 39:15 in 35:11); the _UPPER registers of the "
+           "40-bit physical addresses (Table 6.5, on MIPS32 too: GCR_BASE_UPPER 4:0, "
+           "the others 7:0) are R/W (reset 0), and a block or region they move "
+           "above 4 GB is out of reach of eMIPS's 32-bit physical addresses; "
+           "GCR_CUSTOM_BASE keeps 31:16, GGU_EN reads 0 (GCR_CUSTOM_STATUS.GGU_EX "
+           "= 0: no custom block); a 64-bit access to the 32-bit registers moves "
+           "two of them in the byte order (the manual: 32-bit accesses only).",
+    "CM3": "emips.cps with cm3 (M22 phase 6f; the I6400: MD01196 ch. 5-7, Linux "
+           "mips-cm.h / mips-cpc.h / smp-cps.c / cps-vec.S for the CM3 fields, QEMU's "
+           "Boston CPS and the P8700's CM3.5 RESET_BASE / VP_RUN pages where the guide "
+           "points at its unavailable register companion). The registers are 64 bits: "
+           "a doubleword access reaches a whole register, a word access its low "
+           "(offset + 0) or high (offset + 4) half in either byte order (what Linux's "
+           "32- and 64-bit accessors rely on; the high halves are the CM2's _UPPER "
+           "registers, 16 bits: PA 47:32, out of reach above 4 GB). GCR_REV 8.0; "
+           "GCR_ACCESS at 0x120 (cores 5:0, IOCUs 17:16, reset 0x3003F; it gates the "
+           "CPC too: no CPC_ACCESS; 0x020 reads 0); GCR_CONFIG bit 31 = an ITU, 4 "
+           "regions; the CM2's GCR_REGn are gone (0x90-0xCF read 0: the CM3's "
+           "address regions are the MMIO ones, 0x6F8-0x738, stored: one memory port, "
+           "no request limit); GCR_BASE keeps CM_DEFAULT_TARGET (1:0) only; "
+           "GCR_L2_CONFIG (0x130) describes the L2 as Config2 does (Linux's fields; "
+           "BYPASS without one), read-only; GCR_SYS_CONFIG2.MAXVPW = 4; "
+           "GCR_L2_PFT_CONTROL / _B stored (NPFT 0: no prefetcher); GCR_SEM (0x640) a "
+           "lock write is inhibited while SEM_LOCK is set; GCR_BEV_BASE (0x680) "
+           "stored, not used; GCR_Cx_COHERENCE is COHEN (bit 0): every core with it "
+           "set is in one domain (the directory); GCR_CL_REDIRECT (0x018) and "
+           "GCR_CL_RESET_BASE (0x020) are per VP: REDIRECT's CORE 13:8 / VP 2:0 / "
+           "BLOCK 25:24 choose the core-other window (BLOCK 1 = the global block, 2 / "
+           "3 and a core or VP that does not exist read 0) for the GCR's and the "
+           "CPC's core-other blocks, RESET_BASE's RESET_BASE_MODE (bit 1, R/W, reset "
+           "0): 1 = BEVExcBase anywhere in the 4 GB (MD01196 5.5.2), 0 = as a CM2's "
+           "UseExceptionBase (31:30 = 10); RESET_EXT_BASE per core as a CM2's. Errors "
+           "(Table 5.4): a cached access to a register is MP_REQUEST_DECODE_ERR (2) "
+           "with the CM2's request bits as ERR_INFO, ERR_TYPE in 63:58; the response "
+           "is an error whatever GCR_ERROR_MASK (5.10), the mask only interrupts; "
+           "writing the recorded ERR_TYPE back clears CAUSE and MULT; the directory "
+           "reports no intervention error (no such type). The CPC: 64-bit registers "
+           "as the GCR's; another domain through the accessing VP's GCR_CL_REDIRECT "
+           "(a core, the CM 0x20, the DBU 0x23, an IOCU 0x10, memory 0x1A — Table "
+           "5.1); the CM's domain reads U5 while a core is up, its commands are "
+           "ignored; the DBU's takes the commands (its state only: no DBU); clock "
+           "ratios (CC_CTL 0x18 per domain, the global CC_CTL 0x28 whose change "
+           "sequence ends at once, the prescaler 0x48 whose ratio reads back in "
+           "23:16) and RAM_SLEEP (0x50) are stored: eMIPS has one clock; PWRUP_CTL "
+           "writes are ignored (the CM runs while a core does, 6.2.9); ROCC_CTL "
+           "(Figure 6.4): the occurred bits write-1-to-clear (eMIPS's choice), at "
+           "power-on the CPC, the CM and core 0; RESET_CAUSE 2 after a watchdog "
+           "reset. 2-6 cores of 1-4 VPs, at most 24 VPs (MAPn_VP's 24 bits).",
+    "Release 6 VPs": "emips.vp (M22 phase 6f; Vol. II / III 6.06 / 6.03, MD01196 ch. "
+                     "12). Each VP is a whole Machine (its GPRs, CP0, FPU, VTLB, "
+                     "exceptions, debug); a core's VPs share its L1 caches (and the "
+                     "shared L2 behind the CM), its FTLB (a write on one VP is the "
+                     "others' too) and its ITU / SAAR. VPNum = core x 4 + VPId "
+                     "(Table 9.13's non-contiguous numbering, Max-VP 4: the I6400's GIC) "
+                     "= EBase.CPUNum and the GIC's VP number; GlobalNumber = CoreNum "
+                     "11:8, VPId 7:0. Each step runs every running VP one instruction "
+                     "(or a pipeline cycle: a pipeline per VP — the I6400 issues two a "
+                     "cycle from up to four VPs, not modelled). The CPC: after a core "
+                     "reset VP 0 runs (si_core_vc_run_init; 'the value in this "
+                     "register is reset whenever the associated core is reset', 6.2.11); "
+                     "VP_RUN of a stopped VP starts it from its reset base as a fresh "
+                     "VP (the P8700's 'from the reset vector', QEMU's cpu_reset), "
+                     "VP_STOP suspends it; on a core that does not execute both do "
+                     "nothing (its reset decides). DVP: the core's other VPs fetch "
+                     "nothing and take no interrupt until this VP's EVP (their clock "
+                     "runs); with VPControl.DIS = 1 it still returns VPControl (the "
+                     "pseudocode; the programming notes' nesting needs it); a VP whose "
+                     "DVP holds the others and starts again releases them. The kernel / "
+                     "user boot starts every VP at the entry as every core (stacks 64 "
+                     "KB apart); the reset boot core 0's VP 0. microMIPS DVP / EVP: the "
+                     "6.05 manual's rt in 25:21 (LLVM 18 puts it in 20:16).",
+    "ITU": "emips.itu (M22 phase 6f; MD01196 ch. 11, QEMU's mips_itu.c): one ITU a "
+           "core, 64-bit cells (FIFOs of 2 / 4 / 8 entries, then single-entry "
+           "cells: 4 FIFOs of 4 + 8 by default), at SAAR's base (bits 43:13 = PA "
+           "47:17; 128 KB, SIZE read-only 17; EN only with an ITU: SAARI writes "
+           "other than 0 are dropped, SAAR is the core's, one for its VPs). Decoded "
+           "on the physical address ahead of the caches, whatever the CCA (11.3: "
+           "'always uncached'); the cell index from bit 7 + ICR0.BLK_GRAIN, the "
+           "bits above it to 15 and below it to 7 select nothing; a word is one half "
+           "of a cell by address bit 2 in the CPU's byte order. Errors are error "
+           "responses (a data bus error, imprecise): a 1- or 2-byte access "
+           "(ERROR_AXI), a cell past the configured ones, the ICR view of a cell "
+           "but 0 and the E / F / P/V state errors of 11.5.3 (ERROR_EXEC); a "
+           "misaligned access is an address error (11.3) on Release 6 too. A "
+           "blocking access issues again until it completes (the VP stalls: no "
+           "thread exception — Release 6 has no MT Module); Bypass of a FIFO "
+           "reads the oldest entry, writes the newest; a Control write of E = 1 "
+           "empties a FIFO (QEMU); P/V loads return the 16-bit count they "
+           "decrement (zero-extended); the reserved views 6-14 act as Bypass "
+           "(Table 11.7).",
     "Coherence Manager": "emips.coherence (M11 phase 2; the CPS training notes, "
                          "Linux mips-cm.h / mips-cm.c / c-r4k.c / cps-vec.S). MESI "
                          "between the L1 data caches for CCA 4 / 5 of cores in "
@@ -846,7 +1177,14 @@ DEVIATIONS: dict[str, str] = {
            "COUNTSTOP (12.5.3.2: else unpredictable); a WEDGE to a level "
            "source does nothing (undefined in 12.5.3.9). The console's TX / "
            "RX are sources 0 / 1; the boot firmware routes them to core 0's "
-           "pins 0 / 1 and sets up sources 24-39 as Boot-MIPS's IPIs.",
+           "pins 0 / 1 and sets up sources 24-39 as Boot-MIPS's IPIs. A CM3's GIC "
+           "(the I6400, MD01196 ch. 7): 64 sources (multiples of 8), 64-bit shared "
+           "registers (a doubleword reaches 64 sources, a word 32 as the CM2's), "
+           "MAPn_VP a bit per VP number (core x 4 + VP, Table 7.3), GIC_VL_IDENT "
+           "the VP number, GIC_VL_OTHER.VPNUM (5:0, Linux) the other VP's — the "
+           "guide's GIC_REDIRECT_EN through GCR_CL_REDIRECT is a CM3.5 field "
+           "(Linux), not modelled; the boot firmware's IPIs are the guide's, source "
+           "32 + VPNum rising-edge to that VP (7.2.7), pin 0.",
     "NMI": "Vol. III Non Maskable Interrupt: taken before the next "
            "instruction (the pipelines: when it would enter EX, like an "
            "interrupt), ErrorEPC = the restart PC, Status.BEV / ERL / NMI = 1, "
@@ -1085,7 +1423,14 @@ DEVIATIONS: dict[str, str] = {
                 "never for views, fetches, CACHE / PREF or DMA) and stop before the "
                 "access, as a precise Watch exception; the instruction runs again "
                 "(a delay slot keeps its branch). GDB steps MIPS in software (a "
-                "temporary breakpoint after the delay slot). Threads = cores in "
+                "temporary breakpoint after the delay slot). A MIPS64 core: "
+                "every register 64 bits (GDB's mips64-*.xml), the 32-bit ones "
+                "(Status, Cause, FCSR, FIR) sign-extended and an FPR with FR = 0 "
+                "its word zero-extended, as QEMU's stub (GDB shows 64-bit FPRs "
+                "whole: its FR = 0 handling is disabled); a breakpoint at a "
+                "sign-extended compatibility address is kept in its 32-bit form, "
+                "a watchpoint in the form the core compares (Config.AT = 1: "
+                "32-bit). Threads = cores in "
                 "all-stop mode: every running core steps together (the Session's "
                 "lockstep) unless GDB resumes only some threads (vCont;c:1, "
                 "stepping over a breakpoint: the other cores stay stopped); a "
@@ -1150,7 +1495,11 @@ PRIVILEGED_NAMES: frozenset[str] = frozenset(
      "LBE", "LBUE", "LHE", "LHUE", "LWE", "LWLE", "LWRE", "LLE",
      "SBE", "SHE", "SWE", "SWLE", "SWRE", "SCE", "PREFE", "CACHE@R6",
      # the MT Module (MD00378 5.1: "privileged Cop0 instructions")
-     "DMT", "EMT", "DVPE", "EVPE", "MFTR", "MTTR"}
+     "DMT", "EMT", "DVPE", "EVPE", "MFTR", "MTTR",
+     # MIPS64 (PLAN M22)
+     "DMFC0", "DMTC0",
+     # Release 6 multi-threading (Vol. II 6.06: Coprocessor Unusable)
+     "DVP", "EVP"}
 )
 
 
@@ -1199,6 +1548,11 @@ def _s32(value: int) -> int:
     return value - 0x100000000 if value & 0x80000000 else value
 
 
+def _s64(value: int) -> int:
+    value &= M64
+    return value - (1 << 64) if value >> 63 else value
+
+
 def _s9(value: int) -> int:
     value &= 0x1FF
     return value - 0x200 if value & 0x100 else value
@@ -1229,14 +1583,15 @@ def off9(word: int) -> int:
     return _s9((word >> 7) & 0x1FF)
 
 
-def _br_target(pc: int, word: int) -> int:
-    """Branch target: ``PC + 4 + sign_extend(offset || 00)``."""
-    return (pc + 4 + (_s16(imm16(word)) << 2)) & M32
+def _br_target(pc: int, word: int, mask: int = M32) -> int:
+    """Branch target: ``PC + 4 + sign_extend(offset || 00)`` (``mask``:
+    the PC's width, MIPS64 64 bits)."""
+    return (pc + 4 + (_s16(imm16(word)) << 2)) & mask
 
 
-def _j_target(pc: int, word: int) -> int:
-    """J/JAL target: ``(PC + 4)[31:28] || instr_index || 00``."""
-    return ((pc + 4) & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
+def _j_target(pc: int, word: int, mask: int = M32) -> int:
+    """J/JAL target: ``(PC + 4)[GPRLEN-1:28] || instr_index || 00``."""
+    return ((pc + 4) & ~0x0FFFFFFF & mask) | ((word & 0x3FFFFFF) << 2)
 
 
 # ---------------------------------------------------------------------------
@@ -1312,7 +1667,28 @@ class Machine:
                     2, Release 3+; :mod:`emips.micromips`), or
                     ``"micromips-only"`` (Config3.ISA = 1) — JALX and JR /
                     JALR with bit 0 set switch :attr:`isa_mode`.
+    ``arch``        ``"mips32"`` (default) or ``"mips64"``: a MIPS64 core
+                    (:class:`emips.sim64.Machine64`, PLAN M22).
     """
+
+    #: the architecture (MIPS64: :class:`emips.sim64.Machine64`)
+    arch = "mips32"
+    #: the width of the GPRs, HI / LO, the PC and virtual addresses
+    amask = M32
+    #: 64-bit registers (MIPS64)
+    wide = False
+    #: a GPR's value as a signed number
+    sgn = staticmethod(_s32)
+    #: the width of the virtual addresses the MMU sees (a MIPS64 core with
+    #: 64-bit addressing, Config.AT = 2: 64 bits)
+    vamask = M32
+
+    def __new__(cls, *args: Any, arch: str = "mips32", **kwargs: Any) -> "Machine":
+        if arch not in ("mips32", "mips64"):
+            raise ValueError(f"arch must be 'mips32' or 'mips64', not {arch!r}")
+        if arch == "mips64" and cls is Machine:
+            cls = _S64.Machine64
+        return super().__new__(cls)
 
     def __init__(self, isa: ISA | None = None, memory: PMemory | None = None,
                  pc: int = 0, *, endian: str = "big",
@@ -1320,7 +1696,7 @@ class Machine:
                  mmu: Any = None, caches: Caches | None = None, cpu: int = 0,
                  shadow_sets: int = 1, compressed: str | None = None,
                  fpu: bool = True, prid: int = 0, dsp: int | None = None,
-                 mt: bool = False) -> None:
+                 mt: bool = False, arch: str = "mips32") -> None:
         if endian not in ("big", "little"):
             raise ValueError(f"endian must be 'big' or 'little', not {endian!r}")
         if exceptions not in ("cp0", "raise"):
@@ -1341,7 +1717,11 @@ class Machine:
                 in ("R1", "R6"):
             raise ValueError("the MT Module needs Release 2-5 (MD00378 1.1; Release 6 "
                              "has none)")
-        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp, mt=mt)
+        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp, mt=mt,
+                                                  arch=self.arch)
+        if self.isa.arch != self.arch:
+            raise ValueError(f"a {self.arch} machine needs a {self.arch} ISA, "
+                             f"not {self.isa.arch}")
         #: MIPS32 release of this core (ISA, Config.AR, FPU width)
         self.release = self.isa.release
         #: Count increments every ``ccres`` cycles (the implementation's
@@ -1354,7 +1734,7 @@ class Machine:
         self.mem = memory if memory is not None else PMemory()
         self.big_endian = endian == "big"
         self.exceptions = exceptions
-        self.pc = pc & M32
+        self.pc = self.to_pc(pc)
         if not 1 <= shadow_sets <= 16:
             raise ValueError(f"shadow_sets must be 1..16, not {shadow_sets}")
         if compressed not in (None, "mips16e", "micromips", "micromips-only"):
@@ -1385,6 +1765,10 @@ class Machine:
         self._m16 = None
         #: the base address of a PC-relative MIPS16e instruction (Table 3.14)
         self._m16_base = 0
+        #: the table a MIPS16e instruction's twin decodes with (Release 5:
+        #: SEB / SEH ... are MIPS16e instructions on a Release 1 core too;
+        #: Machine64: its own MIPS64 table)
+        self._isa16 = _ISA_R5
         #: the GPR sets (Release 1: only the normal GPRs); ``regs`` is the
         #: current one (SRSCtl.CSS), set 0 = the normal GPRs
         self.shadow: list[list[int]] = [
@@ -1418,6 +1802,8 @@ class Machine:
         self.fir |= self.prid & 0xFFFF
         #: CP0 registers, keyed ``(register, selector)``.
         self.cp0: dict[tuple[int, int], dict[str, Any]] = _load_cp0_table()
+        #: the 64-bit ones (MIPS64: emips.sim64); the others are 32 bits
+        self._wide_cp0: frozenset[tuple[int, int]] = frozenset()
         for key, name in C.EXTRA_CELLS.items():
             self.cp0.setdefault(key, {"name": name, "value": 0})
         for key, value in C.reset_values(self.big_endian, self.release).items():
@@ -1428,12 +1814,19 @@ class Machine:
             self.cp0[C.STATUS]["value"] &= ~(C.ST_CU1 | C.ST_FR)
             self._wmask[C.STATUS] &= ~(C.ST_CU1 | C.ST_FR)
         #: the MT processor this Machine is a VPE of (emips.mt.Processor; it
-        #: attaches itself), the VPE number, the MT registers it handles,
-        #: the bound TC is interrupt exempt (TCStatus.IXMT)
+        #: attaches itself), the VPE number, the bound TC is interrupt exempt
+        #: (TCStatus.IXMT)
         self.mt: Any = None
         self.vpe = 0
-        self._mt_regs: frozenset = frozenset()
         self._ixmt = False
+        #: CP0 registers another object holds (MFC0 / MTC0 go to its read /
+        #: write): the MT processor's, a Release 6 core's shared ones
+        self._ext_regs: frozenset = frozenset()
+        self._ext: Any = None
+        #: the Release 6 core this Machine is a virtual processor of
+        #: (emips.vp.VPCore; it attaches itself) and its VPId, or None
+        self.vpcore: Any = None
+        self.vp_id = 0
         if mt:                                  # Config3.MT, ULRI (MD00378 6.25.7)
             self.cp0[C.CONFIG3]["value"] |= C.CFG3_MT | C.CFG3_ULRI
         if dsp:                                 # Config3.DSPP / DSP2P, Status.MX R/W
@@ -1634,14 +2027,72 @@ class Machine:
         return 0 if index == 0 else self.regs[index] & M32
 
     def write_reg(self, index: int, value: int) -> None:
+        """Write a 32-bit result (MIPS64: sign-extended to 64 bits)."""
         index &= 31
         if index != 0:
             self.regs[index] = value & M32
 
+    #: write a GPR-width result (MIPS64: all 64 bits; here = write_reg)
+    write_dreg = write_reg
+
+    def _sxw(self, value: int) -> int:
+        """A 32-bit result as a register holds it (MIPS64: sign-extended)."""
+        return value & M32
+
+    def to_pc(self, addr: int) -> int:
+        """A 32-bit address as the PC holds it (MIPS64: sign-extended, the
+        compatibility segments)."""
+        return addr & M32
+
+    def ops64(self) -> bool:
+        """64-bit operations are enabled (MIPS64 only)."""
+        return False
+
+    def fetch_va(self, pc: int) -> int:
+        """The virtual address an instruction fetch at ``pc`` uses (the
+        pipelines; MIPS64 with 32-bit addresses: the compatibility address,
+        or Address Error)."""
+        return pc
+
+    def seq_pc(self, addr: int) -> int:
+        """The next sequential PC (a pipeline's fetch; MIPS64 Release 6:
+        it may wrap at bit 31, Vol. III 6.03 4.11)."""
+        return addr & self.amask
+
+    def branch_pc(self, addr: int) -> int:
+        """A branch / jump / ERET target the last executed instruction
+        produced, as the PC takes it (MIPS64 Release 6: 4.11's wrap)."""
+        return addr & self.amask
+
+    def _bp_va(self, va: int) -> int:
+        """A data address as the breakpoints and watch registers compare
+        it (MIPS64 with 32-bit addresses: sign-extended)."""
+        return va
+
+    def data_wrap(self) -> bool:
+        """Data addresses are sign-extended from bit 31 now (MIPS64's 32-bit
+        compatibility addressing, Vol. III 4.10 / 4.11)."""
+        return False
+
     def cp0_read(self, reg: int, sel: int = 0) -> int:
-        if self._mt_regs and (reg, sel) in self._mt_regs:
-            return self.mt.read(self, (reg, sel))
+        if self._ext_regs and (reg, sel) in self._ext_regs:
+            return self._ext.read(self, (reg, sel))
         return self.cp0[(reg, sel)]["value"]
+
+    def cp0_view(self, reg: int, sel: int = 0) -> int:
+        """A CP0 register as the views show it: its architectural value
+        (MIPS64: EntryLo with RI / XI at 63 / 62, as DMFC0 reads it)."""
+        return self.cp0_read(reg, sel)
+
+    def cp0_dread(self, reg: int, sel: int = 0) -> int:
+        """A CP0 register as a GPR-width move takes it (MIPS64: DMFC0, an
+        MFTR; here MFC0's value)."""
+        return self.cp0_read(reg, sel)
+
+    def cp0_dwrite(self, reg: int, sel: int, value: int) -> None:
+        """A GPR-width move to a CP0 register (MIPS64: DMTC0, an MTTR;
+        here MTC0)."""
+        self.mtc0(reg, sel, value)
 
     def mtc0(self, reg: int, sel: int, value: int) -> None:
         """What an MTC0 does (an MTTR to a CP0 register too): the write,
@@ -1656,8 +2107,8 @@ class Machine:
         Release 6 a write of an unsupported cacheability attribute to
         ``Config.K0 / KU / K23`` leaves that field unchanged (Vol. III
         Config); before R6 using one is UNDEFINED and it is just stored."""
-        if self._mt_regs and (reg, sel) in self._mt_regs:
-            self.mt.write(self, (reg, sel), value)
+        if self._ext_regs and (reg, sel) in self._ext_regs:
+            self._ext.write(self, (reg, sel), value)
             return
         if (reg, sel) == (10, 0):               # EntryHi: a TMOAS with a TLB (3.2)
             self.pdt.entryhi_written()
@@ -1688,7 +2139,8 @@ class Machine:
                     mask &= ~(0xF << shift)
         if (reg, sel) == C.INTCTL and (value >> 5) & 0x1F not in C.VS_VALUES:
             mask &= ~(0x1F << 5)                # a reserved VS: UNDEFINED -> ignored
-        cell["value"] = (cell["value"] & ~mask | value & mask) & M32
+        cell["value"] = (cell["value"] & ~mask | value & mask) & (
+            M64 if (reg, sel) in self._wide_cp0 else M32)
         if (reg, sel) == C.STATUS:              # NMI / SR: software can only clear
             cell["value"] &= ~((C.ST_NMI | C.ST_SR) & old & ~value)
         if (reg, sel) == C.ERRCTL and self.caches is not None:
@@ -1706,7 +2158,7 @@ class Machine:
 
     def _cp0_set(self, key: tuple[int, int], value: int) -> None:
         """Hardware write (exception entry, ERET, DI/EI): no mask."""
-        self.cp0[key]["value"] = value & M32
+        self.cp0[key]["value"] = value & (M64 if key in self._wide_cp0 else M32)
 
     @property
     def status(self) -> int:
@@ -1778,15 +2230,22 @@ class Machine:
     def _asid(self) -> int:
         return self.cp0[(10, 0)]["value"] & 0xFF
 
+    def _tc_id(self) -> int:
+        """The thread context issuing (the MT Module: its TC number, as the
+        EJTAG breakpoints' TCuse and PCsample see it; 0 without)."""
+        return self.mt.current[self.vpe].n if self.mt is not None else 0
+
     def _watch(self, start: int, n: int, kind: int) -> bool:
         """The watch registers (Vol. III 9.51 / 9.52; the 24K's 4 pairs):
         a pair whose enable ``kind`` (I / R / W) is set matches when a
-        byte of the access lies in its doubleword (VAddr 31:3, Mask 11:3
-        bits ignored) and G = 1 or its ASID is EntryHi's; WatchHi records
-        the kind.  Returns True if a Watch exception is taken now; with
-        EXL or ERL set it is deferred instead (Cause.WP)."""
+        byte of the access lies in its doubleword (VAddr 31:3 — MIPS64
+        with 64-bit addresses: 63:3 —, Mask 11:3 bits ignored) and G = 1
+        or its ASID is EntryHi's; WatchHi records the kind.  Returns True
+        if a Watch exception is taken now; with EXL or ERL set it is
+        deferred instead (Cause.WP)."""
         hit = False
-        end = (start + n - 1) & M32
+        vamask = self.amask
+        end = (start + n - 1) & vamask
         for lo_key, hi_key in zip(C.WATCHLO, C.WATCHHI):
             lo = self.cp0[lo_key]["value"]
             if not lo & kind:
@@ -1794,7 +2253,7 @@ class Machine:
             hi = self.cp0[hi_key]["value"]
             if not hi & C.WATCHHI_G and (hi >> 16) & 0xFF != self._asid():
                 continue
-            care = ~(hi & 0xFF8 | 7) & M32
+            care = ~(hi & 0xFF8 | 7) & vamask
             if (start ^ lo) & care and (end ^ lo) & care:
                 continue
             self.cp0[hi_key]["value"] = hi | kind
@@ -1814,7 +2273,8 @@ class Machine:
         if self._dm:
             return
         ej = self.ejtag
-        hits, brk = ej.instruction_match(pc, self._asid()) if ej.ib_armed else (0, False)
+        hits, brk = (ej.instruction_match(pc, self._asid(), self._tc_id()) if ej.ib_armed
+                     else (0, False))
         if hits:
             ej.ibs_bs |= hits
             self._trace_triggers(hits, False)
@@ -1849,15 +2309,19 @@ class Machine:
         LWL / LWR / SWL / SWR really accesses."""
         self._vc = None
         ej = self.ejtag
-        if ej.db_armed:
-            width = 8 if size == 8 else 4
+        addr = self._bp_va(addr)                # (MIPS64: the 64-bit address)
+        if span is not None:
+            span = (self._bp_va(span[0]), span[1])
+        if ej.db_armed:                         # (a 64-bit core: a doubleword bus)
+            width = 8 if size == 8 or self.wide else 4
             start, n = span if span is not None else (addr & ~(size - 1), size)
             lanes = 0
             for a in range(start, start + n):
                 k = a % width
                 lanes |= 1 << (width - 1 - k if self.big_endian else k)
             lanes &= (1 << width) - 1
-            precise, brk, value = ej.data_match(addr, lanes, width, store, self._asid())
+            precise, brk, value = ej.data_match(addr, lanes, width, store, self._asid(),
+                                                self._tc_id())
             if precise:
                 ej.dbs_bs |= precise
                 self._trace_triggers(precise, True)
@@ -1926,11 +2390,16 @@ class Machine:
         self.supported_cca = self.supported_cca | COHERENT_CCA
         self.cached_cca = CACHED_CCA_CPS
         self.cp0[C.CONFIG3]["value"] |= C.CONFIG3_CMGCR
-        self.cmgcr_moved(cps.gcr.base)
+        if self.wide:                           # a 64-bit register (MD01138 2.2.12.2)
+            self._wide_cp0 = self._wide_cp0 | {C.CMGCRBASE}
+        self.cmgcr_moved(cps.gcr.full_base)
 
     def cmgcr_moved(self, base: int) -> None:
-        """GCR_BASE changed: CMGCRBase follows it."""
-        self.cp0[C.CMGCRBASE]["value"] = (base >> 4) & 0x3FFFF800
+        """GCR_BASE (or GCR_BASE_UPPER) changed: CMGCRBase follows it —
+        MIPS32 PA 35:15 in 29:11, MIPS64 PA 39:15 in 35:11 (the P6600,
+        MD01138 Table 2.85)."""
+        self.cp0[C.CMGCRBASE]["value"] = (base >> 4) & (
+            0xFFFFFFF800 if self.wide else 0x3FFFF800)
 
     # -- clock, timer, interrupt lines ----------------------------------------
 
@@ -2085,8 +2554,8 @@ class Machine:
         (physical address — ``None`` when no TLB entry maps it —,
         cacheability attribute, segment, TLB entry); no side effects.  dseg in Debug Mode: no
         physical address (MD00047 Table 2.2)."""
-        addr &= M32
-        if self._dm and EJ.in_dseg(addr):
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr):
             return Translation(addr, None, CCA_UNCACHED, EJ.segment(addr), False,
                                "EJTAG " + ("debug registers" if addr >= EJ.DRSEG_BASE
                                            else "probe memory") + ": no physical address")
@@ -2096,15 +2565,20 @@ class Machine:
         """``(pa, cca)`` of a virtual address for a view (no side effects);
         :class:`UnmappedAddress` when nothing maps it (dseg in Debug
         Mode: no physical address)."""
-        if self._dm and EJ.in_dseg(addr & M32):
-            raise UnmappedAddress(f"0x{addr & M32:08x} is EJTAG {EJ.segment(addr & M32)} "
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr):
+            raise UnmappedAddress(f"0x{addr:08x} is EJTAG {EJ.segment(addr & M32)} "
                                   "(Debug Mode): no physical address",
-                                  name=None, word=None, addr=addr & M32)
-        hit = self.mmu.peek(self, addr & M32)
+                                  name=None, word=None, addr=addr)
+        hit = self.mmu.peek(self, addr)
         if hit is None:
-            raise UnmappedAddress(f"no TLB entry maps 0x{addr & M32:08x} now",
-                                  name=None, word=None, addr=addr & M32)
+            raise UnmappedAddress(f"no TLB entry maps 0x{addr:08x} now",
+                                  name=None, word=None, addr=addr)
         return hit
+
+    def _in_dseg(self, addr: int) -> bool:
+        """In EJTAG's dseg (0xFF200000-0xFF3FFFFF; MIPS64: sign-extended)."""
+        return EJ.in_dseg(addr & M32)
 
     def _xlate_peek(self, addr: int) -> int:
         """The physical address of *addr* now, -1 when nothing maps it
@@ -2125,11 +2599,11 @@ class Machine:
         cacheability attribute, or the MMU's exception (TLB).  Within one
         1 KB block (the smallest MIPS page) one translation serves all
         bytes; an access crossing it is translated byte by byte."""
-        addr &= M32
+        addr &= self.vamask
         pa, cca = self._xlate(self, addr, kind)
         if (addr & 0x3FF) + size <= 0x400:
             return [pa + i for i in range(size)], cca
-        return [pa] + [self._xlate(self, (addr + i) & M32, kind)[0]
+        return [pa] + [self._xlate(self, (addr + i) & self.vamask, kind)[0]
                        for i in range(1, size)], cca
 
     def _view_pas(self, addr: int, size: int) -> list[int]:
@@ -2153,7 +2627,7 @@ class Machine:
 
     def _cca(self, addr: int) -> int:
         """Cacheability attribute of *addr* now (views; uncached if unmapped)."""
-        hit = self.mmu.peek(self, addr & M32)
+        hit = self.mmu.peek(self, addr & self.vamask)
         return CCA_UNCACHED if hit is None else hit[1]
 
     def _uses_dcache(self, cca: int) -> bool:
@@ -2193,9 +2667,9 @@ class Machine:
         (the data cache's copy when it holds the line), with no side
         effects; unwritten bytes read **0** (not an error); an address no
         TLB entry maps raises :class:`UnmappedAddress`."""
-        addr &= M32
-        if self._dm and EJ.in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
-            byte = self.ejtag.peek(addr, 1)
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
+            byte = self.ejtag.peek(addr & M32, 1)
             if byte is not None:
                 return byte
         pa, cca = self._peek(addr)
@@ -2211,7 +2685,7 @@ class Machine:
             self.caches.backdoor_write(pa, value)
 
     def _log(self, kind: str, addr: int, *entry: int) -> None:
-        self._mem_log.append((kind, addr & M32, *entry, self.translate(addr)))
+        self._mem_log.append((kind, addr & self.vamask, *entry, self.translate(addr)))
 
     def load(self, addr: int, size: int, kind: str = "load") -> int:
         """``size`` bytes at virtual address *addr* as an unsigned value, in
@@ -2219,13 +2693,15 @@ class Machine:
         the data cache when the address is cacheable.  ``kind = "pcload"``
         for a PC-relative load (RI / XI rules, Vol. III 4.9.4).  In Debug
         Mode dseg goes to the EJTAG unit (unless ``Debug.LSNM``)."""
-        if self._dm and EJ.in_dseg(addr & M32) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
+        if self._dm and self._in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
             value = self.ejtag.load(addr & M32, size)
             if self._mem_log is not None:
                 self._log("read", addr, size, value)
             return value
         pas, cca = self._access(addr, size, kind)
         if self.itc is not None and self.itc.covers(pas[0]):
+            if addr % size and self.vpcore is not None:     # the ITU: aligned only
+                raise _Arch(C.ADEL, badvaddr=addr)           # (MD01196 11.3)
             return self._itc_load(addr, pas[0], size)
         if self.perf.armed and cca not in self.cached_cca:
             self.perf.pending.append("uncached_load")
@@ -2235,22 +2711,32 @@ class Machine:
         if self._vc is not None:
             self._value_checks(addr & M32, size, value, False)
         if self._pdt_acc is not None:               # MIPS Trace: the load
-            self._pdt_acc.append(("load", addr & M32, size, value))
+            self._pdt_acc.append(("load", addr & self.vamask, size, value))
         return value
 
+    def _itc_shift(self, pa: int, size: int) -> int:
+        """Where the ``size`` bytes at ``pa`` sit in an ITC cell's value
+        (32 bits: address bit 2 ignored, MD00378 A.2; 64 bits: a doubleword
+        in this byte order)."""
+        n = self.itc.bytes
+        k = pa & (n - 1)
+        return max(0, 8 * (n - size - k) if self.big_endian else 8 * k)
+
     def _itc_part(self, pa: int, word: int, size: int) -> int:
-        """The ``size`` bytes at ``pa`` of an ITC cell's 32-bit value."""
-        k = pa & 3
-        shift = 8 * (4 - size - k) if self.big_endian else 8 * k
-        return (word >> shift) & ((1 << (8 * size)) - 1)
+        """The ``size`` bytes at ``pa`` of an ITC cell's value."""
+        return (word >> self._itc_shift(pa, size)) & ((1 << (8 * size)) - 1)
 
     def _itc_load(self, addr: int, pa: int, size: int) -> int:
-        """A load from gating storage (emips.itc): uncached, may block."""
-        value = self._itc_part(pa, self.itc.load(self, pa), size)
+        """A load from gating storage (emips.itc, emips.itu): uncached, may
+        block; an ITU error response is a data bus error."""
+        try:
+            value = self._itc_part(pa, self.itc.load(self, pa, size), size)
+        except BusError:
+            return self._read_bus_error(addr, size)
         if self._mem_log is not None:
             self._log("read", addr, size, value)
         if self._pdt_acc is not None:
-            self._pdt_acc.append(("load", addr & M32, size, value))
+            self._pdt_acc.append(("load", addr & self.vamask, size, value))
         return value
 
     def load_pa(self, addr: int, pas: list[int], cca: int, size: int) -> int:
@@ -2318,7 +2804,7 @@ class Machine:
         conditional store, never gathered as uncached accelerated).  A
         store to gating storage returns whether it succeeded (emips.itc:
         the E/F try view of a full cell drops it)."""
-        if self._dm and EJ.in_dseg(addr & M32) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
+        if self._dm and self._in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
             value &= (1 << (8 * size)) - 1
             if self._mem_log is not None:
                 self._log("write", addr, size, self.ejtag.peek(addr & M32, size) or 0, value)
@@ -2327,18 +2813,27 @@ class Machine:
         pas, cca = self._access(addr, size, "store")
         value &= (1 << (8 * size)) - 1
         if self.itc is not None and self.itc.covers(pas[0]):
+            if addr % size and self.vpcore is not None:     # the ITU: aligned only
+                raise _Arch(C.ADES, badvaddr=addr)
             if self._mem_log is not None:
                 self._log("write", addr, size, self._itc_part(pas[0], self.itc.peek(pas[0]),
                                                                size), value)
             if self._pdt_acc is not None:
-                self._pdt_acc.append(("store", addr & M32, size, value))
-            return self.itc.store(self, pas[0], value)    # gating storage: may block
+                self._pdt_acc.append(("store", addr & self.vamask, size, value))
+            # gating storage: may block; the bytes in their place (a store /
+            # load pair of one size at one address sees the same data, A.2)
+            try:
+                return self.itc.store(self, pas[0], value << self._itc_shift(pas[0], size),
+                                      size)
+            except BusError:                    # an ITU error response (MD01196 11.5)
+                self.bus_error_pending = True
+                return False
         if self.perf.armed and cca not in self.cached_cca:
             self.perf.pending.append("uncached_store")
         if self._vc is not None:
             self._value_checks(addr & M32, size, value, True)
         if self._pdt_acc is not None:               # MIPS Trace: the store
-            self._pdt_acc.append(("store", addr & M32, size, value))
+            self._pdt_acc.append(("store", addr & self.vamask, size, value))
         if self.system is not None:
             if self.system.store_check(self, pas[0], size, cca, value):
                 return                          # a register error / an L2-only SYNC
@@ -2348,7 +2843,7 @@ class Machine:
             order = "big" if self.big_endian else "little"
             old = None
             if self._mem_log is not None:
-                old = bytes(self._view_byte((addr + i) & M32, pa, False)
+                old = bytes(self._view_byte((addr + i) & self.vamask, pa, False)
                             for i, pa in enumerate(pas))
             if c.uncached_store(pas[0], value.to_bytes(size, order), cca, gather):
                 if old is not None:
@@ -2358,7 +2853,7 @@ class Machine:
             order = "big" if self.big_endian else "little"
             old = None
             if self._mem_log is not None:
-                old = bytes(self._view_byte((addr + i) & M32, pa, True)
+                old = bytes(self._view_byte((addr + i) & self.vamask, pa, True)
                             for i, pa in enumerate(pas))
             try:
                 c.write(addr & M32, pas, value.to_bytes(size, order), cca, atomic)
@@ -2398,9 +2893,9 @@ class Machine:
         """The word at virtual address *addr* as a load would see it, for
         the views: no cache side effects (device registers are still read
         through the device, as before)."""
-        addr &= M32
-        if self._dm and EJ.in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
-            word = self.ejtag.peek(addr, 4)
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr) and not self.cp0[C.DEBUG]["value"] & EJ.LSNM:
+            word = self.ejtag.peek(addr & M32, 4)
             if word is not None:
                 return word
         pas = self._view_pas(addr, 4)
@@ -2412,12 +2907,13 @@ class Machine:
             for dev in self.devices:
                 if dev.covers(pas[0]):
                     return dev.load(self, pas[0], 4)
-        data = bytes(self._view_byte((addr + i) & M32, pa, cached) for i, pa in enumerate(pas))
+        data = bytes(self._view_byte((addr + i) & self.vamask, pa, cached)
+                     for i, pa in enumerate(pas))
         return int.from_bytes(data, "big" if self.big_endian else "little")
 
     @staticmethod
     def _no_code(addr: int, i: int, pa: int) -> FetchError:
-        va = (addr + i) & M32
+        va = (addr + i) & M64 if addr > M32 else (addr + i) & M32
         where = f"0x{va:08x}" if pa == va else f"0x{va:08x} (physical 0x{pa:08x})"
         return FetchError(f"code fetch failed: no byte at {where}",
                           name=None, word=None, addr=addr)
@@ -2433,15 +2929,16 @@ class Machine:
     def fetch_half(self, addr: int) -> int:
         """Fetch the MIPS16e halfword at *addr* (Vol. IV-a 3.16: the
         halfword an LH of that address would read, in either byte order):
-        the aligned word's fetch, needing only these two bytes."""
-        addr &= M32
+        the aligned word's fetch, needing only these two bytes.  (MIPS64:
+        the address the fetch uses — Config.AT = 2: all 64 bits.)"""
+        addr &= self.vamask
         off = addr & 2
         word = self.fetch_word(addr & ~3, need=0x3 << off)
         return word >> 16 if (off == 0) == self.big_endian else word & 0xFFFF
 
     def code_half(self, addr: int) -> int:
         """The halfword a fetch at *addr* would get now (views)."""
-        addr &= M32
+        addr &= self.amask
         try:
             word = self.code_word(addr & ~3)
         except FetchError:
@@ -2487,9 +2984,9 @@ class Machine:
     def _fetch_word(self, addr: int, need: int = 0xF) -> int:
         """``need``: the bytes that must hold code (bit k = byte k of the
         word; a MIPS16e halfword needs two)."""
-        addr &= M32
-        if self._dm and EJ.in_dseg(addr):       # a fetch in dseg: always dseg
-            return self.ejtag.fetch(addr)
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr):    # a fetch in dseg: always dseg
+            return self.ejtag.fetch(addr & M32)
         pas, cca = self._access(addr, 4, "fetch")
         c = self.caches
         if c is not None and self._icached(cca):
@@ -2537,9 +3034,9 @@ class Machine:
         I-cache's copy when it holds the line), for the views and the
         debugger: no side effects.  Unwritten bytes: :class:`FetchError`
         (an address no TLB entry maps: :class:`UnmappedAddress`)."""
-        addr &= M32
-        if self._dm and EJ.in_dseg(addr):       # the probe's memory (dmseg)
-            word = self.ejtag.peek(addr, 4) if addr < EJ.DRSEG_BASE else None
+        addr &= self.vamask
+        if self._dm and self._in_dseg(addr):    # the probe's memory (dmseg)
+            word = self.ejtag.peek(addr & M32, 4) if addr & M32 < EJ.DRSEG_BASE else None
             if word is None:
                 raise UnmappedAddress(f"0x{addr:08x}: EJTAG memory, no probe serves it",
                                       name=None, word=None, addr=addr)
@@ -2590,7 +3087,7 @@ class Machine:
         any operation, Vol. II CACHE), then the operation
         (:meth:`emips.cache.Caches.cache_op`).  Returns what was done
         (also kept in :attr:`last_cache_op`)."""
-        addr &= M32
+        addr &= self.vamask
         if not self.address_ok(addr):
             raise _Arch(C.ADEL, badvaddr=addr)
         if self.itc is not None and self.cp0_read(*C.ERRCTL) & ITC_ERRCTL:
@@ -2615,7 +3112,7 @@ class Machine:
         address in user mode is an Address Error (the manual leaves it to
         the implementation); the address is translated (TLB Refill /
         Invalid)."""
-        addr &= M32
+        addr &= self.vamask
         if not self.address_ok(addr):
             raise _Arch(C.ADEL, badvaddr=addr)
         pa, cca = self._xlate(self, addr, "cacheop")
@@ -2629,7 +3126,7 @@ class Machine:
         """``PREF hint, addr``: never an address or TLB exception — an
         address that would raise one is not prefetched; nothing for an
         uncached address (Vol. II-A PREF)."""
-        addr &= M32
+        addr &= self.vamask
         if self.caches is None or not self.address_ok(addr):
             return
         try:
@@ -2714,7 +3211,7 @@ class Machine:
         LL/SC (``atomic``) and the DSP Module's indexed loads (``aligned``:
         MD00374 LWX / LHX) must stay aligned.  First the data breakpoints
         and watch registers, which come before an address error."""
-        addr &= M32
+        addr &= self.vamask
         if self.agent_watch:
             self._agent_watch(addr, size, store, span)
         if self._dhw and not self._dm:
@@ -2808,18 +3305,21 @@ class Machine:
             return None
         size = 4
         try:
-            if self._ihw:
+            # MIPS64: the virtual address the fetch uses (Config.AT = 1: the
+            # compatibility address, AdEL outside those segments)
+            va = self._compat(pc) if self.wide else pc
+            if self._ihw:                       # (the PC as it is: MIPS64 64-bit)
                 self.instruction_checks(pc)
             self._insn_raw = None
             if self.isa_mode and self.compressed == "micromips":
                 size, word, dec = self._fetch_mm(pc)
             elif self.isa_mode:                     # MIPS16e: 16 / 32-bit instructions
                 size, word, dec = self._fetch16(pc)
-                self._m16_base = (pc - self._slot_back) & M32 if in_slot else pc
+                self._m16_base = (pc - self._slot_back) & self.amask if in_slot else pc
             else:
-                if pc & 3 or not self.address_ok(pc) or not self.mips32:
+                if va & 3 or not self.address_ok(va) or not self.mips32:
                     raise _Arch(C.ADEL, badvaddr=pc)
-                word = self.fetch_word(pc)
+                word = self.fetch_word(va)
                 try:
                     dec = self.isa.decode(word)
                 except ISADecodeError as exc:
@@ -2871,21 +3371,22 @@ class Machine:
         if self._redirect is not None:              # ERET, a compact jump: no delay slot
             self._jump(self._redirect)
         elif result == NULLIFY:
-            self.pc = (pc + 8) & M32
+            self.pc = (pc + 8) & self.amask
         elif result is not None or has_delay_slot(dec.entry):
             # taken: the slot runs, then the target; not taken: the slot is
             # still a delay slot (BD on a fault there), then PC + 8 — or,
             # microMIPS, the instruction after the slot (16 or 32 bits): None
             self.slot_armed = True
-            self.slot_target = result & M32 if result is not None else \
-                None if self.isa_mode else (pc + 8) & M32
+            amask = self.amask
+            self.slot_target = result & amask if result is not None else \
+                None if self.isa_mode else (pc + 8) & amask
             self._slot_back = size
             self._slot_raw = self._insn_raw
-            self.pc = (pc + size) & M32
+            self.pc = (pc + size) & amask
         elif in_slot and outer_target is not None:
             self._jump(outer_target)
         else:
-            self.pc = (pc + size) & M32
+            self.pc = (pc + size) & self.amask
         return dec
 
     def _jump(self, target: int) -> None:
@@ -2894,7 +3395,7 @@ class Machine:
         the MIPS16e branches keep 1; ERET / DERET: EPC / DEPC bit 0); bit 0
         of the PC is 0.  Without, the address as is (an odd one faults on
         the fetch)."""
-        target &= M32
+        target &= self.amask
         if self.compressed is not None:
             self.isa_mode = target & 1
             target &= ~1
@@ -2911,10 +3412,10 @@ class Machine:
 
         def second() -> int:
             if not self.address_ok(pc + 2):
-                raise _Arch(C.ADEL, badvaddr=(pc + 2) & M32)
+                raise _Arch(C.ADEL, badvaddr=(pc + 2) & self.amask)
             return self._second_half(pc + 2)
         try:
-            i = M16.decode(h, second)
+            i = M16.decode(h, second, arch=self.arch)
         except ISADecodeError as exc:
             if self.exceptions == "raise":
                 raise
@@ -2924,7 +3425,7 @@ class Machine:
         word = M16.expand(i)
         if word is None:
             return i.size, i.raw, Decode(i.raw, M16.ENTRIES[i.form])
-        return i.size, word, _ISA_R5.decode(word)
+        return i.size, word, self._isa16.decode(word)
 
     def _fetch_mm(self, pc: int) -> tuple[int, int, Decode]:
         """microMIPS: fetch and decode the instruction at ``pc`` (2 or 4
@@ -2937,11 +3438,11 @@ class Machine:
 
         def second() -> int:
             if not self.address_ok(pc + 2):
-                raise _Arch(C.ADEL, badvaddr=(pc + 2) & M32)
+                raise _Arch(C.ADEL, badvaddr=(pc + 2) & self.amask)
             return self._second_half(pc + 2)
         try:
             i = MM.decode(h, second, release=self.release, dsp=self.dsp,
-                          mt=self.mt is not None)
+                          mt=self.mt is not None, arch=self.arch)
             word = MM.expand(i)
             dec = Decode(i.raw, MM.ENTRIES[i.form]) if word is None else \
                 self._twin_isa(i).decode(word)
@@ -2990,13 +3491,15 @@ class Machine:
         self._insn_raw = insn.raw if insn is not None else None
         self._slot_back = back
         self._slot_raw = slot_raw
-        self._m16_base = (pc - back) & M32 if in_slot else pc
+        self._m16_base = (pc - back) & self.amask if in_slot else pc
 
     def _twin_isa(self, i) -> ISA:
-        """The table a microMIPS instruction's MIPS32 twin decodes with:
-        the core's (a Release 6 row with a wider field than MIPS32 R6 has
-        twins to the Release 5 row of the same operation)."""
-        return _ISA_R5 if getattr(i.row, "r5_twin", False) else self.isa
+        """The table a microMIPS instruction's MIPS32 (MIPS64) twin decodes
+        with: the core's (a Release 6 row with a wider field than MIPS32 /
+        MIPS64 R6 has twins to the Release 5 row of the same operation)."""
+        if not getattr(i.row, "r5_twin", False):
+            return self.isa
+        return _ISA_R5 if self.arch == "mips32" else ISA.for_release("R5", arch=self.arch)
 
     def _handler_isa(self, ebase_relative: bool) -> int:
         """The ISA mode a handler starts in: MIPS32 with MIPS16e (Vol.
@@ -3022,7 +3525,7 @@ class Machine:
         branch (``_slot_back`` bytes before), with the ISA mode in bit 0
         (Vol. III 9.30, Vol. IV-a 3.7.3)."""
         base = (pc - self._slot_back) if in_slot else pc
-        return (base | self.isa_mode) & M32
+        return (base | self.isa_mode) & self.amask
 
     # -- execution unit interface (used by step() and emips.pipeline) ---------
 
@@ -3033,7 +3536,7 @@ class Machine:
         (branch/jump target, :data:`NULLIFY` or ``None``); ``ERET``'s
         target is left in ``_redirect``.  Raises :class:`_Arch` for an
         architectural exception, before any state change."""
-        self.pc = pc & M32
+        self.pc = pc & self.amask
         self._redirect = None
         if in_slot and dec.name in _MM_NO_SLOT:
             raise _Arch(C.RI)                   # (as step)
@@ -3251,14 +3754,17 @@ class Machine:
         if exc.code == C.MCHECK:                # Status.TS, PageGrain.MCCause
             self.mmu.machine_check(self, exc.info.get("mccause", 1))
         refill = tlb and exc.info.get("refill", False) and not status & C.ST_EXL
+        if refill and exc.info.get("xtlb"):     # MIPS64: XTLB Refill (Vol. III Table
+            offset = 0x080                      # 6.9: 64-bit addresses enabled)
+            entry["xtlb"] = True
         ebase = self.cp0[C.EBASE]["value"]
         if getattr(self.mmu, "sc", False) and not self.cp0_read(16, 5) & (1 << 30):
             # Config5.K = 0 (the legacy configuration): EBase[31:30] read as
             # 10 — the vectors stay in kseg0 / kseg1 (MD01025 3.6.3.2)
             ebase = (ebase & 0x3FFFFFFF) | 0x80000000
-        self.pc = C.vector(status, ebase,
-                           interrupt_iv=exc.code == C.INT and bool(cause & C.CA_IV),
-                           refill=refill, bev_base=self.bev_base, offset=offset)
+        self.pc = self.to_pc(C.vector(
+            status, ebase, interrupt_iv=exc.code == C.INT and bool(cause & C.CA_IV),
+            refill=refill, bev_base=self.bev_base, offset=offset))
         entry.update(epc=self.cp0[C.EPC]["value"], bd=bool(cause & C.CA_BD),
                      vector=self.pc, refill=refill)
         if exc.info.get("why"):
@@ -3311,7 +3817,7 @@ class Machine:
         self._cp0_set(C.DEPC, depc)
         self._dm = True
         self.ss_pending = self.dint_pending = False
-        self.pc = self.debug_vector()
+        self.pc = self.to_pc(self.debug_vector())
         entry.update(epc=depc, bd=in_slot, vector=self.pc, debug=True)
         self.exception_log.append(entry)
 
@@ -3334,7 +3840,7 @@ class Machine:
         cell["value"] = dbg
         self._cp0_set(C.DEPC, depc)
         self.waiting = False
-        self.pc = self.debug_vector()
+        self.pc = self.to_pc(self.debug_vector())
         entry.update(epc=depc, bd=in_slot, vector=self.pc, debug_mode=True, dexccode=dexc)
         self.exception_log.append(entry)
 
@@ -3350,7 +3856,7 @@ class Machine:
         self._cp0_set(C.ERROREPC, epc)
         status = self.status & ~(C.ST_SR | (1 << 21))
         self._cp0_set(C.STATUS, status | C.ST_BEV | C.ST_ERL | C.ST_NMI)
-        self.pc = (self.bev_base - 0x200) & M32
+        self.pc = self.to_pc(self.bev_base - 0x200)
         entry.update(epc=epc, bd=in_slot, vector=self.pc)
         self.exception_log.append(entry)
 
@@ -3370,10 +3876,10 @@ class Machine:
         self.isa_mode = self._handler_isa(not status & C.ST_BEV)
         self._cp0_set(C.ERROREPC, epc)
         self._cp0_set(C.STATUS, status | C.ST_ERL)
-        self.pc = C.cache_error_vector(status, self.cp0[C.EBASE]["value"], self.release,
-                                       cv=getattr(self.mmu, "sc", False)
-                                       and bool(self.cp0_read(16, 5) & (1 << 29)),
-                                       bev_base=self.bev_base)
+        self.pc = self.to_pc(C.cache_error_vector(
+            status, self.cp0[C.EBASE]["value"], self.release,
+            cv=getattr(self.mmu, "sc", False) and bool(self.cp0_read(16, 5) & (1 << 29)),
+            bev_base=self.bev_base))
         entry.update(epc=epc, bd=in_slot, vector=self.pc, cacheerr=exc.info["cacheerr"],
                      what=exc.info["what"])
         self.exception_log.append(entry)
@@ -3441,27 +3947,27 @@ def _e_subu(m: _M, w: int) -> int | None:
 
 
 def _e_and(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rs(w)) & m.read_reg(rt(w)))
+    m.write_dreg(rd(w), m.read_reg(rs(w)) & m.read_reg(rt(w)))
     return None
 
 
 def _e_or(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rs(w)) | m.read_reg(rt(w)))
+    m.write_dreg(rd(w), m.read_reg(rs(w)) | m.read_reg(rt(w)))
     return None
 
 
 def _e_xor(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rs(w)) ^ m.read_reg(rt(w)))
+    m.write_dreg(rd(w), m.read_reg(rs(w)) ^ m.read_reg(rt(w)))
     return None
 
 
 def _e_nor(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), ~(m.read_reg(rs(w)) | m.read_reg(rt(w))))
+    m.write_dreg(rd(w), ~(m.read_reg(rs(w)) | m.read_reg(rt(w))))
     return None
 
 
 def _e_slt(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), int(_s32(m.read_reg(rs(w))) < _s32(m.read_reg(rt(w)))))
+    m.write_reg(rd(w), int(m.sgn(m.read_reg(rs(w))) < m.sgn(m.read_reg(rt(w)))))
     return None
 
 
@@ -3472,13 +3978,13 @@ def _e_sltu(m: _M, w: int) -> int | None:
 
 def _e_movz(m: _M, w: int) -> int | None:
     if m.read_reg(rt(w)) == 0:
-        m.write_reg(rd(w), m.read_reg(rs(w)))
+        m.write_dreg(rd(w), m.read_reg(rs(w)))
     return None
 
 
 def _e_movn(m: _M, w: int) -> int | None:
     if m.read_reg(rt(w)) != 0:
-        m.write_reg(rd(w), m.read_reg(rs(w)))
+        m.write_dreg(rd(w), m.read_reg(rs(w)))
     return None
 
 
@@ -3486,6 +3992,7 @@ def _e_movn(m: _M, w: int) -> int | None:
 
 
 def _rotr(x: int, n: int) -> int:
+    x &= M32
     n &= 31
     return ((x >> n) | (x << (32 - n))) & M32 if n else x & M32
 
@@ -3496,7 +4003,7 @@ def _e_sll(m: _M, w: int) -> int | None:
 
 
 def _e_srl(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rt(w)) >> sa(w))
+    m.write_reg(rd(w), (m.read_reg(rt(w)) & M32) >> sa(w))
     return None
 
 
@@ -3516,7 +4023,7 @@ def _e_sllv(m: _M, w: int) -> int | None:
 
 
 def _e_srlv(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rt(w)) >> (m.read_reg(rs(w)) & 31))
+    m.write_reg(rd(w), (m.read_reg(rt(w)) & M32) >> (m.read_reg(rs(w)) & 31))
     return None
 
 
@@ -3539,7 +4046,7 @@ def _e_clo(m: _M, w: int) -> int | None:
 
 
 def _e_clz(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), 32 - m.read_reg(rs(w)).bit_length())
+    m.write_reg(rd(w), 32 - (m.read_reg(rs(w)) & M32).bit_length())
     return None
 
 
@@ -3588,12 +4095,13 @@ def _prod64(a: int, b: int, signed: bool) -> int:
 
 
 def _hi_lo(m: _M) -> int:
-    return (m.hi << 32) | (m.lo & M32)
+    return ((m.hi & M32) << 32) | (m.lo & M32)
 
 
 def _set_hi_lo(m: _M, value: int) -> None:
+    """HI, LO = the 64-bit result's halves (MIPS64: each sign-extended)."""
     value &= M64
-    m.hi, m.lo = value >> 32, value & M32
+    m.hi, m.lo = m._sxw(value >> 32), m._sxw(value)
 
 
 def _e_mul(m: _M, w: int) -> int | None:
@@ -3632,12 +4140,12 @@ def _e_msubu(m: _M, w: int) -> int | None:
 
 
 def _e_mfhi(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.hi)
+    m.write_dreg(rd(w), m.hi)
     return None
 
 
 def _e_mflo(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.lo)
+    m.write_dreg(rd(w), m.lo)
     return None
 
 
@@ -3656,21 +4164,21 @@ def _e_div(m: _M, w: int) -> int | None:
     ÷0 is UNPREDICTABLE (see :data:`DEVIATIONS`)."""
     a, b = _s32(m.read_reg(rs(w))), _s32(m.read_reg(rt(w)))
     if b == 0:
-        m.hi = m.lo = M32
+        m.hi = m.lo = m._sxw(M32)
         return None
     q = abs(a) // abs(b)
     if (a < 0) != (b < 0):
         q = -q
-    m.lo, m.hi = q & M32, (a - q * b) & M32
+    m.lo, m.hi = m._sxw(q), m._sxw(a - q * b)
     return None
 
 
 def _e_divu(m: _M, w: int) -> int | None:
-    a, b = m.read_reg(rs(w)), m.read_reg(rt(w))
+    a, b = m.read_reg(rs(w)) & M32, m.read_reg(rt(w)) & M32
     if b == 0:
-        m.hi = m.lo = M32
+        m.hi = m.lo = m._sxw(M32)
     else:
-        m.lo, m.hi = a // b, a % b
+        m.lo, m.hi = m._sxw(a // b), m._sxw(a % b)
     return None
 
 
@@ -3688,28 +4196,28 @@ def _e_addiu(m: _M, w: int) -> int | None:
 
 
 def _e_andi(m: _M, w: int) -> int | None:
-    m.write_reg(rt(w), m.read_reg(rs(w)) & imm16(w))
+    m.write_dreg(rt(w), m.read_reg(rs(w)) & imm16(w))
     return None
 
 
 def _e_ori(m: _M, w: int) -> int | None:
-    m.write_reg(rt(w), m.read_reg(rs(w)) | imm16(w))
+    m.write_dreg(rt(w), m.read_reg(rs(w)) | imm16(w))
     return None
 
 
 def _e_xori(m: _M, w: int) -> int | None:
-    m.write_reg(rt(w), m.read_reg(rs(w)) ^ imm16(w))
+    m.write_dreg(rt(w), m.read_reg(rs(w)) ^ imm16(w))
     return None
 
 
 def _e_slti(m: _M, w: int) -> int | None:
-    m.write_reg(rt(w), int(_s32(m.read_reg(rs(w))) < _s16(imm16(w))))
+    m.write_reg(rt(w), int(m.sgn(m.read_reg(rs(w))) < _s16(imm16(w))))
     return None
 
 
 def _e_sltiu(m: _M, w: int) -> int | None:
     """SLTIU: unsigned compare against the *sign-extended* immediate."""
-    m.write_reg(rt(w), int(m.read_reg(rs(w)) < (_s16(imm16(w)) & M32)))
+    m.write_reg(rt(w), int(m.read_reg(rs(w)) < (_s16(imm16(w)) & m.amask)))
     return None
 
 
@@ -3726,9 +4234,9 @@ def _e_lui(m: _M, w: int) -> int | None:
 def _branch(m: _M, w: int, cond: bool, *, link: bool = False,
             likely: bool = False) -> int | None:
     if link:
-        m.write_reg(31, m.pc + 8)
+        m.write_dreg(31, m.pc + 8)
     if cond:
-        return _br_target(m.pc, w)
+        return _br_target(m.pc, w, m.amask)
     return NULLIFY if likely else None
 
 
@@ -3749,11 +4257,11 @@ def _e_bnel(m: _M, w: int) -> int | None:
 
 
 def _gez(m: _M, w: int) -> bool:
-    return _s32(m.read_reg(rs(w))) >= 0
+    return m.sgn(m.read_reg(rs(w))) >= 0
 
 
 def _gtz(m: _M, w: int) -> bool:
-    return _s32(m.read_reg(rs(w))) > 0
+    return m.sgn(m.read_reg(rs(w))) > 0
 
 
 def _e_bgez(m: _M, w: int) -> int | None:
@@ -3816,12 +4324,12 @@ _e_nal = _e_bltzal
 
 
 def _e_j(m: _M, w: int) -> int | None:
-    return _j_target(m.pc, w)
+    return _j_target(m.pc, w, m.amask)
 
 
 def _e_jal(m: _M, w: int) -> int | None:
-    m.write_reg(31, m.pc + 8)
-    return _j_target(m.pc, w)
+    m.write_dreg(31, m.pc + 8)
+    return _j_target(m.pc, w, m.amask)
 
 
 def _e_jr(m: _M, w: int) -> int | None:
@@ -3830,7 +4338,7 @@ def _e_jr(m: _M, w: int) -> int | None:
 
 def _e_jalr(m: _M, w: int) -> int | None:
     target = m.read_reg(rs(w))
-    m.write_reg(rd(w), m.pc + 8)
+    m.write_dreg(rd(w), m.pc + 8)
     return target
 
 
@@ -3843,19 +4351,19 @@ def _e_jalx(m: _M, w: int) -> int | None:
     other ISA.  Without MIPS16e / microMIPS: Reserved Instruction."""
     if m.compressed is None:
         raise _Arch(C.RI)
-    m.write_reg(31, m.pc + 8)
-    return _j_target(m.pc, w) | 1
+    m.write_dreg(31, m.pc + 8)
+    return _j_target(m.pc, w, m.amask) | 1
 
 
 # -- Loads / stores ---------------------------------------------------------
 
 
 def _addr_i(m: _M, w: int) -> int:
-    return (m.read_reg(rs(w)) + _s16(imm16(w))) & M32
+    return (m.read_reg(rs(w)) + _s16(imm16(w))) & m.amask
 
 
 def _addr_e(m: _M, w: int) -> int:
-    return (m.read_reg(rs(w)) + off9(w)) & M32
+    return (m.read_reg(rs(w)) + off9(w)) & m.amask
 
 
 def _sx(value: int, bits: int) -> int:
@@ -3921,17 +4429,17 @@ def _e_sw(m: _M, w: int) -> int | None:
 def _span_left(m: _M, addr: int) -> tuple[int, int]:
     """The bytes LWL / SWL access (the breakpoints' byte lanes)."""
     k = addr & 3
-    return (addr, 4 - k) if m.big_endian else (addr & ~3 & M32, k + 1)
+    return (addr, 4 - k) if m.big_endian else (addr & ~3, k + 1)
 
 
 def _span_right(m: _M, addr: int) -> tuple[int, int]:
     """The bytes LWR / SWR access."""
     k = addr & 3
-    return (addr & ~3 & M32, k + 1) if m.big_endian else (addr, 4 - k)
+    return (addr & ~3, k + 1) if m.big_endian else (addr, 4 - k)
 
 
 def _lw_left(m: _M, w: int, addr: int) -> None:
-    addr = m.data_address(addr, 1, store=False, span=_span_left(m, addr & M32))
+    addr = m.data_address(addr, 1, store=False, span=_span_left(m, addr))
     k, base, old = addr & 3, addr & ~3, m.read_reg(rt(w))
     if m.big_endian:                    # bytes addr..base+3 -> MS end
         n = 4 - k
@@ -3944,7 +4452,7 @@ def _lw_left(m: _M, w: int, addr: int) -> None:
 
 
 def _lw_right(m: _M, w: int, addr: int) -> None:
-    addr = m.data_address(addr, 1, store=False, span=_span_right(m, addr & M32))
+    addr = m.data_address(addr, 1, store=False, span=_span_right(m, addr))
     k, base, old = addr & 3, addr & ~3, m.read_reg(rt(w))
     if m.big_endian:                    # bytes base..addr -> LS end
         n = k + 1
@@ -3957,7 +4465,7 @@ def _lw_right(m: _M, w: int, addr: int) -> None:
 
 
 def _sw_left(m: _M, w: int, addr: int) -> None:
-    addr = m.data_address(addr, 1, store=True, span=_span_left(m, addr & M32))
+    addr = m.data_address(addr, 1, store=True, span=_span_left(m, addr))
     k, base, r = addr & 3, addr & ~3, m.read_reg(rt(w))
     if m.big_endian:                    # MS (4-k) bytes -> addr..base+3
         n = 4 - k
@@ -3968,7 +4476,7 @@ def _sw_left(m: _M, w: int, addr: int) -> None:
 
 
 def _sw_right(m: _M, w: int, addr: int) -> None:
-    addr = m.data_address(addr, 1, store=True, span=_span_right(m, addr & M32))
+    addr = m.data_address(addr, 1, store=True, span=_span_right(m, addr))
     k, base, r = addr & 3, addr & ~3, m.read_reg(rt(w))
     if m.big_endian:                    # LS (k+1) bytes -> base..addr
         m.store(base, r, k + 1, gather=False)
@@ -4159,6 +4667,25 @@ def _e_ei(m: _M, w: int) -> int | None:
     return None
 
 
+def _e_dvp(m: _M, w: int) -> int | None:
+    """DVP rt (Release 6, Vol. II 6.06): GPR[rt] <- VPControl (sign-
+    extended); the core's other VPs stop until this VP's EVP (emips.vp).
+    Without Config5.VP a NOP."""
+    core = m.vpcore
+    if core is not None:
+        m.write_reg(rt(w), core.dvp(m))
+    return None
+
+
+def _e_evp(m: _M, w: int) -> int | None:
+    """EVP rt (Release 6, Vol. II 6.06): GPR[rt] <- VPControl; the other
+    VPs go on.  Without Config5.VP a NOP."""
+    core = m.vpcore
+    if core is not None:
+        m.write_reg(rt(w), core.evp(m))
+    return None
+
+
 def _e_eret(m: _M, w: int) -> int | None:
     """ERET: return from exception (ERL → ErrorEPC, else EPC), clearing
     ERL / EXL and LLbit; from EXL with shadow sets and BEV = 0, CSS ←
@@ -4215,7 +4742,7 @@ def _e_rdpgpr(m: _M, w: int) -> int | None:
     """RDPGPR rd, rt: GPR[rd] ← SGPR[SRSCtl.PSS, rt] (with one register
     set the previous set is the current one)."""
     r = rt(w)
-    m.write_reg(rd(w), m.shadow[m.srs_field(C.SRS_PSS)][r] & M32 if r else 0)
+    m.write_dreg(rd(w), m.shadow[m.srs_field(C.SRS_PSS)][r] if r else 0)
     return None
 
 
@@ -4243,7 +4770,9 @@ def _e_rdhwr(m: _M, w: int) -> int | None:
     if num not in values or not (m.kernel_mode
                                  or m.cp0_read(*C.HWRENA) >> num & 1):
         raise _Arch(C.RI)
-    m.write_reg(rt(w), values[num])
+    # MIPS64: UserLocal is 64 bits wide when 64-bit operations are enabled
+    # (sign_extend_if_32bit_op), the others sign-extended
+    (m.write_dreg if num == 29 and m.ops64() else m.write_reg)(rt(w), values[num])
     return None
 
 
@@ -4260,8 +4789,8 @@ def _tcode(w: int) -> int:
     return (w >> 6) & 0x3FF
 
 
-def _simm(w: int) -> int:
-    return _s16(imm16(w)) & M32
+def _simm(m: _M, w: int) -> int:
+    return _s16(imm16(w)) & m.amask
 
 
 def _e_teq(m: _M, w: int) -> int | None:
@@ -4273,7 +4802,7 @@ def _e_tne(m: _M, w: int) -> int | None:
 
 
 def _e_tlt(m: _M, w: int) -> int | None:
-    return _trap(_s32(m.read_reg(rs(w))) < _s32(m.read_reg(rt(w))), _tcode(w))
+    return _trap(m.sgn(m.read_reg(rs(w))) < m.sgn(m.read_reg(rt(w))), _tcode(w))
 
 
 def _e_tltu(m: _M, w: int) -> int | None:
@@ -4281,7 +4810,7 @@ def _e_tltu(m: _M, w: int) -> int | None:
 
 
 def _e_tge(m: _M, w: int) -> int | None:
-    return _trap(_s32(m.read_reg(rs(w))) >= _s32(m.read_reg(rt(w))), _tcode(w))
+    return _trap(m.sgn(m.read_reg(rs(w))) >= m.sgn(m.read_reg(rt(w))), _tcode(w))
 
 
 def _e_tgeu(m: _M, w: int) -> int | None:
@@ -4289,27 +4818,27 @@ def _e_tgeu(m: _M, w: int) -> int | None:
 
 
 def _e_teqi(m: _M, w: int) -> int | None:
-    return _trap(m.read_reg(rs(w)) == _simm(w))
+    return _trap(m.read_reg(rs(w)) == _simm(m, w))
 
 
 def _e_tnei(m: _M, w: int) -> int | None:
-    return _trap(m.read_reg(rs(w)) != _simm(w))
+    return _trap(m.read_reg(rs(w)) != _simm(m, w))
 
 
 def _e_tgei(m: _M, w: int) -> int | None:
-    return _trap(_s32(m.read_reg(rs(w))) >= _s16(imm16(w)))
+    return _trap(m.sgn(m.read_reg(rs(w))) >= _s16(imm16(w)))
 
 
 def _e_tlti(m: _M, w: int) -> int | None:
-    return _trap(_s32(m.read_reg(rs(w))) < _s16(imm16(w)))
+    return _trap(m.sgn(m.read_reg(rs(w))) < _s16(imm16(w)))
 
 
 def _e_tgeiu(m: _M, w: int) -> int | None:
-    return _trap(m.read_reg(rs(w)) >= _simm(w))
+    return _trap(m.read_reg(rs(w)) >= _simm(m, w))
 
 
 def _e_tltiu(m: _M, w: int) -> int | None:
-    return _trap(m.read_reg(rs(w)) < _simm(w))
+    return _trap(m.read_reg(rs(w)) < _simm(m, w))
 
 
 def _e_break(m: _M, w: int) -> int | None:
@@ -4521,7 +5050,7 @@ def _cc_tf(m: _M, w: int) -> bool:                  # MOVF/MOVT: cc 20..18, tf 1
 
 def _e_movci(m: _M, w: int) -> int | None:          # integer MOVF / MOVT
     if _cc_tf(m, w):
-        m.write_reg(rd(w), m.read_reg(rs(w)))
+        m.write_dreg(rd(w), m.read_reg(rs(w)))
     return None
 
 
@@ -4612,7 +5141,7 @@ def _fp_load(size: int, indexed: bool = False, unaligned: bool = False) -> Execu
     def ex(m: _M, w: int) -> int | None:
         base = m.read_reg(rs(w))
         addr = (base + m.read_reg(rt(w))) if indexed else (base + _s16(imm16(w)))
-        addr &= M32
+        addr &= m.amask
         if unaligned:
             if not _fr64(m):
                 raise _Arch(C.RI)               # LUXC1 needs FR = 1
@@ -4630,7 +5159,7 @@ def _fp_store(size: int, indexed: bool = False, unaligned: bool = False) -> Exec
     def ex(m: _M, w: int) -> int | None:
         base = m.read_reg(rs(w))
         addr = (base + m.read_reg(rt(w))) if indexed else (base + _s16(imm16(w)))
-        addr &= M32
+        addr &= m.amask
         if unaligned:
             if not _fr64(m):
                 raise _Arch(C.RI)               # SUXC1 needs FR = 1
@@ -4723,9 +5252,9 @@ def _fpu_executors() -> dict[str, Executor]:
 def _compact(m: _M, cond: bool, target: int, *, link: bool = False,
              conditional: bool = True) -> int | None:
     if link:
-        m.write_reg(31, m.pc + 4)
+        m.write_dreg(31, m.pc + 4)
     if cond:
-        m._redirect = target & M32
+        m._redirect = target & m.amask
     elif conditional:
         m._forbidden = True
     return None
@@ -4743,14 +5272,17 @@ def _off26(m: _M, w: int) -> int:
     return m.pc + 4 + (_sx(w & 0x3FFFFFF, 26) << 2)
 
 
-def _ovf(a: int, b: int) -> bool:
+def _ovf(m: _M, a: int, b: int) -> bool:
+    """BOVC / BNVC: the 32-bit sum overflows — or (MIPS64) an operand is
+    not a sign-extended word (``input_overflow``, Vol. II-A64 6.06)."""
     r = _s32(a) + _s32(b)
-    return not -(1 << 31) <= r < (1 << 31)
+    return not -(1 << 31) <= r < (1 << 31) or m.wide and (
+        _s32(a) & M64 != a or _s32(b) & M64 != b)
 
 
 def _r6_branches() -> dict[str, Executor]:
     R = lambda m, w, f: m.read_reg(f(w))                    # noqa: E731
-    S = lambda m, w, f: _s32(m.read_reg(f(w)))              # noqa: E731
+    S = lambda m, w, f: m.sgn(m.read_reg(f(w)))             # noqa: E731
     two = {
         "BEQC": lambda m, w: R(m, w, rs) == R(m, w, rt),
         "BNEC": lambda m, w: R(m, w, rs) != R(m, w, rt),
@@ -4758,8 +5290,8 @@ def _r6_branches() -> dict[str, Executor]:
         "BLTC": lambda m, w: S(m, w, rs) < S(m, w, rt),
         "BGEUC": lambda m, w: R(m, w, rs) >= R(m, w, rt),
         "BLTUC": lambda m, w: R(m, w, rs) < R(m, w, rt),
-        "BOVC": lambda m, w: _ovf(R(m, w, rs), R(m, w, rt)),
-        "BNVC": lambda m, w: not _ovf(R(m, w, rs), R(m, w, rt)),
+        "BOVC": lambda m, w: _ovf(m, R(m, w, rs), R(m, w, rt)),
+        "BNVC": lambda m, w: not _ovf(m, R(m, w, rs), R(m, w, rt)),
     }
     one = {                                     # condition on rt; link?
         "BEQZALC": (lambda v: v == 0, True), "BNEZALC": (lambda v: v != 0, True),
@@ -4773,7 +5305,7 @@ def _r6_branches() -> dict[str, Executor]:
         ex[n] = (lambda c: lambda m, w: _compact(m, c(m, w), _off16(m, w)))(cond)
     for n, (cond, link) in one.items():
         ex[n] = (lambda c, l: lambda m, w: _compact(
-            m, c(_s32(m.read_reg(rt(w)))), _off16(m, w), link=l))(cond, link)
+            m, c(m.sgn(m.read_reg(rt(w)))), _off16(m, w), link=l))(cond, link)
     ex["BEQZC"] = lambda m, w: _compact(m, m.read_reg(rs(w)) == 0, _off21(m, w))
     ex["BNEZC"] = lambda m, w: _compact(m, m.read_reg(rs(w)) != 0, _off21(m, w))
     ex["BC"] = lambda m, w: _compact(m, True, _off26(m, w), conditional=False)
@@ -4792,21 +5324,21 @@ def _e_aui(m: _M, w: int) -> int | None:
 
 
 def _e_auipc(m: _M, w: int) -> int | None:
-    m.write_reg(rs(w), m.pc + (imm16(w) << 16))
+    m.write_dreg(rs(w), m.pc + (_s16(imm16(w)) << 16))
     return None
 
 
 def _e_aluipc(m: _M, w: int) -> int | None:
-    m.write_reg(rs(w), (m.pc + (imm16(w) << 16)) & ~0xFFFF)
+    m.write_dreg(rs(w), (m.pc + (_s16(imm16(w)) << 16)) & ~0xFFFF)
     return None
 
 
 def _pc19(m: _M, w: int) -> int:
-    return (m.pc + (_sx(w & 0x7FFFF, 19) << 2)) & M32
+    return (m.pc + (_sx(w & 0x7FFFF, 19) << 2)) & m.amask
 
 
 def _e_addiupc(m: _M, w: int) -> int | None:
-    m.write_reg(rs(w), _pc19(m, w))
+    m.write_dreg(rs(w), _pc19(m, w))
     return None
 
 
@@ -4818,7 +5350,7 @@ def _e_lwpc(m: _M, w: int) -> int | None:
 def _e_align(m: _M, w: int) -> int | None:
     bp = (w >> 6) & 3
     a, b = m.read_reg(rt(w)), m.read_reg(rs(w))
-    m.write_reg(rd(w), a if bp == 0 else (a << (8 * bp)) | (b >> (32 - 8 * bp)))
+    m.write_reg(rd(w), a if bp == 0 else (a << (8 * bp)) | ((b & M32) >> (32 - 8 * bp)))
     return None
 
 
@@ -4838,12 +5370,12 @@ def _e_lsa(m: _M, w: int) -> int | None:
 
 
 def _e_seleqz(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rs(w)) if m.read_reg(rt(w)) == 0 else 0)
+    m.write_dreg(rd(w), m.read_reg(rs(w)) if m.read_reg(rt(w)) == 0 else 0)
     return None
 
 
 def _e_selnez(m: _M, w: int) -> int | None:
-    m.write_reg(rd(w), m.read_reg(rs(w)) if m.read_reg(rt(w)) != 0 else 0)
+    m.write_dreg(rd(w), m.read_reg(rs(w)) if m.read_reg(rt(w)) != 0 else 0)
     return None
 
 
@@ -4857,19 +5389,19 @@ def _r6_muldiv() -> dict[str, Executor]:
     def sdiv(a: int, b: int, mod: bool) -> int:
         a, b = _s32(a), _s32(b)
         if b == 0:
-            return 0                       # UNPREDICTABLE (QEMU: 0)
+            return 0                       # UNPREDICTABLE (DEVIATIONS)
         q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
         return a - q * b if mod else q
 
     return {
         "MUL@R6": mk(lambda a, b: _s32(a) * _s32(b)),
         "MUH": mk(lambda a, b: (_s32(a) * _s32(b)) >> 32),
-        "MULU": mk(lambda a, b: a * b),
-        "MUHU": mk(lambda a, b: (a * b) >> 32),
+        "MULU": mk(lambda a, b: (a & M32) * (b & M32)),
+        "MUHU": mk(lambda a, b: ((a & M32) * (b & M32)) >> 32),
         "DIV@R6": mk(lambda a, b: sdiv(a, b, False)),
         "MOD": mk(lambda a, b: sdiv(a, b, True)),
-        "DIVU@R6": mk(lambda a, b: a // b if b else 0),
-        "MODU": mk(lambda a, b: a % b if b else 0),
+        "DIVU@R6": mk(lambda a, b: (a & M32) // (b & M32) if b & M32 else 0),
+        "MODU": mk(lambda a, b: (a & M32) % (b & M32) if b & M32 else 0),
     }
 
 
@@ -4998,7 +5530,7 @@ def _h_pref9(m: _M, w: int) -> int | None:
 
 def _h_prefx(m: _M, w: int) -> int | None:
     """PREFX hint, index(base): hint = bits 15..11."""
-    m.prefetch(rd(w), (m.read_reg(rs(w)) + m.read_reg(rt(w))) & M32)
+    m.prefetch(rd(w), (m.read_reg(rs(w)) + m.read_reg(rt(w))) & m.amask)
     return None
 
 
@@ -5021,15 +5553,42 @@ _HINT_EXECUTORS: dict[str, Executor] = {
 
 
 def _e16_addiupc(m: _M, w: int) -> int | None:
-    f = m._m16.f
-    m.write_reg(f["rx"], ((m._m16_base & ~3) + f["imm"]) & M32)
+    f = m._m16.f                                # (a word, sign-extended on MIPS64)
+    m.write_reg(f["rx"], (m._m16_base & ~3) + f["imm"])
     return None
 
 
 def _e16_lwpc(m: _M, w: int) -> int | None:
     f = m._m16.f
-    addr = ((m._m16_base & ~3) + f["imm"]) & M32
+    addr = ((m._m16_base & ~3) + f["imm"]) & m.amask
     m.write_reg(f["rx"], m.load(m.data_address(addr, 4, store=False), 4, "pcload"))
+    return None
+
+
+def _e16_ldpc(m: _M, w: int) -> int | None:
+    """LD ry, offset(pc) (MD00077): the base with its 3 low bits cleared;
+    extended, an unaligned sum is an Address Error."""
+    f = m._m16.f
+    addr = ((m._m16_base & ~7) + f["imm"]) & m.amask
+    m.write_dreg(f["ry"], m.load(m.data_address(addr, 8, store=False), 8, "pcload"))
+    return None
+
+
+def _e16_daddiupc(m: _M, w: int) -> int | None:
+    f = m._m16.f                                # DADDIU ry, pc, imm: all 64 bits
+    m.write_dreg(f["ry"], ((m._m16_base & ~3) + f["imm"]) & m.amask)
+    return None
+
+
+def _e16_sew(m: _M, w: int) -> int | None:
+    rx = m._m16.f["rx"]                         # SEW (MD00077): rx 31..0 sign-extended
+    m.write_reg(rx, m.read_reg(rx))
+    return None
+
+
+def _e16_zew(m: _M, w: int) -> int | None:
+    rx = m._m16.f["rx"]                         # ZEW (MD00077): 0^32 || rx 31..0
+    m.write_dreg(rx, m.read_reg(rx) & M32)
     return None
 
 
@@ -5038,7 +5597,7 @@ def _e16_branch(cond: Callable[[_M, dict], bool]) -> Executor:
     def run(m: _M, w: int) -> int | None:
         i = m._m16
         if cond(m, i.f):
-            m._redirect = M16.branch_target(i, m.pc) | 1
+            m._redirect = M16.branch_target(i, m.pc, m.amask) | 1
         return None
     return run
 
@@ -5051,7 +5610,7 @@ def _e16_jr(reg: int | None) -> Executor:
 
 def _e16_jalr(m: _M, w: int) -> int | None:
     target = m.read_reg(m._m16.f["rx"])
-    m.write_reg(31, (m.pc + 4) | 1)             # past the jump and its delay slot
+    m.write_dreg(31, ((m.pc + 4) | 1) & m.amask)    # past the jump and its delay slot
     return target
 
 
@@ -5064,15 +5623,15 @@ def _e16_jrc(reg: int | None) -> Executor:
 
 def _e16_jalrc(m: _M, w: int) -> int | None:
     target = m.read_reg(m._m16.f["rx"])
-    m.write_reg(31, (m.pc + 2) | 1)
+    m.write_dreg(31, ((m.pc + 2) | 1) & m.amask)
     m._redirect = target
     return None
 
 
 def _e16_jal(exchange: bool) -> Executor:
     def run(m: _M, w: int) -> int | None:
-        m.write_reg(31, (m.pc + 6) | 1)         # past the 32-bit jump and its slot
-        target = M16.jump_target(m._m16, m.pc)
+        m.write_dreg(31, ((m.pc + 6) | 1) & m.amask)    # past the 32-bit jump and its slot
+        target = M16.jump_target(m._m16, m.pc, m.amask)
         return target if exchange else target | 1
     return run
 
@@ -5087,34 +5646,38 @@ def _m16_frame_regs(f: dict, statics: int) -> list[int]:
 def _e16_save(m: _M, w: int) -> int | None:
     """SAVE (Vol. IV-a): the incoming arguments into the caller's area,
     then the registers below sp, then sp -= the frame.  sp changes last:
-    a fault restarts the instruction from the start."""
+    a fault restarts the instruction from the start.  On MIPS64 the low
+    word of each register (MD00077 SAVE), sp a 64-bit subtraction."""
     f = m._m16.f
     sp = m.read_reg(29)
     args, statics = M16.args_statics(f["aregs"])
+    amask = m.amask
 
     def put(addr: int, reg: int) -> None:
-        m.store(m.data_address(addr & M32, 4, store=True), m.read_reg(reg), 4)
+        m.store(m.data_address(addr & amask, 4, store=True), m.read_reg(reg) & M32, 4)
     for k in range(args):
         put(sp + 4 * k, 4 + k)
     at = sp
     for reg in _m16_frame_regs(f, statics):
         at -= 4
         put(at, reg)
-    m.write_reg(29, (sp - f["frame"]) & M32)
+    m.write_dreg(29, (sp - f["frame"]) & amask)
     return None
 
 
 def _e16_restore(m: _M, w: int) -> int | None:
     """RESTORE: the same registers from the frame's top down, then sp +=
-    the frame (the arguments stay in the caller's area)."""
+    the frame (the arguments stay in the caller's area); on MIPS64 each
+    word sign-extended (MD00077 RESTORE: LoadStackWord)."""
     f = m._m16.f
-    top = (m.read_reg(29) + f["frame"]) & M32
+    amask = m.amask
+    top = (m.read_reg(29) + f["frame"]) & amask
     _args, statics = M16.args_statics(f["aregs"])
     at = top
     for reg in _m16_frame_regs(f, statics):
         at -= 4
-        m.write_reg(reg, m.load(m.data_address(at & M32, 4, store=False), 4))
-    m.write_reg(29, top)
+        m.write_reg(reg, m.load(m.data_address(at & amask, 4, store=False), 4))
+    m.write_dreg(29, top)
     return None
 
 
@@ -5129,13 +5692,16 @@ _M16_EXECUTORS: dict[str, Executor] = {
     "M16.JRC": _e16_jrc(None), "M16.JRCRA": _e16_jrc(31), "M16.JALRC": _e16_jalrc,
     "M16.JAL": _e16_jal(False), "M16.JALX": _e16_jal(True),
     "M16.SAVE": _e16_save, "M16.RESTORE": _e16_restore,
+    "M16.LDPC": _e16_ldpc, "M16.DADDIUPC": _e16_daddiupc, "M16.SEW": _e16_sew,
+    "M16.ZEW": _e16_zew,
 }
 
 
 # -- microMIPS (emips.micromips): the instructions without a MIPS32 twin ----
 # (the others run as their MIPS32 twin).  m._mm is the instruction, m.pc
 # its address.  Branch / jump targets keep bit 0 = 1 (microMIPS), the
-# links carry it too (MD00582 3.5); offsets count halfwords.
+# links carry it too (MD00582 3.5); offsets count halfwords.  microMIPS64
+# (MD00594): the same, with GPR-width addresses, links and compares.
 
 
 def _emm_branch(cond: Callable[[_M, dict], bool], *, linked: bool = False) -> Executor:
@@ -5145,8 +5711,8 @@ def _emm_branch(cond: Callable[[_M, dict], bool], *, linked: bool = False) -> Ex
         i = m._mm
         taken = cond(m, i.f)
         if linked:
-            m.write_reg(31, MM.link(i, m.pc))
-        return MM.branch_target(i, m.pc) | 1 if taken else None
+            m.write_dreg(31, MM.link(i, m.pc) & m.amask)
+        return MM.branch_target(i, m.pc, m.amask) | 1 if taken else None
     return run
 
 
@@ -5155,7 +5721,7 @@ def _emm_compact(cond: Callable[[_M, dict], bool]) -> Executor:
     def run(m: _M, w: int) -> int | None:
         i = m._mm
         if cond(m, i.f):
-            m._redirect = MM.branch_target(i, m.pc) | 1
+            m._redirect = MM.branch_target(i, m.pc, m.amask) | 1
         return None
     return run
 
@@ -5164,7 +5730,7 @@ def _emm_jalr(m: _M, w: int) -> int | None:
     """JALR / JALRS (.HB) rt, rs; JR = JALR $0 (the link to $0 vanishes)."""
     f = m._mm.f
     target = m.read_reg(f["s"])
-    m.write_reg(f["t"], MM.link(m._mm, m.pc))
+    m.write_dreg(f["t"], MM.link(m._mm, m.pc) & m.amask)
     return target
 
 
@@ -5172,7 +5738,7 @@ def _emm_jr16(link: bool) -> Executor:
     def run(m: _M, w: int) -> int | None:
         target = m.read_reg(m._mm.f["s"])
         if link:
-            m.write_reg(31, MM.link(m._mm, m.pc))
+            m.write_dreg(31, MM.link(m._mm, m.pc) & m.amask)
         return target
     return run
 
@@ -5196,8 +5762,8 @@ def _emm_jump(link: bool, exchange: bool = False) -> Executor:
         if exchange and not m.mips32:
             raise _Arch(C.RI)                   # MD00582 JALX: no MIPS32 to go to
         if link:
-            m.write_reg(31, MM.link(i, m.pc))
-        target = MM.jump_target(i, m.pc)
+            m.write_dreg(31, MM.link(i, m.pc) & m.amask)
+        target = MM.jump_target(i, m.pc, m.amask)
         return target if exchange else target | 1
     return run
 
@@ -5213,43 +5779,48 @@ def _emm_addiupc(m: _M, w: int) -> int | None:
 def _emm_lwxs(m: _M, w: int) -> int | None:
     """LWXS rd, index(base): base + index * 4."""
     f = m._mm.f
-    addr = (m.read_reg(f["b"]) + (m.read_reg(f["t"]) << 2)) & M32
+    addr = (m.read_reg(f["b"]) + (m.read_reg(f["t"]) << 2)) & m.amask
     m.write_reg(f["d"], m.load(m.data_address(addr, 4, store=False), 4))
     return None
 
 
-def _emm_words(m: _M, regs: list[int], base: int, store: bool) -> None:
+def _emm_words(m: _M, regs: list[int], base: int, store: bool, size: int = 4) -> None:
     """LWM / SWM / LWP / SWP: consecutive aligned words (5.4; the address
-    must be word-aligned, even in Release 6).  Loads read every word
-    before writing a register (a fault leaves the registers as they
-    were); stores go in order (a fault after the first leaves the first
-    ones written: the instruction restarts and writes them again)."""
-    m.data_address(base, 4, store=store, atomic=True)
+    must be word-aligned, even in Release 6); LDM / SDM / LDP / SDP the
+    same with doublewords (MD00594).  Loads read every word before
+    writing a register (a fault leaves the registers as they were);
+    stores go in order (a fault after the first leaves the first ones
+    written: the instruction restarts and writes them again)."""
+    m.data_address(base, size, store=store, atomic=True)
+    mask = m.amask
     if store:
         for k, reg in enumerate(regs):
-            m.store(m.data_address((base + 4 * k) & M32, 4, store=True), m.read_reg(reg), 4)
+            m.store(m.data_address((base + size * k) & mask, size, store=True),
+                    m.read_reg(reg), size)
         return
-    vals = [m.load(m.data_address((base + 4 * k) & M32, 4, store=False), 4)
+    vals = [m.load(m.data_address((base + size * k) & mask, size, store=False), size)
             for k in range(len(regs))]
+    write = m.write_reg if size == 4 else m.write_dreg
     for reg, v in zip(regs, vals):
-        m.write_reg(reg, v)
+        write(reg, v)
 
 
-def _emm_pair(store: bool) -> Executor:
+def _emm_pair(store: bool, size: int = 4) -> Executor:
     def run(m: _M, w: int) -> int | None:
         f = m._mm.f
         if f["t"] == 31 or not store and f["t"] == f["b"]:
             raise _Arch(C.RI)                   # UNPREDICTABLE: QEMU's RI (DEVIATIONS)
-        _emm_words(m, [f["t"], f["t"] + 1], (m.read_reg(f["b"]) + f["o"]) & M32, store)
+        _emm_words(m, [f["t"], f["t"] + 1], (m.read_reg(f["b"]) + f["o"]) & m.amask, store,
+                   size)
         return None
     return run
 
 
-def _emm_multiple(store: bool) -> Executor:
+def _emm_multiple(store: bool, size: int = 4) -> Executor:
     def run(m: _M, w: int) -> int | None:
         i = m._mm
         base = 29 if i.form in ("LWM16", "SWM16") else i.f["b"]
-        _emm_words(m, MM.reglist(i), (m.read_reg(base) + i.f["o"]) & M32, store)
+        _emm_words(m, MM.reglist(i), (m.read_reg(base) + i.f["o"]) & m.amask, store, size)
         return None
     return run
 
@@ -5259,8 +5830,8 @@ def _emm_movep(m: _M, w: int) -> int | None:
     f = m._mm.f
     rd, re = MM.MOVEP_DEST[f["e"]]
     a, b = m.read_reg(f["s"]), m.read_reg(f["t"])
-    m.write_reg(rd, a)
-    m.write_reg(re, b)
+    m.write_dreg(rd, a)
+    m.write_dreg(re, b)
     return None
 
 
@@ -5274,10 +5845,10 @@ def _emm6(cond: Callable[[_M, dict], bool], *, link: bool = False) -> Executor:
     def run(m: _M, w: int) -> int | None:
         i = m._mm
         if link:
-            m.write_reg(31, (m.pc + i.size) | 1)
+            m.write_dreg(31, ((m.pc + i.size) | 1) & m.amask)
         taken = cond(m, i.f)
         if taken:
-            m._redirect = MM.branch_target(i, m.pc) | 1
+            m._redirect = MM.branch_target(i, m.pc, m.amask) | 1
         return None
     return run
 
@@ -5290,9 +5861,9 @@ def _emm6_jump(link: str | None, offset: bool = False) -> Executor:
         f = i.f
         target = m.read_reg(f["t"] if offset else f["s"])
         if offset:
-            target = (target + f["i"]) & M32
+            target = (target + f["i"]) & m.amask
         if link is not None:
-            m.write_reg(31 if link == "ra" else f[link], (m.pc + i.size) | 1)
+            m.write_dreg(31 if link == "ra" else f[link], ((m.pc + i.size) | 1) & m.amask)
         m._redirect = target
         return None
     return run
@@ -5304,7 +5875,7 @@ def _emm6_bc1(nonzero: bool) -> Executor:
             raise _Arch(C.CPU, ce=1)
         i = m._mm
         if bool(m.fpr[i.f["T"]] & 1) == nonzero:
-            m._redirect = MM.branch_target(i, m.pc) | 1
+            m._redirect = MM.branch_target(i, m.pc, m.amask) | 1
         return None
     return run
 
@@ -5312,13 +5883,23 @@ def _emm6_bc1(nonzero: bool) -> Executor:
 def _emm6_lwpc(m: _M, w: int) -> int | None:
     """LWPC rt: the word at (PC with bits 1:0 cleared) + the offset."""
     f = m._mm.f
-    addr = ((m.pc & ~3) + f["o"]) & M32
+    addr = ((m.pc & ~3) + f["o"]) & m.amask
     m.write_reg(f["t"], m.load(m.data_address(addr, 4, store=False), 4, "pcload"))
     return None
 
 
+def _emm6_lwupc(m: _M, w: int) -> int | None:
+    """LWUPC rt (microMIPS64 Release 6): the word at (PC with bits 1:0
+    cleared, as LWPC: DEVIATIONS "microMIPS64") + the offset, zero-
+    extended."""
+    f = m._mm.f
+    addr = ((m.pc & ~3) + f["o"]) & m.amask
+    m.write_dreg(f["t"], m.load(m.data_address(addr, 4, store=False), 4, "pcload"))
+    return None
+
+
 def _sg(m: _M, f: dict, k: str) -> int:
-    return _s32(m.read_reg(f[k]))
+    return m.sgn(m.read_reg(f[k]))
 
 
 _MM6_EXECUTORS: dict[str, Executor] = {
@@ -5332,8 +5913,8 @@ _MM6_EXECUTORS: dict[str, Executor] = {
     "MM.BGEC": _emm6(lambda m, f: _sg(m, f, "s") >= _sg(m, f, "t")),
     "MM.BLTUC": _emm6(lambda m, f: m.read_reg(f["s"]) < m.read_reg(f["t"])),
     "MM.BGEUC": _emm6(lambda m, f: m.read_reg(f["s"]) >= m.read_reg(f["t"])),
-    "MM.BOVC": _emm6(lambda m, f: _ovf(m.read_reg(f["s"]), m.read_reg(f["t"]))),
-    "MM.BNVC": _emm6(lambda m, f: not _ovf(m.read_reg(f["s"]), m.read_reg(f["t"]))),
+    "MM.BOVC": _emm6(lambda m, f: _ovf(m, m.read_reg(f["s"]), m.read_reg(f["t"]))),
+    "MM.BNVC": _emm6(lambda m, f: not _ovf(m, m.read_reg(f["s"]), m.read_reg(f["t"]))),
     "MM.BLTZC": _emm6(lambda m, f: _sg(m, f, "t") < 0),
     "MM.BLEZC": _emm6(lambda m, f: _sg(m, f, "t") <= 0),
     "MM.BGEZC": _emm6(lambda m, f: _sg(m, f, "t") >= 0),
@@ -5348,11 +5929,12 @@ _MM6_EXECUTORS: dict[str, Executor] = {
     "MM.JRC16": _emm6_jump(None), "MM.JALRC16": _emm6_jump("ra"),
     "MM.JALRC": _emm6_jump("t"), "MM.JALRC.HB": _emm6_jump("t"),
     "MM.JIC": _emm6_jump(None, offset=True), "MM.JIALC": _emm6_jump("ra", offset=True),
-    "MM.JRCADDIUSP": _emm_jraddiusp, "MM.LWPC": _emm6_lwpc,
+    "MM.JRCADDIUSP": _emm_jraddiusp, "MM.LWPC": _emm6_lwpc, "MM.LWUPC": _emm6_lwupc,
 }
 
 #: UNPREDICTABLE in a delay slot (MD00582 5.4): Reserved Instruction, as QEMU
-_MM_NO_SLOT = frozenset({"MM.LWP", "MM.SWP", "MM.LWM16", "MM.SWM16", "MM.LWM32", "MM.SWM32"})
+_MM_NO_SLOT = frozenset({"MM.LWP", "MM.SWP", "MM.LWM16", "MM.SWM16", "MM.LWM32", "MM.SWM32",
+                         "MM.LDP", "MM.SDP", "MM.LDM", "MM.SDM"})
 
 
 _MM_EXECUTORS: dict[str, Executor] = {
@@ -5362,14 +5944,14 @@ _MM_EXECUTORS: dict[str, Executor] = {
     "MM.BEQ": _emm_branch(lambda m, f: m.read_reg(f["s"]) == m.read_reg(f["t"])),
     "MM.BPOSGE32": _emm_branch(lambda m, f: (m.dspctl & 0x3F) >= 32),   # MD00764
     "MM.BNE": _emm_branch(lambda m, f: m.read_reg(f["s"]) != m.read_reg(f["t"])),
-    "MM.BLTZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1),
-    "MM.BGEZ": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0),
-    "MM.BLEZ": _emm_branch(lambda m, f: _s32(m.read_reg(f["s"])) <= 0),
-    "MM.BGTZ": _emm_branch(lambda m, f: _s32(m.read_reg(f["s"])) > 0),
-    "MM.BLTZAL": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1, linked=True),
-    "MM.BGEZAL": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0, linked=True),
-    "MM.BLTZALS": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 1, linked=True),
-    "MM.BGEZALS": _emm_branch(lambda m, f: m.read_reg(f["s"]) >> 31 == 0, linked=True),
+    "MM.BLTZ": _emm_branch(lambda m, f: _sg(m, f, "s") < 0),
+    "MM.BGEZ": _emm_branch(lambda m, f: _sg(m, f, "s") >= 0),
+    "MM.BLEZ": _emm_branch(lambda m, f: _sg(m, f, "s") <= 0),
+    "MM.BGTZ": _emm_branch(lambda m, f: _sg(m, f, "s") > 0),
+    "MM.BLTZAL": _emm_branch(lambda m, f: _sg(m, f, "s") < 0, linked=True),
+    "MM.BGEZAL": _emm_branch(lambda m, f: _sg(m, f, "s") >= 0, linked=True),
+    "MM.BLTZALS": _emm_branch(lambda m, f: _sg(m, f, "s") < 0, linked=True),
+    "MM.BGEZALS": _emm_branch(lambda m, f: _sg(m, f, "s") >= 0, linked=True),
     "MM.BC1F": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 0),
     "MM.BC1T": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 1),
     "MM.BEQZC": _emm_compact(lambda m, f: m.read_reg(f["s"]) == 0),
@@ -5384,6 +5966,8 @@ _MM_EXECUTORS: dict[str, Executor] = {
     "MM.LWP": _emm_pair(False), "MM.SWP": _emm_pair(True),
     "MM.LWM16": _emm_multiple(False), "MM.SWM16": _emm_multiple(True),
     "MM.LWM32": _emm_multiple(False), "MM.SWM32": _emm_multiple(True),
+    "MM.LDP": _emm_pair(False, 8), "MM.SDP": _emm_pair(True, 8),     # microMIPS64
+    "MM.LDM": _emm_multiple(False, 8), "MM.SDM": _emm_multiple(True, 8),
     **_MM6_EXECUTORS,
 }
 
@@ -5397,6 +5981,7 @@ _EXECUTORS: dict[str, Executor] = {
     "BLTZAL": _e_bltzal, "BLTZALL": _e_bltzall, "BLTZL": _e_bltzl,
     "BNE": _e_bne, "BNEL": _e_bnel, "BREAK": _e_break,
     "CLO": _e_clo, "CLZ": _e_clz, "DERET": _e_deret, "DI": _e_di,
+    "DVP": _e_dvp, "EVP": _e_evp,
     "DIV": _e_div, "DIVU": _e_divu, "EI": _e_ei, "ERET": _e_eret,
     "TLBP": _tlb_op("tlbp"), "TLBR": _tlb_op("tlbr"), "TLBWI": _tlb_op("tlbwi"),
     "TLBWR": _tlb_op("tlbwr"), "TLBINV": _tlb_op("tlbinv"),
@@ -5435,6 +6020,10 @@ _EXECUTORS.update(_r6_executors())
 _EXECUTORS.update(_r6_fpu())
 _EXECUTORS.update(DSP.EXECUTORS)
 _EXECUTORS.update(MT.EXECUTORS)
+
+# MIPS64 (PLAN M22): the 64-bit machine and the doubleword instructions
+from . import sim64 as _S64  # noqa: E402  (it builds on everything above)
+_EXECUTORS.update(_S64.EXECUTORS)
 
 #: Row names with an executor (dispatched by name, never by ``funct``).
 #: the MIPS32 rows with an executor (MIPS16e's own M16.* executors are not rows)

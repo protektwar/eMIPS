@@ -38,8 +38,25 @@ def _mt(o: Options) -> bool:
     return o.mt not in ("auto", "none")
 
 
+def _vpes(o: Options) -> int:
+    from .mt import parse_spec
+    try:
+        spec = parse_spec(o.mt)
+    except ValueError:
+        return 1
+    return spec[0] if spec else 1
+
+
+#: the VPs a CPS's boot firmware serves (emips.cps.MAX_VPS)
+_MAX_VPS = 8
+
+
 def _malta(o: Options) -> bool:
     return o.board.split(":")[0] == "malta"
+
+
+def _mips64(o: Options) -> bool:
+    return o.arch == "mips64"
 
 
 @dataclass(frozen=True)
@@ -60,6 +77,21 @@ class Rule:
 
 
 RULES = (
+    # first, MIPS64 (PLAN M22): the 64-bit core has none of these yet — the
+    # rules below see the settings they leave
+    Rule("compressed", "arch", lambda o, r: _mips64(o) and o.compressed.startswith("micromips")
+         and not at_least(r, "R3"), lambda o: setattr(o, "compressed", "auto"),
+         "microMIPS64 needs Release 3 or later (MD00594 3.1: microMIPS came with Release 3)"),
+    Rule("c_isa", "arch", lambda o, r: _mips64(o) and o.c_isa == "micromips"
+         and not at_least(r, "R3"), lambda o: setattr(o, "c_isa", "mips32"),
+         "microMIPS64 needs Release 3 or later (MD00594 3.1)"),
+    Rule("model", "arch", lambda o, r: _mips64(o) and o.model == "24k",
+         lambda o: setattr(o, "model", "5-stage"),
+         "the 24K is a MIPS32 core (MD00343): a MIPS64 program runs on the 5-stage pipeline"),
+    Rule("core", "arch", lambda o, r: (c := _cores.get(o.core)) is not None and c.arch != o.arch,
+         lambda o: setattr(o, "core", ""),
+         lambda o, r: (f"the {_cores.get(o.core).title} is a "
+                       f"{_cores.get(o.core).arch.upper()} core")),
     Rule("compressed", "release", lambda o, r: o.compressed == "mips16e" and r == "R6",
          lambda o: setattr(o, "compressed", "auto"),
          "Release 6 has no MIPS16e (it was removed; microMIPS R6 is its 16-bit ISA)"),
@@ -97,6 +129,10 @@ RULES = (
          lambda o: setattr(o, "mt", "auto"),
          "the MT Module needs Release 2-5 (MD00378 1.1: Release 2; Release 6 replaced "
          "it with DVP / EVP and has none of its instructions)"),
+    Rule("vps", "release", lambda o, r: o.vps > 1 and r != "R6",
+         lambda o: setattr(o, "vps", 1),
+         "virtual processors are Release 6 multi-threading (Vol. III 9.8, Config5.VP; "
+         "before Release 6: the MT Module)"),
     Rule("shadow_sets", "release", lambda o, r: o.shadow_sets > 1 and not at_least(r, "R2"),
          lambda o: setattr(o, "shadow_sets", 1),
          "shadow register sets exist from Release 2 (SRSCtl / SRSMap); Release 1 has the "
@@ -111,6 +147,11 @@ RULES = (
          lambda o: setattr(o, "cores", 1),
          "a multi-core system (CPS) is made of Release 2+ cores (EBase.CPUNum; the 1004K, "
          "interAptiv, P5600)"),
+    Rule("cores", "mt", lambda o, r: _mt(o) and o.cores * _vpes(o) > _MAX_VPS,
+         lambda o: setattr(o, "cores", _MAX_VPS // _vpes(o)),
+         lambda o, r: (f"{o.cores} MT cores of {_vpes(o)} VPEs: the boot firmware's GIC "
+                       f"routes the IPIs of {_MAX_VPS} VPs (Boot-MIPS init_gic; the MT CPSs, "
+                       "the 1004K / interAptiv, have up to 4 cores of 2 VPEs)")),
     Rule("iocu", "cores", lambda o, r: o.iocu and o.cores < 2,
          lambda o: setattr(o, "iocu", False),
          "an I/O Coherence Unit is part of a multi-core system's Coherence Manager "
@@ -123,6 +164,11 @@ RULES = (
          lambda o: setattr(o, "boot", "kernel"),
          "user mode on the Malta needs a TLB: the boot firmware's refill handler maps "
          "kuseg into the SDRAM (the fixed mapping would put it beyond it)"),
+    Rule("board", "core", lambda o, r: o.core == "20kc" and _malta(o),
+         lambda o: setattr(o, "board", "flat"),
+         "the 20Kc was on the Core20K card, whose system controller is the Bonito64 "
+         "(MD00008 Table 1.1): eMIPS's Malta has the CoreLV's GT-64120, which carried "
+         "4K and 5K-class CPUs (MD00007)"),
     Rule("disks", "board", lambda o, r: bool(o.disks.strip()) and not _malta(o),
          lambda o: setattr(o, "disks", ""),
          "the IDE disks are on the Malta's PIIX4 south bridge: the flat board has no "
@@ -182,6 +228,15 @@ def program_problem(o: Options, kind: str, program=None) -> str | None:
     if kind in ("c", "elf") and _malta(o):
         return ("C programs and ELF executables are linked for the flat memory layout "
                 "(code at 0x00400000): on the Malta that is not memory — choose the flat board")
+    if kind == "elf" and getattr(program, "arch", o.arch) != o.arch:
+        return (f"the program is an {'ELF64 (n64)' if program.arch == 'mips64' else 'ELF32'}: "
+                f"it runs on {program.arch.upper()} — open it again, or choose "
+                f"{program.arch.upper()}")
+    if (_mips64(o) and not o.mmu.startswith(("tlb", "ftlb"))
+            and max(getattr(program, "image", None) or (0,)) > 0xFFFFFFFF):
+        return ("the program has code or data above the 32-bit compatibility space (a "
+                "64-bit address): that needs 64-bit addressing, Config.AT = 2 — a TLB MMU "
+                f"(--mmu tlb; this is --mmu {o.mmu})")
     core = _cores.get(o.core)
     if getattr(program, "mt", False) and o.mt == "none":
         return ("the program has MT Module instructions: " + (

@@ -243,6 +243,11 @@ for teachers.</p>
 <p>Also: <strong>PC</strong>, <strong>HI</strong> / <strong>LO</strong> (<code>mult</code>, <code>div</code>; <code>mfhi</code>, <code>mflo</code>), the FPU's
 <code>$f0</code>–<code>$f31</code> and FCSR (<a href="#64-the-fpu-control-register-fcsr">6.4</a>), and CP0
 (<a href="#63-cp0-registers-and-their-bits">6.3</a>).</p>
+<p>On a <strong>MIPS64</strong> core (<code>--arch mips64</code>) every register has 64 bits and the
+names are the n64 ABI's: <code>$8</code>–<code>$11</code> are <code>$a4</code>–<code>$a7</code> (arguments 5–8),
+<code>$12</code>–<code>$15</code> are <code>$t0</code>–<code>$t3</code>, and there is no <code>$t4</code>–<code>$t7</code>; <code>$sp</code>
+starts at <code>0x7fffeff0</code>
+(<a href="02-writing-programs.html#223-mips64-64-bit-programs">Phase 2, 2.23</a>).</p>
 <h2 id="63-cp0-registers-and-their-bits">6.3 CP0 registers and their bits</h2>
 <p>Read with <code>mfc0 rt, $n</code>, write with <code>mtc0 rt, $n</code> (kernel mode).  The
 ones a student program uses:</p>
@@ -271,6 +276,11 @@ ones a student program uses:</p>
 <td>(MT Module, the core) MVPControl: CPA (3) cache way exclusion, STLB (2) one shared TLB, VPC (1) configuration state, EVP (0) the VPEs run; MVPConf0: PVPE (13–10) VPEs − 1, PTC (7–0) TCs − 1, GS (28) gating storage</td>
 </tr>
 <tr>
+<td style="text-align: right;">0, 4</td>
+<td>VPControl</td>
+<td>(Release 6 VPs, Config5.VP) DIS (0): this VP's <code>dvp</code> holds the core's other VPs; read-only — <code>dvp</code> / <code>evp</code> set and clear it</td>
+</tr>
+<tr>
 <td style="text-align: right;">1, 1–7</td>
 <td>VPEControl, VPEConf0, VPEConf1, YQMask, VPESchedule, VPEScheFBack, VPEOpt</td>
 <td>(MT Module, each VPE) VPEControl: YSI (21) / GSI (20) the scheduler intercepts, EXCPT (18–16) the last Thread exception's reason, TE (15) several TCs issue, TargTC (7–0) the TC <code>mftr</code> / <code>mttr</code> reach; VPEConf0: XTC (28–21) the TC that runs alone in an exception, MVP (1), VPA (0) the VPE runs; YQMask the YIELD qualifier inputs <code>yield</code> may name; VPESchedule.GPO (5) fixed group priorities (WRR)</td>
@@ -288,7 +298,7 @@ ones a student program uses:</p>
 <tr>
 <td style="text-align: right;">4</td>
 <td>Context</td>
-<td>(TLB) PTEBase (31–23) for the OS; BadVPN2 (22–4) = the failing page pair</td>
+<td>(TLB) PTEBase (31–23) for the OS; BadVPN2 (22–4) = the failing page pair (MIPS64: PTEBase 63–23, BadVPN2 still VA 31–13)</td>
 </tr>
 <tr>
 <td style="text-align: right;">5</td>
@@ -326,9 +336,19 @@ ones a student program uses:</p>
 <td>(Release 3+ with a TLB, Release 6) the faulting instruction / the branch before it</td>
 </tr>
 <tr>
+<td style="text-align: right;">3, 1</td>
+<td>GlobalNumber</td>
+<td>(Release 6 VPs) CoreNum (11–8), VPId (7–0); the VP's number in the system (EBase.CPUNum, the GIC's) is core × 4 + VP</td>
+</tr>
+<tr>
 <td style="text-align: right;">9</td>
 <td>Count</td>
 <td>counts up (every 2 cycles by default)</td>
+</tr>
+<tr>
+<td style="text-align: right;">9, 6 / 7</td>
+<td>SAARI, SAAR</td>
+<td>(the I6400's ITU) SAARI.TARGET (5–0) = 0: the ITU (one SAARI a VP); SAAR (one a core): ADDR (43–13) = physical address bits 47–17, SIZE (5–1) = 17 (128 KB), EN (0)</td>
 </tr>
 <tr>
 <td style="text-align: right;">11</td>
@@ -338,7 +358,7 @@ ones a student program uses:</p>
 <tr>
 <td style="text-align: right;">12</td>
 <td>Status</td>
-<td>mode, interrupt enables, coprocessor enables</td>
+<td>mode, interrupt enables, coprocessor enables; MIPS64: KX / SX / UX (7 / 6 / 5) 64-bit addresses in kernel / supervisor / user mode, PX (23) 64-bit operations in user mode, FR (26) 64-bit FPU registers</td>
 </tr>
 <tr>
 <td style="text-align: right;">12, 1</td>
@@ -363,7 +383,7 @@ ones a student program uses:</p>
 <tr>
 <td style="text-align: right;">10</td>
 <td>EntryHi</td>
-<td>(TLB) VPN2 (31–13) = the page pair of an entry or of the failing address; ASID (7–0) = the current address space; EHINV (10) invalidate (Release 3)</td>
+<td>(TLB) VPN2 (31–13) = the page pair of an entry or of the failing address; ASID (7–0) = the current address space; EHINV (10) invalidate (Release 3); MIPS64: R (63–62) the region, VPN2 = VA 39–13</td>
 </tr>
 <tr>
 <td style="text-align: right;">14</td>
@@ -373,7 +393,7 @@ ones a student program uses:</p>
 <tr>
 <td style="text-align: right;">16</td>
 <td>Config</td>
-<td>MT (9–7) = 3 fixed mapping MMU, 1 TLB; K0 / KU / K23 (KU, K23: fixed mapping only) = cacheability of kseg0 / kuseg / kseg2+3: 0 write-through, 2 uncached, 3 write-back, 7 uncached accelerated; MM (18) = 1: the write buffer merges write-through stores</td>
+<td>MT (9–7) = 3 fixed mapping MMU, 1 TLB; AT (14–13) = 0 MIPS32, 1 MIPS64 with 32-bit addresses, 2 MIPS64 with 64-bit addresses; K0 / KU / K23 (KU, K23: fixed mapping only) = cacheability of kseg0 / kuseg / kseg2+3: 0 write-through, 2 uncached, 3 write-back, 7 uncached accelerated; MM (18) = 1: the write buffer merges write-through stores</td>
 </tr>
 <tr>
 <td style="text-align: right;">16, 1</td>
@@ -399,6 +419,11 @@ ones a student program uses:</p>
 <td style="text-align: right;">18, 0–3 / 19, 0–3</td>
 <td>WatchLo / WatchHi</td>
 <td>watch registers: WatchLo VAddr (31–3, a doubleword), I (2, pairs 0–1) / R (1) / W (0, pairs 2–3) enables; WatchHi M (31) more pairs, G (30) any ASID, ASID (23–16), Mask (11–3), I / R / W (2–0) what matched (write 1 to clear) (<a href="05-understanding.html#hardware-breakpoints-and-watch-registers">Phase 5</a>)</td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td>XContext</td>
+<td>(MIPS64, TLB) PTEBase (63–33) for the OS; R (32–31) the region and BadVPN2 (30–4) = VA 39–13 of the failing page pair: <code>dmfc0</code> of it points at the pair's entries (<a href="05-understanding.html#the-64-bit-address-space">Phase 5</a>)</td>
 </tr>
 <tr>
 <td style="text-align: right;">23</td>
@@ -893,6 +918,16 @@ pointing there; one met by an instruction fetch is taken at that fetch.</p>
 (Status.ERL = 0); in the reset state kuseg addresses are their own
 physical address.  Segments, who may access them and how they are
 translated: <a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>.</p>
+<p>On a <strong>MIPS64</strong> core the same addresses are sign-extended (<code>.text</code> =
+<code>0x0000000000400000</code>, <code>.ktext</code> = <code>0xffffffff80000180</code>); <code>$sp</code> starts at
+<code>0x7fffeff0</code>, and the refill handler of the 64-bit segments (the XTLB
+Refill) is at <code>0xffffffff80000080</code>.  With a TLB (<code>--mmu tlb</code>, Config.AT = 2)
+there are also xuseg <code>0x0000000000000000</code>–<code>0x000000ffffffffff</code>, xsseg
+<code>0x4000000000000000</code>–<code>0x400000ffffffffff</code>, xkphys
+<code>0x8000000000000000</code>–<code>0xbfffffffffffffff</code> (unmapped: PA = VA 31–0, the
+attribute = VA 61–59) and xkseg <code>0xc000000000000000</code>–<code>0xc00000ff7fffffff</code>;
+the boot firmware maps xuseg and xsseg at VA 31–0 + 1 GB, xkseg at VA 31–0
+uncached (<a href="05-understanding.html#the-64-bit-address-space">Phase 5, the 64-bit address space</a>).</p>
 <p>On the <strong>Malta board</strong> (<code>--board malta</code>; <a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5, A real board</a>)
 the default segments are in kseg0 and the physical space is the board's:</p>
 <table>
@@ -1113,9 +1148,17 @@ real MIPS does — devices and boot code read memory, not the cache.</p>
 <p><strong><code>syscall</code> prints nothing.</strong>  Check <code>$v0</code> (the service number) and the
 argument register; with <em>System call services</em> off, <code>syscall</code> takes an
 exception instead.</p>
-<p><strong>Can I use eMIPS for MIPS64?</strong>  No — MIPS32 only (R1–R6).  The
-assembler does not know MIPS64 instructions such as <code>daddu</code>, and as
-machine code they are reserved instructions.</p>
+<p><strong>Can I use eMIPS for MIPS64?</strong>  Yes, instruction by instruction and on
+the 5-stage pipeline: start
+the program with the line <code># eMIPS: --arch mips64</code> (or
+<code>--arch mips64</code>).  The core has 64-bit registers and every doubleword
+instruction (<code>daddu</code>, <code>ld</code>, <code>dsll32</code> ...); with the
+fixed mapping it addresses the 32-bit compatibility segments only, with
+<code>--mmu tlb</code> the whole 64-bit address space (xuseg, xsseg, xkphys,
+xkseg).  C (the n64 ABI), GDB, the compressed instruction sets, the DSP and
+MT Modules, several cores, the Malta board and the real MIPS64 cores work on
+it too, and so does the window (choose MIPS64 R1–R6 in the Machine toolbar)
+(<a href="02-writing-programs.html#223-mips64-64-bit-programs">Phase 2, 2.23</a>, Labs 58–62).</p>
 <p><strong>Where are my settings stored?</strong>  <code>~/.config/eMIPS/eMIPS.ini</code> (Linux;
 the equivalent per-user folder elsewhere).  Delete it to start fresh.</p>
 <h2 id="610-for-teachers">6.10 For teachers</h2>
@@ -1301,7 +1344,7 @@ note.</p>
 <td>ftlb:64:128x4+sc, ftlb:64:128x4+sc+pw, tlb:64+sc, tlb:64+sc+pw</td>
 <td>32/64 KB, 4-way, 32-byte lines</td>
 <td>5-stage, 24k</td>
-<td>1, 2, 3, 4</td>
+<td>1–6</td>
 <td><code>0x0001a800</code></td>
 </tr>
 <tr>
@@ -1360,6 +1403,76 @@ note.</p>
 <td>1</td>
 <td><code>0x00019e00</code></td>
 </tr>
+<tr>
+<td><code>5kc</code></td>
+<td>MIPS64 5Kc</td>
+<td>MIPS64 R1</td>
+<td>none</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:16, tlb:32, tlb:48, fixed</td>
+<td>0-64 KB, 1/2/3/4-way, 32-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00018100</code></td>
+</tr>
+<tr>
+<td><code>5kf</code></td>
+<td>MIPS64 5Kf</td>
+<td>MIPS64 R1</td>
+<td>none</td>
+<td>yes</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:16, tlb:32, tlb:48, fixed</td>
+<td>0-64 KB, 1/2/3/4-way, 32-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00018100</code></td>
+</tr>
+<tr>
+<td><code>20kc</code></td>
+<td>MIPS64 20Kc</td>
+<td>MIPS64 R1</td>
+<td>none</td>
+<td>yes</td>
+<td>no</td>
+<td>no</td>
+<td>tlb:48</td>
+<td>32 KB, 4-way, 32-byte lines</td>
+<td>5-stage</td>
+<td>1</td>
+<td><code>0x00018200</code></td>
+</tr>
+<tr>
+<td><code>i6400</code></td>
+<td>MIPS64 I6400</td>
+<td>MIPS64 R6</td>
+<td>none</td>
+<td>yes</td>
+<td>no</td>
+<td>no</td>
+<td>ftlb:16:64x4</td>
+<td>32/64 KB, 4-way, 64-byte lines (L2 256 KB 8-way)</td>
+<td>5-stage</td>
+<td>1–6 (1, 2 or 4 VPs each)</td>
+<td><code>0x0001a900</code></td>
+</tr>
+<tr>
+<td><code>p6600</code></td>
+<td>MIPS64 P6600</td>
+<td>MIPS64 R6</td>
+<td>none</td>
+<td>optional</td>
+<td>no</td>
+<td>no</td>
+<td>ftlb:64:128x4+sc, ftlb:64:128x4+sc+pw</td>
+<td>32/64 KB, 4-way, 32-byte lines (L2 512 KB–8 MB 8-way)</td>
+<td>5-stage</td>
+<td>1–6</td>
+<td><code>0x0001a400</code></td>
+</tr>
 </tbody>
 </table>
 <p>A program finds out which core it runs on as an operating system's
@@ -1381,10 +1494,30 @@ preset offers the 5-stage or the 24K model).  The 34K, the 1004K and the
 interAptiv have the MT Module (<code>mt</code>: their VPEs and TCs, <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>);
 in pipeline mode they run the 34K's pipeline, the 24K model with the
 thread-select stage (bypassed with one thread context).  eMIPS
-builds a multi-core system with 2 to 4 cores, so a single-core 1004K
+builds a multi-core system with 2 to 6 cores (the P5600 and P6600 have
+up to six, the 1004K and interAptiv four), so a single-core 1004K
 has no Coherence Manager here.  Not offered: the M5100 / M5150 (their
 virtualization ASE is always there), the M6250 (its datasheet gives no
 PRId), the 74K and proAptiv (out-of-order pipelines).</p>
+<p>The <strong>MIPS64</strong> presets make a MIPS64 core (choosing one sets the
+architecture; a MIPS32 one sets it back): the 5Kc and 5Kf (MIPS64
+Release 1, the 5Kf datasheet: a 16 / 32 / 48-entry JTLB or the fixed
+mapping, caches of 4–16 KB ways up to 64 KB; the 5Kc has no FPU; both also on the Malta's CoreLV card,
+<code>--board malta</code>), the
+20Kc (a hard core: 32 KB caches, a 48-entry TLB — from QEMU's model and
+the announcements, its manual was not found; not on the Malta: its Core20K card has another
+system controller), the I6400 (MIPS64
+Release 6: 16 VTLB entries a VP and the FTLB of the core, 32 / 64 KB
+caches of 64-byte lines and its L2; up to six cores of 1, 2 or 4 virtual
+processors on its CM3, with an ITU) and the P6600 (MIPS64 Release 6, up to six cores on
+the P5600's Coherence Manager: the multi-core MIPS64 system).  What eMIPS does not model on them is listed too:
+their pipelines (the 5K's six stages, the 20Kc's seven, the I6400's
+multi-issue one: eMIPS runs the textbook 5-stage), their address widths
+(the 5K's 42-bit virtual / 36-bit physical, the I6400's 48 / 48: eMIPS
+has 40 / 32; the P6600's 40-bit physical addresses: the CM's _UPPER
+registers are kept), the I6400's issue of two instructions a cycle
+from four VPs and its Debug Unit, the P6600's out-of-order pipeline, MSA, virtualization and the I6400's
+16-way L2s.</p>
 <h2 id="612-glossary">6.12 Glossary</h2>
 <table>
 <thead>
@@ -1499,6 +1632,22 @@ PRId), the 74K and proAptiv (out-of-order pipelines).</p>
 <td>the code at the TLB Refill vector (<code>0x80000000</code>) that loads the missing entry, usually from the page table (<a href="05-understanding.html#watching-the-tlb">Phase 5</a>)</td>
 </tr>
 <tr>
+<td>XTLB Refill</td>
+<td>MIPS64: the TLB Refill of an address whose segment has 64-bit addressing on (Status.KX / SX / UX): its handler is at <code>0x80000080</code>, XContext points into the page table</td>
+</tr>
+<tr>
+<td>compatibility segments</td>
+<td>MIPS64: the MIPS32 segments sign-extended into the 64-bit address space (kuseg at the bottom, kseg0–kseg3 at the top), where 32-bit code and eMIPS's programs live</td>
+</tr>
+<tr>
+<td>xuseg / xsseg / xkphys / xkseg</td>
+<td>MIPS64's 64-bit segments: user (1 TB here), supervisor, the kernel's unmapped windows onto physical memory (the cache attribute in the address), the kernel's mapped one</td>
+</tr>
+<tr>
+<td>n64 / o32</td>
+<td>the MIPS64 / MIPS32 calling conventions (ABIs): n64 has 64-bit <code>long</code> and pointers and eight argument registers (<code>$a0</code>–<code>$a7</code>)</td>
+</tr>
+<tr>
 <td>page table</td>
 <td>the operating system's table of every page's EntryLo; Context points into it after a TLB miss</td>
 </tr>
@@ -1540,7 +1689,7 @@ PRId), the 74K and proAptiv (out-of-order pipelines).</p>
 </tr>
 <tr>
 <td>sign- / zero-extension</td>
-<td>widening a value by copying its sign bit / adding zeros</td>
+<td>widening a value by copying its sign bit / adding zeros; on MIPS64 every 32-bit result is sign-extended to 64 bits (<code>lwu</code> zero-extends)</td>
 </tr>
 <tr>
 <td>stall</td>

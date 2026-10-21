@@ -148,7 +148,8 @@ class TLBView(QtWidgets.QWidget):
                 "F{s}.{w}".format(s=(r.index - mmu.n) % mmu.fsets, w=(r.index - mmu.n) // mmu.fsets))
             if r.used:
                 owner = "G" if r.g else f"ASID {r.asid}"
-                cells = [name, marks, f"0x{r.va:08x}-0x{(r.va + r.span - 1) & 0xFFFFFFFF:08x}",
+                end = r.va + r.span - 1             # (MIPS64 with 64-bit addresses: wider)
+                cells = [name, marks, f"0x{r.va:08x}-0x{end & (0xFFFFFFFF if r.va >> 32 == 0 else (1 << 64) - 1):08x}",
                          owner, tv.size_name(r.page), tv.half_text(r, 0), tv.half_text(r, 1)]
             else:
                 cells = [name, marks, word(r.state), "", "", "", ""]

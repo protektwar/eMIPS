@@ -5482,6 +5482,42 @@
       "desc": "Load Word Unsigned PC-relative",
       "ref": "II-64 6.06 LWUPC",
       "why": "MIPS64 Release 6 instruction (introduced by Release 6)."
+    },
+    {
+      "id": "M22-068",
+      "op": "add",
+      "name": "LDX",
+      "since": "R2",
+      "arch": "mips64",
+      "ase": "dsp",
+      "family": "load",
+      "encode": "011111bbbbbxxxxxddddd01000001010",
+      "instrType": "R",
+      "desc": "Load Doubleword Indexed",
+      "ref": "IV-e64 3.02 LDX",
+      "why": "DSP Module instruction of MIPS64 (MD00375 rev. 3.02); a MIPS32 core, or a MIPS64 core without the DSP Module, has no such instruction (Reserved Instruction)."
+    },
+    {
+      "id": "M22-069",
+      "op": "add",
+      "name": "DVP",
+      "since": "R6",
+      "encode": "01000001011ttttt0000000000100100",
+      "instrType": "R",
+      "desc": "Disable Virtual Processor",
+      "ref": "II-A (R6) 6.06 DVP; II-64 6.06 DVP",
+      "why": "Release 6 multi-threading instruction (MIPS32 and MIPS64 Release 6, MD00086 / MD00087 rev. 6.06); a NOP without Config5.VP, a Reserved Instruction before Release 6."
+    },
+    {
+      "id": "M22-070",
+      "op": "add",
+      "name": "EVP",
+      "since": "R6",
+      "encode": "01000001011ttttt0000000000000100",
+      "instrType": "R",
+      "desc": "Enable Virtual Processor",
+      "ref": "II-A (R6) 6.06 EVP; II-64 6.06 EVP",
+      "why": "Release 6 multi-threading instruction (MIPS32 and MIPS64 Release 6, MD00086 / MD00087 rev. 6.06); a NOP without Config5.VP, a Reserved Instruction before Release 6."
     }
   ]
 }

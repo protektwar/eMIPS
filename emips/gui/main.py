@@ -501,11 +501,13 @@ class MainWindow(QtWidgets.QMainWindow):
         A("settings", tr("&Settings…"), self.open_settings, "Ctrl+,",
           tr("Processor, assembler (strict mode), boot state, exceptions, console, run"))
         self.release_group = QtGui.QActionGroup(self)
-        for r in RELEASES:
-            a = A(f"release_{r}", f"MIPS32 {r}" + (" (Release 6)" if r == "R6" else ""),
-                  checkable=True)
-            a.triggered.connect(lambda _=False, r=r: self.set_release(r))
-            self.release_group.addAction(a)
+        for arch, prefix in (("mips32", "release"), ("mips64", "release64")):
+            for r in RELEASES:          # (MIPS64: the 64-bit core, PLAN M22)
+                a = A(f"{prefix}_{r}", f"{arch.upper()} {r}"
+                      + (" (Release 6)" if r == "R6" else ""), checkable=True)
+                a.triggered.connect(lambda _=False, v=f"{arch}:{r}":
+                                    self._machine_choice("release", v))
+                self.release_group.addAction(a)
         self.endian_group = QtGui.QActionGroup(self)
         for e, text in (("big", tr("Big-endian")), ("little", tr("Little-endian"))):
             a = A(f"endian_{e}", text, checkable=True)
@@ -604,8 +606,11 @@ class MainWindow(QtWidgets.QMainWindow):
         m = mb.addMenu(tr("&Configure"))
         m.addAction(a["settings"])
         m.addSeparator()
-        rel = m.addMenu(tr("MIPS32 &Release"))
-        rel.addActions(self.release_group.actions())
+        rel = m.addMenu(tr("&Architecture and Release"))
+        for i, act in enumerate(self.release_group.actions()):
+            if i == len(RELEASES):
+                rel.addSeparator()              # MIPS32 | MIPS64
+            rel.addAction(act)
         end = m.addMenu(tr("&Byte Order"))
         end.addActions(self.endian_group.actions())
         m.addSeparator()
@@ -674,9 +679,11 @@ class MainWindow(QtWidgets.QMainWindow):
             from .. import cores
             core = cores.get(s.options.core)
             self.m_core.setCurrentIndex(max(0, self.m_core.findData(s.options.core)))
-            self.m_release.setCurrentIndex(max(0, self.m_release.findData(s.release)))
+            self.m_release.setCurrentIndex(max(0, self.m_release.findData(
+                f"{s.options.arch}:{s.release}")))
             for i in range(self.m_release.count()):
-                why = forbidden("release", self.m_release.itemData(i), s.options, s.release)
+                arch, rel = self.m_release.itemData(i).split(":")
+                why = forbidden("release", rel, replace(s.options, arch=arch), s.release)
                 self.m_release.model().item(i).setEnabled(why is None)
                 self.m_release.setItemData(i, why or "", Qt.ItemDataRole.ToolTipRole)
             self.m_board.setCurrentIndex(max(0, self.m_board.findData(
@@ -733,9 +740,12 @@ class MainWindow(QtWidgets.QMainWindow):
                                   "caches and pipeline it is built with (the others are "
                                   "greyed out); Generic core: any setting"))
         self.m_release = QtWidgets.QComboBox()
-        for r in RELEASES:
-            self.m_release.addItem(f"MIPS32 {r}", r)
-        self.m_release.setToolTip(tr("The MIPS32 release: its instructions and CP0"))
+        for arch in ("mips32", "mips64"):
+            for r in RELEASES:
+                self.m_release.addItem(f"{arch.upper()} {r}", f"{arch}:{r}")
+        self.m_release.setToolTip(tr("The architecture and release: MIPS32, or MIPS64 (64-bit "
+                                     "registers, the doubleword instructions); its "
+                                     "instructions and CP0"))
         self.m_board = QtWidgets.QComboBox()
         self.m_board.addItem(tr("Flat memory"), "flat")
         self.m_board.addItem(tr("Malta board"), "malta")
@@ -776,9 +786,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_syncing", False):
             return
         s = self.session
-        release = value if field == "release" else s.release
+        release = s.release
         o = replace(s.options, latency=dict(s.options.latency),
                     mem_timing=dict(s.options.mem_timing))
+        if field == "release":                  # "mips64:R5": the architecture too
+            if not value:
+                return
+            o.arch, _, release = value.rpartition(":") if ":" in value else (o.arch, "", value)
         core = cores.get(o.core)
         if field == "core":
             o, core_release = cores.apply(o, value)
@@ -888,7 +902,7 @@ class MainWindow(QtWidgets.QMainWindow):
         a["forwarding"].blockSignals(True)
         a["forwarding"].setChecked(s.forwarding)
         a["forwarding"].blockSignals(False)
-        a[f"release_{s.release}"].setChecked(True)
+        a[f"{'release64' if s.wide else 'release'}_{s.release}"].setChecked(True)
         c = getattr(self, "lang", "asm") == "c"
         a["assemble"].setText(tr("&Build") if c else tr("&Assemble"))
         a["assemble"].setToolTip(tr("Compile and link the C program") if c else
@@ -897,12 +911,13 @@ class MainWindow(QtWidgets.QMainWindow):
         a["names_abi" if s.abi else "names_numeric"].setChecked(True)
         lang = self._get("language", "en")
         a.get(f"lang_{lang}", a["lang_en"]).setChecked(True)
-        self.reference.set_context(s.release, s.abi, s.options.pseudo)
-        self.encoder.set_context(s.release, s.abi, s.options.pseudo)
+        self.reference.set_context(s.release, s.abi, s.options.pseudo, s.options.arch)
+        self.encoder.set_context(s.release, s.abi, s.options.pseudo, s.options.arch)
         self.converter.set_nan2008(s.release == "R6")
         from ..cores import get as get_core
         core = get_core(s.options.core)
-        self.config_label.setText(f" {core.title + ' · ' if core else ''}MIPS32 {s.release} · "
+        self.config_label.setText(f" {core.title + ' · ' if core else ''}"
+                                  f"{s.options.arch.upper()} {s.release} · "
                                   + (tr("big-endian") if s.endian == "big"
                                      else tr("little-endian")) + " ")
 
@@ -1059,10 +1074,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_actions()
         self.docks["source"].show()
         self.docks["source"].raise_()
-        self._log(tr("loaded {name}: an ELF executable, MIPS32 {release}, {endian}-endian, "
+        self._log(tr("loaded {name}: an ELF executable, {arch} {release}, {endian}-endian, "
                      "{n} instruction words, entry 0x{entry:08x}").format(
-            name=p.name, release=s.release, endian=s.endian, n=len(s.program.source_map),
-            entry=s.program.entry))
+            name=p.name, arch="MIPS64" if s.wide else "MIPS32", release=s.release,
+            endian=s.endian, n=len(s.program.source_map), entry=s.program.entry))
         self.refresh()
         return True
 
@@ -1239,7 +1254,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def listing_text(self) -> str:
         s = self.session
-        lines = [f"# {self.doc_name or 'program'} — MIPS32 {s.release}, {s.endian}-endian"]
+        lines = [f"# {self.doc_name or 'program'} — {s.options.arch.upper()} {s.release}, "
+                 f"{s.endian}-endian"]
         src = s.program.source_map
         for a, w, text, line in s.disassembly():
             source = src[a].text.strip() if s.kind == "asm" else ""
@@ -1576,17 +1592,19 @@ class MainWindow(QtWidgets.QMainWindow):
             code = set(s.program.source_map)
             s.breakpoints = {a for a in keep if a in code}
             if self.hex_text is None and self.lang == "c":
-                self._log(tr("built for MIPS32 {release}, {endian}-endian: {n} instruction "
+                self._log(tr("built for {arch} {release}, {endian}-endian: {n} instruction "
                              "words (the Disassembly pane shows the code)").format(
-                    release=s.release, endian=s.endian, n=len(code)))
+                    arch=s.options.arch.upper(), release=s.release, endian=s.endian,
+                    n=len(code)))
                 self._log(s.c_build)
                 for key in ("disassembly", "source"):
                     self.docks[key].show()
                 self.docks["disassembly"].raise_()
             elif self.hex_text is None:
-                self._log(tr("assembled for MIPS32 {release}, {endian}-endian: "
+                self._log(tr("assembled for {arch} {release}, {endian}-endian: "
                              "{n} instruction words").format(
-                    release=s.release, endian=s.endian, n=len(code)))
+                    arch=s.options.arch.upper(), release=s.release, endian=s.endian,
+                    n=len(code)))
             for note in s.disk_notes:           # a disk image that is not there
                 self._log(tr("disk: {note}").format(note=note))
         else:
@@ -1618,6 +1636,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._put(f"options/{k}", v)
         s.set_mode("pipeline" if i else "instruction",
                    forwarding=self.fwd.isChecked())
+        if i and s.mode != "pipeline":          # (the MT Module on MIPS64)
+            for note in s.program_notes:
+                self._log(tr("adjusted: {note}").format(note=note))
+            if s.program_notes:
+                self.status.showMessage(s.program_notes[-1], 10000)
         self._put("mode", s.mode)
         self._put("forwarding", "1" if s.forwarding else "0")
         self.legend.set_mode(s.mode)

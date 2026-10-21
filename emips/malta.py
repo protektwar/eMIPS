@@ -247,20 +247,28 @@ class MaltaBus:
 
     def _cbus_bytes(self, pa: int, n: int, side_effects: bool = False) -> bytes | None:
         """The CBUS (MD00048 Table 3.1): flash, its boot alias, the board
-        registers; nothing else answers (reads 0)."""
+        registers; nothing else answers (reads 0).  A doubleword (a 64-bit
+        CPU's LD) reads the two words it covers, each as a word access
+        would (the board registers are 32 bits on 64-bit boundaries)."""
         b = self.board
-        if REVISION_ADDR <= pa < REVISION_ADDR + 4:
-            return _lanes(REVISION, pa - REVISION_ADDR, n, b.big_endian)
-        if FPGA_BASE <= pa < FPGA_BASE + FPGA_SIZE:
-            off = pa - FPGA_BASE
-            if side_effects:
-                b.sync()
-            return _lanes(b.fpga.read(off & ~3, side_effects=side_effects), off & 3, n,
-                          b.big_endian)
-        flash = b.flash_offset(pa)
-        if flash is not None:
-            return bytes(b.m.phys_read_byte(FLASH_BASE + flash + i) for i in range(n))
-        return bytes(n)
+        if side_effects and FPGA_BASE <= pa < FPGA_BASE + FPGA_SIZE:
+            b.sync()
+        out = bytearray()
+        a, end = pa, pa + n
+        while a < end:
+            k = min(end, (a & ~3) + 4) - a          # the bytes of this word
+            if REVISION_ADDR <= a < REVISION_ADDR + 4:
+                out += _lanes(REVISION, a - REVISION_ADDR, k, b.big_endian)
+            elif FPGA_BASE <= a < FPGA_BASE + FPGA_SIZE:
+                off = a - FPGA_BASE
+                out += _lanes(b.fpga.read(off & ~3, side_effects=side_effects), off & 3, k,
+                              b.big_endian)
+            else:
+                flash = b.flash_offset(a)
+                out += (bytes(b.m.phys_read_byte(FLASH_BASE + flash + i) for i in range(k))
+                        if flash is not None else bytes(k))
+            a += k
+        return bytes(out)
 
     def load(self, m, pa: int, size: int) -> int:
         kind, arg = self._route(pa)
@@ -321,12 +329,14 @@ class MaltaBus:
             gt.cause(GT.MAS_ABORT0)
         elif kind == "cbus" and FPGA_BASE <= pa < FPGA_BASE + FPGA_SIZE:
             b.sync()
-            off = pa - FPGA_BASE
-            reg = off & ~3
-            old = _lanes(b.fpga.read(reg), 0, 4, b.big_endian)
-            word = bytearray(old)
-            word[off & 3: (off & 3) + size] = data[:4 - (off & 3)]
-            b.fpga.write(reg, int.from_bytes(word, "big" if b.big_endian else "little"))
+            off, i = pa - FPGA_BASE, 0
+            while i < size:                      # each register the bytes reach
+                reg, lane = (off + i) & ~3, (off + i) & 3
+                k = min(size - i, 4 - lane)
+                word = bytearray(_lanes(b.fpga.read(reg), 0, 4, b.big_endian))
+                word[lane:lane + k] = data[i:i + k]
+                b.fpga.write(reg, int.from_bytes(word, "big" if b.big_endian else "little"))
+                i += k
             b.touched()
         # the flash: read-only here (the CFI command set is not modelled)
 
@@ -351,9 +361,12 @@ class MaltaBus:
 def _pci_lanes(addr: int, size: int, reversed_: bool) -> tuple[int, bool]:
     """Where a CPU access of ``size`` bytes at ``addr`` lands on PCI: with
     the byte lanes reversed (the GT-64120's swap bits disagree) byte k of
-    a word goes to byte 3 - k."""
+    a word goes to byte 3 - k — of a doubleword (a 64-bit CPU's) to byte
+    7 - k (GT-64120 Table 7)."""
     if not reversed_:
         return addr, False
+    if size == 8:
+        return addr, True
     return (addr & ~3) | (4 - (addr & 3) - size), True
 
 

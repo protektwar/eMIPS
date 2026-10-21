@@ -65,7 +65,7 @@ from typing import Any, Callable
 from . import cp0 as C
 from . import dsp as DSP
 from .disasm import text_at
-from .exceptions import FetchError, WatchpointHit
+from .exceptions import Blocked, FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .sim import NULLIFY, Machine, _Arch
 from .syntax import kind_of, operand_spec
@@ -79,6 +79,11 @@ LATENCY: dict[str, int] = {
     "MUL": 4,          # MUL rd: holds EX
     "MULT": 4,         # MULT/MULTU/MADD*/MSUB*: MDU busy
     "DIV": 35,         # DIV/DIVU: MDU busy
+    # MIPS64 (M22): the 5K's 64-bit multiply / divide latencies (MD00109,
+    # the 5Kf datasheet, Table 3: 64x64 multiply 9, 64-bit divide 67 — its
+    # 32-bit divide 35 is DIV's; GCC's 5k.md has them one less, 66 / 34)
+    "DMULT": 9,        # DMULT / DMULTU: MDU busy; R6 DMUL / DMUH ...: hold EX
+    "DDIV": 67,        # DDIV / DDIVU: MDU busy; R6 DDIV / DMOD ...: hold EX
     "FP_ADD": 4, "FP_MUL": 4, "FP_MADD": 4, "FP_CVT": 4, "FP_CMP": 1,
     "FP_DIV_S": 17, "FP_DIV_D": 32, "FP_SQRT_S": 17, "FP_SQRT_D": 32,
 }
@@ -86,12 +91,17 @@ LATENCY: dict[str, int] = {
 _LOADS_TO_RT = {"LB", "LBU", "LH", "LHU", "LW", "LWL", "LWR", "LL", "LBE",
                 "LBUE", "LHE", "LHUE", "LWE", "LWLE", "LWRE", "LLE"}
 _LOADS_TO_RT |= {"LL@R6"}
+# MIPS64 (M22): the doubleword loads
+_LOADS_TO_RT |= {"LD", "LWU", "LDL", "LDR", "LLD", "LLD@R6"}
 _RT_DEST = (_LOADS_TO_RT | {"SC", "SCE", "SC@R6", "MFC0", "MFC1", "MFHC1",
                             "CFC1", "RDHWR", "RDHWR@R6", "DI", "EI", "EXT",
                             "INS", "LUI",
                             "AUI"})
 _RT_DEST |= DSP.RT_DEST                    # the DSP Module's rt results (M18)
-_RT_DEST_AND_SRC = {"LWL", "LWR", "LWLE", "LWRE", "INS", "SC", "SCE", "SC@R6"}
+_RT_DEST |= {"SCD", "SCD@R6", "DMFC0", "DMFC1", "DEXT", "DEXTM", "DEXTU", "DINS",
+             "DINSM", "DINSU", "DAUI"}
+_RT_DEST_AND_SRC = {"LWL", "LWR", "LWLE", "LWRE", "INS", "SC", "SCE", "SC@R6",
+                    "LDL", "LDR", "DINS", "DINSM", "DINSU", "SCD", "SCD@R6"}
 _RT_DEST_AND_SRC |= DSP.RT_DEST - DSP.ACC_READERS     # INSV, APPEND ...: merge into rt
 _LINKS = {"JAL", "BAL", "BGEZAL", "BLTZAL", "BGEZALL", "BLTZALL", "NAL",
           # Release 6 compact (link = PC + 4)
@@ -100,6 +110,10 @@ _LINKS = {"JAL", "BAL", "BGEZAL", "BLTZAL", "BGEZALL", "BLTZALL", "NAL",
 _R6_MUL = {"MUL@R6", "MUH", "MULU", "MUHU"}
 _R6_DIV = {"DIV@R6", "MOD", "DIVU@R6", "MODU"}
 _MDU_OPS = {"MULT", "MULTU", "MADD", "MADDU", "MSUB", "MSUBU", "DIV", "DIVU"}
+# MIPS64 (M22)
+_D_MDU = {"DMULT": "DMULT", "DMULTU": "DMULT", "DDIV": "DDIV", "DDIVU": "DDIV"}
+_D_R6 = {"DMUL": "DMULT", "DMUH": "DMULT", "DMULU": "DMULT", "DMUHU": "DMULT",
+         "DDIV@R6": "DDIV", "DMOD": "DDIV", "DDIVU@R6": "DDIV", "DMODU": "DDIV"}
 _FP_LOADS = {"LWC1", "LDC1", "LWXC1", "LDXC1", "LUXC1"}
 _COND_MOVES = ("MOVZ.", "MOVN.", "MOVF.", "MOVT.")
 
@@ -170,8 +184,8 @@ def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
                 reads.add(("r", f5(16)))
         elif kind == "rd":
             writes.add(("r", f5(11)))
-        elif kind == "rsd":                      # R6 PC-relative destination
-            writes.add(("r", f5(21)))
+        elif kind in ("rsd", "rs2"):             # R6 PC-relative destination; DAHI /
+            writes.add(("r", f5(21)))           # DATI's result (rs, read and written)
         elif kind in ("mem", "mem9"):
             reads.add(("r", f5(21)))
         elif kind == "idx":
@@ -179,16 +193,17 @@ def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
         elif kind in ("fs", "ft", "fr", "fd"):
             n = f5({"fs": 11, "ft": 16, "fr": 21, "fd": 6}[kind])
             dest = (kind == "fd" or (kind == "ft" and name in ("LWC1", "LDC1"))
-                    or (kind == "fs" and name in ("MTC1", "MTHC1")))
+                    or (kind == "fs" and name in ("MTC1", "MTHC1", "DMTC1")))
             regs = {("f", n), ("f", n ^ 1)} if (".D" in name or name in (
-                "LDC1", "SDC1", "LDXC1", "SDXC1", "LUXC1", "SUXC1")) else {("f", n)}
+                "LDC1", "SDC1", "LDXC1", "SDXC1", "LUXC1", "SUXC1", "DMFC1",
+                "DMTC1")) else {("f", n)}
             (writes if dest else reads).update(regs)
             if dest and (name.startswith(_COND_MOVES + ("SEL.", "MADDF", "MSUBF"))
                          or name == "MTHC1"):
                 reads.update(regs)
     if name in _LINKS:
         writes.add(("r", 31))
-    if name in _MDU_OPS:
+    if name in _MDU_OPS or name in _D_MDU:
         writes |= {"hi", "lo"}
     if name in ("MADD", "MADDU", "MSUB", "MSUBU"):
         reads |= {"hi", "lo"}
@@ -220,7 +235,8 @@ def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
     reads_ex = frozenset() if control else frozenset(reads)
 
     ready = "MEM" if (name in _LOADS_TO_RT or name in _FP_LOADS or name in DSP.LOADS
-                      or name in ("SC", "SCE", "SC@R6", "LWPC")) else "EX"
+                      or name in ("SC", "SCE", "SC@R6", "LWPC", "SCD", "SCD@R6", "LDPC",
+                                  "LWUPC")) else "EX"
     ex_cycles, mdu = 1, 0
     if name == "MUL" or name in _R6_MUL:
         ex_cycles = latency["MUL"]
@@ -228,6 +244,10 @@ def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
         ex_cycles = latency["DIV"]
     elif name in ("DIV", "DIVU"):
         mdu = latency["DIV"]
+    elif name in _D_MDU:                         # MIPS64: DMULT / DDIV: the MDU
+        mdu = latency[_D_MDU[name]]
+    elif name in _D_R6:                          # R6 DMUL ... / DDIV ...: hold EX
+        ex_cycles = latency[_D_R6[name]]
     elif name in _MDU_OPS or name in DSP.MACS or name in DSP.ACC_WRITERS:
         mdu = latency["MULT"]                    # (the DSP Module's MACs: the MDU)
     elif name in DSP.GPR_MULTIPLIES:
@@ -259,6 +279,8 @@ _M16_REGS: dict[str, tuple[tuple, tuple]] = {
     "JR": (("rx",), ()), "JRC": (("rx",), ()), "JRRA": ((31,), ()), "JRCRA": ((31,), ()),
     "JALR": (("rx",), (31,)), "JALRC": (("rx",), (31,)), "JAL": ((), (31,)),
     "JALX": ((), (31,)),
+    "LDPC": ((), ("ry",)), "DADDIUPC": ((), ("ry",)), "SEW": (("rx",), ("rx",)),
+    "ZEW": (("rx",), ("rx",)),
 }
 _MM_REGS: dict[str, tuple[tuple, tuple]] = {
     **dict.fromkeys(("B16", "J", "BC16", "BC", "BC2F", "BC2T", "BC2EQZC", "BC2NEZC", "BPOSGE32"), ((), ())),
@@ -278,16 +300,17 @@ _MM_REGS: dict[str, tuple[tuple, tuple]] = {
     "ADDIUPC": ((), ("t",)), "LWPC": ((), ("t",)), "LWXS": (("b", "t"), ("d",)),
     "MOVEP": (("s", "t"), ()), "LWP": (("b",), ()), "SWP": (("b",), ()),
     "LWM16": ((29,), ()), "SWM16": ((29,), ()), "LWM32": (("b",), ()), "SWM32": (("b",), ()),
+    **dict.fromkeys(("LDP", "SDP", "LDM", "SDM"), (("b",), ())), "LWUPC": ((), ("t",)),
     "BC1F": ((), ()), "BC1T": ((), ()), "BC1EQZC": ((), ()), "BC1NEZC": ((), ()),
 }
-_COMPRESSED_LOADS = {"M16.LWPC", "M16.RESTORE", "MM.LWPC", "MM.LWXS", "MM.LWP", "MM.LWM16",
-                     "MM.LWM32"}
+_COMPRESSED_LOADS = {"M16.LWPC", "M16.LDPC", "M16.RESTORE", "MM.LWPC", "MM.LWXS", "MM.LWP", "MM.LWM16",
+                     "MM.LWM32", "MM.LWUPC", "MM.LDP", "MM.LDM"}
 
 
 def compressed_words(dec: Decode, insn: Any) -> list[int]:
     """The registers a multiple load / store moves, in memory order
-    (MIPS16e SAVE / RESTORE, microMIPS LWP / SWP / LWM / SWM): one word
-    each."""
+    (MIPS16e SAVE / RESTORE, microMIPS LWP / SWP / LWM / SWM, microMIPS64
+    LDP / SDP / LDM / SDM): one word (doubleword) each."""
     from .mips16 import args_statics
     from .micromips import reglist
     from .sim import _m16_frame_regs
@@ -297,9 +320,9 @@ def compressed_words(dec: Decode, insn: Any) -> list[int]:
         args, statics = args_statics(f["aregs"])
         regs = _m16_frame_regs(f, statics)
         return ([4 + k for k in range(args)] if form == "SAVE" else []) + regs
-    if form in ("LWP", "SWP"):
+    if form in ("LWP", "SWP", "LDP", "SDP"):
         return [f["t"], f["t"] + 1]
-    if form in ("LWM16", "SWM16", "LWM32", "SWM32"):
+    if form in ("LWM16", "SWM16", "LWM32", "SWM32", "LDM", "SDM"):
         return reglist(insn)
     return []
 
@@ -307,7 +330,8 @@ def compressed_words(dec: Decode, insn: Any) -> list[int]:
 def _analyze_compressed(dec: Decode, insn: Any) -> Info:
     """:func:`analyze` for the MIPS16e / microMIPS forms with their own
     executor.  A multiple load / store moves one word per cycle (the
-    32-bit data path): it holds EX that long."""
+    32-bit data path; microMIPS64: a doubleword, the 64-bit one): it
+    holds EX that long."""
     from .micromips import MOVEP_DEST
     name, fam = dec.name, dec.entry["family"]
     form = name.split(".", 1)[1]
@@ -321,7 +345,7 @@ def _analyze_compressed(dec: Decode, insn: Any) -> Info:
     for k in w:
         writes.add(("r", f[k] if isinstance(k, str) else k))
     words = compressed_words(dec, insn) if insn is not None else []
-    if name in ("M16.SAVE", "MM.SWP", "MM.SWM16", "MM.SWM32"):
+    if name in ("M16.SAVE", "MM.SWP", "MM.SWM16", "MM.SWM32", "MM.SDP", "MM.SDM"):
         reads |= {("r", n) for n in words}
     elif words:
         writes |= {("r", n) for n in words}
@@ -575,12 +599,13 @@ def _pop_run(runs: list) -> str | None:
     return key
 
 
-def _rname(r: Res) -> str:
+def _rname(r: Res, abi: bool | str = True) -> str:
+    """A resource's name (``abi="n64"``: a MIPS64 core's register names)."""
     if isinstance(r, tuple):
         from .syntax import gpr_name
         if r[0] in ("hi", "lo"):
             return f"{r[0].upper()}{r[1]} ($ac{r[1]})"
-        return gpr_name(r[1]) if r[0] == "r" else f"$f{r[1]}"
+        return gpr_name(r[1], abi) if r[0] == "r" else f"$f{r[1]}"
     return {"fcc": "FCC", "dspctl": "DSPControl"}.get(r, r.upper())
 
 
@@ -595,24 +620,24 @@ def fetch_compressed(p, m: Machine, pc: int) -> Slot:
     try:
         size, word, dec, insn = m.fetch_compressed(pc)
     except FetchError as exc:
-        p.fetch_pc = (pc + 2) & M32
+        p.fetch_pc = m.seq_pc(pc + 2)
         return Slot(p._seq, pc, None, None, "(no code here)", None, fetch_error=exc,
                     fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2)
     except ISADecodeError as exc:               # exceptions="raise": raised in EX
-        p.fetch_pc = (pc + 2) & M32
+        p.fetch_pc = m.seq_pc(pc + 2)
         return Slot(p._seq, pc, None, None, f".half 0x{exc.word & 0xFFFF:04x}"
                     if isinstance(getattr(exc, "word", None), int) else "(reserved)", None,
                     fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2,
                     decode_error=exc)
     except _Arch as exc:                        # AdEL / TLB / Cache Error / RI
-        p.fetch_pc = (pc + 2) & M32
+        p.fetch_pc = m.seq_pc(pc + 2)
         what = ("reserved instruction" if exc.code == C.RI else
                 "TLB refill" if exc.info.get("refill") else
                 "cache error" if exc.code == C.CACHE_ERROR else
                 C.EXC_NAMES.get(exc.code, str(exc.code)))
         return Slot(p._seq, pc, None, None, f"(fetch: {what})", None, fetch_exc=exc,
                     fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2)
-    p.fetch_pc = (pc + size) & M32
+    p.fetch_pc = m.seq_pc(pc + size)
     return Slot(p._seq, pc, word, dec, _compressed_text(m, insn, pc),
                 analyze(dec, getattr(p, "latency", LATENCY), insn), fetch_cache=m.fetch_accesses,
                 fetch_tlb=m.fetch_tlb, imiss=m.fetch_missed, isa=1, size=size, insn=insn)
@@ -647,6 +672,7 @@ class Pipeline:
                  latency: dict[str, int] | None = None, trace: bool = True,
                  memory: dict[str, int] | None = None, nonblocking: bool = False) -> None:
         self.m = machine
+        self._abi: bool | str = "n64" if machine.wide else True   # (register names)
         machine.tracing = trace
         self.forwarding = forwarding
         self.latency = dict(LATENCY, **(latency or {}))
@@ -699,7 +725,7 @@ class Pipeline:
     def _goto(self, target: int) -> None:
         """Fetch from ``target`` next: with MIPS16e / microMIPS its bit 0
         is the ISA mode there (as :meth:`emips.sim.Machine._jump`)."""
-        target &= M32
+        target &= self.m.amask
         if self.m.compressed is not None:
             self.fetch_isa = target & 1
             target &= ~1
@@ -709,16 +735,21 @@ class Pipeline:
         m, pc = self.m, self.fetch_pc
         if self.fetch_isa:
             return fetch_compressed(self, m, pc)
-        self.fetch_pc = (pc + 4) & M32
+        self.fetch_pc = m.seq_pc(pc + 4)
         self._seq += 1
         if not m.mips32:                        # microMIPS only: no MIPS32 mode
             return Slot(self._seq, pc, None, None, "(fetch: address error)",
                         None, fetch_exc=_Arch(C.ADEL, badvaddr=pc))
-        if pc & 3 or not m.address_ok(pc):
+        try:                                    # (MIPS64: the address the fetch uses)
+            va = m.fetch_va(pc)
+        except _Arch as exc:
+            return Slot(self._seq, pc, None, None, "(fetch: address error)",
+                        None, fetch_exc=exc)
+        if va & 3 or not m.address_ok(va):
             return Slot(self._seq, pc, None, None, "(fetch: address error)",
                         None, fetch_exc=_Arch(C.ADEL, badvaddr=pc))
         try:
-            word = m.fetch_word(pc)
+            word = m.fetch_word(va)
         except FetchError as exc:
             return Slot(self._seq, pc, None, None, "(no code here)", None,
                         fetch_error=exc, fetch_cache=m.fetch_accesses,
@@ -756,7 +787,7 @@ class Pipeline:
             for r in sorted(needs, key=str):
                 ready = self.reg_ready.get(r, 0)
                 if ready > self.cycles:
-                    return ("miss-wait", f"{_rname(r)} from a load still missing "
+                    return ("miss-wait", f"{_rname(r, self._abi)} from a load still missing "
                                          f"({ready - self.cycles} more cycle(s))")
         for prod, where in ((ex, "EX"), (mem, "MEM")):
             if prod is None or prod.info is None:
@@ -764,7 +795,7 @@ class Pipeline:
             common = {r for r in needs & prod.info.writes if not is_accumulator(r)}
             if not common:
                 continue
-            r = _rname(sorted(common, key=str)[0])
+            r = _rname(sorted(common, key=str)[0], self._abi)
             if not self.forwarding:
                 return ("no-forwarding", f"{r} not written back yet "
                                          f"({prod.text} in {where})")
@@ -786,6 +817,7 @@ class Pipeline:
         trace = CycleTrace(self.cycles, {k: _view(v, k == "ID") for k, v in st.items()})
         ev = trace.events
         flush_to: int | None = None
+        gated: Blocked | None = None            # EX blocked on gating storage
         nullify = False
         branch_target: int | None = None
 
@@ -881,7 +913,7 @@ class Pipeline:
                                 trace.ex_view.fetch = ex.fetch_cache
                                 trace.ex_view.fetch_tlb = ex.fetch_tlb
                         if m._redirect is not None:      # ERET
-                            flush_to = m._redirect & M32
+                            flush_to = m.branch_pc(m._redirect)
                             ev.append(f"{ex.text}: return to 0x{flush_to:08x}, "
                                       "flush IF/ID")
                         if m.halted:                     # exit syscall
@@ -898,6 +930,14 @@ class Pipeline:
                     self.watch_hit = w
                     ev.append(f"EX: {ex.text} stopped by a debugger watchpoint "
                               "(it executes in the next cycle)")
+                except Blocked as b:            # gating storage (an ITU cell): no effect,
+                    gated = b                   # EX holds and it issues again
+                    if self.timing is not None:
+                        self.timing.take()
+                    if self.utlb is not None:
+                        self.utlb.take()
+                    ev.append(f"EX: {ex.text} blocked ({b.wait}): it issues again "
+                              "in the next cycle")
                 except _Arch as a:
                     if self.timing is not None:
                         self.timing.take()               # the access did not happen
@@ -905,8 +945,9 @@ class Pipeline:
                         self.utlb.take()
                     flush_to = self._exception(ex, a, ev)
         watched = self.watch_hit is not None and ex is not None and not ex.executed
-        ex_holds = ex is not None and flush_to is None and (ex.busy > 0 or watched)
-        if watched:
+        ex_holds = ex is not None and flush_to is None and (ex.busy > 0 or watched
+                                                             or gated is not None)
+        if watched or gated is not None:
             pass
         elif ex_holds:
             ex.busy -= 1
@@ -922,6 +963,8 @@ class Pipeline:
         if flush_to is None and ids is not None:
             if watched:
                 stall = ("watch", f"{ex.text} stopped by a debugger watchpoint")
+            elif gated is not None:
+                stall = ("gating", f"{ex.text} waits for gating storage")
             elif ex_holds:
                 stall = ("ex-busy", f"EX busy ({ex.text})")
             elif m.waiting:
@@ -961,7 +1004,7 @@ class Pipeline:
                 nxt = st["IF"]
                 if ids.info.compact:                     # R6: no delay slot
                     if m._redirect is not None:
-                        branch_target = m._redirect & M32
+                        branch_target = m.branch_pc(m._redirect)
                         m._redirect = None
                         nullify = True
                         ev.append(f"{ids.text}: taken -> 0x{branch_target:08x} "
@@ -981,7 +1024,7 @@ class Pipeline:
                     nullify = True
                     ev.append(f"{ids.text}: not taken, delay slot nullified")
                 elif res is not None:
-                    branch_target = res & M32
+                    branch_target = m.branch_pc(res)
                     ev.append(f"{ids.text}: taken -> 0x{branch_target:08x} "
                               "(after the delay slot)")
                 elif ids.info.control == "branch" and ids.pending is None:
@@ -1119,7 +1162,7 @@ class Pipeline:
             if not common:
                 continue
             for r in sorted((r for r in common if not is_accumulator(r)), key=str):
-                ev.append(f"forward {_rname(r)}: {path} -> {stage} "
+                ev.append(f"forward {_rname(r, self._abi)}: {path} -> {stage} "
                           f"({prod.text} -> {s.text})")
                 sources[r] = f"forwarded {path} -> {stage} from {prod.text}"
                 needs = needs - {r}

@@ -690,6 +690,9 @@ _R6_32 = [
                                       "LHUE", "LBE", "LHE", "LLE", "LWE", "SBE", "SHE", "SCE",
                                       "SWE", "PREFE", "CACHEE") and r.form != "LUI"],
     _R("SIGRIE", "000000 0000 cccccccccccccccc 111111", "0000010000010111 cccccccccccccccc"),
+    # Release 6 multi-threading (MD00582 6.05 DVP / EVP: POOL32Axf, rt in 25:21)
+    _R("DVP", "000000 ttttt 00000 0001100101 111100", "01000001011 ttttt 0000000000100100"),
+    _R("EVP", "000000 ttttt 00000 0011100101 111100", "01000001011 ttttt 0000000000000100"),
     _R("SDBBP@R6", "000000 cccccccccc 1101101101 111100", "000000 0000000000 cccccccccc 001110"),
     *[_R(n, f"000000 ttttt sssss {m} 111100", t) for n, (m, t) in _AXF_R6.items()],
     *[_R(n, f"000000 00000 00000 {m} 111100", t) for n, (m, t) in _AXF0.items()],
@@ -951,9 +954,15 @@ _DSP32 = [
     _R("WRDSP", "000000 sssss 0 mmmmmm 01011001111100", "011111 sssss mmmmmmmmmm 10011111000"),
 ]
 DSP = _Table(_DSP32)
+#: microMIPS64's DSP Module (MD00765 rev. 3.02): microMIPS32's rows and
+#: LDX (POOL32S), whose twin is MIPS64's LDX (MD00375)
+_DSP64 = [_R("LDX", "010110 xxxxx bbbbb ddddd 00110100101",
+             "011111 bbbbb xxxxx ddddd 01000001010")]
+DSP64 = _Table(_DSP32 + _DSP64)
 #: the DSP Module level each form needs (emips.isa.ISA.DSP_LEVEL)
 DSP_LEVEL = {r.form: 1 if r.form == "BPOSGE32" else
              ISA.DSP_LEVEL[ISA.for_release("R5", 2).get(r.form)["ase"]] for r in _DSP32}
+DSP_LEVEL["LDX"] = 1
 # ------------------------------------------------------------ the MT Module
 #
 # MD00768 rev. 1.12 (Vol. IV-f for microMIPS32) ch. 5: POOL32Axf for DMT /
@@ -984,6 +993,139 @@ MT_FORMS = frozenset(r.form for r in _MT32)
 PRE_ASM = _Table(PRE_ROWS + _DSP32 + _MT32)
 
 
+# ------------------------------------------------------------ microMIPS64
+#
+# MD00594 (Vol. II-B for microMIPS64) rev. 5.04 / 6.05: the microMIPS32
+# instructions plus the doubleword ones — POOL32S (010110: the ALU, shifts,
+# bit fields, POOL32Sxf), DADDIU32 (010111), LD32 / SD32 (110111 / 110110),
+# POOL32C's LDL ... LWU, POOL32B's LDP / SDP / LDM / SDM, POOL32Fxf's DMFC1
+# / DMTC1, POOL32Axf's DMFC2 / DMTC2.  The 16-bit instructions are the
+# microMIPS32 ones (32-bit operations, sign-extended).  Every recoded row's
+# twin is its MIPS64 row (the MIPS64 table of the core's release decodes
+# it); rt is bits 25:21 and rs 20:16 as everywhere in microMIPS.  binutils
+# (micromips-opc.c's I3 rows, ``objdump -m mips:micromips``) agrees on the
+# pre-Release 6 encodings; Release 6 is pinned to the 6.05 pages (see
+# DEVIATIONS "microMIPS64": its POOL32S table and DLSA page disagree).
+
+#: POOL32S three-register forms: the minor (bits 10:0), the MIPS64 twin
+_S3 = {"DSLLV": ("00000010000", "000000 sssss ttttt ddddd 00000 010100"),
+       "DSRLV": ("00001010000", "000000 sssss ttttt ddddd 00000 010110"),
+       "DSRAV": ("00010010000", "000000 sssss ttttt ddddd 00000 010111"),
+       "DROTRV": ("00011010000", "000000 sssss ttttt ddddd 00001 010110"),
+       "DADD": ("00100010000", "000000 sssss ttttt ddddd 00000 101100"),
+       "DADDU": ("00101010000", "000000 sssss ttttt ddddd 00000 101101"),
+       "DSUB": ("00110010000", "000000 sssss ttttt ddddd 00000 101110"),
+       "DSUBU": ("00111010000", "000000 sssss ttttt ddddd 00000 101111")}
+#: POOL32S shifts by sa: rt (25:21) = rs (20:16) shifted
+_S_SH = {"DSLL": ("00000000000", "00000000000 sssss ttttt aaaaa 111000"),
+         "DSLL32": ("00000001000", "00000000000 sssss ttttt aaaaa 111100"),
+         "DSRL": ("00001000000", "00000000000 sssss ttttt aaaaa 111010"),
+         "DSRL32": ("00001001000", "00000000000 sssss ttttt aaaaa 111110"),
+         "DSRA": ("00010000000", "00000000000 sssss ttttt aaaaa 111011"),
+         "DSRA32": ("00010001000", "00000000000 sssss ttttt aaaaa 111111"),
+         "DROTR": ("00011000000", "00000000001 sssss ttttt aaaaa 111010"),
+         "DROTR32": ("00011001000", "00000000001 sssss ttttt aaaaa 111110")}
+#: POOL32S bit fields (bits 5:0), the MIPS64 function
+_S_BITS = {"DINSM": ("000100", "000101"), "DINS": ("001100", "000111"),
+           "DEXTU": ("010100", "000010"), "DEXTM": ("100100", "000001"),
+           "DEXT": ("101100", "000011"), "DINSU": ("110100", "000110")}
+#: POOL32Sxf (bits 5:0 = 111100) with rt, rs: minor 15:6, twin
+_SXF = {"DSBH": ("0111101100", "01111100000 sssss ttttt 00010 100100"),
+        "DSHD": ("1111101100", "01111100000 sssss ttttt 00101 100100")}
+_SXF_PRE = {"DCLO": ("0100101100", "011100 sssss ttttt ttttt 00000 100101"),
+            "DCLZ": ("0101101100", "011100 sssss ttttt ttttt 00000 100100"),
+            "DMULT": ("1000101100", "000000 sssss ttttt 00000 00000 011100"),
+            "DMULTU": ("1001101100", "000000 sssss ttttt 00000 00000 011101"),
+            "DDIV": ("1010101100", "000000 sssss ttttt 00000 00000 011110"),
+            "DDIVU": ("1011101100", "000000 sssss ttttt 00000 00000 011111")}
+#: POOL32C with a 12-bit offset: bits 15:12, the MIPS64 opcode
+_C12 = {"LDL": ("0100", "011010"), "LDR": ("0101", "011011"), "LLD": ("0111", "110100"),
+        "SDL": ("1100", "101100"), "SDR": ("1101", "101101"), "LWU": ("1110", "100111"),
+        "SCD": ("1111", "111100")}
+
+
+def _rows64(pre: bool) -> list[Row]:
+    """The microMIPS64 rows added to the microMIPS32 table of a pre-Release
+    6 (``pre``) or a Release 6 core."""
+    rows = [
+        *[_R(n, f"010110 ttttt sssss ddddd {m}", t) for n, (m, t) in _S3.items()],
+        *[_R(n, f"010110 ttttt sssss aaaaa {m}", t) for n, (m, t) in _S_SH.items()],
+        *[_R(n, f"010110 ttttt sssss mmmmm ppppp {m}", f"011111 sssss ttttt mmmmm ppppp {f}")
+          for n, (m, f) in _S_BITS.items()],
+        *[_R(n, f"010110 ttttt sssss {m} 111100", t) for n, (m, t) in _SXF.items()],
+        _R("DMFC0", "010110 ttttt sssss 00 lll 00011 111100",
+           "01000000001 ttttt sssss 00000000 lll"),
+        _R("DMTC0", "010110 ttttt sssss 00 lll 01011 111100",
+           "01000000101 ttttt sssss 00000000 lll"),
+        _R("DMFC1", "010101 ttttt SSSSS 0010010000 111011", "01000100001 ttttt SSSSS 00000000000"),
+        _R("DMTC1", "010101 ttttt SSSSS 0010110000 111011", "01000100101 ttttt SSSSS 00000000000"),
+        _R("DMFC2", "000000 ttttt sssss 0110110100 111100", "01001000001 ttttt sssss 00000000000"),
+        _R("DMTC2", "000000 ttttt sssss 0111110100 111100", "01001000101 ttttt sssss 00000000000"),
+        _R("DADDIU", "010111 ttttt sssss iiiiiiiiiiiiiiii", "011001 sssss ttttt iiiiiiiiiiiiiiii",
+           "i=sx"),
+        _R("LD", "110111 ttttt bbbbb oooooooooooooooo", "110111 bbbbb ttttt oooooooooooooooo",
+           "o=sx"),
+        _R("SD", "110110 ttttt bbbbb oooooooooooooooo", "111111 bbbbb ttttt oooooooooooooooo",
+           "o=sx"),
+        _R("LDP", "001000 ttttt bbbbb 0100 oooooooooooo", None, "o=sx", "ldp {t}, {o}({b})"),
+        _R("SDP", "001000 ttttt bbbbb 1100 oooooooooooo", None, "o=sx", "sdp {t}, {o}({b})"),
+        _R("LDM", "001000 nnnnn bbbbb 0111 oooooooooooo", None, "o=sx", "ldm {L}, {o}({b})"),
+        _R("SDM", "001000 nnnnn bbbbb 1111 oooooooooooo", None, "o=sx", "sdm {L}, {o}({b})"),
+    ]
+    if pre:
+        return rows + [
+            *[_R(n, f"010110 ttttt sssss {m} 111100", t) for n, (m, t) in _SXF_PRE.items()],
+            _R("DADDI", "010110 ttttt sssss iiiiiiiiii 011100",
+               "011000 sssss ttttt iiiiiiiiiiiiiiii", "i=sx"),
+            *[_R(n, f"011000 ttttt bbbbb {m} oooooooooooo", f"{op} bbbbb ttttt oooooooooooooooo",
+                 "o=sx") for n, (m, op) in _C12.items()],
+        ]
+    # Release 6 (6.05): DMUL ... DMODU, DLSA, DALIGN, DBITSWAP, DCLO / DCLZ
+    # (the R6 MIPS64 encodings), DAUI / DAHI / DATI, LDPC / LWUPC; LWU and
+    # LLD keep their 12-bit offset (the 6.05 LLD page; MIPS64 R6's LLD has
+    # 9 bits: the twin is the Release 5 row), SCD has 9 bits
+    md = {"DMUL": ("000011000", "00010 011100"), "DMUH": ("001011000", "00011 011100"),
+          "DMULU": ("010011000", "00010 011101"), "DMUHU": ("011011000", "00011 011101"),
+          "DDIV@R6": ("100011000", "00010 011110"), "DMOD": ("101011000", "00011 011110"),
+          "DDIVU@R6": ("110011000", "00010 011111"), "DMODU": ("111011000", "00011 011111")}
+    return rows + [
+        *[_R(n, f"010110 ttttt sssss ddddd 00 {m}", f"000000 sssss ttttt ddddd {t}")
+          for n, (m, t) in md.items()],
+        _R("DLSA", "010110 ttttt sssss ddddd aa 100 000000",
+           "000000 sssss ttttt ddddd 000 aa 010101"),
+        _R("DALIGN", "010110 ttttt sssss ddddd bbb 00 011100",
+           "011111 sssss ttttt ddddd 01 bbb 100100"),
+        _R("DBITSWAP", "010110 ttttt sssss 0000101100 111100",
+           "01111100000 ttttt sssss 00000 100100"),
+        _R("DCLO@R6", "010110 ttttt sssss 0100101100 111100",
+           "000000 sssss 00000 ttttt 00001 010011"),
+        _R("DCLZ@R6", "010110 ttttt sssss 0101101100 111100",
+           "000000 sssss 00000 ttttt 00001 010010"),
+        _R("DAUI", "111100 ttttt sssss iiiiiiiiiiiiiiii", "011101 sssss ttttt iiiiiiiiiiiiiiii"),
+        _R("DAHI", "010000 10001 sssss iiiiiiiiiiiiiiii", "000001 sssss 00110 iiiiiiiiiiiiiiii"),
+        _R("DATI", "010000 10000 sssss iiiiiiiiiiiiiiii", "000001 sssss 11110 iiiiiiiiiiiiiiii"),
+        _R("LDPC", "011110 ttttt 110 oooooooooooooooooo", "111011 ttttt 110 oooooooooooooooooo"),
+        _R("LWUPC", "011110 ttttt 10 ooooooooooooooooooo", None, "o=sx,x4", "lwupc {t}, {o}"),
+        _R("LWU", "011000 ttttt bbbbb 1110 oooooooooooo", "100111 bbbbb ttttt oooooooooooooooo",
+           "o=sx"),
+        _R("LLD", "011000 ttttt bbbbb 0111 oooooooooooo", "110100 bbbbb ttttt oooooooooooooooo",
+           "o=sx", r5=True),
+        _R("SCD@R6", "011000 ttttt bbbbb 1111 000 ooooooooo",
+           "011111 bbbbb ttttt ooooooooo 0 100111", "o=sx"),
+    ]
+
+
+PRE64_ROWS: list[Row] = PRE_ROWS + _rows64(True)
+R6_64_ROWS: list[Row] = R6_ROWS + _rows64(False)
+PRE64 = _Table(PRE64_ROWS)
+R6_64 = _Table(R6_64_ROWS)
+#: the assembler's pre-Release 6 microMIPS64 forms (the DSP Module's:
+#: MD00765; the MT Module's: MD00768's encodings, its twins the MIPS64 rows)
+PRE64_ASM = _Table(PRE64_ROWS + _DSP32 + _DSP64 + _MT32)
+#: the forms only microMIPS64 has
+FORMS64 = frozenset(r.form for r in _rows64(True) + _rows64(False))
+
+
 @dataclass(frozen=True)
 class MM:
     """A decoded microMIPS instruction: ``form`` (:class:`Row` name),
@@ -1006,13 +1148,21 @@ class MMDecodeError(ISADecodeError):
         self.why = why
 
 
+def table_for(release: str = "R5", arch: str = "mips32") -> _Table:
+    """The base table of a microMIPS32 / microMIPS64 core of ``release``."""
+    if arch == "mips64":
+        return R6_64 if release == "R6" else PRE64
+    return R6 if release == "R6" else PRE
+
+
 def decode(h: int, second: Callable[[], int] | None = None, *, release: str = "R5",
-           dsp: int = 0, mt: bool = False) -> MM:
+           dsp: int = 0, mt: bool = False, arch: str = "mips32") -> MM:
     """Decode the instruction whose first halfword is ``h``; ``second()``
     gives the next halfword for a 32-bit one.  An encoding that is no
     instruction of this release raises :class:`ISADecodeError`.  ``dsp``:
     the DSP Module level whose encodings decode (MD00764: Releases 2-5);
-    ``mt``: the MT Module's (MD00768: Releases 2-5)."""
+    ``mt``: the MT Module's (MD00768: Releases 2-5); ``arch`` "mips64":
+    microMIPS64 (MD00594)."""
     h &= 0xFFFF
     size = size_of(h)
     if size == 4:
@@ -1021,19 +1171,19 @@ def decode(h: int, second: Callable[[], int] | None = None, *, release: str = "R
         raw = (h << 16) | (second() & 0xFFFF)
     else:
         raw = h
-    table = R6 if release == "R6" else PRE
-    row = table.match(raw, size)
+    row = table_for(release, arch).match(raw, size)
     if row is None and dsp and release != "R6" and size == 4:
-        row = DSP.match(raw, size)
+        row = (DSP64 if arch == "mips64" else DSP).match(raw, size)
         if row is not None and DSP_LEVEL[row.form] > dsp:
             row = None
     if row is None and mt and release != "R6" and size == 4:
         row = MT.match(raw, size)
     if row is None:
-        raise MMDecodeError(f"0x{raw:0{size * 2}x}: reserved or not in microMIPS32"
+        raise MMDecodeError(f"0x{raw:0{size * 2}x}: reserved or not in microMIPS"
+                            f"{'64' if arch == 'mips64' else '32'}"
                             f"{' R6' if release == 'R6' else ''}", raw)
     f = row.extract(raw)
-    if row.form in ("LWM32", "SWM32") and not reglist_ok(f["n"]):
+    if row.form in ("LWM32", "SWM32", "LDM", "SDM") and not reglist_ok(f["n"]):
         raise MMDecodeError(f"{row.form}: reglist {f['n']:05b} is reserved", raw)
     return MM(row.form, size, raw, row, f)
 
@@ -1075,6 +1225,8 @@ _FAMILY = {
     "ADDIUPC": "imm", "LWXS": "load", "LWP": "load", "LWM16": "load", "LWM32": "load",
     "SWP": "store", "SWM16": "store", "SWM32": "store", "MOVEP": "alu",
     "BPOSGE32": "branch",                           # the DSP Module (MD00764)
+    "LDP": "load", "LDM": "load", "SDP": "store", "SDM": "store",   # microMIPS64
+    "LWUPC": "load",
 }
 #: the short-slot jumps / branches (a 16-bit delay slot: link = PC + size + 2)
 SHORT_SLOT = {"JALS", "JALRS", "JALRS.HB", "JALRS16", "BLTZALS", "BGEZALS"}
@@ -1083,6 +1235,9 @@ ENTRIES = {form: {"name": f"MM.{form}", "mnemonic": form.lower(), "family": fam,
                   "decode": {"lead": True}, "releases": ["R2", "R3", "R5", "R6"]}
            for form, fam in _FAMILY.items()}
 ENTRIES["BPOSGE32"].update(ase="dsp", releases=["R2", "R3", "R5"])   # Status.MX
+for _f in ("LDP", "LDM", "SDP", "SDM", "LWUPC"):    # 64-bit operations (MD00594)
+    ENTRIES[_f].update(arch="mips64", releases=[], releases64=["R3", "R5", "R6"])
+ENTRIES["LWUPC"].update(releases64=["R6"])
 
 
 def link(i: MM, pc: int) -> int:
@@ -1093,22 +1248,23 @@ def link(i: MM, pc: int) -> int:
     return (pc + i.size + slot) | 1
 
 
-def branch_target(i: MM, pc: int) -> int:
+def branch_target(i: MM, pc: int, mask: int = M32) -> int:
     """PC-relative: the instruction after the branch + the offset (the
-    field shifted by 1: halfwords)."""
-    return (pc + i.size + i.f["o"]) & M32
+    field shifted by 1: halfwords); ``mask`` the GPR width."""
+    return (pc + i.size + i.f["o"]) & mask
 
 
-def jump_target(i: MM, pc: int) -> int:
+def jump_target(i: MM, pc: int, mask: int = M32) -> int:
     """J / JAL / JALS: the 128 MB region of the delay slot || instr_index
-    << 1; JALX: the 256 MB region || target << 2 (MD00582 5.4)."""
-    region = 0xF0000000 if i.form == "JALX" else 0xF8000000
-    return (((pc + 4) & region) | i.f["j"]) & M32
+    << 1; JALX: the 256 MB region || target << 2 (MD00582 5.4; MD00594:
+    the region is PC 63:27 / 63:28)."""
+    keep = 0x0FFFFFFF if i.form == "JALX" else 0x07FFFFFF
+    return (((pc + 4) & ~keep) | i.f["j"]) & mask
 
 
 def reglist(i: MM) -> list[int]:
     """LWM / SWM's registers in memory order (5.4 LWM32 / LWM16)."""
-    n = i.f["n"]
+    n = i.f["n"]                                # (LDM / SDM: the same lists, MD00594)
     if i.form in ("LWM16", "SWM16"):
         return [16, 17, 18, 19][:n + 1] + [31]
     regs = list(SREGS[:n & 0xF])
@@ -1123,7 +1279,7 @@ def reglist_ok(n: int) -> bool:
 
 # ------------------------------------------------------------ the disassembler
 
-def _reg(n: int, abi: bool) -> str:
+def _reg(n: int, abi: bool | str) -> str:
     from .syntax import gpr_name
     return gpr_name(n, abi)
 
@@ -1144,9 +1300,13 @@ def _list_text(regs: list[int], abi: bool) -> str:
     return ", ".join(out)
 
 
-def text(i: MM, pc: int, *, abi: bool = True, release: str = "R5") -> str:
-    """The instruction in GNU syntax: a recoded one as its MIPS32 twin
-    (``emips.disasm``), the others in binutils ``micromips-opc.c`` syntax."""
+def text(i: MM, pc: int, *, abi: bool | str = True, release: str = "R5",
+         arch: str = "mips32") -> str:
+    """The instruction in GNU syntax: a recoded one as its MIPS32 (MIPS64)
+    twin (``emips.disasm``), the others in binutils ``micromips-opc.c``
+    syntax; microMIPS64 names the registers as n64 does."""
+    if abi is True and arch == "mips64":
+        abi = "n64"
     r = lambda n: _reg(n, abi)               # noqa: E731
     syn = i.row.syntax
     if i.form == "MOVE16" and i.f["d"] == i.f["s"] == 0:
@@ -1156,9 +1316,12 @@ def text(i: MM, pc: int, *, abi: bool = True, release: str = "R5") -> str:
         tw = expand(i)
         if tw is None:
             return _special_text(i, pc, r)
+        rel = "R6" if release == "R6" and not i.row.r5_twin else "R5"
         out = disassemble(tw, pc, abi=abi, style="gas", dsp=2 if i.form in DSP_LEVEL else 0,
-                          mt=i.form in MT_FORMS,
-                          release="R6" if release == "R6" and not i.row.r5_twin else "R5")
+                          mt=i.form in MT_FORMS, release=rel,
+                          isa=ISA.for_release(rel, 2 if i.form in DSP_LEVEL else 0,
+                                              i.form in MT_FORMS, arch="mips64")
+                          if arch == "mips64" else None)
         if i.form.endswith("@DSP") and "$ac" not in out:     # ac0: still the DSP form
             mn, _, ops = out.partition(" ")
             out = (f"{mn} $ac0, {ops}" if mn in ("mult", "multu", "madd", "maddu", "msub",
@@ -1172,7 +1335,7 @@ def text(i: MM, pc: int, *, abi: bool = True, release: str = "R5") -> str:
             return f"jrc{'.hb' if i.form.endswith('.HB') else ''} {r(f['s'])}"
         if f["t"] == 31:
             return f"{i.form.lower()} {r(f['s'])}"
-    if i.form in ("ADDIUPC", "LWPC") and release == "R6":     # (the address, as MIPS32 R6)
+    if i.form in ("ADDIUPC", "LWPC", "LWUPC") and release == "R6":   # (the address, as R6)
         k = "i" if i.form == "ADDIUPC" else "o"
         return f"{i.form.lower()} {r(f['t'])}, 0x{((pc & ~3) + f[k]) & M32:08x}"
     if i.form in ("JALR", "JALR.HB", "JALRS", "JALRS.HB"):
@@ -1360,10 +1523,17 @@ _ENC16_SPEC: dict[str, list[tuple[str, str | None]]] = {
 _ALIAS_ROWS = {"NOP": "SLL", "SSNOP": "SLL", "EHB": "SLL", "PAUSE": "SLL"}
 
 
+#: microMIPS64: GNU as's MOVE16 forms of ADDU rd, rs, $0 / ADDIU rd, rs, 0
+#: are a 64-bit copy, not ADDU / ADDIU's sign extension of the low word
+#: (MD00594 MOVE16, ADDU): eMIPS keeps the 32-bit instruction (DEVIATIONS
+#: "microMIPS64")
+_NOT_MOVE64 = {"addu", "addiu"}
+
+
 class _Encoder:
     """The forms of one table, for the assembler."""
 
-    def __init__(self, table: _Table) -> None:
+    def __init__(self, table: _Table, arch: str = "mips32") -> None:
         self.table = table
         self.by_twin32 = {r.form: (r, _twin_spec(r.twin_source))
                           for r in table.rows if r.size == 4 and r.twin is not None}
@@ -1371,6 +1541,8 @@ class _Encoder:
         for mn, lst in _ENC16_SPEC.items():
             out = []
             for form, tw in lst:
+                if arch == "mips64" and mn in _NOT_MOVE64 and form == "MOVE16":
+                    continue
                 row = table.by_form.get(form)
                 if row is not None:
                     out.append((row, _twin_spec(tw if tw is not None else row.twin_source)))
@@ -1426,12 +1598,16 @@ def _fits(v: int, bits: int, scale: int = 1) -> bool:
 
 class Encoder:
     """GNU as's microMIPS (pre-Release 6): :meth:`encode` gives the
-    instruction a (macro-expanded) statement assembles to at ``pc``."""
+    instruction a (macro-expanded) statement assembles to at ``pc``;
+    ``arch`` "mips64": microMIPS64 (MD00594; the MIPS64 assembler's
+    encodings read back through the twins)."""
 
-    def __init__(self, release: str = "R5") -> None:
+    def __init__(self, release: str = "R5", arch: str = "mips32") -> None:
         self.release = release
-        self.table = R6 if release == "R6" else PRE_ASM
-        self._enc = _Encoder(self.table)
+        self.arch = arch
+        self.table = (R6_64 if release == "R6" else PRE64_ASM) if arch == "mips64" else \
+            R6 if release == "R6" else PRE_ASM
+        self._enc = _Encoder(self.table, arch)
 
     def _raw(self, form: str, **fields) -> Insn:
         row = self.table.by_form[form]
@@ -1470,8 +1646,9 @@ class Encoder:
             if insn is None:
                 from .isa import ISA, ISADecodeError
                 try:
-                    name = ISA.for_release(self.release, 2, self.release != "R6") \
-                        .decode(word).name
+                    isa = ISA.for_release(self.release, 2, self.release != "R6",
+                                          arch=self.arch)
+                    name = isa.decode(word).name
                 except ISADecodeError:
                     name = ""
                 name = _ALIAS_ROWS.get(name, name)
@@ -1487,7 +1664,8 @@ class Encoder:
                 if raw is None:
                     raise AsmErrorMM(f"{mn}: no microMIPS encoding for these operands"
                                      if entry is not None else
-                                     f"{mn} does not exist in microMIPS32")
+                                     f"{mn} does not exist in microMIPS"
+                                     f"{'64' if self.arch == 'mips64' else '32'}")
                 insn = Insn(4, raw)
         if force and insn.size != force:
             raise AsmErrorMM(f"{mn}: the delay slot needs a {8 * force}-bit instruction")
@@ -1615,35 +1793,23 @@ class Encoder:
             if v % 4 or not 0 <= v <= 124:
                 raise AsmErrorMM("jraddiusp: 0..124, a multiple of 4")
             return self._raw("JRADDIUSP", i=v // 4)
-        if mn in ("lwp", "swp"):
+        if mn in ("ldp", "sdp", "ldm", "sdm") and self.arch != "mips64":
+            raise AsmErrorMM(f"{mn} is a microMIPS64 instruction (--arch mips64)")
+        if mn in ("lwp", "swp", "ldp", "sdp"):
             need(2)
             rd = _gpr(ops[0])
             off, base = _mem(ops[1])
             v = value(off)
             if not _fits(v, 12):
                 raise AsmErrorMM(f"{mn}: offset {v} out of range (12 bits)")
-            if rd == 31 or mn == "lwp" and rd == _gpr(base):
+            if rd == 31 or mn in ("lwp", "ldp") and rd == _gpr(base):
                 raise AsmErrorMM(f"{mn}: rd must not be $ra" + ("" if rd == 31 else
                                                               " or the base register"))
             return self._raw(mn.upper(), t=rd, b=_gpr(base), o=v & 0xFFF)
+        if mn in ("ldm", "sdm"):                # (no 16-bit form: MD00594)
+            return self._multiple(mn, ops, value, False)
         if mn in ("lwm", "swm"):
-            if n < 2:
-                raise AsmErrorMM(f"{mn} takes a register list and offset(base)")
-            regs = _reglist(ops[:-1])
-            off, base = _mem(ops[-1])
-            v, b = value(off), _gpr(base)
-            s_regs = [r for r in regs if r != 31]
-            ra = 31 in regs
-            if s_regs != list(SREGS[:len(s_regs)]) or len(regs) != len(set(regs)) or \
-                    not s_regs and not ra:
-                raise AsmErrorMM(f"{mn}: the list must be s0[-s7][, s8][, ra] or ra")
-            if short_ok and b == 29 and ra and 1 <= len(s_regs) <= 4 and v % 4 == 0 \
-                    and 0 <= v <= 60:
-                return self._raw(mn.upper() + "16", n=len(s_regs) - 1, o=v // 4)
-            if not _fits(v, 12):
-                raise AsmErrorMM(f"{mn}: offset {v} out of range (12 bits)")
-            return self._raw(mn.upper() + "32", n=len(s_regs) | (0x10 if ra else 0), b=b,
-                             o=v & 0xFFF)
+            return self._multiple(mn, ops, value, short_ok)
         if mn == "lwxs":
             need(2)
             index, base = _mem(ops[1])
@@ -1782,7 +1948,9 @@ class Encoder:
             if v % 4 or not 0 <= v <= 124:
                 raise AsmErrorMM(f"{mn}: 0..124, a multiple of 4")
             return self._raw("JRCADDIUSP", i=v // 4)
-        if mn in ("addiupc", "lwpc"):                     # an address (as MIPS32 R6)
+        if mn in ("addiupc", "lwpc", "lwupc"):            # an address (as MIPS32 R6)
+            if mn == "lwupc" and self.arch != "mips64":
+                raise AsmErrorMM("lwupc is a microMIPS64 instruction (--arch mips64)")
             need(2)
             try:
                 target = value(ops[1]) & M32
@@ -1794,6 +1962,24 @@ class Encoder:
                 raise AsmErrorMM(f"{mn}: address {ops[1]} not reachable (+-1 MB, x4)")
             k = "i" if mn == "addiupc" else "o"
             return self._raw(mn.upper(), t=_gpr(ops[0]), **{k: (delta >> 2) & 0x7FFFF})
+        if mn == "lld" and self.arch == "mips64":         # 6.05 LLD: a 12-bit offset
+            need(2)
+            off, base = _mem(ops[1])
+            v = value(off)
+            if not _fits(v, 12):
+                raise AsmErrorMM(f"lld: offset {v} out of range (12 bits)")
+            return self._raw("LLD", t=_gpr(ops[0]), b=_gpr(base), o=v & 0xFFF)
+        if mn == "ldpc" and self.arch == "mips64":        # (PC & ~7) + offset << 3
+            need(2)
+            try:
+                target = value(ops[1]) & M32
+            except Unresolved:
+                return Insn(4, 0)
+            delta = (target - (pc & ~7)) & M32
+            delta = delta - (1 << 32) if delta >> 31 else delta
+            if not _fits(delta, 18, 8):
+                raise AsmErrorMM(f"ldpc: address {ops[1]} not reachable (+-1 MB, x8)")
+            return self._raw("LDPC", t=_gpr(ops[0]), o=(delta >> 3) & 0x3FFFF)
         if mn in ("j", "jal", "jals", "jalx", "bgezal", "bltzal", "bals", "bgezals", "bltzals",
                   "beql", "bnel", "jalrs", "jrs"):
             raise AsmErrorMM(f"{mn} does not exist in microMIPS32 Release 6 (no delay slots: "
@@ -1805,7 +1991,7 @@ class Encoder:
             if not 0 <= op <= 31 or not _fits(v, 12):
                 raise AsmErrorMM("cache: op 0..31, a 12-bit offset")
             return self._raw("CACHE", h=op, b=_gpr(base), o=v & 0xFFF)
-        if mn in ("lwp", "swp", "lwm", "swm", "movep"):
+        if mn in ("lwp", "swp", "lwm", "swm", "movep", "ldp", "sdp", "ldm", "sdm"):
             r = self.release
             self.release = "R5"                 # (the same syntax; Release 6's own rows)
             try:
@@ -1814,6 +2000,26 @@ class Encoder:
                 self.release = r
             return insn
         return None
+
+    def _multiple(self, mn: str, ops: list[str], value, short_ok: bool) -> Insn:
+        """LWM / SWM (the 16-bit form when it fits) and LDM / SDM."""
+        if len(ops) < 2:
+            raise AsmErrorMM(f"{mn} takes a register list and offset(base)")
+        regs = _reglist(ops[:-1])
+        off, base = _mem(ops[-1])
+        v, b = value(off), _gpr(base)
+        s_regs = [r for r in regs if r != 31]
+        ra = 31 in regs
+        if s_regs != list(SREGS[:len(s_regs)]) or len(regs) != len(set(regs)) or \
+                not s_regs and not ra:
+            raise AsmErrorMM(f"{mn}: the list must be s0[-s7][, s8][, ra] or ra")
+        if mn in ("lwm", "swm") and short_ok and b == 29 and ra and 1 <= len(s_regs) <= 4 \
+                and v % 4 == 0 and 0 <= v <= 60:
+            return self._raw(mn.upper() + "16", n=len(s_regs) - 1, o=v // 4)
+        if not _fits(v, 12):
+            raise AsmErrorMM(f"{mn}: offset {v} out of range (12 bits)")
+        return self._raw(mn.upper() + ("32" if mn in ("lwm", "swm") else ""),
+                         n=len(s_regs) | (0x10 if ra else 0), b=b, o=v & 0xFFF)
 
     def _branch16(self, f16, regs16, f32, regs32, expr, pc, value, short_ok) -> Insn:
         try:

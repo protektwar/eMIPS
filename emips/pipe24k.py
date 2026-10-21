@@ -63,7 +63,7 @@ from typing import Any
 from . import cp0 as C
 from . import dsp as DSP
 from .disasm import text_at
-from .exceptions import FetchError, WatchpointHit
+from .exceptions import Blocked, FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
 from .pipeline import (_HAZARD_EVENTS, _MEM_EVENTS, CycleTrace, History, Info, StageView,
                        _pop_run, _rname, analyze, enter, fetch_compressed,
@@ -1020,7 +1020,16 @@ class Pipeline24K:
             else:
                 st["EX"], st["AG"] = ag, None
                 entered = ag
-                self._execute(ag, t, trace, ev)      # EX: in program order
+                try:
+                    self._execute(ag, t, trace, ev)  # EX: in program order
+                except Blocked as b:                 # gating storage (an ITU cell): no
+                    m._redirect = None               # effect, it issues again (AG)
+                    if self.timing is not None:
+                        self.timing.take()
+                    if self.utlb is not None:
+                        self.utlb.take()
+                    st["EX"], st["AG"], entered = None, ag, None
+                    stall = ("gating", f"{ag.text} waits for gating storage ({b.wait})")
                 if self.watch_hit is not None:       # the debugger: it stays in AG
                     st["EX"], st["AG"], entered = None, ag, None
                     stall = ("watch", f"{ag.text} stopped by a debugger watchpoint")

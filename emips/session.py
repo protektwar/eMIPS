@@ -48,6 +48,10 @@ M32 = 0xFFFFFFFF
 READ_SERVICES = {5, 6, 7, 8, 12}
 #: the stack of core N starts N x 64 KB below core 0's (the boot firmware)
 CORE_STACK = 0x10000
+#: why the MT Module on MIPS64 runs in instruction mode
+MT64_INSTRUCTION_MODE = (
+    "MT Module on MIPS64: instruction mode — eMIPS's multithreaded pipeline is the "
+    "34K's, a MIPS32 core (MD00534), and no MIPS64 core had the MT Module")
 
 
 #: calls stepped over by :meth:`Session.step_over` (they write a return
@@ -255,7 +259,8 @@ class Session:
             self.program = assemble(text, endian=self.endian, release=self.release,
                                     bases=self.options.segment_bases(),
                                     pseudo=self.options.pseudo,
-                                    reorder=self.options.reorder)
+                                    reorder=self.options.reorder,
+                                    arch=self.options.arch)
         except AsmError as exc:
             self.errors = [str(exc)]
             self._drop_program()
@@ -363,7 +368,8 @@ class Session:
             self.c_build = build([src], out, release=self.release, endian=self.endian,
                                  optimize=optimize, mips16=isa == "mips16e",
                                  micromips=isa == "micromips", fpu=self.options.fpu,
-                                 dsp=self._c_dsp(text))
+                                 dsp=self._c_dsp(text),
+                                 arch=self.options.arch)
         except BuildError as exc:
             text_ = str(exc).replace(str(src), src.name)
             lines = text_.splitlines()
@@ -379,10 +385,11 @@ class Session:
         return True
 
     def load_elf(self, data: bytes, path: str = "", *, release: str | None = None) -> bool:
-        """Load an ELF32 executable (emips.elf): its segments, entry and
-        symbols; the release and byte order it was built for (EF_MIPS_ARCH,
-        EI_DATA) become the session's (``release``: the one it was built
-        for, when it says more than its EF_MIPS_ARCH).  :attr:`listing` is
+        """Load an ELF executable (emips.elf): its segments, entry and
+        symbols; the release, byte order and architecture it was built for
+        (EF_MIPS_ARCH, EI_DATA, EI_CLASS: an ELF64 is an n64 MIPS64 program)
+        become the session's (``release``: the one it was built for, when it
+        says more than its EF_MIPS_ARCH).  :attr:`listing` is
         a read-only disassembly with each source line (DWARF line table;
         the text when the file can be read) above its instructions."""
         from .compat import program_problem
@@ -406,6 +413,8 @@ class Session:
         if release is None and core is not None and _arch_fits(img.release, core.release):
             release = core.release              # (EF_MIPS_ARCH 32R2: Release 2 to 5)
         self.release, self.endian = release or img.release, img.endian
+        if self.options.arch != img.arch:          # (reset adjusts what depends on it)
+            self.options = replace(self.options, arch=img.arch)
         symbols = {}
         for sym in sorted(img.symbols, key=lambda x: x.kind != "func"):
             symbols.setdefault(sym.name, sym.value)
@@ -414,16 +423,16 @@ class Session:
                        c_stmts=img.statement_starts(),
                        functions=sorted((sym.value, sym.value + max(sym.size, 4), sym.name)
                                         for sym in img.symbols if sym.kind == "func"),
-                       dsp=img.dsp)
+                       dsp=img.dsp, arch=img.arch)
         for name, addr, size, _x in img.sections:
             prog.segments[name] = (addr, addr + size)
         labels = {}
         for sym in img.symbols:
             if sym.kind == "func":
                 labels.setdefault(sym.value, sym.name)
-        isa = ISA.for_release(img.release, self.dsp_level() or (    # (its ABI flags'
-            img.dsp if self.options.dsp == "auto" and not self.options.core
-            and img.release not in ("R1", "R6") else 0))             # DSP Module)
+        isa = ISA.for_release(img.release, self.dsp_level() or (
+            img.dsp if self.options.dsp == "auto" and not self.options.core   # (its ABI
+            and img.release not in ("R1", "R6") else 0), arch=img.arch)    # flags' DSP)
         texts = _SourceFiles()
         entry_name = labels.get(img.entry, "")
         lines = [f"# ELF executable {Path(path).name if path else ''}: {img.arch_name}, "
@@ -450,7 +459,8 @@ class Session:
                 if code_isa == "mips16e":           # MIPS16e: 2 / 4 bytes
                     try:
                         i = prog.m16_insn(a)
-                        size, enc, txt = i.size, i.raw, mips16.text(i, a, abi=self.abi)
+                        size, enc, txt = i.size, i.raw, mips16.text(i, a, abi=self.abi,
+                                                                    arch=prog.arch)
                     except (ISADecodeError, ValueError):
                         size, enc, txt = 2, prog.half(a), "(no MIPS16e instruction)"
                     prog.m16[a] = size
@@ -459,7 +469,8 @@ class Session:
                     try:
                         i = prog.mm_insn(a)
                         size, enc = i.size, i.raw
-                        txt = micromips.text(i, a, abi=self.abi, release=img.release)
+                        txt = micromips.text(i, a, abi=self.abi, release=img.release,
+                                             arch=prog.arch)
                     except (ISADecodeError, ValueError):
                         size, enc = micromips.size_of(prog.half(a)), prog.half(a)
                         txt = "(no microMIPS instruction)"
@@ -542,6 +553,10 @@ class Session:
             self.program_notes = [f"model 24k -> 5-stage: the program has microMIPS code; "
                                   f"{rule.why}"]
             self.adjusted += self.program_notes
+        if self.wide and self.mode == "pipeline" and self.mt_config() is not None:
+            self.mode = "instruction"
+            self.program_notes.append(MT64_INSTRUCTION_MODE)
+            self.adjusted.append(MT64_INSTRUCTION_MODE)
         o = self.options
         self.output = ""
         self.console = MmioConsole(on_output=self._emit, tx_delay=o.tx_delay,
@@ -580,7 +595,8 @@ class Session:
             from .mt import Cluster
             vpes, tcs = mtc
             spec = self.itc_config()
-            itc = ITC(*spec) if spec is not None else None   # one ITU for the CPS
+            itc = (ITC(*spec, width=64 if self.wide else 32)   # one ITU for the CPS
+                   if spec is not None else None)
             l2, l3 = o.shared_levels()
             self.cps = CPS(n, lambda cps, i: self._make_mt_core(cps, i, mem, vpes, tcs, itc),
                            self._core_started, l2=l2, l3=l3, ecc=o.cache_ecc,
@@ -592,6 +608,21 @@ class Session:
                 self.board.join_cps(self.cps)
             n = len(self.machines)
             self._mt_model_note()
+        elif self.vp_config() is not None:      # a CM3 system: Release 6 VPs (the I6400)
+            vps = self.vp_config()
+            spec = self.itu_config()
+            l2, l3 = o.shared_levels()
+            self.cps = CPS(n, lambda cps, i: self._make_vp_core(cps, i, mem, vps, spec),
+                           self._core_started, l2=l2, l3=l3, ecc=o.cache_ecc,
+                           hardware_init=o.cache_init == "hardware", iocu=o.iocu,
+                           vpes=vps, cm3=True,
+                           vp_factory=lambda cps, c, k: self._make_vp(cps, c, k, mem),
+                           itu=spec is not None)
+            self.machines = self.cps.vps
+            self.console.sink = self.cps.gic.set_input     # TX, RX: GIC sources 0, 1
+            if self.board is not None:
+                self.board.join_cps(self.cps)
+            n = len(self.machines)
         elif n == 1:
             self.cps = None
             self.machines = [self._make_core(None, 0, mem)]
@@ -618,8 +649,9 @@ class Session:
             for i in range(n) if boot else (0,):
                 m = self.machines[i]
                 self.program.load(m, boot=boot)
-                if o.boot == "user":            # KSU = user (Status.UM)
-                    m._cp0_set(C.STATUS, m.status | (2 << C.ST_KSU_SHIFT))
+                if o.boot == "user":            # KSU = user (Status.UM); MIPS64: PX,
+                    m._cp0_set(C.STATUS, m.status | (2 << C.ST_KSU_SHIFT)   # the 64-bit
+                               | (1 << 23 if m.wide else 0))               # operations
                     if self.board is not None:  # its stack in kuseg (the TLB maps it)
                         from .malta import USER_SP
                         m.write_reg(29, USER_SP - i * CORE_STACK)
@@ -642,7 +674,8 @@ class Session:
                             self.machines[i].write_reg(reg, value)
                 elif not any(MON.RESET <= a < MON.RESET + 0x10
                              for a in self.program.image):
-                    m0.pc = MON.RESET           # power-on: the monitor in the flash
+                    m0.pc = m0.to_pc(MON.RESET)   # power-on: the monitor in the flash
+                    #                             (MIPS64: kseg1 sign-extended)
         self.pipelines = [self._make_pipeline(m) for m in self.machines]
         self._code = None
         self.steps = 0
@@ -666,15 +699,62 @@ class Session:
     def mt_config(self) -> tuple[int, int] | None:
         """(VPEs, TCs) of the MT Module (emips.mt), or None: Options.mt
         "VPES:TCS"; "auto" = 2 VPEs and 5 TCs (a 34K) when the program has
-        MT instructions; only Release 2-5, one core."""
+        MT instructions; only Release 2-5 (MIPS32 or MIPS64)."""
         from .mt import parse_spec
         if self.release in ("R1", "R6"):
             return None
         spec = self.options.mt
         if spec == "auto":
             prog = getattr(self, "program", None)
-            return (2, 5) if prog is not None and getattr(prog, "mt", False) else None
+            if prog is None or not getattr(prog, "mt", False):
+                return None
+            # (a 34K; on more than 4 cores one VPE each: 8 VPs at most, cps.MAX_VPS)
+            return (2, 5) if self.options.cores <= 4 else (1, 5)
         return parse_spec(spec)
+
+    def vp_config(self) -> int | None:
+        """The Release 6 VPs a core of a CM3 system (emips.vp, emips.cps),
+        or None: Options.vps > 1, or a core preset with a CM3 (the I6400)
+        of more than one core; Release 6 only."""
+        o = self.options
+        if self.release != "R6":
+            return None
+        core = cores.get(o.core)
+        if o.vps > 1 or (o.cores > 1 and core is not None and core.cm == "cm3"):
+            return o.vps
+        return None
+
+    def itu_config(self) -> tuple[int, int, int] | None:
+        """The cells of a CM3 core's ITU (emips.itu): Options.itu; "auto"
+        = 4 FIFO cells of 4 entries + 8 single-entry cells."""
+        from . import itu
+        spec = self.options.itu
+        return itu.AUTO if spec == "auto" else itu.parse_spec(spec)
+
+    def _make_vp_core(self, cps: CPS, core: int, mem: PMemory, vps: int, itu) -> list[Machine]:
+        """A Release 6 core of a CM3 system in its reset state: its VPs
+        (``vps`` Machines, VP ``core * vps + k``) on one set of caches in
+        the coherence domain, one FTLB, its ITU (emips.vp, emips.itu)."""
+        from .itu import ITU
+        from .vp import VPCore
+        o = self.options
+        caches = o.caches(core=core, shared=True)
+        if caches is None and cps.cm.l2 is not None:
+            caches = Caches(None, None)
+        if caches is not None:
+            cps.cm.attach(core, caches)
+        ms = [self._make_core(cps, core * vps + k, mem, vp=True, caches=caches)
+              for k in range(vps)]
+        VPCore(core, ms, itu=ITU(*itu) if itu is not None else None)
+        return ms
+
+    def _make_vp(self, cps: CPS, core: int, k: int, mem: PMemory) -> Machine:
+        """VP ``k`` of a running CM3 core started again (CPC VP_RUN): a
+        fresh Machine on the core's caches, FTLB and ITU."""
+        vc = next(m.vpcore for m in cps.vps_of(core) if m is not None and m.vpcore is not None)
+        m = self._make_core(cps, core * cps.vpes + k, mem, vp=True, caches=vc.caches)
+        vc.attach(m, k)
+        return m
 
     def _mt_model_note(self) -> None:
         if self.mode == "pipeline" and self.options.model != "24k":
@@ -713,21 +793,22 @@ class Session:
         return ms
 
     def _make_core(self, cps: CPS | None, cpu: int, mem: PMemory, *, mt: bool = False,
-                   caches: Any = False) -> Machine:
+                   caches: Any = False, vp: bool = False) -> Machine:
         """A core in its hardware reset state on the shared memory and
         devices (the console's interrupts go to core 0); in a CPS its
         caches join the Coherence Manager (the shared L2 / L3).  ``mt``:
         VPE ``cpu`` of an MT processor, on the ``caches`` it shares (one
-        FPU context: VPE 0's)."""
+        FPU context: VPE 0's).  ``vp``: a Release 6 VP on its core's
+        ``caches`` (its own FPU: a complete processor, MD01196 ch. 12)."""
         o = self.options
         if caches is False:
             caches = o.caches(core=cpu, shared=cps is not None)
         if cps is not None and caches is None and cps.cm.l2 is not None:
             caches = Caches(None, None)               # only the shared L2 / L3
-        if caches is not None and cps is not None and not mt:
+        if caches is not None and cps is not None and not mt and not vp:
             cps.cm.attach(cpu, caches)
         core = cores.get(o.core)
-        m = Machine(memory=mem, endian=self.endian, release=self.release,
+        m = Machine(memory=mem, endian=self.endian, release=self.release, arch=o.arch,
                     exceptions="raise" if o.exceptions == "stop" else "cp0",
                     caches=caches, mmu=o.make_mmu(), cpu=cpu,
                     shadow_sets=1 if mt else o.shadow_sets,
@@ -789,12 +870,15 @@ class Session:
         try:
             isa = self.compressed_at(pc, cpu)
             if isa == "mips16e":
-                i = mips16.decode(m.code_half(pc), lambda: m.code_half(pc + 2))
-                return mips16.text(i, pc, abi=self.abi)
+                i = mips16.decode(m.code_half(pc), lambda: m.code_half(pc + 2), arch=m.arch)
+                return mips16.text(i, pc, abi=self.abi, arch=m.arch)
             if isa == "micromips":
                 i = micromips.decode(m.code_half(pc), lambda: m.code_half(pc + 2),
-                                     release=self.release, dsp=m.dsp, mt=m.mt is not None)
-                return micromips.text(i, pc, abi=self.abi, release=self.release)
+                                     release=self.release, dsp=m.dsp, mt=m.mt is not None,
+                                     arch=m.arch)
+                return micromips.text(i, pc, abi=self.abi, release=self.release, arch=m.arch)
+            if m.wide:                          # MIPS64: its own table, the n64 names
+                return disassemble(m.code_word(pc), pc, isa=m.isa, abi=self.abi)
             return decode_word(m.code_word(pc), release=self.release, pc=pc, abi=self.abi).text
         except Exception:                                   # noqa: BLE001
             return "?"
@@ -804,9 +888,23 @@ class Session:
         ("auto": MIPS16e from Release 1 to 5, as the 24K; none in Release
         6; "micromips" / "micromips-only": microMIPS32, Release 3+), and
         what the program's code needs anyway: microMIPS for .set micromips
-        / STO_MICROMIPS code, MIPS16e for MIPS16e code."""
+        / STO_MICROMIPS code, MIPS16e for MIPS16e code.  MIPS64: "auto" =
+        MIPS16e64 (Releases 1-5) / microMIPS64 (Release 3+) when the
+        program has such code — no MIPS64 core eMIPS models has MIPS16e."""
         c = self.options.compressed
         prog = getattr(self, "program", None)
+        if self.wide:
+            if self.options.core:
+                return None if c in ("none", "auto") else c
+            if c == "mips16e":
+                return None if self.release == "R6" else c
+            if prog is not None and prog.mm and c != "micromips-only":
+                return None if self.release in ("R1", "R2") else "micromips"
+            if c in ("micromips", "micromips-only"):
+                return None if self.release in ("R1", "R2") else c
+            if c == "auto" and prog is not None and prog.m16 and self.release != "R6":
+                return "mips16e"
+            return None
         if self.options.core:                   # a real core: what it is built with
             return None if c in ("none", "auto") else c
         if prog is not None and prog.mm and c != "micromips-only":
@@ -823,7 +921,7 @@ class Session:
         """The DSP Module a C program is built for: Options.dsp, or with
         "auto" Revision 2 when it calls the DSP builtins (``__builtin_mips_``
         — a compiler cannot use the DSP Module by itself)."""
-        if self.release in ("R1", "R6"):
+        if self.release in ("R1", "R6") or self.wide:
             return 0
         level = {"dsp": 1, "dspr2": 2}.get(self.options.dsp)
         if level is not None:
@@ -915,7 +1013,7 @@ class Session:
             return [v for v in range(len(self.machines)) if self.mt.alive(v)]
         if self.cps is None:
             return [0] if self.machines else []
-        return self.cps.running()
+        return self.cps.running_vps()
 
     def configure_counter(self, i: int, event: int | None, modes: str = "uk",
                           ie: bool = False) -> None:
@@ -1071,11 +1169,17 @@ class Session:
                 finally:
                     cpu = self.mt.last_vp
                     self.mt.prepare()
+            cm3 = self.cps is not None and self.cps.cm3
             for cpu in cores if not dispatch else ():
+                if cm3 and not self.cps.vp_runs(cpu):
+                    continue                    # a VP an earlier one stopped / reset
                 try:
                     self._step_core(cpu)
                 except WatchpointHit as exc:    # before the access: it runs next step
                     watched = watched or (cpu, exc)
+            if self.cps is not None and self.cps.cm3:
+                for v in self.cps.held_vps():   # a DVP holds them: their clock runs
+                    machines[v].advance(1)
         except InputNeeded:
             res.stopped = "input"
             return res
@@ -1083,7 +1187,7 @@ class Session:
             if cpu != self.cpu:
                 self.select(cpu)                # show the core that stopped
             where = (f"VP {cpu}: " if self.cps is not None and self.mt is not None else
-                     f"core {cpu}: " if self.cps is not None else
+                     f"{self.cpu_name(cpu)}: " if self.cps is not None else
                      f"VPE {cpu}: " if self.mt is not None and len(self.machines) > 1 else "")
             res.fault = exc
             res.error = f"{where}{type(exc).__name__}: {exc}" + self._no_handler_hint(exc) \
@@ -1121,6 +1225,8 @@ class Session:
 
     def _step_core(self, cpu: int) -> None:
         m, p = self.machines[cpu], self.pipelines[cpu]
+        if m.vpcore is not None and m.caches is not None:
+            m.caches.m = m                      # (a Release 6 VP: the core's caches)
         if p is None:                           # (only the last view is shown)
             m.last_view = None
             m.fetch_tlb = []
@@ -1150,6 +1256,15 @@ class Session:
     #: exception vectors (BEV = 0 / 1, general and interrupt offsets)
     VECTORS = {0x80000180, 0x80000200, 0xBFC00380, 0xBFC00400,
                0x80000000, 0xBFC00200}           # + the TLB Refill vectors
+    #: MIPS64 adds the XTLB Refill vectors (Vol. III Table 6.9)
+    VECTORS64 = VECTORS | {0x80000080, 0xBFC00280}
+
+    def _at_vector(self, m, pc: int) -> bool:
+        """``pc`` is an exception vector (MIPS64: sign-extended, the XTLB
+        Refill ones too)."""
+        if not m.wide:
+            return pc in self.VECTORS
+        return pc >= 0xFFFFFFFF80000000 and pc & M32 in self.VECTORS64
 
     def _no_handler_hint(self, exc: Exception) -> str:
         """An exception was taken but nothing is at the vector: say which
@@ -1165,7 +1280,7 @@ class Session:
             return (f" — the CPU took a debug exception ({why}, DEPC 0x{st['depc']:08x}) "
                     f"and jumped to the debug vector 0x{m.pc:08x}, but there is no debug "
                     f"handler there: write one (.ktext 0x{m.pc:08x}) that ends with deret")
-        if m.pc not in self.VECTORS:
+        if not self._at_vector(m, m.pc):
             return ""
         code = (m.cp0_read(*C.CAUSE) >> C.CA_EXC_SHIFT) & 31
         name = C.EXC_NAMES.get(code, str(code))
@@ -1256,7 +1371,8 @@ class Session:
             return False
 
         def outside(pc: int, cpu: int) -> bool:   # a vector: the hint explains
-            return pc not in self.VECTORS and self.program_address(pc, cpu) is None
+            return (not self._at_vector(self.machines[cpu], pc)
+                    and self.program_address(pc, cpu) is None)
 
         for i in self.running():
             m, p = self.machines[i], self.pipelines[i]
@@ -1289,23 +1405,34 @@ class Session:
             from . import micromips
             try:
                 i = micromips.decode(m.code_half(pc), lambda: m.code_half(pc + 2),
-                                     release=self.release, dsp=m.dsp, mt=m.mt is not None)
+                                     release=self.release, dsp=m.dsp, mt=m.mt is not None,
+                                     arch=m.arch)
             except (SimException, ISADecodeError):
                 return None
             calls = {n[3:] for n in _MM_CALLS} | {"JALR", "JALR.HB", "JALRS", "JALRS.HB"}
             if i.form in calls and not (i.form.startswith("JALR") and i.f.get("t") == 0
                                         and i.size == 4):
-                return micromips.link(i, pc) & ~1
+                return micromips.link(i, pc) & m.amask & ~1
             return None
+        if self.compressed_at(pc) == "mips16e":
+            from . import mips16
+            try:
+                i = mips16.decode(m.code_half(pc), lambda: m.code_half(pc + 2), arch=m.arch)
+            except (SimException, ISADecodeError):
+                return None
+            # (the link each writes, Vol. IV-a: past JAL / JALX's and JALR's
+            # delay slots, after JALRC)
+            back = {"JAL": 6, "JALX": 6, "JALR": 4, "JALRC": 2}.get(i.form)
+            return None if back is None else (pc + back) & m.amask
         try:
             dec = m.isa.decode(m.code_word(pc))
         except (SimException, ISADecodeError):
             return None
         name = dec.name
         if name in _COMPACT_CALLS:
-            return (pc + 4) & M32                 # compact: no delay slot
+            return (pc + 4) & m.amask             # compact: no delay slot
         if name in _CALLS:
-            return (pc + 8) & M32                 # after the delay slot
+            return (pc + 8) & m.amask             # after the delay slot
         return None
 
     # -- source-level debugging (M13 phase 3) -----------------------------
@@ -1342,8 +1469,8 @@ class Session:
                 return
             if name in _CALLS or name in _COMPACT_CALLS:
                 if result is not None and result >= 0:         # taken
-                    ret = (pc + (4 if name in _COMPACT_CALLS else 8)) & M32
-                    stack.append(Frame(pc, result & M32, ret, m.read_reg(29)))
+                    ret = (pc + (4 if name in _COMPACT_CALLS else 8)) & m.amask
+                    stack.append(Frame(pc, result & m.amask, ret, m.read_reg(29)))
                     if len(stack) > 10_000:
                         del stack[:1000]
             elif stack and (word >> 21) & 31 == 31 and (
@@ -1597,9 +1724,10 @@ class Session:
         cpu = self.cpu if cpu is None else cpu
         m = self.machines[cpu]
         if m.compressed is not None:            # bit 0: the ISA mode there (GDB)
+            pc = m.to_pc(pc)                    # (MIPS64: a 32-bit address sign-extended)
             m._jump(pc | (1 if not pc & 1 and self.compressed_at(pc & ~1, cpu) else 0))
         else:
-            m.pc = pc & 0xFFFFFFFF
+            m.pc = m.to_pc(pc)
         m.slot_armed, m.slot_target, m._forbidden = False, None, False
         old = self.pipelines[cpu]
         if old is not None:
@@ -1617,6 +1745,10 @@ class Session:
         address it aliases: kseg0 / kseg1, the fixed mapping) on ``cpu``."""
         if pc in self.breakpoints or pc == self.run_to:
             return True
+        if pc >= 0xFFFFFFFF80000000:            # MIPS64: a compatibility address
+            pc &= M32                           # (its 32-bit form: the program's)
+            if pc in self.breakpoints or pc == self.run_to:
+                return True
         a = self.program_address(pc, cpu)
         return a is not None and a != pc and (a in self.breakpoints or a == self.run_to)
 
@@ -1656,10 +1788,32 @@ class Session:
     # -- state for the views -----------------------------------------------------
 
     def registers(self) -> list[tuple[str, int, bool]]:
-        """``(name, value, changed by the last step)`` for the 32 GPRs."""
+        """``(name, value, changed by the last step)`` for the 32 GPRs (MIPS64:
+        the n64 names)."""
         m = self.machine
-        return [(gpr_name(i, self.abi), m.read_reg(i), m.read_reg(i) != self.prev_regs[i])
+        abi = "n64" if self.abi and m.wide else self.abi
+        return [(gpr_name(i, abi), m.read_reg(i), m.read_reg(i) != self.prev_regs[i])
                 for i in range(32)]
+
+    @property
+    def wide(self) -> bool:
+        """A MIPS64 core (Options.arch, emips.sim64; PLAN M22)."""
+        return self.options.arch == "mips64"
+
+    #: the CP0 registers that are 64 bits wide on a MIPS64 core
+    WIDE_REGISTERS = frozenset({"pc", "hi", "lo", "EPC", "BadVAddr", "ErrorEPC", "DEPC",
+                                "DESAVE", "UserLocal",
+                                # (a TLB with 64-bit addresses, Config.AT = 2)
+                                "EntryHi", "EntryLo0", "EntryLo1", "Context", "XContext",
+                                "SegCtl0", "SegCtl1", "SegCtl2", "EBase", "PWBase",
+                                "PWField", "PWSize",
+                                # (the MT Module: emips.mt.WIDE)
+                                "TCRestart", "TCContext"})
+
+    def hex_digits(self, name: str | None = None) -> int:
+        """Digits of a register in the views: 16 for a MIPS64 GPR (``name``
+        None) or 64-bit register, else 8."""
+        return 16 if self.wide and (name is None or name in self.WIDE_REGISTERS) else 8
 
     #: what sets each ouflag bit (MD00374 Table 3.5)
     OUFLAG_CAUSES = {16: "ac0 multiply-accumulate", 17: "ac1 multiply-accumulate",
@@ -1674,6 +1828,8 @@ class Session:
             return f"VP {i} (core {self.cps.vp_core(i)})"
         if self.mt is not None:
             return f"VPE {i}"
+        if self.cps is not None and self.cps.cm3 and self.cps.vpes > 1:
+            return f"VP {self.cps.vp_id(i)} (core {self.cps.vp_core(i)})"   # (its VPNum)
         return f"core {i}"
 
     def processor(self):
@@ -1681,6 +1837,45 @@ class Session:
         if self.mt is None:
             return None
         return self.mt.processor_of(self.cpu) if hasattr(self.mt, "processor_of") else self.mt
+
+    def vp_lines(self) -> list[str]:
+        """Release 6 VPs (debugger ``vp``): per core its VPs, which run
+        (CPC VP_RUNNING), the DVP that holds them, SAAR; every VP's state."""
+        cps = self.cps
+        if cps is None or not cps.cm3:
+            return ["no Release 6 VPs (a CM3 system: set release R6, set vps 2, or "
+                    "--core i6400 --cores N)"]
+        from .cps import SEQ_D2, SEQ_U5
+        out = []
+        for c in range(cps.n):
+            first = cps.vps[c * cps.vpes]
+            vc = first.vpcore if first is not None else None
+            run = cps.vp_mask[c] if cps.state[c] in (SEQ_U5, SEQ_D2) else 0
+            names = ", ".join(str(cps.vp_id(c * cps.vpes + k)) for k in range(cps.vpes)
+                              if run >> k & 1) or "none"
+            held = (f"; VP {vc.vpnum(vc.dis_by)}'s DVP holds the others"
+                    if vc is not None and vc.dis_by is not None else "")
+            saar = f"; SAAR 0x{vc.saar:x}" if vc is not None else ""
+            out.append(f"core {c}: VP_RUNNING 0x{run:x} (VPs {names}){held}{saar}")
+        for row in self.cores():
+            v = row["cpu"]
+            m = self.machines[v]
+            out.append(f"  {'=>' if row['selected'] else '  '} {self.cpu_name(v)}: "
+                       f"{row['state']}, GlobalNumber 0x{m.cp0_read(3, 1):x}, VPControl "
+                       f"{m.cp0_read(0, 4)}" + (f", pc 0x{row['pc']:0{self.hex_digits('pc')}x}"
+                                                if row["pc"] is not None else ""))
+        return out
+
+    def itu_lines(self) -> list[str]:
+        """The selected VP's core's ITU (debugger ``vp itu``)."""
+        m = self.machine
+        vc = getattr(m, "vpcore", None) if m is not None else None
+        if vc is None:
+            return ["no ITU: a CM3 core's (set release R6, set vps 2)"]
+        if vc.itu is None:
+            return [f"core {vc.core}: no ITU (set itu auto)"]
+        return [f"core {vc.core}'s " + line if i == 0 else line
+                for i, line in enumerate(vc.itu.lines())]
 
     def mt_lines(self) -> list[str]:
         """The MT Module's state (debugger ``mt``)."""
@@ -1703,15 +1898,19 @@ class Session:
             regs = {k: m.cp0_read(*k) for k in (TCSTATUS, TCBIND, TCRESTART, TCHALT, TCCONTEXT)}
             hi, lo = m.hi, m.lo
             status = m.status
+            d, mask = (16, m.amask) if m.wide else (8, M32)
+        names = "n64" if self.wide and self.abi else self.abi
         out = [f"TC{n}: {p.state(tc)}, bound to VPE {tc.vpe}" + (
             " (issues next)" if tc is p.next else "")]
         out.append(f"TCStatus 0x{regs[TCSTATUS]:08x}  TCBind 0x{regs[TCBIND]:08x}  "
-                   f"TCRestart 0x{regs[TCRESTART]:08x}  TCHalt {regs[TCHALT]}  "
-                   f"TCContext 0x{regs[TCCONTEXT]:08x}")
-        out.append(f"Status (as this TC sees it) 0x{status:08x}  hi 0x{hi:08x}  lo 0x{lo:08x}")
-        for row in range(0, 32, 4):
-            out.append("  ".join(f"{gpr_name(r, self.abi):>5} 0x{tc.gprs[r] & 0xFFFFFFFF:08x}"
-                                 for r in range(row, row + 4)))
+                   f"TCRestart 0x{regs[TCRESTART]:0{d}x}  TCHalt {regs[TCHALT]}  "
+                   f"TCContext 0x{regs[TCCONTEXT]:0{d}x}")
+        out.append(f"Status (as this TC sees it) 0x{status:08x}  hi 0x{hi:0{d}x}  "
+                   f"lo 0x{lo:0{d}x}")
+        per = 2 if self.wide else 4
+        for row in range(0, 32, per):
+            out.append("  ".join(f"{gpr_name(r, names):>5} 0x{tc.gprs[r] & mask:0{d}x}"
+                                 for r in range(row, row + per)))
         return out
 
     def yield_inputs(self, value: int) -> None:
@@ -1761,9 +1960,10 @@ class Session:
                  f"DSPControl 0x{c:08x}: pos {c & D.POS}  scount {(c >> D.SCOUNT_SHIFT) & 0x3F}"
                  f"  c {(c >> D.C_BIT) & 1}  EFI {(c >> D.EFI_BIT) & 1}"
                  f"  ccond {(c >> D.CCOND_SHIFT) & 0xF:04b}  ouflag 0x{ou:02x} ({flags})"]
+        digits = 16 if m.wide else 8            # (MIPS64: each half a 64-bit register)
         for n in range(4):
-            v = D.acc(m, n)
-            lines.append(f"ac{n} 0x{v >> 32:08x} {v & 0xFFFFFFFF:08x}"
+            hi, lo = D._half(m, n, True) & m.amask, D._half(m, n, False) & m.amask
+            lines.append(f"ac{n} 0x{hi:0{digits}x} {lo:0{digits}x}"
                          + ("  (HI / LO)" if n == 0 else ""))
         return lines
 
@@ -1782,10 +1982,11 @@ class Session:
                 ("  ccond", (c >> D.CCOND_SHIFT) & 0xF, "compare results (CMP* -> PICK)"),
                 ("  ouflag", ou, ", ".join(self.OUFLAG_CAUSES[16 + i] for i in range(8)
                                            if ou >> i & 1) or "no overflow")]
-        for n in range(4):
-            v = D.acc(m, n)
-            rows += [(f"ac{n} hi" + (" (HI)" if n == 0 else ""), v >> 32, ""),
-                     (f"ac{n} lo" + (" (LO)" if n == 0 else ""), v & 0xFFFFFFFF, "")]
+        for n in range(4):                      # (MIPS64: 64-bit halves)
+            rows += [(f"ac{n} hi" + (" (HI)" if n == 0 else ""),
+                      D._half(m, n, True) & m.amask, ""),
+                     (f"ac{n} lo" + (" (LO)" if n == 0 else ""),
+                      D._half(m, n, False) & m.amask, "")]
         return rows
 
     def shadow_set(self, n: int) -> list[tuple[str, int]]:
@@ -1795,7 +1996,8 @@ class Session:
         if not 0 <= n < len(m.shadow):
             raise ValueError(f"there is no shadow set {n} (sets 0-{len(m.shadow) - 1})")
         bank = m.shadow[n]
-        return [(gpr_name(i, self.abi), bank[i] & 0xFFFFFFFF if i else 0) for i in range(32)]
+        abi = "n64" if self.abi and m.wide else self.abi
+        return [(gpr_name(i, abi), bank[i] & m.amask if i else 0) for i in range(32)]
 
     def interrupt_state(self) -> dict[str, Any]:
         """The interrupt system of the selected core (Vol. III 6.1): the
@@ -1908,7 +2110,8 @@ class Session:
         if self.probe is None:
             raise ValueError("no probe (probe on first)")
         prog = assemble(source, endian=self.endian, release=self.release,
-                        pseudo=self.options.pseudo, reorder=self.options.reorder)
+                        pseudo=self.options.pseudo, reorder=self.options.reorder,
+                        arch=self.options.arch)
         n = self.probe.load(prog.image)
         if not n:
             raise ValueError("nothing in dmseg (0xff200000-0xff2fffff): put the handler "
@@ -1938,7 +2141,8 @@ class Session:
         bits = [n for b, n in ((TAPM.ECR_ROCC, "Rocc"), (TAPM.ECR_PRACC, "PrAcc"),
                                (TAPM.ECR_PROBEN, "ProbEn"), (TAPM.ECR_PROBTRAP, "ProbTrap"),
                                (TAPM.ECR_EJTAGBRK, "EjtagBrk"), (TAPM.ECR_DOZE, "Doze"),
-                               (TAPM.ECR_HALT, "Halt"), (TAPM.ECR_DM, "DM")) if ecr & b]
+                               (TAPM.ECR_HALT, "Halt"), (TAPM.ECR_DM, "DM"),
+                               (TAPM.ECR_VPED, "VPED")) if ecr & b]
         out = [f"TAP: {tap.state}, IR {TAPM.INSTRUCTIONS.get(tap.ir, 'BYPASS')} "
                f"(0x{tap.ir:02x}), {tap.tck} TCK; IDCODE 0x{TAPM.DEVICE_ID:08x}, "
                f"IMPCODE 0x{tap.impcode():08x}"
@@ -1959,8 +2163,9 @@ class Session:
                            + (" ".join(f"0x{w:08x}" for w in p.upload[-6:]) or "none"))
         ej = m.ejtag
         new = "new" if ej.pc_sample & 1 else "read"
+        tc = (f", TC{(ej.pc_sample >> (9 + 8 * ej.bus)) & 0xFF}" if tap.mt else "")
         out.append(f"PC sampling every {ej.sample_period} cycles (DCR.PCR): last sample "
-                   f"0x{(ej.pc_sample >> 1) & 0xFFFFFFFF:08x} ({new})"
+                   f"0x{(ej.pc_sample >> 1) & ej.mask:0{self.hex_digits('pc')}x}{tc} ({new})"
                    + (f", {len(p.samples)} collected" if p is not None and p.samples else ""))
         return out
 
@@ -1970,7 +2175,7 @@ class Session:
         if self.probe is None:
             return []
         counts: dict[int, int] = {}
-        for pc, _asid in self.probe.samples:
+        for pc, *_ in self.probe.samples:
             counts[pc] = counts.get(pc, 0) + 1
         rows = []
         for pc, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:top]:
@@ -2067,7 +2272,8 @@ class Session:
             except SimException:
                 return None
         return PDT.regenerate(self.trace_formats(), word, m.isa, tb=st["tb"],
-                              mode=st["mode"], vector=PDT.exception_vectors(m))
+                              mode=st["mode"], vector=PDT.exception_vectors(m),
+                              wide=m.wide)
 
     def trace_state(self) -> list[str]:
         """The trace settings and the TCB (the debugger's ``trace``)."""
@@ -2249,6 +2455,7 @@ class Session:
         ej = m.ejtag
         ib = [{"n": n, "address": ej.iba[n], "mask": ej.ibm[n],
                "asid": ej.ibasid[n] if ej.ibc[n] & EJ.BC_ASIDUSE else None,
+               "tc": ej.ibc[n] >> EJ.BC_TC_SHIFT & 0xFF if ej.ibc[n] & EJ.BC_TCUSE else None,
                "break": bool(ej.ibc[n] & EJ.BC_BE), "trigger": bool(ej.ibc[n] & EJ.BC_TE),
                "hit": bool(ej.ibs_bs >> n & 1)}
               for n in range(EJ.IB_COUNT) if ej.ibc[n] & (EJ.BC_BE | EJ.BC_TE)]
@@ -2260,6 +2467,7 @@ class Session:
             blm, bai = (c >> EJ.DBC_BLM_SHIFT) & 0xFF, (c >> EJ.DBC_BAI_SHIFT) & 0xFF
             db.append({"n": n, "address": ej.dba[n], "mask": ej.dbm[n],
                        "asid": ej.dbasid[n] if c & EJ.BC_ASIDUSE else None,
+                       "tc": c >> EJ.BC_TC_SHIFT & 0xFF if c & EJ.BC_TCUSE else None,
                        "load": not c & EJ.DBC_NOLB, "store": not c & EJ.DBC_NOSB,
                        "value": None if (blm | bai) & 0xF == 0xF else ej.dbv[n],
                        "blm": blm, "bai": bai,
@@ -2290,6 +2498,7 @@ class Session:
                 out.append(f"   IB{b['n']} 0x{b['address']:08x}"
                            + (f" mask 0x{b['mask']:08x}" if b["mask"] else "")
                            + (f" ASID {b['asid']}" if b["asid"] is not None else "")
+                           + (f" TC{b['tc']}" if b["tc"] is not None else "")
                            + " " + "+".join(x for x, on in (("break", b["break"]),
                                                             ("trigger", b["trigger"])) if on)
                            + ("  (matched)" if b["hit"] else ""))
@@ -2304,6 +2513,7 @@ class Session:
                            + (f" value 0x{b['value']:08x} (imprecise)" if b["value"] is not None
                               else "")
                            + (f" ASID {b['asid']}" if b["asid"] is not None else "")
+                           + (f" TC{b['tc']}" if b["tc"] is not None else "")
                            + " " + "+".join(x for x, on in (("break", b["break"]),
                                                             ("trigger", b["trigger"])) if on)
                            + ("  (matched)" if b["hit"] else ""))
@@ -2445,6 +2655,8 @@ class Session:
             tlb = [("EntryHi", (10, 0)), ("Index", (0, 0)), ("Random", (1, 0)),
                    ("EntryLo0", (2, 0)), ("EntryLo1", (3, 0)), ("PageMask", (5, 0)),
                    ("Wired", (6, 0)), ("Context", (4, 0))]
+            if getattr(mmu, "wide", False):         # MIPS64 (Vol. III 9.52)
+                tlb.append(("XContext", (20, 0)))
             if mmu.pagegrain:
                 tlb.append(("PageGrain", (5, 1)))
             if mmu.sc:
@@ -2455,7 +2667,7 @@ class Session:
                         ("PWCtl", (6, 6))]
             if m.has_bad_instr:
                 tlb += [("BadInstr", (8, 1)), ("BadInstrP", (8, 2))]
-            rows += [(name, m.cp0_read(*key)) for name, key in tlb]
+            rows += [(name, m.cp0_view(*key)) for name, key in tlb]
         elif m.has_bad_instr:
             rows += [("BadInstr", m.cp0_read(8, 1)), ("BadInstrP", m.cp0_read(8, 2))]
         rows += [(name, m.cp0_read(*key)) for key, name in sorted(perf.NAMES.items())]
@@ -2478,7 +2690,7 @@ class Session:
         """One row per core: ``cpu``, ``state`` (the CPC's SEQSTATE name),
         ``running``, ``pc`` (:meth:`current_pc`), ``line``, ``halted``,
         ``waiting`` (in WAIT), ``selected``, ``coherent``."""
-        from .cps import SEQ_NAMES
+        from .cps import SEQ_NAMES, SEQ_U5, SEQ_U6
         running = set(self.running())
         out = []
         for i, m in enumerate(self.machines):
@@ -2486,6 +2698,12 @@ class Session:
                 c = self.cps.vp_core(i)
                 st = self.cps.seq_state(c)
                 state, coherent = SEQ_NAMES.get(st, str(st)), self.cps.coherent(c)
+                if self.cps.cm3 and self.cps.vpes > 1 and st in (SEQ_U5, SEQ_U6):
+                    k = i % self.cps.vpes
+                    if not self.cps.vp_mask[c] >> k & 1:
+                        state = "VP stopped (CPC VP_RUNNING = 0)"
+                    elif m.vpcore is not None and m.vpcore.disabled(k):
+                        state += ", held by a DVP"
             elif self.mt is not None:               # the VPEs of one MT core
                 state, coherent = ("active" if self.mt.vpa[i] else
                                    "not active (VPEConf0.VPA = 0)"), False

@@ -1013,6 +1013,71 @@ $ python3 -m emips run docs/guide/labs/page_walker.asm --mmu tlb
 <p>With the walker the load reads the second page's word (2) without any
 exception; without it the boot firmware's refill handler maps the page
 the usual way (1).</p>
+<h3 id="the-64-bit-address-space">The 64-bit address space</h3>
+<p>A MIPS64 core (<code>--arch mips64</code>, <a href="02-writing-programs.html#223-mips64-64-bit-programs">2.23</a>) has
+64-bit addresses, but a program does not have to use them.  Every MIPS32
+segment is in the 64-bit space, sign-extended: kuseg is 0x0000000000000000–
+0x000000007fffffff, kseg0 0xffffffff80000000–0xffffffff9fffffff and so on up to
+kseg3 — the <strong>compatibility segments</strong>, where every program eMIPS
+assembles lives.  How much more there is depends on the MMU, and the core
+says so in <strong>Config.AT</strong>:</p>
+<ul>
+<li><strong>AT = 1</strong> (the fixed mapping or the BAT; the manual assumes a MIPS64
+  without a TLB has 32-bit addresses): the compatibility segments only.  Any
+  other address is an Address Error, and Status.KX / SX / UX read 0.</li>
+<li><strong>AT = 2</strong> (with a TLB, <code>--mmu tlb</code>): all of it.  eMIPS's TLB maps 40
+  bits of virtual address (SEGBITS = 40, the manual's example) onto 32 bits
+  of physical address (PABITS = 32): the segments below.</li>
+</ul>
+<table>
+<thead>
+<tr><th>Segment</th><th>Addresses</th><th>Who, with which bit</th><th>How</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>xuseg</strong></td><td><code>0x0000000000000000</code>–<code>0x000000ffffffffff</code> (1 TB)</td><td>every mode, with Status.UX</td><td>mapped (kuseg is its first 2 GB)</td></tr>
+<tr><td><strong>xsseg</strong></td><td><code>0x4000000000000000</code>–<code>0x400000ffffffffff</code></td><td>supervisor and kernel, with SX</td><td>mapped</td></tr>
+<tr><td><strong>xkphys</strong></td><td><code>0x8000000000000000</code>–<code>0xbfffffffffffffff</code></td><td>kernel, with KX</td><td>unmapped: PA = VA bits 31..0, the cache attribute = VA bits 61..59 — eight 4 GB windows onto physical memory</td></tr>
+<tr><td><strong>xkseg</strong></td><td><code>0xc000000000000000</code>–<code>0xc00000ff7fffffff</code></td><td>kernel, with KX</td><td>mapped</td></tr>
+<tr><td>the compatibility kernel segments</td><td><code>0xffffffff80000000</code>–<code>0xffffffffffffffff</code></td><td>as on MIPS32</td><td>kseg0, kseg1, sseg / kseg2, kseg3</td></tr>
+</tbody>
+</table>
+<p>Everything between is in no segment: an Address Error in every mode.  So is
+an xkphys address whose physical address would need more than 32 bits (a real
+5K has 36).  <strong>Status.KX, SX and UX</strong> (bits 7, 6, 5) turn the 64-bit
+segments on for kernel, supervisor and user mode; with the bit 0 that mode
+sees only the compatibility segments.  The boot firmware sets all three, as
+a 64-bit Linux does.</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/mips64_xkphys.asm
+(emips) translate 0x9000000000201000
+0x9000000000201000 xkphys -&gt; physical 0x00201000  (unmapped: PA = VA 31:0, attribute 2 from VA 61:59; attribute 2 = uncached)
+(emips) translate 0x100000000
+0x100000000 xuseg -&gt; physical 0x40000000  (not in the TLB yet; boot firmware refill handler: PA = VA 31:0 + 0x40000000, cacheable; attribute 3 = cacheable, write-back)
+(emips) translate 0x10000000000
+0x10000000000 no segment -&gt; no physical address  (in no segment (Vol. III Table 4.2): an access would take an Address Error exception)
+</code></pre>
+<p><strong>xkphys</strong> is how a 64-bit kernel reaches all of physical memory without a TLB
+entry — kseg0 and kseg1 reach only the first 512 MB — and picks the cache
+attribute per access: 0x9000… is uncached, 0x9800… cached write-back (Lab 60).</p>
+<p><strong>The TLB with 64-bit addresses.</strong>  EntryHi holds the <strong>region</strong> in R
+(bits 63..62: 0 xuseg, 1 xsseg, 3 xkseg) and VPN2 = VA bits 39..13; an entry
+matches only its region.  A miss is an <strong>XTLB Refill</strong> when 64-bit addressing is
+on for its segment — UX for kuseg and xuseg, SX for xsseg, KX for xkseg and
+for kseg2 / kseg3: its handler is at <strong>EBase + 0x080</strong>, next to the 32-bit one
+at EBase + 0x000, and after the boot (all three bits set) every refill goes
+there.  For it the CPU fills
+<strong>XContext</strong> (CP0 20): the page table's base (PTEBase, bits 63..33, set by
+software), R (32..31) and BadVPN2 = VA 39..13 (30..4) — so <code>dmfc0</code> of XContext
+is the address of the missing page pair's two 8-byte entries in a linear page
+table.  Context (CP0 4) keeps only VA 31..13: pages 4 GB apart look the same in
+it, and so they do to the boot firmware's refill handlers, which map by VA bits
+31..0.  Lab 61 writes a 64-bit refill handler.</p>
+<p><strong>32-bit compatibility addressing.</strong>  While a mode's KX / SX / UX bit is 0 its
+addresses are 32-bit ones: a user program with UX = 0 that adds past
+0x7fffffff gets 0xffffffff80000000 — kseg0, an Address Error in user mode —
+exactly as on MIPS32 (the effective address is sign-extended from bit 31,
+Vol. III 4.10).  Release 6 does it in every mode whose bit is 0, and there a
+base register that is not a sign-extended word is itself an Address Error
+(4.11).</p>
 <h3 id="watching-the-tlb">Watching the TLB</h3>
 <p>Everything a TLB does can be watched without changing it: the views
 read the entries, they never translate through them — no micro-TLB is
@@ -1420,10 +1485,34 @@ at 1 MB).  A user program is assembled at the MARS user addresses
 kernel — your exception handler in <code>.ktext</code> — serves it.  It cannot
 reach the devices (kseg1) or CP0: it asks the kernel with <code>syscall</code>.
 <a href="#lab-37--a-user-program-and-its-kernel">Lab 37</a>.</p>
+<h3 id="a-64-bit-cpu-on-the-malta">A 64-bit CPU on the Malta</h3>
+<p>The CoreLV card also came with a <strong>MIPS64</strong> processor, a 5Kc or 5Kf:
+the GT-64120 talks to the CPU over a 64-bit bus, so the board is the same.
+<code>--core 5kc</code> (or <code>--arch mips64</code> for a generic MIPS64 core) runs every
+Malta program as before, with 64-bit registers:</p>
+<pre><code class="language-console">$ python3 -m emips run --board malta --core 5kc docs/guide/labs/malta_serial.asm
+Hello from tty0!
+...
+</code></pre>
+<p>The addresses are the same 32-bit kseg0 / kseg1 addresses, sign-extended
+(<code>0xffffffff80100000</code> is <code>.text</code>).  Devices and memory stay at 32-bit
+physical addresses; an <code>ld</code> / <code>sd</code> to a board register covers two of
+them (the registers are 32 bits wide, on 64-bit boundaries), and with the byte
+lanes reversed a doubleword to PCI swaps all 8 bytes.  The boot monitor
+is the same MIPS32 code built for the 64-bit CPU: it saves an
+interrupted program's registers whole (64 bits, HI / LO too), prints a
+64-bit EPC when an exception has no handler, and starts the program
+with <code>Status.FR</code> (and, with a TLB, the 64-bit address space:
+<code>KX</code> / <code>SX</code> / <code>UX</code>); the XTLB refill handler maps user pages into
+the same window of the SDRAM.  Its interface stays 32-bit, as YAMON's:
+the descriptor, the function table, a registered handler's address.  The
+20Kc is refused: it was on the Core20K card, whose system controller is the
+Bonito64, not the GT-64120.</p>
 <h2 id="59-more-than-one-core">5.9 More than one core</h2>
-<p>A multi-core MIPS — the 1004K, interAptiv, P5600 — is a <strong>Coherent
-Processing System</strong> (CPS): up to four cores (eMIPS: <code>--cores 2..4</code>,
-Settings → Processor → Cores, the debugger's <code>set cores N</code>) on one
+<p>A multi-core MIPS — the 1004K, interAptiv, P5600, the 64-bit P6600 — is a <strong>Coherent
+Processing System</strong> (CPS): up to four or six cores (eMIPS: <code>--cores 2..6</code>,
+Settings → Processor → Cores, the debugger's <code>set cores N</code>; MIPS32 or
+MIPS64 cores, <code>--arch mips64</code> or <code>--core p6600</code>) on one
 physical memory, plus three blocks every core reaches by loads and
 stores:</p>
 <table>
@@ -2193,6 +2282,106 @@ qualifier inputs instead of an interrupt pin, so a thread can
 <code>yield</code> until a device needs it.  The toolbar's selector, <code>cpu</code>
 and the System pane list the VPs ("VP 3 (core 1)"), <code>mt</code> lists every
 core's MT Module.</p>
+<h3 id="release-6-threads-virtual-processors">Release 6 threads: virtual processors</h3>
+<p>Release 6 dropped the MT Module.  A multi-threaded Release 6 core — the
+64-bit MIPS I6400 has up to four threads a core, up to six cores — has
+<strong>virtual processors</strong> (VPs) instead: each VP is a complete
+processor of its own, with its GPRs, its CP0, its FPU registers, its TLB
+for the variable pages, its exceptions and interrupts.  What the VPs of
+one core share is the hardware: the caches, the TLB of fixed pages (the
+FTLB), and a block of gating storage, the <strong>ITU</strong>.  There are no
+thread contexts to bind, no MFTR / MTTR: software sees a VP as it sees a
+core.  In eMIPS: <code>--release R6 --vps 2</code> (1 to 4 VPs a core;
+<code>--core i6400 --cores N --vps N</code> is the I6400).</p>
+<ul>
+<li><strong>Numbering.</strong>  Config5.VP says the core has VPs.  The Global
+  Number register (CP0 3, select 1) holds the core (11:8) and the VP in
+  it (7:0); the system's number of a VP — <strong>VPNum</strong>, its EBase.CPUNum
+  and its number in the GIC — is core × 4 + VP whether the core has 1, 2
+  or 4 of them (the I6400's GIC keeps four places a core).  Two cores of
+  two VPs are VPs 0, 1, 4 and 5; <code>cpu</code> lists them as
+  "VP 4 (core 1)".</li>
+<li><strong>DVP / EVP.</strong>  <code>dvp rt</code> stops every other VP of the core —
+  they keep their state, fetch nothing and take no interrupt — and sets
+  VPControl.DIS; <code>evp rt</code> lets them go on as if nothing had happened.
+  Both write the old VPControl to rt, so a nested pair can see that the
+  others are already held.  It is how a VP changes something the whole
+  core shares, such as the FTLB or the cache, with nobody running beside
+  it.</li>
+<li><strong>Starting and stopping VPs</strong> is the Cluster Power Controller's: a
+  core's VP_RUN / VP_STOP / VP_RUNNING registers.  After a core reset only
+  VP 0 runs; VP_RUN starts another from its own reset base
+  (GCR_CL_RESET_BASE, one per VP) as a fresh processor.  The kernel boot
+  starts every VP at <code>main</code>, as every core.</li>
+<li><strong>The CM3.</strong>  The I6400's Coherence Manager has 64-bit registers (a
+  word access reads one half), its write-access register at 0x120, and one
+  <strong>redirect</strong> register for each VP (GCR_CL_REDIRECT): the core and the
+  VP the "core-other" windows of the GCRs and of the CPC reach.  A core
+  joins the coherence domain with one bit, COHEN.  <code>vp</code> in the
+  debugger shows every core's running VPs; <code>cps</code> the registers.</li>
+<li><strong>The ITU.</strong>  Software places the core's ITU with CP0 SAAR (9.7:
+  bits 43:13 are physical address bits 47:17, bit 0 turns it on; SAARI
+  (9.6) = 0 selects the ITU).  It is gating storage as the 34K's ITC
+  (above): cells of 64 bits, FIFO cells and single-entry cells, the view in
+  address bits 6:3 — 2 is "E/F synchronized": a load of an empty cell
+  waits until another VP stores.  Mistakes are bus errors: a byte access,
+  a P/V view of a FIFO.  <code>vp itu</code> lists the cells.</li>
+</ul>
+<pre><code class="language-asm"># release: R6
+# vps: 2
+# output: VP 1 got 60\n
+# VP 0 places the core's ITU and sends 10, 20, 30 through a FIFO cell;
+# VP 1 waits until the ITU is on, then reads them: each load of the E/F
+# synchronized view waits until VP 0 has stored the next value.
+        .set noreorder
+main:   mfc0    $t0, $3, 1              # GlobalNumber
+        andi    $t0, $t0, 0xff          # VPId
+        bnez    $t0, consumer
+        nop
+        mtc0    $zero, $9, 6            # SAARI = 0: SAAR is the ITU's
+        li      $t1, 0x01f00001         # the ITU at 0x1f000000 (0xf80 << 13), on
+        mtc0    $t1, $9, 7
+        ehb
+        li      $s7, 0xbf000000         # its cells (kseg1: uncached)
+        li      $t2, 10
+        sw      $t2, 0x14($s7)          # cell 0, view 2 (E/F synchronized),
+        li      $t2, 20                 # the cell's low word (+4)
+        sw      $t2, 0x14($s7)
+        li      $t2, 30
+        sw      $t2, 0x14($s7)
+1:      b       1b                      # (VP 1 ends the program)
+        nop
+consumer:
+        mfc0    $t1, $9, 7              # SAAR is the core's: wait for EN
+        andi    $t1, $t1, 1
+        beqz    $t1, consumer
+        nop
+        li      $s7, 0xbf000000
+        li      $t3, 3
+        li      $t4, 0
+2:      lw      $t2, 0x14($s7)          # waits for the next value
+        addu    $t4, $t4, $t2
+        addiu   $t3, $t3, -1
+        bnez    $t3, 2b
+        nop
+        li      $v0, 4
+        la      $a0, got
+        syscall
+        li      $v0, 1
+        move    $a0, $t4
+        syscall
+        li      $v0, 11
+        li      $a0, 10
+        syscall
+        li      $v0, 10
+        syscall
+        .data
+got:    .asciiz "VP 1 got "</code></pre>
+<p>Not modelled: the I6400's pipeline, which issues two instructions a
+cycle from up to four VPs — in eMIPS each VP executes an instruction a
+step (in pipeline mode each VP has a pipeline of its own) —, its Debug
+Unit, its clock ratios (the CPC stores them: eMIPS has one clock), and
+the routing of its MMIO regions.</p>
 <h2 id="510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</h2>
 <p>An <strong>exception</strong> stops the normal flow when an instruction cannot
 complete (or a <code>syscall</code> / <code>break</code> / trap asks for the kernel).  The MIPS
@@ -2511,7 +2700,8 @@ other:  li    $v0, 10
 </code></pre>
 <p>The debugger sets the EJTAG ones as a probe would (<code>ejtag ib N LOC</code>,
 <code>ejtag db N LOC [load|store] [value V]</code>, <code>ejtag watch N LOC i|r|w</code>,
-<code>ejtag clear</code>; <code>help ejtag</code>).  A data breakpoint on the same store comes
+<code>ejtag clear</code>; <code>help ejtag</code>; on a core with the MT Module <code>tc T</code>
+makes a breakpoint match one thread context only — IBCn / DBCn.TCuse).  A data breakpoint on the same store comes
 <em>before</em> the watch (the priority of Table 5.1) — and this program has
 no debug handler:</p>
 <pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/watch_culprit.asm
@@ -2580,7 +2770,10 @@ from the probe</em> boxes.  Without a probe a dmseg access waits forever.</p>
 <p>The TAP also carries <strong>PC sampling</strong> (MD00047 chapter 7): every 2^(5 +
 DCR.PCR) cycles the core puts the PC of the instruction completing then
 into the PCSAMPLE register; a probe that reads it often enough has a
-statistical profile, for free, of a program that runs at full speed:</p>
+statistical profile, for free, of a program that runs at full speed
+(with the MT Module the sample also names the thread context — the TC
+field above the ASID — and the ECR's VPED bit says when a VPE is
+disabled):</p>
 <pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/profile_me.asm
 (emips) probe on
 probe connected; the program restarted
@@ -2760,7 +2953,7 @@ apart into sign, exponent and fraction.  See <a href="#lab-6--01--02--03">Lab 6<
 <p>Each lab gives a task, a way to check your answer with eMIPS, and the
 answer (click to open it — try first!).  The lab programs are in
 <code>docs/guide/labs/</code>.  The labs that ask you to write or change a
-program — 3, 4, 12, 15, 20 and 21 — also come with <strong>checks</strong>, a file
+program — 3, 4, 12, 15, 20, 21, 58 and 61 — also come with <strong>checks</strong>, a file
 next to the program (<code>lab4_misaligned.check</code> for
 <code>lab4_misaligned.asm</code>): <strong>Run → Check</strong> (F8) or
 <code>python3 -m emips check docs/guide/labs/PROGRAM.asm</code> runs your version
@@ -4166,6 +4359,129 @@ counted 0.  That is why a kernel's exception handler can use the CP0
 registers without being disturbed by another thread of the same VPE.
 Starting TC 1 on VPE 1 needs VPE 1 itself to be on (VPEConf0.VPA) and
 the VPEs enabled (<code>evpe</code>); <code>emt</code> matters only for <code>--mt 1:2</code>.</p>
+</details>
+<h3 id="lab-58--unsigned-words-in-a-64-bit-register">Lab 58 — Unsigned words in a 64-bit register</h3>
+<p><a href="labs/mips64_sum.asm"><code>labs/mips64_sum.asm</code></a> adds up the sizes of five
+files — unsigned 32-bit words, up to 4 GB each — in a 64-bit register
+(<a href="02-writing-programs.html#223-mips64-64-bit-programs">2.23</a>; its settings: <code>--arch mips64</code>).
+It should print 9500000000.  Run it (<code>python3 -m emips run
+docs/guide/labs/mips64_sum.asm</code>): what does it print, and why?  Fix it by
+changing one instruction.  Then change <code>daddu</code> to <code>addu</code>: what does it
+print now, and why is it the same wrong number?  <code>python3 -m emips check
+docs/guide/labs/mips64_sum.asm</code> says when the program is right.</p>
+<details>
+<summary>Answer</summary>
+<p>It prints 910065408.  <code>lw</code> sign-extends: 3000000000 and 2500000000 have
+bit 31 set, so they arrive as 3000000000 − 2<sup>32</sup> and 2500000000 − 2<sup>32</sup>,
+two negative numbers, and the total is 2 × 4294967296 short.  <code>lwu</code> (load
+word unsigned) zero-extends: <code>lwu $t3, 0($t0)</code> gives 9500000000.  With
+<code>addu</code> the sum is a word again — its low 32 bits, sign-extended:
+9500000000 − 2 × 2<sup>32</sup> = 910065408 once more, because both mistakes lose
+whole multiples of 2<sup>32</sup>.  (After <code>lwu</code> the operands of <code>addu</code> are
+not sign-extended words, and the manual calls its result UNPREDICTABLE;
+eMIPS uses their low words.)  The 64-bit register only helps if every
+value goes into it the right way: a signed word with <code>lw</code>, an unsigned one
+with <code>lwu</code>, and the arithmetic with the <code>d</code> instructions.</p>
+</details>
+<h3 id="lab-59--how-long-is-a-constant">Lab 59 — How long is a constant?</h3>
+<p><a href="labs/mips64_constants.asm"><code>labs/mips64_constants.asm</code></a> loads ten
+constants with <code>dli</code>, <code>li</code> and <code>la</code> and prints each in hex.  Guess how
+many instructions each one takes, then look: <code>python3 -m emips asm
+docs/guide/labs/mips64_constants.asm</code>.  Why does 0xffffffff80000000 take
+one instruction and 0x80000000 two?  What does <code>li $a0, 0xffffffff</code> print,
+and why?  Write two instructions that load 0x0000ffff00000000.</p>
+<details>
+<summary>Answer</summary>
+<p>100, -100, 0x12340000 and 0xffffffff80000000 take one: <code>addiu</code> from
+<code>$zero</code> (a sign-extended 16-bit value) or <code>lui</code> (a sign-extended word whose
+low half is 0) — for 0xffffffff80000000 <code>lui $a0, 0x8000</code> is enough,
+the sign extension makes the upper half.  0x80000000 is positive as a
+doubleword, so it takes two: <code>ori 0x8000</code> and <code>dsll 16</code>.  So do 0xffffffff
+(<code>lui 0xffff</code> gives 0xffffffffffff0000, <code>dsrl32</code> by 0 shifts it right by 32)
+and 0x0000123400000000 (<code>ori 0x91a0</code>, <code>dsll 29</code>);
+0x123456789abcdef0 takes six (<code>lui</code>, <code>ori</code> and two more <code>dsll 16</code> +
+<code>ori</code>).  <code>li $a0, 0xffffffff</code> is one <code>addiu $a0, $zero, -1</code> and prints
+0xffffffffffffffff: <code>li</code> loads a word, and a word in a register is
+sign-extended — an unsigned 32-bit constant needs <code>dli</code>.  <code>la main</code> is
+<code>lui</code> + <code>daddiu</code>: a label is a 32-bit compatibility address.
+0x0000ffff00000000 is <code>ori $a0, $zero, 0xffff</code> + <code>dsll32 $a0, $a0, 0</code> —
+what <code>dli</code> picks too.</p>
+</details>
+<h3 id="lab-60--memory-without-the-tlb-xkphys">Lab 60 — Memory without the TLB: xkphys</h3>
+<p><a href="labs/mips64_xkphys.asm"><code>labs/mips64_xkphys.asm</code></a> (<code>--arch mips64 --mmu
+tlb --caches</code>) stores 0x1234 through xkphys with attribute 3 (cached) and
+reads the same physical address with attribute 2 (uncached), then with 3
+(<a href="#the-64-bit-address-space">the 64-bit address space</a>).  Why are the two lines
+different?  Add one instruction before the uncached load so that it reads
+0x1234.  Then, one at a time: change the cached address to
+0x9800000100201000; run with <code>--mmu fixed</code>; clear Status.KX (bit 7) at the
+start of <code>main</code>.  Its exception handler prints the exception code and
+BadVAddr: what does each print, and why?</p>
+<details>
+<summary>Answer</summary>
+<p><code>0x0000000000000000</code>, then <code>0x0000000000001234</code>: the store went into the data
+cache (attribute 3 is write-back), the uncached load reads memory, where the
+word is still 0, and the cached load hits the line.  <code>cache 0x19, 0($t0)</code> (Hit
+Writeback, D-cache) writes the line back first — the same as kseg0 and
+kseg1 (<a href="#caches">Caches</a>), with the attribute in the address instead of
+the segment.  The three changes all print <code>5</code> (AdES, the store) and the
+address: 0x9800000100201000 is in no segment (its physical address needs bit
+32; eMIPS's have 32 bits, so each xkphys window is 4 GB); with the fixed
+mapping the core has Config.AT = 1 — the compatibility segments only, as the
+manual assumes for a MIPS64 without a TLB; with KX = 0 kernel mode sees
+only the compatibility segments (kseg0 0x80201000 and kseg1 0xa0201000
+still reach the word).</p>
+</details>
+<h3 id="lab-61--above-4-gb">Lab 61 — Above 4 GB</h3>
+<p><a href="labs/mips64_above4g.asm"><code>labs/mips64_above4g.asm</code></a> (<code>--arch mips64 --mmu
+tlb</code>) is a kernel program in kseg0 that stores 1 at 0x100000000 and 2 at
+0x200000000, two xuseg pages 4 GB apart.  Its XTLB refill handler maps them
+through a linear page table in xkphys: XContext gives the address of the
+missing page pair's entries
+(<a href="#the-64-bit-address-space">the 64-bit address space</a>).  It should print
+<code>1 2 2</code> (the two values and the number of refills).  Run it: what does it
+print, what is exception 2, and why that address?  Fix the handler with one
+change (<code>python3 -m emips check docs/guide/labs/mips64_above4g.asm</code>).  Then
+delete the handler — from <code>.ktext 0x80000080</code> to its <code>eret</code> — and run
+again: why does it print <code>2 2 0</code>?</p>
+<details>
+<summary>Answer</summary>
+<p><code>2 0x0000000000800000</code>: exception 2 is TLBL, a TLB miss on a load.  The
+handler reads XContext with <code>mfc0</code>, which moves only the low 32 bits
+(sign-extended): PTEBase (bits 63..33) is lost and the "pointer" is
+0x800000, an xuseg address.  Its <code>ld</code> misses the TLB, and a miss while
+Status.EXL = 1 goes to the general exception vector (offset 0x180), not to a
+refill handler.  <code>dmfc0 $k1, $20</code> reads all 64 bits — 0x9800000000800000, the
+entries in xkphys — and the program prints <code>1 2 2</code>: one refill a page pair.
+Without the handler the boot firmware's refill handlers are installed: they
+map by VA bits 31..0, so 0x100000000 and 0x200000000 get the same physical
+page (PA 0x40000000), the second store overwrites the first, and the
+program's counter stays 0.  A 64-bit handler must use the whole VPN2:
+XContext's BadVPN2 holds VA 39..13, Context's only 31..13.</p>
+</details>
+<h3 id="lab-62--c-on-64-bits">Lab 62 — C on 64 bits</h3>
+<p><a href="labs/c_long.c"><code>labs/c_long.c</code></a> built twice with <code>-O 1</code>: for MIPS32 (the
+o32 ABI, <code>c_long_32.elf</code>) and for MIPS64 (n64, <code>cc --arch mips64</code>,
+<code>c_long_64.elf</code>).  It prints the sizes of <code>int</code>, <code>long</code>, a pointer and
+<code>struct entry</code>, then how many bytes a million 4 KB pages hold, computed by
+<code>bytes_int</code> and by <code>bytes_long</code>.  Predict both outputs, then run them
+(<code>python3 -m emips run docs/guide/labs/c_long_64.elf</code>).  Why does the
+struct grow?  Why is <code>bytes_int</code> wrong on both?  Compare <code>bytes_long</code> in
+the two listings (<code>python3 -m emips dis docs/guide/labs/c_long_64.elf</code>).</p>
+<details>
+<summary>Answer</summary>
+<p>MIPS32: <code>4 4 4 8</code>, -198967296, -198967296.  MIPS64: <code>4 8 8 16</code>,
+-198967296, 4096000000.  In o32 a <code>long</code> and a pointer have 32 bits; n64
+makes them 64 and keeps <code>int</code> at 32 ("LP64").  The struct holds an
+<code>int</code> and a <code>long</code>: 4 + 4 bytes on o32, 4 + 4 bytes of padding + 8 on
+n64, because the <code>long</code> must be 8-byte aligned.  4096000000 does not fit
+in an <code>int</code>, and in <code>bytes_int</code> the multiplication is <code>int</code> × <code>int</code>,
+done in 32 bits (<code>sll $v0, $a0, 12</code>) whatever type the result is given:
+it overflows on both (in C that is undefined behaviour; here it wraps).
+<code>bytes_long</code> converts first: on MIPS64 GCC uses <code>dsll $v0, $a0, 12</code>, a
+64-bit shift of the sign-extended <code>int</code> — no conversion instruction is
+needed, n64 passes an <code>int</code> as a sign-extended word — and gets
+4096000000; on MIPS32 a <code>long</code> has 32 bits and it is the same <code>sll</code>.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

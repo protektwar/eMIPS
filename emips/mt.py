@@ -64,6 +64,9 @@ YQMASK, VPESCHEDULE, VPESCHEFBACK, VPEOPT = (1, 4), (1, 5), (1, 6), (1, 7)
 TCSTATUS, TCBIND, TCRESTART, TCHALT = (2, 1), (2, 2), (2, 3), (2, 4)
 TCCONTEXT, TCSCHEDULE, TCSCHEFBACK = (2, 5), (2, 6), (2, 7)
 SRSCONF0 = (6, 1)
+#: the MT registers a MIPS64 VPE holds at 64 bits (DMFC0 / DMTC0 whole):
+#: TCRestart (a PC) and TCContext (software's, a pointer)
+WIDE = frozenset({TCRESTART, TCCONTEXT})
 
 #: the MT registers (the Machine sends MFC0 / MTC0 of these here)
 REGISTERS = frozenset({MVPCONTROL, MVPCONF0, MVPCONF1, VPECONTROL, VPECONF0,
@@ -248,7 +251,7 @@ class Processor:
         #: the gating storage: the 34K's ITC (emips.itc; None: MVPConf0.GS = 0);
         #: an ITC object: one the cores of a CPS share (the 1004K's)
         from .itc import ITC
-        self.itc = ITC(*itc) if isinstance(itc, tuple) else itc
+        self.itc = ITC(*itc, width=64 if vpes[0].wide else 32) if isinstance(itc, tuple) else itc
         #: the VPE whose TC issues in the current cycle (an error's VPE)
         self.last_vp = 0
         #: VPESchedule.GPO (one per processor, reset 1: fixed priorities)
@@ -322,7 +325,9 @@ class Processor:
         state; Config3.MT / ULRI, EBase.CPUNum, Debug.OffLine writable."""
         m.mt = self
         m.vpe = v
-        m._mt_regs = REGISTERS
+        m._ext_regs, m._ext = REGISTERS, self
+        if m.wide:                              # "the same width as the processor
+            m._wide_cp0 = m._wide_cp0 | WIDE    # GPRs" (MD00378 6.14 / 6.16)
         tc = next(t for t in self.tcs if t.vpe == v)
         tc.gprs = m.shadow[0]
         tc.dsp_hi, tc.dsp_lo = m.dsp_hi, m.dsp_lo
@@ -689,6 +694,14 @@ class Processor:
         """The VPE whose TC issues next (prepare()), as a list."""
         return [self.next.vpe] if self.next is not None else []
 
+    def vpe_disabled(self, v: int) -> bool:
+        """VPE ``v`` is disabled (EJTAG's ECR.VPED, MD00534 Table 11.25): not
+        activated (VPEConf0.VPA = 0), or multi-VPE execution is off
+        (MVPControl.EVP = 0) and the one TC that runs is another VPE's."""
+        if self.mvpcontrol & EVP:
+            return not self.vpa[v]
+        return self.solo is None or self.solo.vpe != v
+
     def alive(self, v: int) -> bool:
         """VPE ``v`` has a TC that runs or waits (or a debug request)."""
         m = self.vpes[v]
@@ -759,7 +772,7 @@ class Processor:
         next, TDS), bit 0 = the ISA mode (MD00534 7.2.15.1)."""
         pc = self.attr(tc, "pc")
         if self.attr(tc, "slot_armed"):
-            pc = (pc - self.attr(tc, "_slot_back")) & M32
+            pc = (pc - self.attr(tc, "_slot_back")) & self.vpes[tc.vpe].amask
         return (pc & ~1) | self.attr(tc, "isa_mode")
 
     def _restart(self, tc: TC, value: int) -> None:
@@ -767,8 +780,9 @@ class Processor:
         0 = the ISA mode with a compressed ISA); TDS and the LLbit clear
         (MD00378 7.2)."""
         m = self.vpes[tc.vpe]
+        value &= m.amask
         isa = value & 1 if m.compressed is not None else 0
-        for name, v in (("pc", value & ~1 if m.compressed is not None else value & M32),
+        for name, v in (("pc", value & ~1 if m.compressed is not None else value),
                         ("isa_mode", isa), ("slot_armed", False), ("slot_target", None),
                         ("_forbidden", False), ("_redirect", None), ("waiting", False),
                         ("lr_valid", False), ("_slot_back", 4)):
@@ -921,7 +935,7 @@ class Processor:
         the VPE issuing it)."""
         v = m.vpe
         tc = self.current[v]
-        value &= M32
+        value &= m.amask if key in WIDE else M32
         mvp = self._mvp(m)
         if key in NO_PM:
             self._pm_write(tc, key, value)
@@ -1110,50 +1124,58 @@ class Processor:
         return tc
 
     def mftr(self, m, tc: TC, rt: int, u: int, sel: int, h: int, rx: int) -> int:
-        """MFTR's value (-1: not implemented / not accessible)."""
+        """MFTR's value as GPR[rd] takes it (-1: not implemented / not
+        accessible).  MIPS64 (GPRLEN = 64): a source narrower than the GPR
+        sign-extended (MD00378 MFTR), a CP0 register as DMFC0 reads it, an
+        FPR whole (Config.AT 1 / 2: the widths match)."""
         t = self.vpes[tc.vpe]
+        ones, sx = t.amask, t._sxw
         if u == 0:                              # CP0 register rt, sel of the target TC
             if (rt, sel) not in t.cp0 or h:
-                return M32 if (rt, sel) not in t.cp0 else 0
+                return ones if (rt, sel) not in t.cp0 else 0
             with self.bound(tc) as tm:
-                return tm.cp0_read(rt, sel)
+                return tm.cp0_dread(rt, sel)
         if sel == 0:
-            return tc.gprs[rt] & M32 if rt else 0
+            return tc.gprs[rt] & ones if rt else 0
         if sel == 1:
             if rt == 0:
-                return self.attr(tc, "lo") & M32
+                return self.attr(tc, "lo") & ones
             if rt == 1:
-                return self.attr(tc, "hi") & M32
+                return self.attr(tc, "hi") & ones
             if not t.dsp or rt in (2, 6, 10, 14) or rt not in (4, 5, 8, 9, 12, 13, 16):
-                return M32                      # no ACX on MIPS32; no DSP Module
+                return ones                     # no ACX on MIPS32; no DSP Module
             if rt == 16:
-                return self.attr(tc, "dspctl") & M32
+                return sx(self.attr(tc, "dspctl"))
             a = rt >> 2
-            return (tc.dsp_hi if rt & 1 else tc.dsp_lo)[a] & M32
+            return (tc.dsp_hi if rt & 1 else tc.dsp_lo)[a] & ones
         if sel == 2:
             if not t.has_fpu:
-                return M32
+                return ones
             v = t.fpr[rt]
+            if t.wide:                          # h = 1 UNPREDICTABLE: the high word
+                return sx(v >> 32) if h else v & ones
             return (v >> 32) & M32 if h else v & M32
         if sel == 3:
             if not t.has_fpu:
-                return M32
+                return ones
             from .sim import fcr_read
             v = fcr_read(t, rt)
-            return M32 if v is None else v
-        return M32                              # COP2 (none) and reserved selects
+            return ones if v is None else sx(v)
+        return ones                             # COP2 (none) and reserved selects
 
     def mttr(self, m, tc: TC, rd: int, u: int, sel: int, h: int, rx: int, value: int) -> None:
-        """MTTR: write ``value`` (no effect where MFTR would read -1)."""
+        """MTTR: write ``value`` (no effect where MFTR would read -1).
+        MIPS64: the whole GPR (MD00378: not sign-extended), a CP0 register
+        as DMTC0 writes it, an FPR whole."""
         t = self.vpes[tc.vpe]
-        value &= M32
+        value &= t.amask
         if u == 0:
             if (rd, sel) not in t.cp0 or h:
                 return
             self._issuer = m
             try:
                 with self.bound(tc) as tm:
-                    tm.mtc0(rd, sel, value)
+                    tm.cp0_dwrite(rd, sel, value)
             finally:
                 self._issuer = None
             return
@@ -1172,10 +1194,14 @@ class Processor:
             return
         if sel == 2 and t.has_fpu:
             old = t.fpr[rd]
-            t.fpr[rd] = (old & M32) | (value << 32) if h else (old & ~M32) | value
+            if t.wide and not h:
+                t.fpr[rd] = value
+            else:                               # (MIPS64 h = 1: the high word)
+                value &= M32
+                t.fpr[rd] = (old & M32) | (value << 32) if h else (old & ~M32) | value
         elif sel == 3 and t.has_fpu:
             from .sim import fcr_write
-            fcr_write(t, rd, value)             # an FPE it enables: the target's (6.29)
+            fcr_write(t, rd, value & M32)       # an FPE it enables: the target's (6.29)
 
     # -- the views ----------------------------------------------------------------------
 
@@ -1235,7 +1261,9 @@ class Processor:
             if r["gs"]:
                 wait = f" waits: {r['gs']}"
             group = f" group {r['group']}" if r["group"] is not None else ""
-            out.append(f"{mark} TC{r['tc']} VPE {r['vpe']}  {r['state']:<24} pc 0x{r['pc']:08x}"
+            digits = 16 if self.vpes[0].wide else 8
+            out.append(f"{mark} TC{r['tc']} VPE {r['vpe']}  {r['state']:<24} "
+                       f"pc 0x{r['pc']:0{digits}x}"
                        f"  issued {r['issued']:<6}{group} {flags}{wait}")
         return out
 
@@ -1394,7 +1422,7 @@ def _e_yield(m, w: int) -> int | None:
     tc = p.current[m.vpe]
     v = m.vpe
     r = m.read_reg(_rs(w))
-    sr = r - (1 << 32) if r & 0x80000000 else r
+    sr = m.sgn(r)                               # (MIPS64: the whole register)
     if sr == 0:
         if not any(t.vpe == v and t is not tc and t.da and not t.halted and t.active
                    for t in p.tcs):
@@ -1417,8 +1445,8 @@ def _e_mftr(m, w: int) -> int | None:
     p = m.mt
     tc = p.target(m)
     rt, rx, u, h, sel = _rt(w), (w >> 6) & 31, (w >> 5) & 1, (w >> 4) & 1, w & 7
-    value = M32 if tc is None else p.mftr(m, tc, rt, u, sel, h, rx)
-    m.write_reg(_rd(w), value)
+    value = m.amask if tc is None else p.mftr(m, tc, rt, u, sel, h, rx)
+    m.write_dreg(_rd(w), value)
     return None
 
 
