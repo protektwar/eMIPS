@@ -157,9 +157,11 @@ _RV_LETTERS = "iemafdqlcbkjtpvh"
 def rv_march(arch: str, extensions: str) -> tuple[str, str]:
     """(-march, -mabi) for a hart with ``extensions``: the canonical ISA
     string, the psABI's integer (ilp32 / lp64) or hardware floating-point
-    calling convention (``f`` / ``d`` suffix)."""
+    calling convention (``f`` / ``d`` suffix).  Vendor extensions (the
+    P8700's ``xmips*``) are left out: GCC 13 knows none, and C does not
+    need their instructions."""
     from .riscv import parse_extensions
-    exts = parse_extensions(extensions) | {"i"}
+    exts = {e for e in parse_extensions(extensions) if not e.startswith("x")} | {"i"}
     letters = "".join(c for c in _RV_LETTERS if c in exts)
     multi = sorted((e for e in exts if len(e) > 1),
                    key=lambda e: (e[0] != "z", _RV_LETTERS.find(e[1]) if e[0] == "z" else 0, e))

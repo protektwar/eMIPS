@@ -942,9 +942,16 @@ class SettingsDialog(QtWidgets.QDialog):
             self.core_note.setText(html.escape(tr(
                 "Any combination eMIPS can model; PRId 0 (no licensed core).")))
             return
-        lines = [tr("{arch} Release {r}, PRId 0x{p:08x}; the settings below offer what "
-                    "its manuals allow (the others are greyed out).").format(
-                        arch=core.arch.upper(), r=core.release[1:], p=core.prid)]
+        from ..options import arch_title
+        if core.rv:                             # (RISC-V: marchid, no release / PRId)
+            from ..p8700 import MARCHID, MVENDORID
+            lines = [tr("{arch}, mvendorid 0x{v:x}, marchid 0x{a:x}; its extensions: "
+                        "{ext}.").format(arch=arch_title(core.arch), v=MVENDORID, a=MARCHID,
+                                         ext=core.build["rv_extensions"])]
+        else:
+            lines = [tr("{arch} Release {r}, PRId 0x{p:08x}; the settings below offer what "
+                        "its manuals allow (the others are greyed out).").format(
+                            arch=arch_title(core.arch), r=core.release[1:], p=core.prid)]
         if core.missing:
             lines.append(tr("Not modelled: {what}.").format(what="; ".join(core.missing)))
         lines += list(core.notes)

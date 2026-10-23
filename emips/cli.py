@@ -79,7 +79,7 @@ class Debugger(cmd.Cmd):
     #: RISC-V hart they say what to use instead
     MIPS_ONLY = frozenset(("srs", "ejtag", "probe", "board", "disk", "trace", "tap", "cp0",
                            "dsp", "msa", "mt", "vp", "tc", "translate", "cm", "cps", "gic",
-                           "tlb", "mpu", "perf", "core"))
+                           "tlb", "mpu", "core"))
 
     def onecmd(self, line: str) -> bool:
         word = line.split()[0] if line.split() else ""
@@ -987,8 +987,8 @@ class Debugger(cmd.Cmd):
             for name, value in s.special_registers():
                 self.say(f"{name:>9} = 0x{value:0{s.hex_digits(name)}x}")
             return
-        from . import rvcsr
-        by_name = {v: k for k, v in rvcsr.NAMES.items()}
+        table = m.csrs.table                    # (the P8700's own too: emips.p8700)
+        by_name = {c.name: n for n, c in table.items()}
         for tok in arg.split():
             num = by_name.get(tok.lower())
             if num is None:
@@ -1000,7 +1000,7 @@ class Debugger(cmd.Cmd):
                 value = m.csrs.read(num)
             except Exception as exc:                        # noqa: BLE001
                 raise CliError(f"CSR 0x{num:03x}: {exc}") from None
-            name = rvcsr.NAMES.get(num, f"0x{num:03x}")
+            name = table[num].name if num in table else f"0x{num:03x}"
             self.say(f"{name:>9} = 0x{value:0{s.hex_digits()}x}")
 
     def do_fpu(self, arg: str) -> None:
@@ -1376,11 +1376,16 @@ class Debugger(cmd.Cmd):
                                     overflow interrupt; the count starts at 0
           perf N off                stop counter N (its mode bits 0)
           perf N = VALUE            write counter N
-        Software does the same with mtc0 to $25 (select 0-3)."""
+        Software does the same with mtc0 to $25 (select 0-3).  RISC-V: the
+        MIPS P8700's mhpmcounter3-6 (N = 3-6, MODES letters of u, s, m —
+        default all; perf events: Table 11.4); csrw mhpmeventN does the same."""
         from . import perf
         self._need_program()
         m = self.s.machine
         parts = arg.split()
+        if m.rv:
+            self._perf_rv(m, parts)
+            return
         if not parts:
             self.say(perf.format_counters(m))
             return
@@ -1415,6 +1420,54 @@ class Debugger(cmd.Cmd):
                 raise CliError("modes are letters of u, s, k, x (e.g. uk)")
             self.s.configure_counter(i, where[0], modes, ie)
         self.say(perf.format_counters(m).splitlines()[i])
+
+    def _perf_rv(self, m, parts: list[str]) -> None:
+        """perf on a RISC-V hart: the P8700's mhpmcounter3-6 (N = 3-6;
+        modes: letters of u, s, m)."""
+        from . import sessionrv as RV
+        p = m.p8700
+        if p is None:
+            raise CliError("this hart's mhpmcounter3-31 count no event (Zihpm: read 0); the "
+                           "P8700 has four counters: --core p8700")
+        if not parts:
+            self.say("\n".join(p.counters.lines()))
+            return
+        if parts[0] == "events":
+            self.say("\n".join(RV.event_lines()))
+            return
+        if parts[0] not in ("3", "4", "5", "6") or len(parts) < 2:
+            raise CliError("perf N EVENT [MODES] with N = 3-6 (mhpmcounterN; help perf)")
+        i = int(parts[0]) - 3
+        if parts[1] == "off":
+            self.s.configure_counter(i, None)
+        elif parts[1] == "=":
+            if len(parts) < 3:
+                raise CliError("perf N = VALUE")
+            try:
+                value = int(parts[2], 0)
+            except ValueError:
+                value = self.resolve(parts[2])
+            m.csrs.write(0xB03 + i, value)
+        else:
+            event = RV.find_event(parts[1])
+            if event is None:
+                raise CliError(f"no P8700 event {parts[1]!r} (perf events)")
+            modes = parts[2].lower() if len(parts) > 2 else "msu"
+            if set(modes) - set("usmk"):
+                raise CliError("modes are letters of u, s, m (e.g. us)")
+            self.s.configure_counter(i, event, modes)
+        self.say(p.counters.lines()[i])
+
+    def do_p8700(self, arg: str) -> None:
+        """p8700   RISC-V: the MIPS P8700's own registers — the hart ID, mipstvec,
+        mipsintctl's routing, mipsconfig5-7, the PMAs, the four counters
+        (MD01502 ch. 7 / 11)"""
+        self._need_program()
+        m = self.s.machine
+        if not m.rv:
+            raise CliError("p8700 is a RISC-V command (the MIPS P8700: --core p8700)")
+        from . import sessionrv as RV
+        self.say("\n".join(RV.p8700_lines(m)))
 
     def do_core(self, arg: str) -> None:
         """core [buffer|predict|units]   inside the MIPS 24K pipeline model

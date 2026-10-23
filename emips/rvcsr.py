@@ -105,7 +105,22 @@ class CSRFile:
         self.dcsr = DCSR_DEBUGVER | 3
         self.dpc = 0
         self.dscratch0 = self.dscratch1 = 0
+        #: the interrupt priority, the S-level interrupts (sie / sip /
+        #: mideleg), the mip bits the platform's lines may reach, the
+        #: software-writable mip bits beyond SSIP / STIP / SEIP
+        self.priority = PRIORITY
+        self.s_interrupts = S_INTERRUPTS
+        self.line_mask = M_INTERRUPTS | (1 << SEI) if self.has_s else M_INTERRUPTS
+        self.mip_extra = 0
         self.table = {c.num: c for c in CSRS if c.exists(self)}
+        if m.p8700 is not None:                 # (the P8700's own: emips.p8700)
+            from . import p8700 as P
+            self.table.update({c.num: c for c in P.CSRS if c.exists(self)})
+            self.priority = P.PRIORITY
+            lcofi = 1 << P.LCOFI
+            self.s_interrupts |= lcofi if self.has_s else 0
+            self.line_mask |= P.LINE_BITS
+            self.mip_extra = lcofi
 
     # -- mstatus helpers -------------------------------------------------------------
 
@@ -180,14 +195,14 @@ class CSRFile:
     def mip(self) -> int:
         """mip as read: the platform's lines (MSIP, MTIP, MEIP, the
         external SEIP) and the software-writable bits."""
-        return self.m.irq_lines & (M_INTERRUPTS | (1 << SEI) if self.has_s else M_INTERRUPTS) \
-            | self.mip_sw
+        return self.m.irq_lines & self.line_mask | self.mip_sw
 
     def mip_mask(self) -> int:
-        return S_INTERRUPTS if self.has_s else 0
+        return (S_INTERRUPTS if self.has_s else 0) | self.mip_extra
 
     def mie_mask(self) -> int:
-        return M_INTERRUPTS | (S_INTERRUPTS if self.has_s else 0)
+        return M_INTERRUPTS | (S_INTERRUPTS if self.has_s else 0) | self.line_mask \
+            | self.mip_extra
 
     def medeleg_mask(self) -> int:
         mask = sum(1 << c for c in (1, 2, 3, 4, 5, 6, 7, 8, 9))
@@ -198,6 +213,8 @@ class CSRFile:
         return mask
 
     def counter_mask(self) -> int:
+        if self.m.p8700 is not None:            # (four counters: MD01502 11.1)
+            return 0x7F
         return 0x7 | (0xFFFFFFF8 if self.zihpm else 0)
 
     # -- access --------------------------------------------------------------------
@@ -223,6 +240,8 @@ class CSRFile:
                 raise RVTrap(ILLEGAL, insn)
         if num == 0x180 and m.priv == 1 and self.status_bit(TVM):
             raise RVTrap(ILLEGAL, insn)         # 3.1.6.6: TVM
+        if num == 0xC01 and m.p8700 is not None:
+            m.p8700.read_time(insn)             # (the P8700 has no time: MD01502 7.2)
 
     def read(self, num: int) -> int:
         return self.table[num].read(self) & self.m.amask
@@ -344,12 +363,12 @@ def _w_mip(c: CSRFile, v: int) -> None:
 
 
 def _w_sip(c: CSRFile, v: int) -> None:
-    mk = (1 << SSI) & c.mideleg                 # 10.1.3: only SSIP is writable in sip
+    mk = ((1 << SSI) | c.mip_extra) & c.mideleg     # 10.1.3: only SSIP (and LCOFIP)
     c.mip_sw = (c.mip_sw & ~mk) | (v & mk)
 
 
 def _w_sie(c: CSRFile, v: int) -> None:
-    mk = S_INTERRUPTS & c.mideleg
+    mk = c.s_interrupts & c.mideleg
     c.mie = (c.mie & ~mk) | (v & mk)
 
 
@@ -413,7 +432,7 @@ CSRS: list[CSR] = [
     # -- supervisor (priv. 10.1) --
     CSR(0x100, "sstatus", _s, CSRFile.sstatus_value,
         lambda c, v: c.write_mstatus(v, c.sstatus_mask())),
-    CSR(0x104, "sie", _s, lambda c: c.mie & c.mideleg & S_INTERRUPTS, _w_sie),
+    CSR(0x104, "sie", _s, lambda c: c.mie & c.mideleg & c.s_interrupts, _w_sie),
     CSR(0x105, "stvec", _s, _attr("stvec"), _w_tvec("stvec")),
     CSR(0x106, "scounteren", _s, _attr("scounteren"), _set("scounteren", CSRFile.counter_mask)),
     CSR(0x10A, "senvcfg", _s, _attr("senvcfg"), _set("senvcfg", 1)),
@@ -421,7 +440,7 @@ CSRS: list[CSR] = [
     CSR(0x141, "sepc", _s, _r_epc("sepc"), lambda c, v: setattr(c, "sepc", v & ~1)),
     CSR(0x142, "scause", _s, _attr("scause"), _set("scause")),
     CSR(0x143, "stval", _s, _attr("stval"), _set("stval")),
-    CSR(0x144, "sip", _s, lambda c: c.mip() & c.mideleg & S_INTERRUPTS, _w_sip),
+    CSR(0x144, "sip", _s, lambda c: c.mip() & c.mideleg & c.s_interrupts, _w_sip),
     CSR(0x180, "satp", _s, _attr("satp"), _w_satp),
     # -- machine (priv. 3.1) --
     CSR(0xF11, "mvendorid", _always, lambda c: 0),
@@ -434,7 +453,7 @@ CSRS: list[CSR] = [
     CSR(0x301, "misa", _always, CSRFile.misa, lambda c, v: None),
     CSR(0x302, "medeleg", _s, lambda c: c.medeleg & (M32 if c.m.xlen == 32 else M64),
         _w64("medeleg", CSRFile.medeleg_mask, "")),
-    CSR(0x303, "mideleg", _s, _attr("mideleg"), _set("mideleg", lambda c: S_INTERRUPTS)),
+    CSR(0x303, "mideleg", _s, _attr("mideleg"), _set("mideleg", lambda c: c.s_interrupts)),
     CSR(0x304, "mie", _always, _attr("mie"), _set("mie", CSRFile.mie_mask)),
     CSR(0x305, "mtvec", _always, _attr("mtvec"), _w_tvec("mtvec")),
     CSR(0x306, "mcounteren", _u, _attr("mcounteren"), _set("mcounteren", CSRFile.counter_mask)),

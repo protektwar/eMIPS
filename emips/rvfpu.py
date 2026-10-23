@@ -211,7 +211,7 @@ def classify(a: int, f: F.Fmt) -> int:
 # -------------------------------------------------------------- executors
 
 def _executors() -> dict:
-    from .simrv import _reg, _set, _s32
+    from .simrv import _reg, _set, _s32, misaligned
     ex: dict = {}
 
     def fp(fn):
@@ -323,17 +323,22 @@ def _executors() -> dict:
     ex["fcvt.d.s"] = fp(s2d)
     ex["fcvt.s.d"] = fp(d2s)
 
+    def _ea(m, i, size, store):
+        addr = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+        misaligned(m, addr, size, store)        # (the P8700's DMALN / DULS)
+        return addr
+
     def flw(m, i, pc):
-        write_s(m, i.f["rd"], m.load((_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask, 4))
+        write_s(m, i.f["rd"], m.load(_ea(m, i, 4, False), 4))
 
     def fsw(m, i, pc):
-        m.store((_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask, m.fpr[i.f["rs2"]] & M32, 4)
+        m.store(_ea(m, i, 4, True), m.fpr[i.f["rs2"]] & M32, 4)
 
     def fld(m, i, pc):
-        write_d(m, i.f["rd"], m.load((_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask, 8))
+        write_d(m, i.f["rd"], m.load(_ea(m, i, 8, False), 8))
 
     def fsd(m, i, pc):
-        m.store((_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask, m.fpr[i.f["rs2"]] & M64, 8)
+        m.store(_ea(m, i, 8, True), m.fpr[i.f["rs2"]] & M64, 8)
 
     def fmv_x_w(m, i, pc):
         _set(m, i.f["rd"], _s32(m.fpr[i.f["rs1"]]))

@@ -107,6 +107,13 @@ class CounterView(QtWidgets.QWidget):
                 self.events[i].setEnabled(False)
                 self.counts[i].setText("-")
             c = m.csrs
+            if m.p8700 is not None:             # the P8700's four (MD01502 11.1)
+                self.ratio.setText(tr(
+                    "RISC-V: the counters are CSRs — cycle {cy:,}, instret {ir:,}.  The MIPS "
+                    "P8700's mhpmcounter3-6 (mhpmevent3-6: csrw, or the debugger's perf "
+                    "N EVENT):").format(cy=c.read(0xB00), ir=c.read(0xB02))
+                    + "\n" + "\n".join(m.p8700.counters.lines()))
+                return
             self.ratio.setText(tr(
                 "RISC-V: the counters are CSRs (Zicntr / Zihpm, priv. 3.1.10-3.1.11) — cycle "
                 "{cy:,}, instret {ir:,}, time {tm:,}; mhpmcounter3-31 count no event on this "

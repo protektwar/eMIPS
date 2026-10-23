@@ -244,6 +244,8 @@ class RVPipeline:
         self.fetching = True
         #: Debug Mode stopped the pipeline: fetch again at the pc on resume
         self.parked = False
+        #: ID / IF stalled in the last cycle (the P8700's edge-counted events)
+        self._was_stalled = self._was_fetch_stalled = False
         from .sessionrv import _disassembler
         self._dis = _disassembler(machine.xlen, machine.extensions, False)
         self.stage["IF"] = self._fetch()
@@ -456,6 +458,10 @@ class RVPipeline:
                            f"{mem.mem_wait + 1} more cycle{'s' if mem.mem_wait else ''})")
             self.stalls["memory"] = self.stalls.get("memory", 0) + 1
             st["WB"] = None
+            p = m.p8700
+            if p is not None and p.counters.armed and mem.insn is not None \
+                    and mem.insn.base.name in _LOADS:
+                p.counters.add(35)                 # (load_blocked: MD01502 Table 11.4)
             self._flush_notes(ev)
             self._tick()
             self.history.append(trace)
@@ -542,6 +548,13 @@ class RVPipeline:
             trace.stall = f"{kind}: {why}"
             self.stalls[kind] = self.stalls.get(kind, 0) + 1
 
+        p = m.p8700                                        # (its performance counters)
+        if p is not None and p.counters.armed:
+            dropped = (st["IF"] is not None) if squash else \
+                (st["IF"] is not None) + (st["ID"] is not None and not st["ID"].executed) \
+                if flush else 0
+            self._count(p.counters, ids, stall, flush or squash, if_wait, dropped)
+
         # the pipeline registers
         st["WB"] = st["MEM"]
         if flush:
@@ -585,6 +598,41 @@ class RVPipeline:
         self._tick()
         self.history.append(trace)
         return trace
+
+    def _count(self, hpm, ids: Slot | None, stall, redirect: bool, if_wait: bool,
+               dropped: int) -> None:
+        """The P8700's pipeline events of this cycle (MD01502 Table 11.4;
+        emips.p8700): 19 a stall of ID begins, 20 of IF (an I-cache miss),
+        22 ID empty, 25 / 27 / 29 a taken branch / a return / a JALR
+        redirects fetch (the 5-stage pipeline predicts not taken: each is
+        a misprediction), 32 a redirect, 35 a load holds issue, 137 the
+        fetched instructions a redirect drops, 138 a cycle IF waits for a
+        miss."""
+        kind = stall[0] if stall else None
+        if ids is None:
+            hpm.add(22)
+        if kind and not self._was_stalled:
+            hpm.add(19)
+        self._was_stalled = bool(kind)
+        if if_wait:
+            if not self._was_fetch_stalled:
+                hpm.add(20)
+            hpm.add(138)
+        self._was_fetch_stalled = if_wait
+        if kind in ("load-use", "miss-wait"):
+            hpm.add(35)
+        if redirect:
+            hpm.add(32)
+            if dropped:
+                hpm.add(137, dropped)
+            if ids is not None and ids.executed and ids.insn is not None:
+                name, f = ids.insn.base.name, ids.insn.f
+                if name in _BRANCHES:
+                    hpm.add(25)
+                elif name == "jalr":
+                    hpm.add(29)
+                    if f.get("rd", 0) == 0 and f.get("rs1", 0) in (1, 5):
+                        hpm.add(27)
 
     def _hold(self, ids: Slot, ev: list[str]) -> bool:
         """A branch the debugger stops at goes to EX unresolved (the

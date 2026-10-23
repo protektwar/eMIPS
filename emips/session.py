@@ -494,7 +494,8 @@ class Session:
             self._drop_program()
             return False
         core = cores.get(self.options.core)
-        if release is None and core is not None and _arch_fits(img.release, core.release):
+        if release is None and core is not None and not core.rv \
+                and _arch_fits(img.release, core.release):
             release = core.release              # (EF_MIPS_ARCH 32R2: Release 2 to 5)
         self.release, self.endian = release or img.release, img.endian
         if self.options.arch != img.arch:          # (reset adjusts what depends on it)
@@ -1270,7 +1271,10 @@ class Session:
 
     def _apply_counters(self, m: Machine) -> None:
         for i, (event, modes, ie) in sorted(self.counters.items()):
-            perf.configure(m, i, event, modes, ie)
+            if m.rv:                            # (the P8700's mhpmevent3-6)
+                RV.configure_counter(m, i, event, modes)
+            else:
+                perf.configure(m, i, event, modes, ie)
 
     def _core_started(self, cpu: int, m: Machine) -> None:
         """The CPC / GCR powered a core up or reset it: a fresh core (and
@@ -1309,15 +1313,28 @@ class Session:
     def configure_counter(self, i: int, event: int | None, modes: str = "uk",
                           ie: bool = False) -> None:
         """Set performance counter ``i`` as software would (MTC0) and keep
-        the setting for the next resets; ``event=None`` stops it."""
+        the setting for the next resets; ``event=None`` stops it.  The
+        P8700 (RISC-V): counter ``i`` = mhpmcounter3 + i, ``modes`` of u /
+        s / m (k = m), written to mhpmevent as the inhibit bits."""
         if event is None:
             self.counters.pop(i, None)
             for m in self.machines:
-                m.cp0_write(*perf.PERFCTL[i], m.cp0_read(*perf.PERFCTL[i]) & ~perf.CTL_MODES)
+                if m.rv:
+                    RV.configure_counter(m, i, None, modes)
+                else:
+                    m.cp0_write(*perf.PERFCTL[i],
+                                m.cp0_read(*perf.PERFCTL[i]) & ~perf.CTL_MODES)
             return
         self.counters[i] = (event, modes, ie)
+        self._apply_counters_now(i)
+
+    def _apply_counters_now(self, i: int) -> None:
+        event, modes, ie = self.counters[i]
         for m in self.machines:
-            perf.configure(m, i, event, modes, ie)
+            if m.rv:
+                RV.configure_counter(m, i, event, modes)
+            else:
+                perf.configure(m, i, event, modes, ie)
 
     def set_mode(self, mode: str, *, forwarding: bool | None = None) -> None:
         self.mode = mode
@@ -3071,6 +3088,11 @@ class Session:
                          ("stval", c.stval), ("satp", c.satp)]
             if m.flen:
                 rows.append(("fcsr", m.fcsr))
+            p = m.p8700
+            if p is not None:                       # (MD01502 7.3)
+                rows += [("mipstvec", p.mipstvec), ("mipsintctl", p.mipsintctl),
+                         ("mipsconfig5", p.config5), ("mipsconfig6", p.config6),
+                         ("mipsconfig7", p.config7)]
             return rows
         # (nanoMIPS: no HI / LO, no FPU, BadInstrX instead of BadInstrP — MD01251 9.28)
         rows = [("pc", m.pc)] + ([] if m.nano else [("hi", m.hi), ("lo", m.lo)])

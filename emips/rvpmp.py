@@ -43,6 +43,9 @@ class PMP:
         self.entries = entries
         self.cfg = [0] * 64
         self.addr = [0] * 64
+        #: counts the writes (what depends on the entries rebuilds: the
+        #: P8700's PMAs, emips.p8700)
+        self.version = 0
         #: pmpaddr's width: physical addresses of 56 (RV64) / 34 (RV32) bits
         self.addr_mask = (1 << 54) - 1 if xlen == 64 else M32
 
@@ -56,6 +59,7 @@ class PMP:
         return sum(self.cfg[n * 4 + k] << (8 * k) for k in range(per))
 
     def write_cfg(self, n: int, value: int) -> None:
+        self.version += 1
         for k in range(self.xlen // 8):
             i = n * 4 + k
             if i >= self.entries or self.cfg[i] & L:
@@ -69,6 +73,7 @@ class PMP:
         return self.addr[i] if i < self.entries else 0
 
     def write_addr(self, i: int, value: int) -> None:
+        self.version += 1
         if i >= self.entries or self.cfg[i] & L:
             return
         if i + 1 < self.entries and self.cfg[i + 1] & L and \

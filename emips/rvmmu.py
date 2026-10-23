@@ -52,7 +52,13 @@ ACCESS_FAULT = {"fetch": 1, "load": 5, "pcload": 5, "store": 7}
 def pma_cca(m, pa: int) -> int:
     """The platform's PMAs (priv. 3.6): I/O — RARS's MMIO page and the
     devices of emips.rvplatform (``m.io_regions``) — is uncached (2),
-    memory cacheable write-back (3)."""
+    memory cacheable write-back (3).  The P8700: its pmacfg / ERL first
+    (emips.p8700)."""
+    p = m.p8700
+    if p is not None:
+        cca = p.pma(pa)
+        if cca is not None:
+            return cca
     if 0xFFFF0000 <= pa <= M32:
         return 2
     for lo, hi in m.io_regions:

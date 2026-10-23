@@ -90,12 +90,23 @@ from . import tracerv  # noqa: E402  (the views of the instructions)
 
 
 class RVTrap(Exception):
-    """A synchronous exception an instruction raises (``cause``, ``tval``)."""
+    """A synchronous exception an instruction raises (``cause``, ``tval``);
+    ``custom``: one of the P8700's custom M-mode exceptions, taken through
+    mipstvec (emips.p8700)."""
 
-    def __init__(self, cause: int, tval: int = 0) -> None:
-        super().__init__(CAUSE_NAMES.get(cause, f"cause {cause}"))
+    def __init__(self, cause: int, tval: int = 0, custom: bool = False) -> None:
+        super().__init__(cause_name(cause, custom))
         self.cause = cause
         self.tval = tval
+        self.custom = custom
+
+
+def cause_name(cause: int, custom: bool = False) -> str:
+    """An exception's name (priv. Table 3.6; the P8700's Table 7.4)."""
+    if custom:
+        from .p8700 import CAUSE_NAMES as P
+        return f"{P.get(cause) or CAUSE_NAMES.get(cause, f'cause {cause}')} (mipstvec)"
+    return CAUSE_NAMES.get(cause, f"cause {cause}")
 
 
 class EnterDebug(Exception):
@@ -121,8 +132,8 @@ class RVException(SimException):
     changed.  ``exc_code`` = mcause."""
 
     def __init__(self, cause: int, tval: int, pc: int, name: str | None = None,
-                 word: int | None = None) -> None:
-        super().__init__(f"{CAUSE_NAMES.get(cause, cause)} at 0x{pc:x}", name=name, word=word,
+                 word: int | None = None, custom: bool = False) -> None:
+        super().__init__(f"{cause_name(cause, custom)} at 0x{pc:x}", name=name, word=word,
                          addr=pc)
         self.exc_code = cause
         self.tval = tval
@@ -189,13 +200,20 @@ class RVMachine(S.Machine):
     #: the operands the pipeline bypassed for the instruction it issues
     #: (emips.rvpipeline; the views name the path)
     rv_sources: dict | None = None
+    #: the MIPS P8700's own state (emips.p8700) on a P8700 hart
+    p8700 = None
 
     def __init__(self, memory=None, pc: int = 0, *, arch: str = "rv64",
                  extensions: str = DEFAULT_EXTENSIONS, modes: str = "msu",
                  exceptions: str = "cp0", mmu: Any = None, caches=None, cpu: int = 0,
-                 pmp: int = 0, triggers: int = 4, **_ignored: Any) -> None:
+                 pmp: int = 0, triggers: int = 4, core: str | None = None,
+                 **_ignored: Any) -> None:
         if arch not in ("rv32", "rv64"):
             raise ValueError(f"arch must be 'rv32' or 'rv64', not {arch!r}")
+        if core not in (None, "", "p8700"):
+            raise ValueError(f"core must be None or 'p8700', not {core!r}")
+        if core == "p8700" and arch != "rv64":
+            raise ValueError("the P8700 is an RV64 core (MD01502 1.2)")
         if modes not in ("m", "mu", "msu"):
             raise ValueError(f"modes must be 'm', 'mu' or 'msu', not {modes!r}")
         if mmu is None:                         # S-mode: page-based translation (2b)
@@ -227,6 +245,10 @@ class RVMachine(S.Machine):
         self.paging = "s" in modes
         self.satp_modes = frozenset({0} | ({1} if self.xlen == 32 else {8, 9, 10})
                                     if self.paging else {0})
+        if core == "p8700":                     # (Sv39 / Sv48: QEMU's mips-p8700, 2.7)
+            from .p8700 import P8700
+            self.p8700 = P8700(self)
+            self.satp_modes = frozenset({0, 8, 9} if self.paging else {0})
         #: WFI is waiting for an interrupt (priv. 3.3.3)
         self.waiting = False
         #: the platform's timer (emips.rvplatform.CLINT) and I/O regions (PMAs)
@@ -306,9 +328,11 @@ class RVMachine(S.Machine):
         pend = c.mip() & c.mie
         if not pend:
             return None
+        if self.p8700 is not None and self.p8700.erl:
+            return None                         # (mipsconfig5.ERL: none but NMI)
         m_ok = self.priv < 3 or c.status_bit(CSR.MIE)
         s_ok = self.priv < 1 or (self.priv == 1 and c.status_bit(CSR.SIE))
-        for bit in CSR.PRIORITY:
+        for bit in c.priority:
             if pend >> bit & 1:
                 if c.mideleg >> bit & 1:
                     if s_ok:
@@ -319,7 +343,11 @@ class RVMachine(S.Machine):
 
     def set_interrupt(self, bit: int, level: bool) -> None:
         """A platform interrupt line (MSIP / MTIP / MEIP, the external
-        SEIP): mip bit ``bit`` follows it."""
+        SEIP): mip bit ``bit`` follows it (the P8700: where mipsintctl
+        routes it)."""
+        if self.p8700 is not None:
+            self.irq_lines = self.p8700.set_line(bit, level)
+            return
         if level:
             self.irq_lines |= 1 << bit
         else:
@@ -332,6 +360,9 @@ class RVMachine(S.Machine):
         self.cycles += cycles
         if "mcycle" not in self.counter_written:
             self.csrs.tick(cycles)
+        p = self.p8700
+        if p is not None and p.counters.armed:
+            p.counters.tick(cycles)
         for dev in self.devices:
             dev.tick(self, cycles)
         if self.caches is not None and self.caches.fsb:
@@ -472,6 +503,9 @@ class RVMachine(S.Machine):
         if tm.icounts:                          # (a trap from an enabled mode counts)
             tm.icount_trap(self.priv)
         prev = self.priv
+        p = self.p8700
+        if p is not None and p.counters.armed:
+            p.counters.trap()
         self._enter(req[0], 0, pc, req[1], interrupt=True)
         self._trap_triggers(req[0], True, prev)
 
@@ -517,8 +551,7 @@ class RVMachine(S.Machine):
             self._trap(t, pc, i)
             self._stepped()
             if v is not None:
-                self.last_view = tracerv.finish(self, v, i, None,
-                                                CAUSE_NAMES.get(t.cause, f"cause {t.cause}"))
+                self.last_view = tracerv.finish(self, v, i, None, cause_name(t.cause, t.custom))
             return i
         except SimException as exc:             # (a simulator halt)
             self._mem_log = None
@@ -530,10 +563,14 @@ class RVMachine(S.Machine):
         if "minstret" not in self.counter_written:
             self.csrs.retire()
         self.last_insn = i
+        npc = (pc + i.size if nxt is None else nxt) & self.amask
+        p = self.p8700
+        if p is not None and p.counters.armed:
+            p.counters.retired(i, pc, npc)
         if clock:
             self.advance(1)
             self.counter_written.clear()
-        self.pc = (pc + i.size if nxt is None else nxt) & self.amask
+        self.pc = npc
         if self.call_hook is not None:          # (the debugger's call stack)
             self.call_hook(pc, i, i.raw, self.pc)
         if v is not None:
@@ -550,13 +587,18 @@ class RVMachine(S.Machine):
         etriggers (``triggers``: not for a trigger's own breakpoint)."""
         if self.exceptions == "raise":
             raise RVException(t.cause, t.tval, pc, name=i.name if i else None,
-                              word=i.raw if i else None)
+                              word=i.raw if i else None, custom=t.custom)
         prev = self.priv
-        to = 1 if self.priv <= 1 and self.csrs.medeleg >> t.cause & 1 else 3
-        self.exception_log.append({"name": CAUSE_NAMES.get(t.cause), "cause": t.cause,
+        custom = t.custom
+        to = 3 if custom else 1 if self.priv <= 1 and self.csrs.medeleg >> t.cause & 1 else 3
+        self.exception_log.append({"name": cause_name(t.cause, custom), "cause": t.cause,
                                    "tval": t.tval, "epc": pc, "word": i.raw if i else None,
                                    "priv": self.priv, "to": to})
-        self._enter(t.cause, t.tval, pc, to, interrupt=False)
+        p = self.p8700
+        if p is not None and p.counters.armed:
+            p.counters.trap()
+        self._enter(t.cause, t.tval, pc, to, interrupt=False,
+                    vector=p.vector(t.cause) if custom else None)
         if triggers:
             self._trap_triggers(t.cause, False, prev)
 
@@ -585,16 +627,21 @@ class RVMachine(S.Machine):
             if not self.debug_mode:
                 self.enter_debug(CAUSE_STEP)
 
-    def _enter(self, cause: int, tval: int, pc: int, to: int, *, interrupt: bool) -> None:
+    def _enter(self, cause: int, tval: int, pc: int, to: int, *, interrupt: bool,
+               vector: int | None = None) -> None:
         """Trap entry (priv. 3.1.6.1, 3.1.7, 3.1.14-3.1.17; 10.1.1-10.1.9
         for S-mode): xEPC, xCAUSE (the interrupt bit XLEN-1), xTVAL, the
         xPIE / xIE / xPP stack, the PC from xtvec (vectored: BASE +
-        4 * cause for an interrupt); into M-mode tcontrol.MPTE = MTE, MTE
-        = 0 (Debug spec 5.7.6)."""
+        4 * cause for an interrupt) or ``vector`` (the P8700's mipstvec);
+        into M-mode tcontrol.MPTE = MTE, MTE = 0 (Debug spec 5.7.6)."""
         c = self.csrs
         code = cause | ((1 << (self.xlen - 1)) if interrupt else 0)
         if interrupt:
-            self.exception_log.append({"name": INTERRUPT_NAMES.get(cause), "cause": code,
+            name = INTERRUPT_NAMES.get(cause)
+            if name is None and self.p8700 is not None:
+                from .p8700 import INTERRUPT_NAMES as P
+                name = P.get(cause)
+            self.exception_log.append({"name": name, "cause": code,
                                        "epc": pc, "priv": self.priv, "to": to})
         if to == 1:
             c.sepc = pc & ~1
@@ -613,7 +660,8 @@ class RVMachine(S.Machine):
                 tm.tcontrol = MPTE if tm.tcontrol & MTE else 0
         self.priv = to                          # (the LR reservation survives a trap:
         base = tvec & ~3                        # priv. 3.3.2 lets only xRET drop it)
-        self.pc = (base + 4 * cause if interrupt and tvec & 3 == 1 else base) & self.amask
+        self.pc = (vector if vector is not None else
+                   base + 4 * cause if interrupt and tvec & 3 == 1 else base) & self.amask
         if self.exception_log:                  # (the entry _trap / the interrupt made:
             e = self.exception_log[-1]          # the debugger's exception line)
             e.setdefault("error", e.get("name") or f"cause {cause}")
@@ -654,6 +702,9 @@ class RVMachine(S.Machine):
         self.debug_mode = self.waiting = self._stepping = self.halt_request = False
         self.reservation = None
         self.dm_access = None
+        if self.p8700 is not None:
+            self.p8700.reset()
+            self.irq_lines = 0
         flush = getattr(self.mmu, "sfence", None)
         if flush is not None:
             flush(self, None, None)
@@ -795,9 +846,19 @@ def _addr(m: RVMachine, i: RV) -> int:
     return (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
 
 
+def misaligned(m: RVMachine, addr: int, size: int, store: bool) -> None:
+    """A misaligned load / store when the hart refuses them (the P8700's
+    mipsconfig7.DMALN / DULS): address misaligned (4 / 6)."""
+    p = m.p8700
+    if p is not None and addr % size and p.misaligned_traps:
+        raise RVTrap(STORE_MISALIGNED if store else LOAD_MISALIGNED, addr)
+
+
 def _load(name: str, size: int, signed: bool) -> None:
     def ex(m, i, pc):
-        v = m.load(_addr(m, i), size)
+        addr = _addr(m, i)
+        misaligned(m, addr, size, False)
+        v = m.load(addr, size)
         if signed and v >> (8 * size - 1):
             v -= 1 << (8 * size)
         _set(m, i.f["rd"], v)
@@ -812,6 +873,7 @@ for _n, _sz, _sg in (("lb", 1, True), ("lh", 2, True), ("lw", 4, True), ("ld", 8
 def _store(name: str, size: int) -> None:
     def ex(m, i, pc):
         addr = _addr(m, i)
+        misaligned(m, addr, size, True)
         m.store(addr, _reg(m, i.f["rs2"]), size)
         _clear_reservation(m, addr, size)
     EXECUTORS[name] = ex
@@ -904,6 +966,8 @@ def _mret(m, i, pc):
     if mpp != 3:
         c.set_status(mprv=0)
     m.priv = mpp
+    if m.p8700 is not None:                     # (MD01502 7.3.9: xRET clears ERL)
+        m.p8700.config5 &= ~1
     tm = m.tm
     if tm.count and not c.has_s:                # Debug spec 5.7.6: MTE = MPTE
         tm.tcontrol = MPTE | MTE if tm.tcontrol & MPTE else 0
@@ -920,6 +984,8 @@ def _sret(m, i, pc):
     spp = c.status_bit(CSR.SPP)
     c.set_status(sie=c.status_bit(CSR.SPIE), spie=1, spp=0, mprv=0)
     m.priv = spp
+    if m.p8700 is not None:
+        m.p8700.config5 &= ~1
     return c.read(0x141)
 
 
@@ -1067,6 +1133,9 @@ def _amo(name: str, size: int, op: Callable[[int, int, int], int]) -> None:
         addr = _reg(m, i.f["rs1"])
         m.trigger_check("store", addr, size)    # (Spike: the store's address first)
         _aligned(m, addr, size, True)           # 14.4: store / AMO misaligned
+        if m.p8700 is not None:                 # no AMOs: emulated (MD01502 7.3.10)
+            m._access(addr, size, "store")
+            m.p8700.amo(i.raw)
         old = m.load(addr, size, "store")
         new = op(old, _reg(m, i.f["rs2"]) & ((1 << bits) - 1), bits)
         m.store(addr, new, size, atomic=True)
@@ -1179,6 +1248,7 @@ def _pair_load(size: int):
         P8700's choice — CONFIG.pair_aligned 0); rd gets the lower one, rd2
         the upper (little-endian); words are sign-extended."""
         va = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+        misaligned(m, va, size, False)
         lo = m.load(va, size)
         hi = m.load((va + size) & m.amask, size)
         if size == 4:
@@ -1192,6 +1262,7 @@ def _pair_store(size: int):
     def ex(m, i, pc):
         """SDP / SWP: rs2 to rs1 + offset, rs3 to the next doubleword / word."""
         va = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+        misaligned(m, va, size, True)
         m.store(va, _reg(m, i.f["rs2"]), size)
         m.store((va + size) & m.amask, _reg(m, i.f["rs3"]), size)
         _clear_reservation(m, va, 2 * size)

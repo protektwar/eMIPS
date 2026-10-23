@@ -32,12 +32,16 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .cache import Geometry
+from .p8700 import EXTENSIONS as _P8700_EXTENSIONS
 
 #: MIPS Technologies' Company ID (PRId 23:16; every manual here: 1)
 COMPANY_MIPS = 1
 #: the settings a preset decides (Options fields) and the release
 FIELDS = ("release", "compressed", "fpu", "dsp", "msa", "mt", "mmu", "icache", "dcache", "l2",
           "l3", "cores", "vps", "shadow_sets", "model")
+#: the settings a RISC-V core preset decides (PLAN M25 phase 5: the MIPS
+#: settings do not apply to a RISC-V hart, emips.compat)
+RV_FIELDS = ("rv_extensions", "rv_modes", "cores")
 
 
 def _pow2(n: int) -> bool:
@@ -172,6 +176,19 @@ class Core:
     #: its FPU is IEEE 754-2008 (FCSR.NAN2008 / ABS2008 read-only 1) even in
     #: Release 5 (the P5600: MD01025 13.10.7)
     fpu2008: bool = False
+    #: a RISC-V core (PLAN M25 phase 5): the extension sets and privilege
+    #: modes it may have
+    rv_extensions: tuple[str, ...] = ()
+    rv_modes: tuple[str, ...] = ()
+
+    @property
+    def rv(self) -> bool:
+        return self.arch in ("rv32", "rv64")
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        """The settings this preset decides."""
+        return RV_FIELDS if self.rv else FIELDS
 
     @property
     def prid(self) -> int:
@@ -181,6 +198,15 @@ class Core:
 
     def allows(self, name: str, value) -> bool:
         """May this core be built with ``name`` = ``value``?"""
+        if name not in self.fields:
+            return True                         # (a RISC-V core: the MIPS settings)
+        if name == "rv_extensions":
+            from .riscv import parse_extensions
+            try:
+                return parse_extensions(value) in {parse_extensions(e)
+                                                   for e in self.rv_extensions}
+            except ValueError:
+                return False
         if name == "release":
             return value == self.release
         if name in ("icache", "dcache"):
@@ -202,6 +228,11 @@ class Core:
 
     def choices(self, name: str) -> str:
         """The options of ``name`` on this core, for a message."""
+        if name == "rv_extensions":
+            return " or ".join(self.rv_extensions)
+        if name == "rv_modes":
+            return " or ".join({"msu": "M, S and U-mode (msu)", "mu": "M and U-mode (mu)",
+                                "m": "M-mode only (m)"}[x] for x in self.rv_modes)
         if name == "release":
             return f"Release {self.release[1:]}"
         if name in ("icache", "dcache"):
@@ -558,6 +589,26 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "regions, 128 KB L1s allowed), fixed+mpu:N = the FMT build with N MPU "
                 "regions") + _CPS_NOTE,
          arch="nanomips", mpu_l1_kb=128),
+
+    # -- RISC-V (PLAN M25 phase 5) --
+    Core("p8700", "MIPS P8700", "RV", 0x00, ("auto",), (True,), ("auto",), ("auto",),
+         ("fixed",), NO_CACHE, NO_CACHE, None, (1,), (4,), ("5-stage",),   # (not its: RV_FIELDS)
+         build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1),
+         source="MD01502 (the P8700 / P8700-F Multiprocessing System Programmer's Guide "
+                "1.80: RV64GC Zba Zbb, 1.2; the custom instructions, Appendix B; the CSRs "
+                "and causes, ch. 7; the counters, 11.1), QEMU's mips-p8700 (marchid "
+                "0x8000000000000201, Sv48), OpenSBI's P8700 platform code, Linux's "
+                "\"Zalrsc only\" patch (no AMOs)",
+         missing=("the P8700's out-of-order multithreaded pipeline (eMIPS: the textbook "
+                  "5-stage)", "its TLBs and table walkers (phase 5c: eMIPS translates "
+                  "with the generic Sv39 / Sv48 walker)", "several harts and cores, the CM3.7, "
+                  "CPC, ACLINT / APLIC (phase 5d)", "its caches and their CSRs (phase 5e)",
+                  "MIPS Hybrid Debug (eMIPS: the RISC-V Debug specification's)",
+                  "the DSPRAM, L1 prefetching (the trackers' registers are stored), "
+                  "MDIAGR / MDIAGW (undocumented)"),
+         notes=("no AMO instructions: an AMO traps for M-mode emulation (mipsconfig6)",
+                "the time CSR traps (Read Time, cause 26, or an illegal instruction)"),
+         arch="rv64", rv_extensions=(_P8700_EXTENSIONS,), rv_modes=("msu",)),
 )}
 
 #: the generic eMIPS core's name (no preset): any setting, PRId 0
@@ -572,14 +623,15 @@ def conflict(o, release: str, name: str) -> str | None:
     """Why setting ``name`` (an Options field or "release") is not one
     the chosen core can be built with (None: it is, or no core)."""
     core = get(getattr(o, "core", ""))
-    if core is None:
+    if core is None or name not in core.fields:
         return None
     value = release if name == "release" else getattr(o, name)
     if core.allows(name, value):
         return _mpu_l1(core, o) if name in ("icache", "dcache", "mmu") else None
     shown = {"fpu": "an FPU" if value else "no FPU"}.get(name, str(value))
     label = {"shadow_sets": "shadow sets", "l2": "L2", "l3": "L3",
-             "release": "release"}.get(name, name)
+             "release": "release", "rv_extensions": "the extensions",
+             "rv_modes": "the privilege modes"}.get(name, name)
     return (f"the {core.title} is built with {label}: {core.choices(name)} "
             f"(not {shown}; {core.source.split(' (')[0]})")
 
@@ -602,7 +654,8 @@ def _mpu_l1(core: Core, o) -> str | None:
 
 def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
     """``o`` with core ``name``'s build (the fields not in ``keep``) and
-    ``core`` set: (the options, the core's release).  ``name`` "" or
+    ``core`` set: (the options, the core's release — None for a RISC-V
+    core).  ``name`` "" or
     "generic": the generic core (the settings stay)."""
     if not name or name.lower() == "generic":
         return replace(o, core=GENERIC), None
@@ -612,6 +665,8 @@ def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
     changes = {k: v for k, v in core.build.items() if k not in keep}
     if "arch" not in keep:
         changes["arch"] = core.arch
+    if core.rv:                                 # (RISC-V: no release; the session's stays)
+        return replace(o, core=core.name, **changes), None
     if "vps" not in keep:
         changes.setdefault("vps", 1)
     if "msa" not in keep:                       # (the builds before M24 have none)
@@ -622,9 +677,14 @@ def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
 def describe(core: Core) -> list[str]:
     """The core's settings, for the CLI / GUI."""
     from .options import arch_title
-    out = [f"{core.title}: {arch_title(core.arch)} Release {core.release[1:]}, "
-           f"PRId 0x{core.prid:08x}"]
-    for name in FIELDS[1:]:
+    if core.rv:
+        from . import p8700 as P
+        out = [f"{core.title}: {arch_title(core.arch)}, mvendorid 0x{P.MVENDORID:x}, marchid "
+               f"0x{P.MARCHID:016x}, mimpid 0x{P.MIMPID:x}"]
+    else:
+        out = [f"{core.title}: {arch_title(core.arch)} Release {core.release[1:]}, "
+               f"PRId 0x{core.prid:08x}"]
+    for name in core.fields[1:] if not core.rv else core.fields:
         out.append(f"  {name.replace('_', ' ')}: {core.choices(name)}")
     out += [f"  not modelled: {m}" for m in core.missing]
     out += [f"  note: {n}" for n in core.notes]

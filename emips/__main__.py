@@ -133,8 +133,12 @@ def _cmd_cc(args) -> None:
             if mips:
                 sys.exit(f"{', '.join(mips)}: MIPS options (a RISC-V program takes the "
                          "hart's extensions: --rv-ext; RISC-V is little-endian)")
+            if core is not None and args.rv_extensions and \
+                    not core.allows("rv_extensions", args.rv_extensions):
+                sys.exit(f"the {core.title} is built with {core.choices('rv_extensions')}")
             log = build(args.sources, out, arch=arch, optimize=f"-O{args.opt}",
-                        extensions=args.rv_extensions or RV_EXTENSIONS)
+                        extensions=args.rv_extensions or (
+                            core.build["rv_extensions"] if core is not None else RV_EXTENSIONS))
             if args.verbose:
                 print(log)
             print(f"wrote {out}: run it with  python3 -m emips run {out}")

@@ -37,9 +37,11 @@ def make_core(session, cpu: int, mem, caches):
     and services."""
     from .sim import Machine
     o = session.options
+    p8700 = o.core == "p8700"                   # (the P8700: emips.p8700, 64 PMP entries)
     m = Machine(memory=mem, arch=o.arch, extensions=o.rv_extensions, modes=o.rv_modes,
                 exceptions="raise" if o.exceptions == "stop" else "cp0",
-                caches=caches, cpu=cpu)
+                caches=caches, cpu=cpu, core="p8700" if p8700 else None,
+                pmp=P8700_PMP if p8700 else 0)
     m.tracing = True
     m.agent_watch = session.watchpoints
     if cpu == 0:
@@ -62,8 +64,13 @@ def console_sink(session):
 
 
 def boot(session, m) -> None:
-    """The user boot: U-mode (as mret leaves it, MPP = U), the counters
-    readable there."""
+    """The kernel / user boot of a P8700 (:func:`p8700_firmware`); the
+    user boot: U-mode (as mret leaves it, MPP = U), the counters readable
+    there."""
+    if session.options.boot == "reset":
+        return
+    if m.p8700 is not None:
+        p8700_firmware(m)
     if session.options.boot != "user":
         return
     if 0 not in m.modes:
@@ -77,6 +84,55 @@ def boot(session, m) -> None:
     m.csrs.mcounteren = 0x7                     # CY, TM, IR
     if 1 in m.modes:
         m.csrs.scounteren = 0x7
+
+
+#: the P8700's PMP entries (its 64 PMAs: MD01502 7.3.16)
+P8700_PMP = 64
+
+
+def _napot(base: int, size: int) -> int | None:
+    """pmpaddr of a NAPOT region (priv. 3.7.1.1), None when it is not one."""
+    if size < 8 or size & (size - 1) or base & (size - 1):
+        return None
+    return (base >> 2) | ((size >> 3) - 1)
+
+
+def p8700_firmware(m) -> None:
+    """What the P8700's boot firmware sets up — OpenSBI's (``platform/
+    generic/mips/boston.c`` ``boston_nascent_init`` and ``p8700.c``
+    ``mips_p8700_pmp_set``): PMP entries with their PMAs — every I/O
+    region uncached (the platform's devices, RARS's MMIO page), the last
+    entry all of memory cacheable with speculation, read / write /
+    execute for S and U —, and mipsconfig6.AMO_II / RDTM_II (an AMO or a
+    ``time`` read is an illegal instruction: OpenSBI emulates them in its
+    handler; a program here sees the trap).  Misaligned accesses stay in
+    hardware (OpenSBI sets mipsconfig7.DMALN and emulates them)."""
+    from . import p8700 as P
+    from .rvpmp import A_SHIFT, NAPOT, R, TOR, W, X
+    p, pmp = m.p8700, m.pmp
+    rwx = R | W | X
+    k = 0
+    regions = [(0xFFFF0000, 0x10000)] + [(lo, hi - lo) for lo, hi in m.io_regions]
+    for base, size in regions:
+        a = _napot(base, size)
+        if a is not None and k < P8700_PMP - 1:
+            pmp.cfg[k] = rwx | NAPOT << A_SHIFT
+            pmp.addr[k] = a
+            p.pmacfg[k] = 2                     # (uncached)
+            k += 1
+        elif k < P8700_PMP - 2:                 # (TOR: two entries)
+            pmp.addr[k] = base >> 2
+            pmp.addr[k + 1] = (base + size) >> 2
+            pmp.cfg[k + 1] = rwx | TOR << A_SHIFT
+            p.pmacfg[k + 1] = 2
+            k += 2
+    last = P8700_PMP - 1
+    pmp.cfg[last] = rwx | NAPOT << A_SHIFT
+    pmp.addr[last] = pmp.addr_mask              # (all of the address space)
+    p.pmacfg[last] = 0x08                       # (cacheable, speculation enabled)
+    pmp.version += 1
+    p._pma_version += 1
+    p.config6 |= P.AMO_II | P.RDTM_II
 
 
 def code(m, pc: int) -> tuple[int, int] | None:
@@ -162,8 +218,12 @@ def _frame(cls, site, target, ret, sp):
 
 def trap_vector(m, pc: int) -> str | None:
     """"m" / "s" when ``pc`` is where a trap enters (mtvec / stvec: the base,
-    or base + 4 x cause in vectored mode), else None."""
-    for kind, value in (("m", m.csrs.mtvec), ("s", getattr(m.csrs, "stvec", None))):
+    or base + 4 x cause in vectored mode), "mips" for the P8700's
+    mipstvec, else None."""
+    tvecs = [("m", m.csrs.mtvec), ("s", getattr(m.csrs, "stvec", None))]
+    if m.p8700 is not None:                     # (the custom exceptions: MD01502 7.3.1)
+        tvecs.append(("mips", m.p8700.mipstvec))
+    for kind, value in tvecs:
         if value is None:
             continue
         base = value & ~3 & m.amask
@@ -181,16 +241,33 @@ def no_handler_hint(session, exc: Exception) -> str:
     if kind is None or len(log) < 2 or log[-2].get("vector") != m.pc:
         return ""                               # (no trap brought it here)
     from .simrv import CAUSE_NAMES, INTERRUPT_NAMES
+    if str(log[-2].get("name", "")).endswith("(mipstvec)"):
+        kind = "mips"                           # (a P8700 custom exception)
+    tvec = f"{kind}tvec"
+    if kind == "mips":
+        kind = "m"
     cause = m.csrs.mcause if kind == "m" else m.csrs.scause
     epc = m.csrs.mepc if kind == "m" else m.csrs.sepc
     interrupt = bool(cause >> (m.xlen - 1))
     num = cause & ~(1 << (m.xlen - 1))
     name = (INTERRUPT_NAMES if interrupt else CAUSE_NAMES).get(num, str(num))
+    if tvec == "mipstvec":
+        from .p8700 import CAUSE_NAMES as P
+        name = P.get(num, name)
     digits = 8 if m.xlen == 32 else 16
-    return (f" — the hart took {'interrupt' if interrupt else 'exception'} {name} "
-            f"({kind}cause {num}, {kind}epc 0x{epc:0{digits}x}) to {kind}tvec = "
+    why = ""
+    if m.p8700 is not None and not interrupt and num in (2, 26):
+        i = log[-2].get("word")
+        if num == 26:
+            why = " (the P8700 has no time CSR: a read traps for the firmware to emulate)"
+        elif i is not None and i & 0x7F == 0x2F and i >> 27 != 2 and i >> 27 != 3:
+            why = (" (the P8700 has no AMO instructions, only LR / SC: an AMO traps for the "
+                   "firmware to emulate — use an lr / sc loop)")
+    return (f" — the hart took {'interrupt' if interrupt else 'exception'} {name}{why} "
+            f"({kind}cause {num}, {kind}epc 0x{epc:0{digits}x}) to {tvec} = "
             f"0x{m.pc:0{digits}x}, but there is no trap handler there: write one and point "
-            f"{kind}tvec at it (csrw {kind}tvec, handler), or choose Settings > Exceptions: "
+            f"{tvec} at it (csrw {'0x7c0' if tvec == 'mipstvec' else tvec}, handler), "
+            "or choose Settings > Exceptions: "
             "stop the simulation (--exceptions stop)")
 
 
@@ -350,4 +427,85 @@ def debug_lines(m) -> list[str]:
                + (f"in use: {', '.join(str(k) for k in used)}" if used else "none in use"))
     if m.debug_module is not None:
         out.append("a Debug Module is attached (the JTAG DTM)")
+    return out
+
+
+# -- the P8700's own registers (PLAN M25 phase 5b; emips.p8700) -------------------
+
+def configure_counter(m, i: int, event: int | None, modes: str) -> None:
+    """mhpmevent(3 + i) = ``event`` counting in ``modes`` (letters u / s /
+    m; k = m), as software writes it (MD01502 11.1.2); None: event 0."""
+    p = m.p8700
+    if p is None or not 0 <= i < p.counters.N:
+        return
+    from . import p8700 as P
+    modes = modes.lower().replace("k", "m")
+    value = 0 if event is None else event
+    for letter, bit in (("m", P.MINH), ("s", P.SINH), ("u", P.UINH)):
+        if event is not None and letter not in modes:
+            value |= bit
+    p.counters.write_event(i, value)
+    if event is not None:
+        p.counters.count[i] = 0
+
+
+def find_event(name: str) -> int | None:
+    """A P8700 event by number or name (Table 11.4)."""
+    from .p8700 import EVENTS
+    try:
+        n = int(name, 0)
+    except ValueError:
+        n = next((k for k, (ev, _) in EVENTS.items() if ev.lower() == name.lower()), None)
+    return n if n in EVENTS else None
+
+
+def event_lines() -> list[str]:
+    from .p8700 import EVENTS
+    src = {"retire": "each instruction", "cycle": "each clock", "trap": "each trap",
+           "pipeline": "the 5-stage pipeline", "cache": "the caches' counters",
+           "": "not modelled: never counts"}
+    return [f"{n:4} {name:36} {src[how]}" for n, (name, how) in sorted(EVENTS.items())]
+
+
+def p8700_lines(m) -> list[str]:
+    """The P8700's registers (the debugger's ``p8700``; MD01502 ch. 7)."""
+    p = m.p8700
+    if p is None:
+        return ["this hart is not a P8700 (--core p8700)"]
+    from . import p8700 as P
+    d = 16
+    routes = []
+    for n, (std, custom) in sorted(P.ROUTES.items(), reverse=True):
+        name = ("MEI", "MSI", "MTI", "SEI", "STI", "VSEI")[5 - n]
+        routes.append(f"{name} -> mip[{std if p.mipsintctl >> n & 1 else custom}]")
+    tvec = p.mipstvec
+    out = [f"mhartid 0x{p.hartid:x} (cluster {p.cluster}, core {p.core}, hart {p.hart}); "
+           f"mvendorid 0x{P.MVENDORID:x}, marchid 0x{P.MARCHID:x}",
+           f"mipstvec  0x{tvec:0{d}x} ({'vectored' if tvec & 3 == 1 else 'direct'}: the "
+           "custom exceptions)",
+           f"mipsintctl 0x{p.mipsintctl:02x}: " + ", ".join(routes),
+           f"mipsconfig5 0x{p.config5:x}: ERL {p.config5 & 1}"
+           f"{', MDIAGL' if p.config5 & P.MDIAGL else ''}",
+           f"mipsconfig6 0x{p.config6:x}: AMO_II {p.config6 >> 2 & 1} (an AMO: "
+           f"{'illegal instruction' if p.config6 & P.AMO_II else 'mipstvec, mcause 2'}), "
+           f"RDTM_II {p.config6 >> 1 & 1} (time: "
+           f"{'illegal instruction' if p.config6 & P.RDTM_II else 'mipstvec, mcause 26'})",
+           f"mipsconfig7 0x{p.config7:x}: misaligned loads / stores "
+           f"{'trap' if p.misaligned_traps else 'in hardware'}",
+           f"mipsconfig1 0x{p.config1():08x}"]
+    pmas = []
+    names = {0: "cacheable", 2: "uncached", 3: "uncached accelerated"}
+    for k in range(m.pmp.entries):
+        rng = m.pmp._range(k)
+        if rng is not None:
+            cfg = p.pmacfg[k]
+            pmas.append(f"  pma{k}: 0x{rng[0]:x}-0x{rng[1] - 1:x} "
+                        f"{names.get(cfg & 7, 'reserved (uncached)')}"
+                        f"{', speculative' if cfg & 8 else ''}")
+    out.append("PMAs (pmacfg, by PMP entry):" if pmas else
+               "PMAs: no PMP entry configured (the platform's attributes)")
+    out += pmas
+    if p.erl:
+        out.append("  ERL = 1: every access uncached, no interrupts")
+    out += p.counters.lines()
     return out

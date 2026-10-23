@@ -272,7 +272,7 @@ RULES = (
          lambda o, r, name=name: _cores.conflict(o, r, name) is not None,
          lambda o: setattr(o, "core", ""),
          lambda o, r, name=name: _cores.conflict(o, r, name) or "")
-    for name in _cores.FIELDS)
+    for name in _cores.FIELDS + tuple(f for f in _cores.RV_FIELDS if f not in _cores.FIELDS))
 
 
 def _shown(value) -> str:
