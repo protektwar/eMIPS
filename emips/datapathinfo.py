@@ -450,6 +450,19 @@ def control_word(s, key: str) -> int | None:
     return word_of(s, d)
 
 
+def control_rv(s, key: str) -> int | None:
+    """The (32-bit, expanded) word the main control of a RISC-V hart decodes
+    for part ``key`` (Control, in ID), or None."""
+    if key != "control" or s.machine is None or not s.machine.rv:
+        return None
+    det, _ = details(s)
+    i = rv_of(s, det.get("ID") or {})
+    if i is None:
+        return None
+    from .rvcontrol import word32
+    return word32(i)
+
+
 def control_nano(s, key: str):
     """The nanoMIPS instruction (emips.nanomips.NM) the main control decodes
     for part ``key`` (Control, in ID), or None."""

@@ -84,9 +84,8 @@ class PartDialog(QtWidgets.QDialog):
                      stage=E(info.part.stage)))
         now = "".join(f"<li style='font-family:{mono}'>{E(line)}</li>" for line in info.now)
         msa = bool(getattr(s.machine, "msa", False))
-        rv = s.machine is not None and s.machine.rv     # (RISC-V's gates: PLAN M25 4c)
-        logic = None if rv else al.alu_logic(dpi.alu_view(s, self.key), s.release,
-                                             s.options.arch, msa)
+        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release, s.options.arch, msa,
+                             s.options.rv_extensions)
         if logic is not None:                   # (MIPS64: 64 slices)
             self.bit.setRange(0, logic.width - 1)
             self.bit.setToolTip(tr("Which of the {n} one-bit ALU slices to show gate by "
@@ -114,7 +113,10 @@ class PartDialog(QtWidgets.QDialog):
             tabs.removeTab(0)
         html_ = ""
         if s.machine is not None and s.machine.rv:
-            self.drawings.setVisible(False)
+            html_ = self._rv_drawings(s, logic, c)
+            self.drawings.setVisible(tabs.count() > 0)
+            if 0 <= current < tabs.count():
+                tabs.setCurrentIndex(current)
             return html_
         nano = bool(getattr(s.machine, "nano", False))
         word = None if nano else dpi.control_word(s, self.key)
@@ -169,6 +171,53 @@ class PartDialog(QtWidgets.QDialog):
             tabs.setCurrentIndex(current)
         return html_
 
+    def _rv_drawings(self, s: Session, logic, c) -> str:
+        """A RISC-V hart (emips.rvcontrol): the opcode decoder and its
+        secondary decoder in ID, the ALU control and a slice in EX."""
+        from .. import rvcontrol as rc
+        tabs = self.drawings
+        xlen = s.machine.xlen
+        exts = s.options.rv_extensions
+        html_ = ""
+        word = dpi.control_rv(s, self.key)
+        if word is not None:
+            mc = rc.main_control(xlen, exts)
+            ev = rc.evaluate_main(mc, word)
+            lit = c.stage["ID"][1]
+            op = rc.opcode(word)
+            self.pla_main.show_pla(mc.opcode, op, f"Main control: the opcode decoder "
+                                   f"(bits 6..0 = {op:07b}, "
+                                   f"{rc.OPCODES.get(op >> 2, '?')})", lit)
+            tabs.addTab(self.pla_main, tr("Opcode decoder"))
+            if ev.escape is not None:
+                esc = ev.escape
+                self.pla_second.show_pla(
+                    esc.pla, ev.x, f"{esc.escape} decoder ({', '.join(esc.fields)}): "
+                    f"enabled by the opcode decoder's {esc.escape} line", lit)
+                tabs.addTab(self.pla_second, tr("{name} decoder").format(name=esc.escape))
+            sig = ", ".join(f"{k}={int(v)}" for k, v in ev.signals.items())
+            html_ = (f"<p><b>{E(tr('The control signals'))}</b> (the opcode decoder's "
+                     + (f"OR the {E(ev.escape.escape)} decoder's " if ev.escape else "")
+                     + f"outputs): <code>{E(sig)}</code>; ALUOp = {ev.aluop:03b} "
+                     f"({E(rc.ALUOP_WHY.get(ev.aluop, ''))}); rd is always bits 11..7: "
+                     "no RegDst</p>")
+        if logic is not None and logic.control is not None:
+            ctl = logic.control
+            lit = c.stage["EX"][1]
+            view = dpi.alu_view(s, self.key)
+            w = rc.view_word(view, xlen, exts)
+            self.pla_alu.show_pla(rc.alu_control(xlen, exts), rc.alu_input(ctl.aluop, w),
+                                  f"ALU control: ALUOp = {ctl.aluop:03b}, bits 30 29 27 25 "
+                                  f"= {(w >> 30) & 1}{(w >> 29) & 1}{(w >> 27) & 1}"
+                                  f"{(w >> 25) & 1}, funct3 = {(w >> 12) & 7:03b}", lit)
+            tabs.addTab(self.pla_alu, tr("ALU control"))
+            if logic.slices:
+                i = self.bit.value()
+                self.slice.show_slice(logic.slices[i], ctl, i == logic.top, lit, logic.top,
+                                      logic.width)
+                tabs.addTab(self.slice, tr("ALU bit slice"))
+        return html_
+
     def _nano_main(self, insn, lit: str) -> str:
         """The main control of a nanoMIPS core (emips.nanocontrol): the major
         opcode decoder and the pool's decoder."""
@@ -201,7 +250,8 @@ class PartDialog(QtWidgets.QDialog):
         ctl = lg.control
         if ctl is not None and not ctl.other:
             funct = f" + funct {ctl.funct}" if ctl.funct else ""
-            out.append(f"<p>ALU control: ALUOp = {ctl.aluop:04b} ({E(ctl.aluop_why)}){funct} "
+            out.append(f"<p>ALU control: ALUOp = {ctl.aluop:0{ctl.aluop_bits}b} "
+                       f"({E(ctl.aluop_why)}){funct} "
                        f"&rarr; Ainvert {ctl.ainvert}, Bnegate {ctl.bnegate}, Operation "
                        f"{ctl.operation:03b} = {E(al.OPERATION.get(ctl.operation, '?'))}"
                        + (f", Unsigned {ctl.unsigned}" if ctl.operation == 3 else "")

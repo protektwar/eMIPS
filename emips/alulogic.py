@@ -28,6 +28,11 @@ instructions are other units.
 A nanoMIPS core (``arch="nanomips"``, PLAN M23) has the same 32-bit ALU;
 its main control names the ALU function itself (:mod:`emips.nanocontrol`).
 
+A RISC-V hart (``arch="rv32"`` / ``"rv64"``, PLAN M25 phase 4c) has the
+same ALU, 32 or 64 bits wide; its controls come from :mod:`emips.rvcontrol`
+(Word: RV64's *W operations; andn / orn / xnor are and / or / xor with
+Bnegate); RISC-V's add and sub never trap.
+
 A MIPS64 core (``arch="mips64"``, PLAN M22) has a 64-bit ALU: 64 slices
 (Overflow and Set at bit 63) and a 6-stage barrel shifter (32, 16, 8,
 4, 2, 1; Sh32 adds 32 to the amount: DSLL32 ...).  Its **Word** line
@@ -72,8 +77,10 @@ class AluControl:
     aluop: int                   # the main control's 4-bit ALUOp
     funct: str | None            # R-type: bits 5..0
     lines: dict                  # the ALU control's outputs (controllogic.ALU_OUTPUTS)
-    #: what ALUOp asks for, when not MIPS32's / MIPS64's code (nanoMIPS)
+    #: what ALUOp asks for, when not MIPS32's / MIPS64's code (nanoMIPS, RISC-V)
     why: str | None = None
+    #: ALUOp's width (RISC-V's: 3 bits)
+    aluop_bits: int = 4
 
     @property
     def aluop_why(self) -> str:
@@ -188,18 +195,22 @@ def control_for(word: int, release: str = "R5", arch: str = "mips32",
 
 
 def alu_logic(view, release: str = "R5", arch: str = "mips32",
-              msa: bool = False) -> AluLogic | None:
+              msa: bool = False, extensions: str = "") -> AluLogic | None:
     """The gates of the instruction ``view`` (an :class:`emips.trace.InstrView`)
     executed, or None when it used no ALU operation (``arch="mips64"``: the
     64-bit ALU)."""
     if view is None or view.alu is None:
         return None
     alu = view.alu
-    width = 64 if arch == "mips64" else 32
+    rv = arch in ("rv32", "rv64")
+    width = 64 if arch in ("mips64", "rv64") else 32
     mask = (1 << width) - 1
     a = alu.a.value & mask if alu.a is not None else 0
     b = alu.b.value & mask if alu.b is not None else 0
-    if arch == "nanomips":                       # (emips.nanocontrol; a 32-bit ALU)
+    if rv:                                       # (emips.rvcontrol: the expanded word)
+        from . import rvcontrol as rc
+        ctl = rc.control_for(rc.view_word(view, width, extensions), width, extensions)
+    elif arch == "nanomips":                     # (emips.nanocontrol; a 32-bit ALU)
         from .nanocontrol import control_for as nano_control
         ctl = nano_control(view.word, view.size)
     else:
@@ -212,8 +223,8 @@ def alu_logic(view, release: str = "R5", arch: str = "mips32",
                          "says OtherUnit")
         return out
     shifted = _shift(out, ctl, a, b) if ctl.operation == 5 else None
-    _slices(out, ctl, a, b, shifted)
-    if width == 64 and view.address is not None and out.result is not None \
+    _slices(out, ctl, a, b, shifted, traps=not rv)
+    if arch == "mips64" and view.address is not None and out.result is not None \
             and alu.result == _sx32(out.result) != out.result:
         out.address = _sx32(out.result)                 # (Vol. III 4.10 / 4.11)
         out.notes.append("the address path then sign-extends bit 31: a 32-bit "
@@ -221,7 +232,8 @@ def alu_logic(view, release: str = "R5", arch: str = "mips32",
     return out
 
 
-def _slices(out: AluLogic, ctl: AluControl, a: int, b: int, shifted: int | None) -> None:
+def _slices(out: AluLogic, ctl: AluControl, a: int, b: int, shifted: int | None,
+            traps: bool = True) -> None:
     n = out.width
     ab, bb = _bits(a, n), _bits(b, n)
     sb = _bits(shifted or 0, n)
@@ -252,7 +264,8 @@ def _slices(out: AluLogic, ctl: AluControl, a: int, b: int, shifted: int | None)
     out.overflow, out.set_ = overflow, set_
     if ctl.operation == 2:
         t = out.top
-        traps = out.instruction.split()[0] in ("add", "addi", "sub", "dadd", "daddi", "dsub")
+        traps = traps and out.instruction.split()[0] in ("add", "addi", "sub", "dadd",
+                                                           "daddi", "dsub")
         out.notes.append(f"Overflow = carry into bit {t} XOR carry out of bit {t} = "
                          f"{overflow}" + (" — this instruction traps on it" if traps else
                                           " (ignored: this instruction does not trap)"))

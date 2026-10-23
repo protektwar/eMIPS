@@ -76,6 +76,9 @@ _SERIALIZE = {"ecall": "ecall", "ebreak": "ebreak", "mret": "mret", "sret": "sre
 #: a0 / fa0 out; emips.rvservices)
 _ECALL_READS = frozenset({("r", 17), ("r", 10), ("r", 11), ("r", 12), ("r", 13)})
 _ECALL_WRITES = frozenset({("r", 10)})
+#: rows whose register fields are reserved (unpriv. 2.7 / ch. 6: fence's rd and
+#: rs1, fence.i's): they read and write no register
+_NO_REGISTERS = {"fence", "fence.tso", "pause", "fence.i"}
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,8 @@ def analyze(i, latency: dict[str, int] = LATENCY) -> RVInfo:
 
     reads = {r for r in (res("rs1"), res("rs2"), res("rs3")) if r is not None}
     writes = {r for r in (res("rd"),) if r is not None}
+    if name in _NO_REGISTERS:                   # (their rd / rs1 fields are reserved)
+        reads, writes = set(), set()
     control, reads_id, serialize = "", frozenset(), ""
     if name in _BRANCHES:
         control, reads_id, reads = "branch", frozenset(reads), set()
@@ -178,7 +183,7 @@ def control_signals(i, info: RVInfo) -> dict[str, Any]:
     name, f = i.base.name, i.f
     load = info.ready == "MEM" and not name.startswith("sc.")
     store = name in _STORES
-    write = bool(info.writes) and name != "ecall"
+    write = any(r[0] == "r" for r in info.writes) and name != "ecall"   # (an x register)
     imm = any(k.startswith("imm") or k in ("shamt", "zimm") for k in f) \
         or name in ("lui", "auipc")
     return {"RegDst": "rd" if write else "-",
