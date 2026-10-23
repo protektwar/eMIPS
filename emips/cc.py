@@ -131,7 +131,7 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           endian: str = "big", optimize: str = "-O1", extra: list[str] | None = None,
           toolchain: Toolchain | None = None, mips16: bool = False,
           micromips: bool = False, fpu: bool = True, dsp: int = 0,
-          arch: str = "mips32", nms: bool = False) -> str:
+          arch: str = "mips32", nms: bool = False, msa: bool = False) -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
     :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
@@ -149,6 +149,11 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
     builds MIPS16 n64 code soft-float only — "'hard-float' MIPS16 code for
     ABIs other than o32 and o64" is unimplemented —, so the whole program
     is soft-float, as without an FPU), ``dsp`` the DSP Module (MD00375).
+    ``msa``: the C files may use MSA (MD00866: ``-mmsa`` — GCC's
+    ``msa.h`` / ``__builtin_msa_*``, and the auto-vectorizer at -O3);
+    every object gets ``-mfp64`` (MSA needs Status.FR = 1: one FP ABI
+    for the link) and ``-mnan=2008`` (an MSA core's FPU is IEEE
+    754-2008), Release 5 / 6 (``-march=mips32r5`` / ``mips64r5``).
     ``arch="nanomips"``: a p32 nanoMIPS executable (``nms``: for a core with
     the nanoMIPS subset only; ``dsp``: the DSP ASE, ``-mdsp``); no compressed
     ISAs."""
@@ -171,6 +176,14 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
                          "(BEQC ...) by 2 where MD00582 6.05's pseudocode and QEMU shift "
                          "them by 1, and its la / li put MIPS32 LUI encodings in microMIPS "
                          "code; write microMIPS R6 in assembly (.set micromips)")
+    if msa and release not in ("R5", "R6"):
+        raise BuildError("MSA C needs Release 5 or 6 (MD00866 1.1): build with --release "
+                         "R5 or R6")
+    if msa and not fpu:
+        raise BuildError("MSA needs the FPU: its vector registers extend the FPU's "
+                         "(MD00866 3.1)")
+    if msa and (mips16 or micromips):
+        raise BuildError("MSA C is MIPS32 / MIPS64 code here (GCC has no microMIPS MSA)")
     if dsp and release in ("R1", "R6"):
         raise BuildError("DSP C needs Release 2, 3 or 5: the DSP Module needs Release 2+, "
                          "and the compilers have no -mdspr3 for Release 6")
@@ -186,6 +199,10 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
     #: n64: the FPU stays, the program does not use it)
     soft = not fpu or (mips16 and arch == "mips64")
     flags = cflags(release, optimize, not soft, arch, tc.kind) + list(extra or [])
+    if msa:                                 # (every object: one FP ABI, 2008 NaNs)
+        flags = [f"-march={'mips64r5' if arch == 'mips64' else 'mips32r5'}"
+                 if f.startswith("-march=") and release == "R5" else f for f in flags]
+        flags += ["-mfp64", "-mnan=2008"]
     log = []
     with tempfile.TemporaryDirectory(prefix="emips-cc-") as tmp:
         objs = []
@@ -196,6 +213,7 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
                 obj = Path(tmp) / "crt0.o"           # the linker script names it
             isa = ((["-mips16"] if mips16 else ["-mmicromips"] if micromips else [])
                    + ([] if not dsp else ["-mdsp"] if dsp == 1 else ["-mdspr2"])
+                   + (["-mmsa"] if msa else [])
                    if src.suffix == ".c" else [])
             cmd = tc.cc + flags + isa + ["-c", str(src), "-o", str(obj)]
             _run(cmd, log)

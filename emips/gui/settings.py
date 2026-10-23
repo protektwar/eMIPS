@@ -37,6 +37,14 @@ LATENCY_LABELS = {
     "FP_DIV_D": N_("FP divide, double"),
     "FP_SQRT_S": N_("FP square root, single"),
     "FP_SQRT_D": N_("FP square root, double"),
+    "DMULT": N_("DMULT / DMUL (64-bit multiply)"),
+    "DDIV": N_("DDIV / DMOD (64-bit divide)"),
+    "MSA": N_("MSA integer / logic / permute"),
+    "MSA_COUNT": N_("MSA PCNT / SAT"),
+    "MSA_FP": N_("MSA FP add / convert"),
+    "MSA_MUL": N_("MSA multiply / dot product"),
+    "MSA_FMADD": N_("MSA FP multiply-add"),
+    "MSA_DIV": N_("MSA integer divide"),
 }
 MEMORY_LABELS = {
     "L2": N_("L1 miss served by the L2"),
@@ -124,7 +132,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.arch.currentIndexChanged.connect(self._arch_chosen)   # (before _constrain)
         for box in (self.arch, self.release, self.board, self.mmu, self.model, self.icache,
                     self.dcache, self.l2, self.l3, self.compressed, self.c_isa, self.dsp,
-                    self.mt):
+                    self.msa, self.mt):
             box.currentIndexChanged.connect(self._constrain)
         self.fpu.toggled.connect(self._constrain)
         self.nms.toggled.connect(self._constrain)
@@ -222,6 +230,24 @@ class SettingsDialog(QtWidgets.QDialog):
                                "saturating fractional arithmetic, the accumulators ac1-ac3, "
                                "DSPControl; Status.MX enables it (Release 2+)"))
         form.addRow(tr("DSP Module"), self.dsp)
+        self.msa = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: when the program has MSA instructions")),
+                          ("none", tr("None")),
+                          ("msa", tr("MSA (the P5600, P6600, I6400)"))):
+            self.msa.addItem(text, key)
+        self.msa.setToolTip(tr("The MIPS SIMD Architecture (MD00866): 32 vector registers "
+                               "of 128 bits over the FPU's, integer, fixed-point and "
+                               "floating-point vector instructions, MSACSR; Config5.MSAEn "
+                               "enables it (Release 5+, needs the FPU)"))
+        form.addRow(tr("MSA"), self.msa)
+        self.msa_wrp = QtWidgets.QSpinBox()
+        self.msa_wrp.setRange(0, 32)
+        self.msa_wrp.setSpecialValueText(tr("No partitioning"))
+        self.msa_wrp.setToolTip(tr("Vector register partitioning (MSAIR.WRP, MD00866 3.4): "
+                                   "this many physical vector registers shared by the "
+                                   "architectural $w0-$w31; the kernel maps them with "
+                                   "MSAMap / MSAUnmap"))
+        form.addRow(tr("MSA physical registers"), self.msa_wrp)
         self.mt = QtWidgets.QComboBox()
         for key, text in (("auto", tr("Automatic: 2 VPEs, 5 TCs when the program has MT "
                                       "instructions")),
@@ -613,6 +639,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.compressed.setCurrentIndex(max(0, self.compressed.findData(o.compressed)))
         self.fpu.setChecked(o.fpu)
         self.dsp.setCurrentIndex(max(0, self.dsp.findData(o.dsp)))
+        self.msa.setCurrentIndex(max(0, self.msa.findData(o.msa)))
+        self.msa_wrp.setValue(o.msa_wrp)
         if self.mt.findData(o.mt) < 0:          # another VPES:TCS (the command line)
             self.mt.addItem(o.mt, o.mt)
         self.mt.setCurrentIndex(max(0, self.mt.findData(o.mt)))
@@ -702,7 +730,8 @@ class SettingsDialog(QtWidgets.QDialog):
             shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
             disks=self._disks_spec(), c_optimize=self.c_optimize.currentData(),
             compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData(),
-            fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), mt=self.mt.currentData(),
+            fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), msa=self.msa.currentData(),
+            msa_wrp=self.msa_wrp.value(), mt=self.mt.currentData(),
             mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
             core=self.core.currentData(), arch=self.arch.currentData(),
             nms=self.nms.isChecked(), crc=self.crc.currentData(),
@@ -777,7 +806,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 for box, value in ((self.compressed, fixed.compressed),
                                    (self.board, fixed.board.split(":")[0]),
                                    (self.c_isa, fixed.c_isa), (self.model, fixed.model),
-                                   (self.dsp, fixed.dsp), (self.mt, fixed.mt),
+                                   (self.dsp, fixed.dsp), (self.msa, fixed.msa),
+                                   (self.mt, fixed.mt),
                                    (self.core, fixed.core), (self.arch, fixed.arch)):
                     box.setCurrentIndex(max(0, box.findData(value)))
                 self._core_text()
@@ -787,7 +817,7 @@ class SettingsDialog(QtWidgets.QDialog):
                     if notes else "")
             for box, field in ((self.mmu, "mmu"), (self.compressed, "compressed"),
                                (self.c_isa, "c_isa"), (self.model, "model"), (self.dsp, "dsp"),
-                               (self.mt, "mt"),
+                               (self.msa, "msa"), (self.mt, "mt"),
                                (self.release, "release"), (self.icache, "icache"),
                                (self.dcache, "dcache"), (self.l2, "l2"), (self.l3, "l3")):
                 model = box.model()

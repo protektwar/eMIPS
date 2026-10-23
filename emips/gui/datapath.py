@@ -26,6 +26,7 @@ from typing import Any
 from ..datapathinfo import PARTS as _PARTS
 from ..datapathinfo import control_of as _control_of, dest_of as _dest_of
 from ..datapathinfo import nano_of as _nano_of
+from ..datapathinfo import coprocessor_of, coprocessor_reads
 from ..datapathinfo import details as _details_of, taken as _taken_of
 from ..datapathinfo import tlb_lines as _tlb_lines_of, word_of as _word
 from ..syntax import gpr_name
@@ -167,7 +168,7 @@ class DatapathView(QtWidgets.QGraphicsView):
     """Scene with parts, wires and value labels; :meth:`refresh` colours
     them from the session.  A click on a part emits :attr:`part_clicked`
     (its key in :data:`emips.datapathinfo.PARTS`); :meth:`show_numbers`
-    puts the guide's part numbers (1-17) on the drawing."""
+    puts the guide's part numbers (1-18) on the drawing."""
 
     part_clicked = Signal(str)
 
@@ -283,8 +284,13 @@ class DatapathView(QtWidgets.QGraphicsView):
         part("alusrc", "mux", 708, 372, 24, 62, "Src", "ALUSrc mux: operand b is "
              "the register value or the sign-extended immediate")
         part("alu", "alu", 768, 262, 84, 176, "ALU", "Arithmetic-logic unit")
+        part("vunit", "rect", 784, 542, 124, 30, "FPU / MSA unit",
+             "The coprocessor beside the ALU: the FPU's and MSA's registers ($fN = "
+             "the low half of $wN) and execution units; it runs FPU and MSA "
+             "instructions element by element")
         part("regdst", "mux", 740, 500, 24, 54, "Dst", "RegDst mux: destination "
-             "register is rt (I-type) or rd (R-type), or $ra for links")
+             "register is rt (I-type) or rd (R-type), or $ra for links, or bits "
+             "10..6 (MSA's COPY_S / COPY_U / CFCMSA)")
         part("fwdu", "rect", 680, Y_FWD - 23, 160, 46, "Forwarding\nunit",
              "Forwarding unit: compares the destination registers in EX/MEM and "
              "MEM/WB with the operands in EX and drives muxes A and B")
@@ -382,7 +388,8 @@ class DatapathView(QtWidgets.QGraphicsView):
                 ("res", 856, 316, 8), ("dst", 768, 532, 8), ("mem", 940, 434, 8),
                 ("wb", 1190, 556, 9), ("status", 10, 764, 10), ("events", 470, 646, 8),
                 ("icache", 20, 392, 8), ("dcache", 940, 540, 8),
-                ("below_if", 20, 646, 8), ("below_mem", 990, 646, 8)):
+                ("below_if", 20, 646, 8), ("below_mem", 990, 646, 8),
+                ("vunit", 786, 573, 7)):
             self.values[key] = _Value(s, x, y, size)
         # the guide's part numbers (View > Datapath Part Numbers)
         self.badges = []
@@ -592,6 +599,15 @@ class DatapathView(QtWidgets.QGraphicsView):
                 if imm is not None:
                     self._light(["sext", "ifid_sext", "sext_idex"], c)
                     self.values["imm"].set(f"imm {imm}")
+        elif coprocessor_reads(s, word) is not None:    # FPU / MSA: its own registers
+            unit, reads = coprocessor_reads(s, word)
+            self.values["regs"].set(f"{'MSA' if unit == 'msa' else 'FPU'} reads "
+                                    + (" ".join(reads[:4]) or "-"))
+            if not any(r.startswith("$") and r[1:2] not in ("w", "f") for r in reads):
+                for k in ("regs", "ifid_rs", "ifid_rt", "rd1_idex", "rd2_idex"):
+                    (self.parts.get(k) or self.wires[k]).set(None)   # (no GPR read)
+            if ctl.get("ALUSrc") == "imm" or ctl.get("Branch"):
+                self._light(["sext", "ifid_sext", "sext_idex"], c)
         elif word is not None:
             rs, rt, imm = (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
             abi = "n64" if s.wide else True     # (MIPS64: the n64 names)
@@ -615,9 +631,24 @@ class DatapathView(QtWidgets.QGraphicsView):
 
     def _ex(self, s, d, ev) -> None:
         c = T().stage["EX"][1]
+        v = d.get("view")
+        unit = coprocessor_of(s, v)
+        if unit is not None:                    # the FPU / MSA unit does the work
+            self._light(["vunit"], c)
+            lanes = getattr(v, "lanes", None)
+            self.values["vunit"].set(
+                _clip(f"{lanes.size}-bit x {128 // lanes.size}" if lanes is not None
+                      else "FPU", 20))
+            if v.alu is None and not (v.mem_reads or v.mem_writes):
+                if v.exception:
+                    self.values["res"].set(f"EXCEPTION\n{v.exception}", T().red)
+                dest = _dest(s, d)
+                if dest is not None:
+                    self._light(["regdst", "dst_exmem"], c)
+                    self.values["dst"].set(f"dest {dest[0]}")
+                return
         self._light(["fwda", "fwdb", "alu", "idex_fwda", "idex_fwdb", "fwda_alu",
                      "fwdb_src", "alusrc", "src_alu", "alu_exmem", "idex_dst"], c)
-        v = d.get("view")
         if v is None:
             return
         if v.alu is not None:

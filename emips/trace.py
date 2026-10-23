@@ -37,6 +37,7 @@ from . import cp0 as C
 from .disasm import text_at
 from .isa import ISA, Decode
 from .mmu import cca_name, segment
+from .msa import READS_WD
 from .tlb import segment64
 from .pipeline import analyze
 from .sim import NULLIFY
@@ -91,6 +92,24 @@ class AddressView:
 
 
 @dataclass
+class LaneView:
+    """An MSA instruction element by element (MD00866 3.3: element 0 =
+    bits ``size`` - 1 .. 0): its vector operands before, the destination
+    after — observed, as the rest of the view."""
+    size: int                # element bits of the destination's format
+    #: (role, register, elements): "ws" / "wt" / "wd before" (inputs, at
+    #: their own element size: DOTP_S.H reads bytes) and "wd" (the result)
+    rows: list[tuple[str, int, int, list[int]]]
+
+    def lines(self) -> list[str]:
+        out = [f"lanes ({self.size}-bit elements, element 0 first):"]
+        for role, n, size, es in self.rows:
+            out.append(f"  {role + ' $w' + str(n) + ':':<16}"
+                       + " ".join(f"{e:0{size // 4}x}" for e in es))
+        return out
+
+
+@dataclass
 class BranchView:
     condition: str
     taken: bool
@@ -110,7 +129,7 @@ class InstrView:
 
     #: built when first read (see :meth:`_build`)
     _BUILT = frozenset(("text", "format", "fields", "alu", "address", "branch", "reg_writes",
-                        "mem_reads", "mem_writes", "compressed", "source_text"))
+                        "mem_reads", "mem_writes", "compressed", "source_text", "lanes"))
 
     pc: int
     word: int
@@ -141,6 +160,8 @@ class InstrView:
     compressed: str
     #: ... its text alone (what a listing shows at that address)
     source_text: str
+    #: an MSA instruction's elements (None for every other instruction)
+    lanes: LaneView | None
 
     def __init__(self, pc: int, word: int, name: str, in_slot: bool, raw: tuple) -> None:
         self.pc, self.word, self.name, self.in_delay_slot = pc, word, name, in_slot
@@ -221,6 +242,8 @@ def decode_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
 
 def _decode_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
     e, w = dec.entry, dec.word
+    if e.get("ase") == "msa" and e["family"] != "alu":
+        return _msa_fields(dec, abi)
     mask = e["decode"]["mask"]
     owner: dict[int, str] = {}
     for item in operand_spec(e):
@@ -247,6 +270,84 @@ def _decode_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
         bits = format(value, f"0{hi - lo + 1}b")
         out.append(Field(name, hi, lo, bits, value,
                          _meaning(name, value, hi - lo + 1, dec, abi)))
+        bit = lo - 1
+    return out
+
+
+#: MSA (PLAN M24): template letter -> field name (``corrections.json``
+#: letters; MD00866 3.7's names)
+_MSA_LETTERS = {"V": "wt", "W": "ws", "Y": "wd", "s": "rs", "d": "rd", "t": "rt",
+                "C": "cs", "E": "cd", "N": "n", "M": "m", "F": "u5", "G": "s5",
+                "B": "i8", "O": "s10", "o": "s16"}
+#: the df bits of each MSA format (MD00866 Figures 3.x): (msb, lsb); the BIT /
+#: ELM formats' df is the fixed part of df/m / df/n
+_MSA_DF = {"3R": (22, 21), "I5": (22, 21), "I10": (22, 21), "3RF": (21, 21),
+           "2R": (17, 16), "2RF": (16, 16), "MI10": (1, 0), "BIT": (22, 16),
+           "ELM": (21, 16)}
+
+
+def _msa_fields(dec: Decode, abi: bool | str = True) -> list[Field]:
+    """An MSA word's fields as MD00866 3.7 draws them: op (MSA = 011110, or
+    COP1 for the branches), the operation bits, df, the operand fields, and
+    the minor opcode (MI10: minor 5..2 + df 1..0)."""
+    e, w = dec.entry, dec.word
+    enc, fmt, name = e["encode"], e["instrType"], dec.name
+    df = name.rsplit(".", 1)[-1]
+    df_bits: tuple[int, int] | None = _MSA_DF.get(fmt)
+    if fmt == "I8" and name.startswith("SHF."):
+        df_bits = (25, 24)
+    if fmt == "COP1":
+        df_bits = None if df == "V" else (22, 21)
+    if fmt == "ELM" and "N" not in enc:        # CTCMSA, CFCMSA, MOVE.V: df/n = 111110
+        df_bits = None
+    out: list[Field] = []
+
+    def put(fname: str, hi: int, lo: int, meaning: str) -> None:
+        value = (w >> lo) & ((1 << (hi - lo + 1)) - 1)
+        out.append(Field(fname, hi, lo, format(value, f"0{hi - lo + 1}b"), value, meaning))
+
+    bit = 31
+    while bit >= 0:
+        ch = enc[31 - bit]
+        hi = lo = bit
+        if ch in "01":
+            if bit >= 26:
+                lo = 26
+                put("op", 31, 26, "COP1" if fmt == "COP1" else "MSA")
+            elif fmt != "COP1" and bit <= 5 and (fmt != "MI10" or bit >= 2):
+                lo = 2 if fmt == "MI10" else 0
+                minor = (w >> lo) & ((1 << (bit - lo + 1)) - 1)
+                put("minor", bit, lo, "MI10: " + ("LD" if minor == 8 else "ST")
+                    if fmt == "MI10" else f"the {fmt} format")
+            elif df_bits and df_bits[1] <= bit <= df_bits[0]:
+                while lo - 1 >= df_bits[1] and enc[31 - (lo - 1)] in "01":
+                    lo -= 1
+                put("df", bit, lo, df)
+            else:
+                stop = df_bits[0] if df_bits and bit > df_bits[0] else -1
+                limit = 6 if fmt != "COP1" else 16
+                while lo - 1 > max(stop, limit - 1) and enc[31 - (lo - 1)] in "01":
+                    lo -= 1
+                put("operation", bit, lo, e.get("mnemonic", name))
+        else:
+            while lo - 1 >= 0 and enc[31 - (lo - 1)] == ch:
+                lo -= 1
+            fname = _MSA_LETTERS.get(ch, ch)
+            value = (w >> lo) & ((1 << (hi - lo + 1)) - 1)
+            if fname in ("wt", "ws", "wd"):
+                meaning = f"$w{value}"
+            elif fname in ("rs", "rd", "rt"):
+                meaning = gpr_name(value, abi)
+            elif fname in ("s5", "s10", "s16"):
+                v = _sx(value, hi - lo + 1)
+                meaning = (f"{v} (x{ {'B': 1, 'H': 2, 'W': 4, 'D': 8}[df]} bytes)"
+                           if fmt == "MI10" else f"{v} (x4, PC-relative)"
+                           if fname == "s16" else str(v))
+            elif fname in ("cs", "cd"):
+                meaning = f"MSA control register {value}"
+            else:
+                meaning = str(value)
+            put(fname, hi, lo, meaning)
         bit = lo - 1
     return out
 
@@ -483,7 +584,7 @@ def _build(v: InstrView) -> None:
     pc, word, name, fam = v.pc, v.word, v.name, dec.entry["family"]
     d = v.__dict__
     d.update(alu=None, address=None, branch=None, compressed="", source_text="",
-             mem_reads=[], mem_writes=[])
+             mem_reads=[], mem_writes=[], lanes=None)
     if st.nm is not None:                       # nanoMIPS (emips.tracenano)
         _build_nano(v, st, before, after, log, sources, failed, code)
         return
@@ -503,6 +604,8 @@ def _build(v: InstrView) -> None:
             v.source_text = text
         _operands(v, st, word, name, fam, sources)
     v.reg_writes = _diff(before, after, st.mask, st.abi) if after is not None else []
+    if dec.entry.get("ase") == "msa":
+        v.lanes = _lanes(dec, before, after)
     if code == C.OV and v.alu is not None:
         v.alu.overflow = True
     for entry in log:
@@ -530,6 +633,48 @@ def _build(v: InstrView) -> None:
     b = v.branch
     if b is not None and b.target is not None and st.compressed is not None:
         b.target &= ~1                  # (bit 0: the ISA mode there, not an address bit)
+
+
+_ELEMENT_BITS = {"B": 8, "H": 16, "W": 32, "D": 64, "V": 64}
+#: MSA rows whose vector inputs are half the destination's element size
+#: (MD00866: DOTP_S.H reads bytes ...) / twice it (FEXDO.H reads words)
+_MSA_HALF_IN = ("DOTP_S", "DOTP_U", "DPADD_S", "DPADD_U", "DPSUB_S", "DPSUB_U",
+                "HADD_S", "HADD_U", "HSUB_S", "HSUB_U", "FEXUPL", "FEXUPR", "FFQL", "FFQR")
+_MSA_DOUBLE_IN = ("FEXDO", "FTQ")
+
+
+def _lanes(dec: Decode, before: tuple, after: tuple | None) -> LaneView | None:
+    """:class:`LaneView` of an MSA instruction (vector fields wt = V, ws =
+    W, wd = Y in its template; no lanes for a branch or a control move)."""
+    e, w = dec.entry, dec.word
+    enc, name = e["encode"], dec.name
+    base, _, df = name.rpartition(".")
+    size = _ELEMENT_BITS.get(df)
+    if size is None or e["family"] == "msa_branch":
+        return None
+    insize = size // 2 if base in _MSA_HALF_IN else size * 2 if base in _MSA_DOUBLE_IN \
+        else size
+
+    def elements(state, n, bits):
+        v = state[8][3][n] << 64 | state[3][n] if state is before else \
+            state[7][3][n] << 64 | state[3][n]
+        return [(v >> (i * bits)) & ((1 << bits) - 1) for i in range(128 // bits)]
+
+    rows = []
+    for ch, role, lsb in (("W", "ws", 11), ("V", "wt", 16)):
+        if ch in enc:
+            n = (w >> lsb) & 31
+            rows.append((role, n, insize, elements(before, n, insize)))
+    if "Y" in enc:
+        n = (w >> 6) & 31
+        if name.startswith("ST."):
+            rows.append(("wd", n, size, elements(before, n, size)))
+        else:
+            if base in READS_WD:
+                rows.append(("wd before", n, size, elements(before, n, size)))
+            if after is not None:
+                rows.append(("wd", n, size, elements(after, n, size)))
+    return LaneView(size, rows) if rows else None
 
 
 def _build_nano(v: InstrView, st: _Frozen, before: tuple, after: tuple | None, log: list,
@@ -588,6 +733,20 @@ def _operands(v: InstrView, st: _Frozen, word: int, name: str, fam: str,
         else:
             a, b = _reg_operand(st, "a", rs, sources), _reg_operand(st, "b", rt, sources)
         v.alu = AluView(_ALU_OPS[name], a, b, None, None)
+    if fam == "msa_mem":                               # MSA LD / ST.df (MD00866)
+        df = word & 3                                   # (the MI10 format: s10, rs, wd)
+        off = _sx((word >> 16) & 0x3FF, 10) << df
+        base = _reg_operand(st, "base", (word >> 11) & 31, sources)
+        addr = (base.value + off) & st.mask
+        if st.ea32 and (st.release != "R6" or _word(base.value)):
+            addr = _sx(addr, 32) & st.mask
+        seg, priv, mapped = _segment(st, addr)
+        v.address = AddressView(base, off, addr, 16, "store" if name.startswith("ST.")
+                                else "load", seg, priv, mapped, False, True)
+        v.alu = AluView("a + b (effective address)", base,
+                        Operand("b", off & st.mask, f"offset s10 << {df} (the element "
+                                                    "size, sign-extended)"), addr, addr == 0)
+        return
     if name in _SIZES or (fam in ("load", "store")):
         if name.endswith("XC1"):
             off = st.read_reg(rt)
@@ -696,7 +855,7 @@ def _snapshot(m, cp0: bool = True) -> tuple:
     cells = m.cp0
     keys, vals = (tuple(cells), list(map(_VALUE, cells.values()))) if cp0 else (None, None)
     return ((m.regs, m.regs[:]), m.hi, m.lo, m.fpr[:], m.fcsr, keys, vals, (pss, prev),
-            (m.dspctl, m.dsp_hi[:], m.dsp_lo[:]))
+            (m.dspctl, m.dsp_hi[:], m.dsp_lo[:], m.wh[:], m.msacsr))
 
 
 def _gpr_changes(old: list, cur: list, suffix: str = "", mask: int = M32,
@@ -717,7 +876,8 @@ def _after(m, before: tuple) -> tuple:
         vals = list(map(_VALUE, cp0.values())) if tuple(cp0) == cp0_keys else \
             [cp0[k]["value"] for k in cp0_keys]     # (a cell added: by key)
     return (cur[:], m.hi, m.lo, m.fpr[:], m.fcsr, vals,
-            prev[0][:] if prev is not None else None, (m.dspctl, m.dsp_hi[:], m.dsp_lo[:]))
+            prev[0][:] if prev is not None else None,
+            (m.dspctl, m.dsp_hi[:], m.dsp_lo[:], m.wh[:], m.msacsr))
 
 
 def _diff(before: tuple, after: tuple, mask: int = M32,
@@ -726,7 +886,7 @@ def _diff(before: tuple, after: tuple, mask: int = M32,
     Count (CP0 9.0) ticks by itself and is left out (``mask`` / ``abi``:
     the GPRs' width and names, MIPS64: 64 bits, n64)."""
     (_cur, regs), hi, lo, fpr, fcsr, cp0_keys, cp0_vals, (pss, prev), dsp = before
-    cur, hi2, lo2, fpr2, fcsr2, now, bank, (dspctl2, dhi2, dlo2) = after
+    cur, hi2, lo2, fpr2, fcsr2, now, bank, (dspctl2, dhi2, dlo2, wh2, msacsr2) = after
     out = _gpr_changes(regs, cur, "", mask, abi)
     if prev is not None:
         out += _gpr_changes(prev[1], bank, f" (set {pss})", mask, abi)
@@ -734,13 +894,17 @@ def _diff(before: tuple, after: tuple, mask: int = M32,
         out.append(("hi", hi, hi2))
     if lo != lo2:
         out.append(("lo", lo, lo2))
-    if fpr != fpr2:
-        for i, (old, new) in enumerate(zip(fpr, fpr2)):
-            if old != new:
+    dspctl, dhi, dlo, wh, msacsr = dsp        # the DSP Module; MSA (M24)
+    if fpr != fpr2 or wh != wh2:              # (a vector register: its high half
+        for i, (old, new) in enumerate(zip(fpr, fpr2)):   # changed — else the FPR)
+            if wh[i] != wh2[i]:
+                out.append((f"$w{i}", wh[i] << 64 | old, wh2[i] << 64 | new))
+            elif old != new:
                 out.append((f"$f{i}", old, new))
     if fcsr != fcsr2:
         out.append(("fcsr", fcsr, fcsr2))
-    dspctl, dhi, dlo = dsp                    # the DSP Module: DSPControl, ac1-ac3
+    if msacsr != msacsr2:
+        out.append(("msacsr", msacsr, msacsr2))
     if dspctl != dspctl2:
         out.append(("dspctl", dspctl, dspctl2))
     if dhi != dhi2 or dlo != dlo2:
@@ -765,6 +929,15 @@ _NAME = itemgetter(0)
 
 
 # --------------------------------------------------------------- printing
+
+def digits_of(name: str, w: int) -> int:
+    """Hex digits a ``reg_writes`` value is shown with: a GPR / HI / LO the
+    core's width ``w``, a vector register (MSA) 32, the rest 8 (an FPR's
+    word view, CP0, DSPControl, MSACSR ...)."""
+    if name.startswith("$w"):
+        return 32
+    return w if name[0] == "$" and name[1] != "f" or name in ("hi", "lo") else 8
+
 
 def format_view(v: InstrView) -> str:
     """Multi-line, human-readable rendering of a view."""
@@ -816,8 +989,10 @@ def format_view(v: InstrView) -> str:
     for acc in v.cache:
         lines.append(f"  cache: {acc.describe()}")
     for name, old, new in v.reg_writes:
-        d = w if name[0] == "$" and name[1] != "f" or name in ("hi", "lo") else 8
+        d = digits_of(name, w)
         lines.append(f"  {name}: 0x{old:0{d}x} -> 0x{new:0{d}x}")
+    if v.lanes is not None:
+        lines.extend(f"  {line}" for line in v.lanes.lines())
     if v.exception:
         lines.append(f"  EXCEPTION: {v.exception}")
     return "\n".join(lines)

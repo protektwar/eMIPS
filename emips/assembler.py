@@ -147,6 +147,8 @@ class Program:
     dsp: int = 0
     #: it uses the MT Module's instructions (emips.mt, MD00378)
     mt: bool = False
+    #: it uses MSA's instructions (MD00866; LSA / DLSA before Release 6 too)
+    msa: bool = False
     #: the architecture it was made for: "mips32", "mips64" (assembled
     #: for MIPS64, an ELF64) or "nanomips" (emips.nanoasm)
     arch: str = "mips32"
@@ -227,6 +229,9 @@ class Program:
         if self.mt and getattr(machine, "mt", None) is None:
             raise ValueError("the program uses MT Module instructions: the core needs "
                              "the MT Module (--mt VPES:TCS)")
+        if self.msa and not getattr(machine, "msa", False):
+            raise ValueError("the program uses MSA instructions: the core needs MSA "
+                             "(--msa)")
         if boot:
             from .tlb import boot_cca, firmware_refill, firmware_xtlb_refill, user_window
             cca = boot_cca(machine)                    # 3; a CPS core: 5, coherent
@@ -238,6 +243,16 @@ class Program:
                              | (C.ST_MX if getattr(machine, "dsp", 0) else 0))
             if machine.wide:                           # MIPS64: FR (n64), KX / SX / UX
                 machine.boot64()
+            if self.msa and getattr(machine, "msa", False):
+                # MSA in use: 64-bit FPRs (FR, MD00866 3.3.2) and Config5.MSAEn
+                # (3.2) — a reset-state program enables it itself (the lazy
+                # switch: MSA Disabled until it does)
+                machine._cp0_set(C.STATUS, machine.status | (C.ST_FR if machine.has_fpu else 0))
+                machine._cp0_set((16, 5), machine.cp0_read(16, 5) | (1 << 27))
+                wrp = getattr(machine, "msa_wrp", None)
+                if wrp is not None:                    # partitioning: map $w0 ...
+                    for n in range(len(wrp.store)):     # (as many as there are)
+                        wrp.write(machine, 6, n)
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
             ku_k23 = (2 << 28) | (cca << 25) if fixed else 0
             machine._cp0_set(C.CONFIG, config | ku_k23 | (0 if mpu else cca))
@@ -856,6 +871,8 @@ class _Stmt:
     dsp: int = 2
     #: ``.set mt`` / ``nomt``: the MT Module's instructions are allowed
     mt: bool = True
+    #: ``.set msa`` / ``nomsa``: MSA's instructions are allowed
+    msa: bool = True
 
 
 class Assembler:
@@ -913,6 +930,7 @@ class Assembler:
         self._seen_m16 = self._seen_mm = False
         self._dsp_set = 2                       # .set dsp / dspr2 / nodsp
         self._mt_set = True                     # .set mt / nomt
+        self._msa_set = True                    # .set msa / nomsa
         self._isa64 = True                      # .set mips64* / mips32* (MIPS64)
         self.prog = Program(endian=self.endian, release=self.isa.release,
                             arch=self.isa.arch)
@@ -978,7 +996,8 @@ class Assembler:
                     if lc[seg] & 1:
                         raise AsmError(n, "microMIPS instruction not halfword-aligned", raw)
                     self._m16_labels.update(self._pending)
-                    st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok, mm=True)
+                    st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok, mm=True,
+                               msa=self._msa_set)
                     if prev is not None and prev.mm and not prev.reorder and \
                             prev.addr + prev.size == lc[seg]:
                         st.slot = self._mm_slot_need(prev)
@@ -1004,7 +1023,7 @@ class Assembler:
                         " (after MIPS16e / microMIPS code: .align 2)" if self._m16_labels
                         else ""), raw)
                 st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok,
-                           dsp=self._dsp_set, mt=self._mt_set)
+                           dsp=self._dsp_set, mt=self._mt_set, msa=self._msa_set)
                 insns = self._expand(st)
                 if (prev is not None and prev.reorder and prev.seg == seg
                         and prev.addr + prev.size == lc[seg]
@@ -1095,6 +1114,10 @@ class Assembler:
                     raise AsmError(n, "the MT Module needs Release 2-5 (MD00378 1.1; "
                                    "Release 6 has none)", raw)
                 self._mt_set = word == "mt"
+            elif word in ("msa", "nomsa"):      # GNU as: MSA's instructions
+                if word == "msa" and self.isa.release not in ("R5", "R6"):
+                    raise AsmError(n, "MSA needs Release 5+ (MD00866 1.1)", raw)
+                self._msa_set = word == "msa"
             return seg, reorder, at_ok
         if d in (".eqv", ".equ"):
             if len(ops) != 2:
@@ -1389,7 +1412,7 @@ class Assembler:
 
     def _has_delay_slot(self, mn: str) -> bool:
         e = self._by_name[mn]
-        return e["family"] in ("branch", "jump", "branch_fpu") or \
+        return e["family"] in ("branch", "jump", "branch_fpu", "msa_branch") or \
             mn.upper().startswith("BC2")
 
     def _li(self, st: _Stmt, rt: str, expr: str) -> list[tuple[str, list[str]]]:
@@ -1553,6 +1576,7 @@ class Assembler:
                   "jrs", "jrs.hb", "jalr", "jalr.hb", "jalrs", "jalrs.hb", "jrc", "jraddiusp",
                   "lwp", "swp", "lwm", "swm", "lwxs", "movep", "addiupc", "bposge32",
                   "ldp", "sdp", "ldm", "sdm",          # microMIPS64 (MD00594)
+                  *(f"{b}.{df}" for b in ("bz", "bnz") for df in "vbhwd"),   # MSA
                   # Release 6
                   "balc", "beqc", "bnec", "bltc", "bgec", "bltuc", "bgeuc", "bovc", "bnvc",
                   "bgtc", "blec", "bgtuc", "bleuc", "bltzc", "blezc", "bgezc", "bgtzc",
@@ -1567,7 +1591,10 @@ class Assembler:
     _MM_SLOT16 = {"jals", "jalrs", "jalrs.hb", "bgezals", "bltzals", "bals"}
     _MM_SLOT_ANY = {"b", "beqz", "bnez", "beq", "bne", "bgez", "bltz", "blez", "bgtz",
                     "bc1f", "bc1t", "bc2f", "bc2t", "j", "jr", "jr.hb", "jrs", "jrs.hb",
-                    "bposge32"}
+                    "bposge32",
+                    # MSA (MD00870): compact — but binutils gives them a delay slot
+                    # (CBD): GNU as puts a NOP after them under .set reorder
+                    *(f"{b}.{df}" for b in ("bz", "bnz") for df in "vbhwd")}
 
     def _mm_expand(self, st: _Stmt) -> list[tuple[str, list[str], int]]:
         """(mnemonic, operands, forced size) of a microMIPS statement:
@@ -1784,6 +1811,10 @@ class Assembler:
             if not st.mt:
                 raise err("an MT Module instruction, after .set nomt")
             self.prog.mt = True
+        elif e.get("ase") == "msa":             # MSA (MD00866)
+            if not st.msa:
+                raise err("an MSA instruction, after .set nomsa")
+            self.prog.msa = True
         elif e.get("ase"):                      # the DSP Module (MD00374)
             level = ISA.DSP_LEVEL[e["ase"]]
             if level > st.dsp:
@@ -2018,6 +2049,8 @@ class Assembler:
             return (num(-512, 511, "immediate") & 0x3FF) << lsb
         if kind == "shilo":
             return (num(-32, 31, "shift") & 0x3F) << lsb
+        if kind in _MSA_KINDS:                  # MSA (MD00866 3.6)
+            return self._msa_operand(kind, tok, st, err)
         if kind == "jt":
             target = self._value(tok, st) & M32
             if target & 3:
@@ -2026,6 +2059,90 @@ class Assembler:
                 raise err(f"jump target 0x{target:08x} outside the 256 MB region")
             return (target >> 2) & 0x3FFFFFF
         raise err(f"internal: unknown operand kind {kind}")
+
+
+    def _msa_operand(self, kind: str, tok: str, st: _Stmt, err) -> int:
+        """An MSA operand (MD00866 3.6, GNU as's syntax): ``$w5``, ``$w5[3]``,
+        ``$w5[$t0]``, ``-16($a0)`` (a byte offset, a multiple of the element
+        size), the control registers as ``$1`` (objdump's ``msa_csr`` names
+        too), the immediates."""
+        t = tok.strip()
+        fields = KINDS[kind].fields
+        lsb = fields[0][0]
+
+        def wreg(text: str) -> int:
+            m = _WREG.fullmatch(text.strip())
+            if not m:
+                raise err(f"MSA register $w0..$w31 expected, got {text.strip()!r}")
+            return int(m.group(1))
+
+        def num(text: str, lo: int, hi: int, what: str) -> int:
+            v = self._value(text, st)
+            if not lo <= v <= hi:
+                raise err(f"{what} {v} out of range {lo}..{hi}")
+            return v
+
+        if kind in ("wd", "ws", "wt"):
+            return wreg(t) << lsb
+        if kind in ("rd6", "rs11"):
+            r = parse_gpr(t)
+            if r is None:
+                raise err(f"GPR expected, got {t!r}")
+            return r << lsb
+        if kind in ("mcs", "mcd"):
+            r = parse_numreg(t)
+            if r is None and t.lower().lstrip("$") in MSA_CONTROL:
+                r = MSA_CONTROL.index(t.lower().lstrip("$"))
+            if r is None:
+                r = num(t, 0, 31, "MSA control register")
+            return r << lsb
+        if kind == "u5":
+            return num(t, 0, 31, "immediate") << lsb
+        if kind == "s5":
+            return (num(t, -16, 15, "immediate") & 31) << lsb
+        if kind in ("m3", "m4", "m5", "m6", "u8"):
+            width = fields[0][1]
+            return num(t, 0, (1 << width) - 1, "immediate") << lsb
+        if kind == "s10":
+            return (num(t, -512, 511, "immediate") & 0x3FF) << lsb
+        if kind.startswith("vmem_"):
+            m = re.fullmatch(r"(.*)\((\s*\$[\w]+\s*)\)", t)
+            base = parse_gpr(m.group(2)) if m else None
+            if base is None:
+                raise err(f"offset(base) expected, got {t!r}")
+            off = self._value(m.group(1), st) if m.group(1).strip() else 0
+            scale = {"b": 1, "h": 2, "w": 4, "d": 8}[kind[-1]]
+            if off % scale:
+                raise err(f"offset {off} is not a multiple of {scale} (the element size)")
+            if not -512 <= off // scale <= 511:
+                raise err(f"offset {off} out of range {-512 * scale}..{511 * scale}")
+            return ((off // scale) & 0x3FF) << 16 | base << 11
+        m = re.fullmatch(r"(.*?)\[(.*)\]", t)
+        if not m:
+            raise err(f"an element $wN[n] expected, got {t!r}")
+        reg, index = wreg(m.group(1)), m.group(2).strip()
+        if kind == "ws0":
+            if self._value(index, st) != 0:
+                raise err(f"the source element must be [0], got [{index}]")
+            return reg << lsb
+        if kind == "elmr":
+            r = parse_gpr(index)
+            if r is None:
+                raise err(f"a GPR index $wN[$rt] expected, got [{index}]")
+            return reg << lsb | r << 16
+        width = fields[1][1]
+        return reg << lsb | num(index, 0, (1 << width) - 1, "element index") << 16
+
+
+#: the operand kinds of MSA's rows (emips.syntax.msa_spec)
+_MSA_KINDS = frozenset({"wd", "ws", "wt", "rd6", "rs11", "mcs", "mcd", "u5", "s5", "m3",
+                        "m4", "m5", "m6", "u8", "s10", "ws0", "elmr",
+                        *(f"vmem_{d}" for d in "bhwd"), *(f"elm{k}" for k in (1, 2, 3, 4)),
+                        *(f"elmd{k}" for k in (1, 2, 3, 4))})
+_WREG = re.compile(r"\$w([12]?[0-9]|3[01])", re.I)
+#: MSA's control registers as objdump names them (MD00866 3.4: 0-7)
+MSA_CONTROL = ("msa_ir", "msa_csr", "msa_access", "msa_save", "msa_modify",
+               "msa_request", "msa_map", "msa_unmap")
 
 
 #: MIPS64 (PLAN M22, MIPS64 Vol. II DEXT ... DINSU): row -> (pos / size

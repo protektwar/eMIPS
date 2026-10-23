@@ -459,6 +459,9 @@ class Pipeline24K:
         if machine.nano:
             raise ValueError("the 24K is a MIPS32 core (MD00343): a nanoMIPS program runs "
                              "on the 5-stage model")
+        if getattr(machine, "msa", False):
+            raise ValueError("the 24K has no MSA (MD00343); the MSA cores (P5600, P6600, "
+                             "I6400) run on the 5-stage model")
         self.m = machine
         machine.tracing = trace
         self.timing = machine.caches.timing if machine.caches is not None else None

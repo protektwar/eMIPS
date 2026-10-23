@@ -5,8 +5,9 @@ The parts carry the numbers of the guide's figure (Phase 3, 3.4): 1 PC
 mux, 2 PC, 3 +4, 4 instruction memory, 5 control, 6 registers, 7
 sign-extend, 8 branch target, 9 comparator, 10 hazard detection, 11
 forwarding muxes A and B, 12 ALUSrc, 13 ALU, 14 RegDst, 15 forwarding
-unit, 16 data memory, 17 the write-back mux; the level below the caches
-has no number.
+unit, 16 data memory, 17 the write-back mux, 18 the FPU / MSA unit (the
+coprocessor beside the ALU: the textbook figure has none); the level
+below the caches has no number.
 
 "What happens now" comes from the per-cycle trace only
 (:meth:`Session.stage_details` / :attr:`Session.last_view`, the cycle's
@@ -127,8 +128,9 @@ PARTS: dict[str, Part] = {p.key: p for p in (
          "also detect signed overflow (a trap for add, addi, sub)."),
     Part("regdst", 14, "RegDst mux", "EX",
          "Chooses the number of the register the instruction will write: rt "
-         "(I-type: bits 20..16), rd (R-type: bits 15..11) or 31 ($ra: jal, bal, "
-         "...).  The number travels to WB with the result; the hazard and "
+         "(I-type: bits 20..16), rd (R-type: bits 15..11), 31 ($ra: jal, bal, "
+         "...) or, on an MSA core, bits 10..6 (COPY_S / COPY_U / CFCMSA put the GPR "
+         "they write there).  The number travels to WB with the result; the hazard and "
          "forwarding units compare against it."),
     Part("fwdu", 15, "Forwarding unit", "EX",
          "Compares the rs / rt of the instruction in EX with the destination "
@@ -145,6 +147,17 @@ PARTS: dict[str, Part] = {p.key: p for p in (
          "Chooses the value written back to the register file: the data loaded in "
          "MEM (MemtoReg = 1) or the ALU result.  Together with RegWrite and the "
          "destination number it drives the register file's write port."),
+    Part("vunit", 18, "FPU / MSA unit", "EX",
+         "The coprocessor beside the ALU (the textbook figure has none): the FPU's "
+         "and MSA's own register file (32 registers: $fN = the low 64 bits of "
+         "MSA's 128-bit $wN) and execution units — FP add / multiply / divide, "
+         "and MSA's integer, fixed-point and FP units working on every element "
+         "(16 bytes, 8 halfwords, 4 words or 2 doublewords) at once.  It holds EX "
+         "for its latency (the FPU's; MSA's from the P6600, MD01138 Table 15.3).  "
+         "The integer datapath only hands it GPR operands (MTC1, FILL, INSERT), "
+         "takes GPR results back (MFC1, COPY_S, CFCMSA) and computes the address "
+         "of its loads and stores (LWC1, LD.df: the vector data goes to / from "
+         "the data memory)."),
     Part("below_if", None, "The level below the I-cache", "IF",
          "Where an instruction-cache miss is served: the L2 (or L3, or memory).  "
          "One unified level, drawn under each L1 cache."),
@@ -334,7 +347,7 @@ def dest_of(d: dict, names: Any = None) -> tuple[str, int | None] | None:
     if isinstance(dst, str) and dst[1:2].isdigit():     # a number: compressed / nanoMIPS
         reg = int(dst[1:].split(",")[0])
     else:
-        reg = {"rd": (w >> 11) & 31, "$ra": 31}.get(dst, (w >> 16) & 31)
+        reg = {"rd": (w >> 11) & 31, "$ra": 31, "rd6": (w >> 6) & 31}.get(dst, (w >> 16) & 31)
     if reg == 0:
         return None
     value = None if ctl.get("MemtoReg") else (v.alu.result if v.alu is not None else None)
@@ -498,7 +511,7 @@ def _imem(s, d, det, ev, pipeline):
 
 
 _SIGNALS = {
-    "RegDst": "which register is written: rt, rd or $ra",
+    "RegDst": "which register is written: rt, rd, $ra or rd6 (MSA: bits 10..6); - = no GPR",
     "ALUSrc": "ALU operand b: the register (reg) or the immediate (imm)",
     "MemtoReg": "write back the loaded data (1) or the ALU result (0)",
     "RegWrite": "a register is written in WB",
@@ -673,9 +686,59 @@ def _alusrc(s, d, det, ev, pipeline):
     return out
 
 
+def coprocessor_reads(s, word: int | None) -> tuple[str, list[str]] | None:
+    """An FPU / MSA instruction word in ID: ("fpu" | "msa", the registers it
+    reads — the coprocessor's own and the GPRs it hands over), else None."""
+    if word is None or s.machine is None:
+        return None
+    try:
+        dec = s.machine.isa.decode(word)
+    except Exception:                                    # noqa: BLE001
+        return None
+    e = dec.entry
+    if e.get("ase") == "msa" and e["family"] != "alu":
+        unit = "msa"
+    elif e["family"].startswith("fpu"):
+        unit = "fpu"
+    else:
+        return None
+    from .pipeline import analyze
+    info = analyze(dec)
+    names = []
+    for r in sorted(info.reads_ex | info.reads_id, key=str):
+        if isinstance(r, tuple) and r[0] == "f":
+            names.append(f"${'w' if unit == 'msa' else 'f'}{r[1]}")
+        elif isinstance(r, tuple) and r[0] == "r":
+            names.append(gpr_name(r[1], s.machine.names))
+        elif isinstance(r, str):
+            names.append(r.upper() if r != "fcc" else "FCC")
+    return unit, names
+
+
+def coprocessor_of(s, v) -> str | None:
+    """"fpu" / "msa" when the FPU / MSA unit executes the instruction."""
+    if v is None:
+        return None
+    if getattr(v, "lanes", None) is not None:
+        return "msa"
+    try:
+        e = s.machine.isa.get(v.name)
+    except Exception:                                    # noqa: BLE001
+        return None
+    if e is None:
+        return None
+    if e.get("ase") == "msa" and e["family"] != "alu":
+        return "msa"
+    return "fpu" if e["family"].startswith("fpu") else None
+
+
 def _alu(s, d, det, ev, pipeline):
     v = d.get("view")
     if v is None or v.alu is None:
+        unit = coprocessor_of(s, v)
+        if unit is not None:
+            return [f"{d.get('text')}: the ALU does no operation for it — the "
+                    f"{'MSA unit' if unit == 'msa' else 'FPU'} (18) executes it"]
         return [f"{d.get('text')}: the ALU does no operation for it"]
     a = v.alu
     out = [f"operation: {a.op}"]
@@ -701,7 +764,8 @@ def _regdst(s, d, det, ev, pipeline):
     fields = fields_of(s, d)
     rt, rd = _field(fields, "rt"), _field(fields, "rd")
     out = [f"RegDst = {ctl.get('RegDst', '?')}; inputs: rt = "
-           f"{rt.meaning if rt else '-'}, rd = {rd.meaning if rd else '-'}, 31 = $ra"]
+           f"{rt.meaning if rt else '-'}, rd = {rd.meaning if rd else '-'}, 31 = $ra"
+           + (", rd6 = bits 10..6 (MSA)" if getattr(s.machine, "msa", False) else "")]
     dest = dest_of(dict(d, control=ctl))
     out.append(f"destination: {dest[0]}" if dest else "RegWrite = 0: no register written")
     return out
@@ -774,11 +838,34 @@ def _below(s, d, det, ev, pipeline):
                    "access)"]
 
 
+def _vunit(s, d, det, ev, pipeline):
+    v = d.get("view")
+    unit = coprocessor_of(s, v)
+    if unit is None:
+        return [f"{d.get('text')}: not used (an integer instruction)"]
+    out = []
+    if unit == "msa" and v.lanes is not None:
+        out.append(f"MSA: {d.get('text')}, {v.lanes.size}-bit elements, element 0 first")
+        for role, reg, size, es in v.lanes.rows:
+            shown = " ".join(f"{x:0{size // 4}x}" for x in es[:8])
+            out.append(f"  {role} $w{reg}: {shown}" + (" …" if len(es) > 8 else ""))
+    else:
+        out.append(f"{'MSA' if unit == 'msa' else 'FPU'}: {d.get('text')}")
+    for name, old, new in v.reg_writes:
+        if name.startswith(("$f", "$w")) or name in ("fcsr", "msacsr"):
+            digits = 32 if name.startswith("$w") else 8 if name in ("fcsr", "msacsr") else 16
+            out.append(f"{name}: 0x{old:0{digits}x} -> 0x{new:0{digits}x}")
+    if v.exception:
+        out.append(f"EXCEPTION: {v.exception}")
+    return out
+
+
 _BUILDERS = {"pcmux": _pcmux, "pc": _pc, "add4": _add4, "imem": _imem,
              "control": _control, "regs": _regs, "sext": _sext, "btarget": _btarget,
              "cmp": _cmp, "hazard": _hazard, "fwda": _fwda, "fwdb": _fwdb,
              "alusrc": _alusrc, "alu": _alu, "regdst": _regdst, "fwdu": _fwdu,
-             "dmem": _dmem, "wbmux": _wbmux, "below_if": _below, "below_mem": _below}
+             "dmem": _dmem, "wbmux": _wbmux, "below_if": _below, "below_mem": _below,
+             "vunit": _vunit}
 
 
 # ------------------------------------------------------------- nanoMIPS

@@ -57,6 +57,7 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</a></li>
 <li><a href="#223-mips64-64-bit-programs">2.23 MIPS64: 64-bit programs</a></li>
 <li><a href="#224-nanomips-16--32--and-48-bit-instructions">2.24 nanoMIPS: 16-, 32- and 48-bit instructions</a></li>
+<li><a href="#225-msa-128-bit-vectors">2.25 MSA: 128-bit vectors</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -2030,6 +2031,124 @@ window shows its halfwords, its datapath and its control logic as gates
 (<a href="03-the-gui.html">Phase 3</a>).  Labs 63–67 measure instruction sizes, build frames
 with <code>save</code> / <code>restore</code>, watch the linker relax a program, guard memory with
 the MPU and compare C for MIPS32 and nanoMIPS.</p>
+<h2 id="225-msa-128-bit-vectors">2.25 MSA: 128-bit vectors</h2>
+<p><strong>MSA</strong>, the MIPS SIMD Architecture (MIPS's Volume IV-j,
+Release 5 and 6), gives a core 32 <strong>vector registers</strong> of 128
+bits, <code>$w0</code>–<code>$w31</code>, and about 150 instructions that work
+on all the elements of a vector at once: sixteen bytes, eight halfwords,
+four words or two doublewords — integers, fixed-point fractions or IEEE
+floats.  The P5600, P6600 and I6400 have it; the 24K and the other older
+cores do not.  Where the DSP Module (<a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>) packs four bytes into a
+32-bit GPR, MSA works on a whole 16-byte line of data with one
+instruction.</p>
+<pre><code class="language-asm"># output: 11 22 33 44 \n44\n1 2 3 4 \n
+        .data
+        .align  4                   # (a vector: 16 bytes)
+v:      .word   1, 2, 3, 4
+f:      .float  0.5, 1.0, 1.5, 2.0
+out:    .space  16
+        .text
+main:   la      $t0, v
+        ld.w    $w0, 0($t0)         # $w0 = 1 2 3 4 (element 0 first)
+        ldi.w   $w1, 10             # 10 in all four words
+        mulv.w  $w2, $w0, $w1       # 10 20 30 40: four multiplies
+        addv.w  $w2, $w2, $w0       # 11 22 33 44
+        la      $t1, out
+        st.w    $w2, 0($t1)         # back to memory, element 0 first
+        jal     show
+        copy_s.w $a0, $w2[3]        # one element to a GPR: 44
+        li      $v0, 1
+        syscall
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        la      $t0, f
+        ld.w    $w3, 0($t0)         # four singles
+        fadd.w  $w3, $w3, $w3       # doubled: 1 2 3 4
+        ftint_s.w $w2, $w3          # converted to integers
+        st.w    $w2, 0($t1)
+        jal     show
+        li      $v0, 10
+        syscall
+
+show:   li      $t2, 4              # print the four words at out
+        la      $t3, out
+next:   lw      $a0, 0($t3)
+        li      $v0, 1
+        syscall
+        li      $a0, ' '
+        li      $v0, 11
+        syscall
+        addiu   $t3, $t3, 4
+        addiu   $t2, $t2, -1
+        bnez    $t2, next
+        li      $a0, '\n'
+        li      $v0, 11
+        syscall
+        jr      $ra
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><strong>The suffix is the element size</strong>: <code>.b</code> bytes, <code>.h</code>
+halfwords, <code>.w</code> words, <code>.d</code> doublewords (<code>.v</code> the
+whole vector, for the bit operations <code>and.v</code>, <code>or.v</code>,
+<code>xor.v</code>, <code>bsel.v</code> ...).  <code>addv.w</code> does four
+32-bit additions, <code>addv.b</code> sixteen 8-bit ones — a carry never
+crosses into the next element.  Elements are numbered from the low end:
+element 0 is bits 31..0 of a <code>.w</code> vector, whatever the byte
+order.</li>
+<li><strong>Loads and stores</strong> <code>ld.df</code> / <code>st.df</code> move 16
+bytes, element 0 at the lowest address (each element in the core's byte
+order: on big-endian <code>ld.w</code> and <code>ld.b</code> of the same
+bytes give different registers — <a href="05-understanding.html#512-vectors-inside-msa">5.12</a>).  The offset is in bytes but must
+be a multiple of the element size (<code>ld.d $w0, 8($t0)</code>); the address
+needs no alignment.</li>
+<li><strong>Elements to and from GPRs</strong>: <code>fill.w $w0, $t0</code> puts
+a GPR in every element, <code>copy_s.w $t0, $w1[2]</code> / <code>copy_u.b</code>
+take one out (sign- or zero-extended), <code>insert.w $w1[2], $t0</code> puts
+one in; <code>ldi.h $w0, -5</code> loads a constant into every element,
+<code>splati.w $w0, $w1[1]</code> copies one element to all.</li>
+<li><strong>Integers</strong> wrap around (<code>addv</code>, <code>subv</code>,
+<code>mulv</code>) or saturate (<code>adds_u.b</code>, <code>adds_s.h</code>,
+<code>subs_u.w</code> ...: <code>_s</code> signed, <code>_u</code> unsigned);
+compares (<code>ceq.w</code>, <code>clt_s.w</code>) give all ones or zeros
+per element, the masks <code>bsel.v</code> chooses with — a branch-free
+<code>if</code>.  <code>dotp_s.w</code> multiplies pairs of halfwords and adds
+each pair into a word; <code>hadd_s.d</code> adds neighbours.</li>
+<li><strong>Fixed point</strong>: <code>mul_q.h</code> / <code>mulr_q.h</code> multiply
+Q15 fractions (rounded with <code>r</code>), <code>madd_q.w</code> accumulates
+Q31 ones (<a href="05-understanding.html#512-vectors-inside-msa">5.12</a>, Lab 70).</li>
+<li><strong>Floating point</strong>: <code>fadd.w</code> is four single-precision
+additions, <code>fmul.d</code> two doubles; <code>ffint_s.w</code> /
+<code>ftint_s.w</code> convert from / to integers; <code>fexdo.h</code> makes
+IEEE half-precision values (16 bits) out of singles.  The rounding mode,
+the IEEE flags and the enables are in <strong>MSACSR</strong>, MSA's own
+control register (<code>cfcmsa $t0, $1</code> / <code>ctcmsa $1, $t0</code>).</li>
+<li><strong>Branches</strong>: <code>bnz.v $w0, label</code> (any bit set),
+<code>bz.w $w0, label</code> (some word zero) ..., with a delay slot (before
+Release 6 and on Release 6 alike; in microMIPS code they are compact).</li>
+<li><strong>The registers overlap the FPU's</strong>: <code>$f5</code> is bits
+63..0 of <code>$w5</code>, so a vector write changes the FPR and a scalar
+FPU write changes the low half of the vector.  MSA needs the FPU in
+64-bit mode (Status.FR = 1).</li>
+</ul>
+<p><strong>The core.</strong>  A Release 5 or 6 program with MSA instructions gets a
+core with MSA (<code>--msa msa</code> / <code>none</code> chooses it, Settings →
+Processor → MSA; <code>--core p5600</code> brings its own).  Software finds MSA in
+Config3.MSAP and enables it with <strong>Config5.MSAEn</strong>: with MSAEn = 0
+every MSA instruction raises <em>MSA Disabled</em> (exception code 21), which is
+how an operating system saves the vector registers only for the programs that
+use them (Lab 71).  The boot firmware sets MSAEn and FR, as it sets CU1 for
+the FPU.  The register pane's <strong>MSA</strong> tab and the debugger's
+<code>msa</code> show the vectors element by element (as bytes, halfwords, words or
+doublewords, as integers or floats), the instruction pane shows each
+element of an instruction's operands and result, and the datapath runs MSA
+instructions in its FPU / MSA unit (<a href="03-the-gui.html">Phase 3</a>).  C
+uses MSA through GCC's <code>msa.h</code> and its auto-vectorizer (<code>python3 -m
+emips cc --msa</code>, <a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>, Lab 72).  Labs 68–72 add arrays, brighten
+an image, multiply fractions, enable MSA on first use and compare C with and
+without vectors.  On MIPS64 (<code>--arch mips64</code>) MSA is the same, with
+<code>copy_s.d</code> / <code>fill.d</code> / <code>insert.d</code> for 64-bit GPRs.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

@@ -185,6 +185,11 @@ class ISA:
     DMT, EMT, DVPE, EVPE, FORK, YIELD, MFTR, MTTR; Releases 2-5).  Without
     it they are Reserved Instructions (MD00378 5.1).
 
+    ``msa`` (PLAN M24) adds MSA, the MIPS SIMD Architecture (``ase``
+    "msa", MD00866 / MD00868 rev. 1.12: the vector instructions, its
+    branches, and LSA / DLSA before Release 6); Releases 5 and 6.  Without
+    it MSA words are Reserved Instructions (MD00866 3.2: Config3.MSAP = 0).
+
     ``arch`` (PLAN M22) is "mips32" (the default) or "mips64": a MIPS64
     ISA has every row plus the doubleword ones (``arch`` "mips64", MIPS64
     Vol. II), each in the releases of its ``releases64`` (MIPS64 Release
@@ -201,7 +206,7 @@ class ISA:
 
     def __init__(self, path: str | Path | None = None, *,
                  release: str | None = None, dsp: int = 0, mt: bool = False,
-                 arch: str = "mips32") -> None:
+                 arch: str = "mips32", msa: bool = False) -> None:
         src = Path(path) if path is not None else _ISAREF_PATH
         with open(src, encoding="utf-8") as handle:
             self._data = json.load(handle)
@@ -225,24 +230,56 @@ class ISA:
         self.dsp = dsp
         #: the MT Module's rows decode
         self.mt = bool(mt)
+        #: MSA's rows decode
+        self.msa = bool(msa)
         self._leads = [e for e in self._instructions if e["decode"]["lead"]
                        and self._has(e)]
         self._leads.sort(key=lambda e: -e["decode"]["specificity"])
         #: word -> Decode (decoding is a pure function of the word)
         self._decoded: dict[int, Decode] = {}
+        #: the leads that can match a word of each major opcode (bits 31..26),
+        #: most specific first (a row with free opcode bits is in every bucket)
+        self._by_op: list[list[dict[str, Any]]] = [[] for _ in range(64)]
+        for e in self._leads:
+            d = e["decode"]
+            if (d["mask"] >> 26) == 0x3F:
+                self._by_op[d["value"] >> 26].append(e)
+            else:
+                for op in range(64):
+                    if (op & (d["mask"] >> 26)) == (d["value"] >> 26) & (d["mask"] >> 26):
+                        self._by_op[op].append(e)
+        #: a big bucket whose rows mostly fix bits 5..0 (MSA's minor opcode,
+        #: SPECIAL's funct ...) split again by those bits: op -> 64 lists
+        self._by_minor: dict[int, list[list[dict[str, Any]]]] = {}
+        for op, bucket in enumerate(self._by_op):
+            fixed = [e for e in bucket if (e["decode"]["mask"] & 0x3F) == 0x3F]
+            if len(bucket) < 48 or len(fixed) * 4 < len(bucket) * 3:
+                continue
+            subs: list[list[dict[str, Any]]] = [[] for _ in range(64)]
+            for e in bucket:                     # (the order kept: most specific first)
+                d = e["decode"]
+                if (d["mask"] & 0x3F) == 0x3F:
+                    subs[d["value"] & 0x3F].append(e)
+                else:
+                    for k in range(64):
+                        if (k & d["mask"]) == d["value"] & d["mask"] & 0x3F:
+                            subs[k].append(e)
+            self._by_minor[op] = subs
 
-    _cache: dict[tuple[str, int, bool, str], "ISA"] = {}
+    _cache: dict[tuple[str, int, bool, str, bool], "ISA"] = {}
     _DECODED_MAX = 1 << 16
 
     @classmethod
     def for_release(cls, release: str | None = None, dsp: int = 0,
-                    mt: bool = False, arch: str = "mips32") -> "ISA":
+                    mt: bool = False, arch: str = "mips32",
+                    msa: bool = False) -> "ISA":
         """A shared (cached) ISA of ``release`` (DSP Module level ``dsp``,
-        the MT Module ``mt``, ``arch`` MIPS32 / MIPS64) — the tables are
-        read once."""
-        key = (release or cls.DEFAULT_RELEASE, dsp, bool(mt), arch)
+        the MT Module ``mt``, ``arch`` MIPS32 / MIPS64, MSA ``msa``) — the
+        tables are read once."""
+        key = (release or cls.DEFAULT_RELEASE, dsp, bool(mt), arch, bool(msa))
         if key not in cls._cache:
-            cls._cache[key] = cls(release=key[0], dsp=dsp, mt=key[2], arch=arch)
+            cls._cache[key] = cls(release=key[0], dsp=dsp, mt=key[2], arch=arch,
+                                  msa=key[4])
         return cls._cache[key]
 
     def _has(self, e: dict[str, Any]) -> bool:
@@ -252,6 +289,8 @@ class ISA:
         ase = e.get("ase")
         if ase == "mt":
             return self.mt
+        if ase == "msa":
+            return self.msa
         return self.DSP_LEVEL.get(ase, 0) <= self.dsp
 
     def in_release(self, name: str) -> bool:
@@ -279,7 +318,8 @@ class ISA:
         hit = self._decoded.get(w)
         if hit is not None:
             return hit
-        for entry in self._leads:          # most specific first
+        subs = self._by_minor.get(w >> 26)
+        for entry in (subs[w & 0x3F] if subs is not None else self._by_op[w >> 26]):
             d = entry["decode"]
             if (w & d["mask"]) == d["value"] and _constraint_ok(entry, w):
                 if len(self._decoded) >= self._DECODED_MAX:
@@ -296,7 +336,8 @@ class ISA:
         return any(
             (w & e["decode"]["mask"]) == e["decode"]["value"]
             and _constraint_ok(e, w)
-            for e in self._leads
+            for e in (self._by_minor[w >> 26][w & 0x3F] if w >> 26 in self._by_minor
+                      else self._by_op[w >> 26])
         )
 
     # -- table access -------------------------------------------------------

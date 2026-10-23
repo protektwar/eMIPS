@@ -83,7 +83,7 @@ to know exactly what something does.</p>
 <tr>
 <td>6</td>
 <td><strong>Registers</strong></td>
-<td>GPRs, PC / CP0, FPU, DSP (<a href="#37-registers">3.7</a>)</td>
+<td>GPRs, PC / CP0, FPU, DSP, MSA (<a href="#37-registers">3.7</a>)</td>
 </tr>
 <tr>
 <td>7</td>
@@ -439,7 +439,7 @@ the instruction in it.</p>
 <td>14</td>
 <td><strong>Dst</strong> (RegDst)</td>
 <td>EX</td>
-<td>the destination register: <code>rt</code>, <code>rd</code> or <code>$ra</code> (value: <code>dest $t2</code>)</td>
+<td>the destination register: <code>rt</code>, <code>rd</code>, <code>$ra</code> or, for MSA's <code>copy_s</code> / <code>copy_u</code> / <code>cfcmsa</code>, bits 10..6 (value: <code>dest $t2</code>)</td>
 </tr>
 <tr>
 <td>15</td>
@@ -458,6 +458,12 @@ the instruction in it.</p>
 <td><strong>WB mux</strong> (MemtoReg)</td>
 <td>WB</td>
 <td>writes back the loaded data or the ALU result (value: <code>$t3 &lt;- 00000003</code>)</td>
+</tr>
+<tr>
+<td>18</td>
+<td><strong>FPU / MSA unit</strong></td>
+<td>EX</td>
+<td>the coprocessor beside the ALU (the textbook figure has none): FPU and MSA instructions execute here, on their own registers (<code>$fN</code> = the low half of <code>$wN</code>); it holds EX for their latency; value: the element size and count (<code>16-bit x 8</code>).  In ID the register file stays dark for them unless they read a GPR (<code>MSA reads $w5</code>)</td>
 </tr>
 </tbody>
 </table>
@@ -660,7 +666,7 @@ shows the call stack, and Step Line steps a source line (a
 pseudo-instruction's several instructions at once).</p>
 <p><img alt="The Source pane: c_recursion.c on return 1;, six fact() frames deep" src="img/03-source.png"></p>
 <h2 id="37-registers">3.7 Registers</h2>
-<p>Five tabs (six with the DSP Module):</p>
+<p>Five tabs (more with the DSP Module and MSA):</p>
 <ul>
 <li><strong>GPRs</strong> — the 32 registers in hex and decimal; those changed by the
   last step are <strong>highlighted</strong>.  On a MIPS64 core they are 64 bits
@@ -683,6 +689,16 @@ pseudo-instruction's several instructions at once).</p>
   last step changed is highlighted
   (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">Phase 2, 2.21</a>).  The debugger's
   <code>dsp</code> prints the same.</li>
+<li><strong>MSA</strong> (a core with MSA) — Config5.MSAEn and Status.FR, MSAIR and
+  MSACSR decoded (rounding mode, Flags, Enables, Cause, NX, FS), and the 32
+  vector registers element by element, element 0 first: choose the view
+  (16 bytes, 8 halfwords, 4 words or 2 doublewords as hex, signed or
+  unsigned; 4 singles or 2 doubles).  The elements the last step changed are
+  highlighted — a repaint or another view keeps the marks
+  (<a href="02-writing-programs.html#225-msa-128-bit-vectors">Phase 2, 2.25</a>).  The debugger's <code>msa</code> prints the same; the
+  instruction pane shows an MSA instruction's operands and result element by
+  element.
+<p><img alt="The MSA tab: dotp_s.h has just written $w3, highlighted; the elements shown as signed halfwords" src="img/03-msa.png"></p></li>
 <li><strong>Interrupts</strong> — the interrupt mode (compatibility, vectored, EIC),
   the vector spacing, what is pending and enabled (or, in EIC mode, the
   RIPL the controller requests, Status.IPL and the RIPL / shadow set
@@ -998,6 +1014,10 @@ other change restarts it.</p>
 <td>automatic (default: 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions), none, or 1–2 VPEs with 2–9 TCs; Releases 2–5 (<a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>)</td>
 </tr>
 <tr>
+<td>MSA / MSA physical registers</td>
+<td>automatic (default: when the program has MSA instructions), none, or MSA; Release 5 / 6 with the FPU (<a href="02-writing-programs.html#225-msa-128-bit-vectors">Phase 2, 2.25</a>).  Physical registers: 0 = no vector register partitioning, else that many physical registers shared by <code>$w0</code>–<code>$w31</code> (MSAIR.WRP)</td>
+</tr>
+<tr>
 <td>MT policy manager</td>
 <td>which thread context issues: basic round-robin (default), weighted round-robin (the TCSchedule groups), or weighted round-robin with throttles (WRR2) (<a href="05-understanding.html#threads-in-one-core-the-mt-module">Phase 5</a>)</td>
 </tr>
@@ -1031,7 +1051,7 @@ other change restarts it.</p>
 </tr>
 <tr>
 <td>Pipeline latencies</td>
-<td>how many cycles MUL, MULT / MADD, DIV and the FPU operations take in the 5-stage pipeline (the 24K model has the latencies of its manual)</td>
+<td>how many cycles MUL, MULT / MADD, DIV, the FPU operations, the 64-bit multiply / divide and MSA's operation classes (the P6600's: integer / logic 2, PCNT / SAT 3, FP 4, multiplies 5) take in the 5-stage pipeline (the 24K model has the latencies of its manual)</td>
 </tr>
 </tbody>
 </table>

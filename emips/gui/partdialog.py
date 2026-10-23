@@ -83,7 +83,8 @@ class PartDialog(QtWidgets.QDialog):
                  if info.instruction else tr("{stage} holds a bubble").format(
                      stage=E(info.part.stage)))
         now = "".join(f"<li style='font-family:{mono}'>{E(line)}</li>" for line in info.now)
-        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release, s.options.arch)
+        msa = bool(getattr(s.machine, "msa", False))
+        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release, s.options.arch, msa)
         if logic is not None:                   # (MIPS64: 64 slices)
             self.bit.setRange(0, logic.width - 1)
             self.bit.setToolTip(tr("Which of the {n} one-bit ALU slices to show gate by "
@@ -116,7 +117,8 @@ class PartDialog(QtWidgets.QDialog):
         if insn is not None:
             html_ = self._nano_main(insn, c.stage["ID"][1])
         if word is not None:
-            mc = cl.main_control(s.release, s.options.arch)
+            mc = cl.main_control(s.release, s.options.arch,
+                                 bool(getattr(s.machine, "msa", False)))
             ev = cl.evaluate_main(mc, word)
             lit = c.stage["ID"][1]
             self.pla_main.show_pla(mc.opcode, word >> 26,
@@ -146,7 +148,8 @@ class PartDialog(QtWidgets.QDialog):
                                       f"ALU control: ALUOp = {ctl.aluop:04b}, ALUSrc = "
                                       f"{int(src)}", lit)
             else:
-                pla = cl.alu_control(s.release, s.options.arch)
+                pla = cl.alu_control(s.release, s.options.arch,
+                                     bool(getattr(s.machine, "msa", False)))
                 self.pla_alu.show_pla(pla, cl.alu_input(ctl.aluop, view.word),
                                       f"ALU control: ALUOp = {ctl.aluop:04b}, funct = "
                                       f"{view.word & 0x3F:06b}", lit)

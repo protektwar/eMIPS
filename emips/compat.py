@@ -166,6 +166,24 @@ RULES = (
          lambda o: setattr(o, "dsp", "dspr2"),
          "on Release 6 the DSP Module is Revision 3: Revision 2's instructions and "
          "BPOSGE32C (Config3.DSPP = DSP2P = 1, MD00374 3.11)"),
+    Rule("msa", "release", lambda o, r: o.msa == "msa" and r not in ("R5", "R6"),
+         lambda o: setattr(o, "msa", "auto"),
+         "MSA needs Release 5 or later (MD00866 1.1: MIPS Release 5)"),
+    Rule("msa", "fpu", lambda o, r: o.msa == "msa" and not o.fpu,
+         lambda o: setattr(o, "msa", "auto"),
+         "MSA needs the FPU: the vector registers extend its 64-bit registers (FR = 1; "
+         "MD00866 3.1, Config3.MSAP needs Config1.FP)"),
+    Rule("msa", "arch", lambda o, r: o.msa == "msa" and _nano(o),
+         lambda o: setattr(o, "msa", "auto"),
+         "nanoMIPS has no MSA (MD01247: no MSA instruction, no opcode space for it)"),
+    Rule("msa", "mt", lambda o, r: o.msa == "msa" and _mt(o),
+         lambda o: setattr(o, "msa", "auto"),
+         "no MT core has MSA (the 34K, 1004K, interAptiv; MSA's partitioning registers "
+         "per thread context are not modelled)"),
+    Rule("model", "msa", lambda o, r: o.model == "24k" and o.msa == "msa",
+         lambda o: setattr(o, "model", "5-stage"),
+         "the 24K has no MSA (the MSA cores — P5600, P6600, I6400 — are modelled on the "
+         "5-stage pipeline)"),
     Rule("mt", "release", lambda o, r: _mt(o) and r in ("R1", "R6") and not _nano(o),
          lambda o: setattr(o, "mt", "auto"),
          "the MT Module needs Release 2-5 (MD00378 1.1: Release 2; Release 6 replaced "
@@ -297,6 +315,14 @@ def program_problem(o: Options, kind: str, program=None) -> str | None:
         return ("the program has nanoMIPS DSP ASE instructions (MD01249): the core has "
                 "none (--dsp none)")
     core = _cores.get(o.core)
+    if getattr(program, "msa", False) and (o.msa == "none" or core is not None
+                                           and "msa" not in core.msa):
+        return ("the program has MSA instructions: " + (
+            f"this {core.title} has no MSA" if core is not None and "msa" not in core.msa
+            else "the core has none (--msa none)"))
+    if getattr(program, "msa", False) and not o.fpu:
+        return ("the program has MSA instructions: the core has no FPU (--no-fpu), and "
+                "MSA's vector registers extend the FPU's")
     if getattr(program, "mt", False) and o.mt == "none":
         return ("the program has MT Module instructions: " + (
             f"this {core.title} is built without the MT Module" if core is not None

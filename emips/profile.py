@@ -33,8 +33,8 @@ HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\
 #: the options a profile owns (the machine): unnamed ones go to their defaults
 PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
-                  "shadow_sets", "boot", "compressed", "fpu", "dsp", "mt", "mt_pm", "itc",
-                  "vps", "itu", "core", "arch", "nms", "crc", "ginv")
+                  "shadow_sets", "boot", "compressed", "fpu", "dsp", "msa", "msa_wrp", "mt",
+                  "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -68,6 +68,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--core")
     p.add_argument("--no-fpu", action="store_true")
     p.add_argument("--dsp", choices=("auto", "none", "dsp", "dspr2"))
+    p.add_argument("--msa", choices=("auto", "none", "msa"))
+    p.add_argument("--msa-wrp", type=int)
     p.add_argument("--mt")
     p.add_argument("--mt-pm", choices=("rr", "wrr", "wrr2"))
     p.add_argument("--itc")
@@ -146,8 +148,8 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
         raise ValueError(f"eMIPS header: unknown {' '.join(rest)}")
     o: dict[str, Any] = {}
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
-                 "shadow_sets", "boot", "cache_init", "compressed", "dsp", "mt", "mt_pm",
-                 "itc", "vps", "itu", "core", "arch", "crc", "ginv"):
+                 "shadow_sets", "boot", "cache_init", "compressed", "dsp", "msa", "msa_wrp",
+                 "mt", "mt_pm", "itc", "vps", "itu", "core", "arch", "crc", "ginv"):
         v = getattr(ns, name)
         if v is not None:
             o[name] = v.lower() if isinstance(v, str) and name != "boot" else v

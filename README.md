@@ -47,6 +47,11 @@ choice open, it says which one it made.
 - **The DSP Module** — SIMD on bytes and halfwords, saturating and
   fixed-point arithmetic, four accumulators (Revisions 1 to 3), in
   MIPS32 and microMIPS, on both pipelines, from C and in GDB.
+- **MSA, the MIPS SIMD Architecture** — 32 vector registers of 128 bits
+  (16 bytes, 8 halfwords, 4 words or 2 doublewords at once): integer,
+  saturating, fixed-point and IEEE floating-point vectors, MSACSR, the MSA
+  Disabled exception, on MIPS32, MIPS64 and microMIPS, on the 5-stage
+  pipeline, from C (GCC's auto-vectorizer) and in GDB.
 - **The MT Module** — hardware threads: thread contexts and VPEs, FORK /
   YIELD, the policy managers, the ITC's gating storage, on the 34K's
   pipeline and on multi-core 1004K / interAptiv systems, on MIPS64 too;
@@ -61,7 +66,7 @@ choice open, it says which one it made.
 - **Real MIPS cores** — presets for the 4Kc, 24Kc / 24Kf, 34Kc / 34Kf,
   1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc, microAptiv UC / UP,
   the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600 and the nanoMIPS I7200:
-  each core's release, compressed ISA, FPU, DSP Module, MT Module, MMU,
+  each core's release, compressed ISA, FPU, DSP Module, MT Module, MSA, MMU,
   caches and PRId as its manuals allow.
 - **A real core's pipeline** — a model of the MIPS 24K's 8-stage pipeline
   with branch prediction, CP0 hazards and performance counters, and the
@@ -183,7 +188,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 67 labs
+computer architecture behind every number on the screen (with 72 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

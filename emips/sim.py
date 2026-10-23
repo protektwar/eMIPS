@@ -78,6 +78,7 @@ from .exceptions import (
 from .cache import CACHED_CCA, CACHED_CCA_CPS, CCA_24K, CCA_UCA, COHERENT_CCA, CacheError, Caches
 from .isa import ISA, Decode, ISADecodeError
 from . import dsp as DSP
+from . import msa as _V
 from . import mt as MT
 from .itc import ERRCTL_ITC as ITC_ERRCTL
 from . import micromips as MM
@@ -639,6 +640,58 @@ DEVIATIONS: dict[str, str] = {
                  "no microMIPS R6, clang 18's la / li macros emit the MIPS32 LUI "
                  "encoding there and its compact branches use the other offset "
                  "scale).",
+    "MSA": "emips.msa (MD00866 / MD00868 rev. 1.12; PLAN M24, the working plan "
+           "m24-MSA-SIMD.md). A scalar FPU write leaves bits 127..64 of the vector "
+           "register as they were (UNPREDICTABLE: QEMU does the same), so does a "
+           "change of Status.FR. MSAIR = 0x00000300 (WRP 0, ProcessorID 3: QEMU's "
+           "I6400 value; the core manuals say only 'Preset'); MSACSR.Impl (22:21) "
+           "reads 0. LD / ST are done in hardware at any address (one or two "
+           "translations, both before a byte is stored), unless a core preset "
+           "traps an element-misaligned one (Machine.msa_ade: the P5600 / P6600 "
+           "for uncached memory, the P6600 across a 16 KB page; MAAR regions are "
+           "not modelled). The Unimplemented Operation cause (E) is never raised: "
+           "subnormals are handled in hardware. FRCP / FRSQRT are 1 / x and 1 / "
+           "sqrt(x) rounded at each step (the manual allows 1 / 2 ULP) and, as "
+           "the pages allow, signal Inexact alone unless the operand is infinite, "
+           "the result a NaN, or Invalid / Divide by Zero arise (QEMU's rule). "
+           "DIV / MOD by zero (UNPREDICTABLE) give QEMU's results: DIV_S -1 / 1 by "
+           "the dividend's sign, DIV_U all ones, MOD the dividend; DIV_S of the "
+           "most negative by -1 the most negative, MOD_S 0. A subnormal "
+           "floating-point result signals Underflow (Cause U when enabled, else "
+           "only when inexact: Figure 3.26), not for FMIN / FMAX / FMIN_A / "
+           "FMAX_A. Where QEMU 2.1.4 departs from the manual eMIPS follows the "
+           "manual: FLOG2 is IEEE logB (negatives, -inf, ±0 with Divide by Zero), "
+           "16-bit values are never flushed by FS, SUBS_S.D saturates only real "
+           "overflows, SAT_S.D / SAT_U.D with m = 63 keep the value, tininess is "
+           "detected after rounding (Table 3.3; QEMU: before), FMADD / FMSUB of "
+           "inf x 0 give the default NaN even with a NaN wd (QEMU: wd's NaN), and "
+           "their Underflow follows the manual (QEMU's host-FPU muladd raises it "
+           "for normal results) "
+           "(tests/test_msa_unicorn.py DEPARTURES). The 16-byte accesses meet the "
+           "24K's EJTAG 3.20 (data breakpoints over the 16 bytes, value compares "
+           "of 64 bits): the P5600's 128-bit DBCS / DBVS and its ganged even / odd "
+           "breakpoints (MD01025 14.8.5.3) are not modelled. Vector register "
+           "partitioning (MSAIR.WRP, Machine(msa_wrp=N): no real core has it) is "
+           "one thread context's: N physical registers, MSAMap takes the lowest "
+           "free one, an unmapped physical register keeps its value; MSARequest "
+           "holds the registers that were missing or unsaved. MSA with the MT "
+           "Module is refused (no MT core has MSA; per-TC MSACSR / partitions are "
+           "not modelled); each Release 6 VP has its own vector registers. "
+           "Pipelines: the 5-stage model holds EX for the P6600's MSA latencies "
+           "(MD01138 Table 15.3: pipeline.LATENCY MSA ...; the P5600's manual "
+           "gives none); its 'variable' divides use the FPU's divide / square "
+           "root latencies and, for DIV_S ... MOD_U, the 32-bit MDU divide's; "
+           "FMADD / FMSUB hold EX for the add operand's 4 (8 to a multiply "
+           "operand is not modelled); LD.df is ready after MEM like a load "
+           "(Table 15.3's 10 assumes the P6600's out-of-order pipeline). Every "
+           "floating-point MSA instruction but FCLASS reads and writes MSACSR "
+           "(a forwarded resource). The 24K model has no MSA. GDB: no GDB has an "
+           "MSA feature; the stub's own org.gnu.gdb.mips.msa sends w0-w31 as ST.D "
+           "stores them (Linux's NT_MIPS_MSA layout), so its union has the "
+           "doubleword views in both byte orders and the word / halfword / byte / "
+           "single views on little-endian only (on big-endian `monitor msa $wN w` "
+           "shows them). ELF: o32 MSA code for an FR = 0 FP ABI is refused; legacy "
+           "NaN code on a 2008 FPU only gets a note.",
     "DSP Module": "emips.dsp (MD00374 rev. 3.01): Revision 1 / 2 and, on Release "
                   "6, Revision 3. Where the manual leaves a result UNPREDICTABLE "
                   "eMIPS does what QEMU does: a .PH compare leaves ccond 27..26; EXTP / "
@@ -1702,7 +1755,8 @@ FPU_FAMILIES: frozenset[str] = frozenset(
 )
 
 #: Rows not executed yet (simulator limitation, always raises
-#: :class:`UnimplementedError`): none since EJTAG Debug Mode (M14).
+#: :class:`UnimplementedError`): none since EJTAG Debug Mode (M14) but MSA's
+#: (M24, until phase 2: set at the end of the module).
 DEFER_NAMES: frozenset[str] = frozenset()
 
 #: The EVA rows (Vol. III 4.11, Table 4.6): kernel accesses with user
@@ -1730,8 +1784,9 @@ PRIVILEGED_NAMES: frozenset[str] = frozenset(
 
 def has_delay_slot(entry: Mapping[str, Any]) -> bool:
     """Branches and jumps (pre-Release 6): the next instruction is their
-    delay slot whether or not they are taken (``ERET`` has none)."""
-    return entry["family"] in ("branch", "branch_fpu", "jump") or \
+    delay slot whether or not they are taken (``ERET`` has none); MSA's
+    BZ / BNZ keep theirs in Release 6 (MD00866 BNZ.V)."""
+    return entry["family"] in ("branch", "branch_fpu", "jump", "msa_branch") or \
         entry["name"].startswith("BC2")
 
 
@@ -1739,7 +1794,7 @@ def is_cti(entry: Mapping[str, Any]) -> bool:
     """Control transfer instruction: any branch or jump (R6: may not be
     placed in a delay slot or a forbidden slot)."""
     return entry["family"] in ("branch", "branch_fpu", "jump", "branch_compact",
-                               "jump_compact") or entry["name"].startswith("BC2")
+                               "jump_compact", "msa_branch") or entry["name"].startswith("BC2")
 
 
 def classify(entry: Mapping[str, Any]) -> str:
@@ -1930,7 +1985,8 @@ class Machine:
                  mmu: Any = None, caches: Caches | None = None, cpu: int = 0,
                  shadow_sets: int = 1, compressed: str | None = None,
                  fpu: bool = True, prid: int = 0, dsp: int | None = None,
-                 mt: bool = False, arch: str = "mips32") -> None:
+                 mt: bool = False, arch: str = "mips32", msa: bool | None = None,
+                 msa_wrp: int = 0, fpu2008: bool = False) -> None:
         if endian not in ("big", "little"):
             raise ValueError(f"endian must be 'big' or 'little', not {endian!r}")
         if exceptions not in ("cp0", "raise"):
@@ -1951,8 +2007,23 @@ class Machine:
                                      or ISA.DEFAULT_RELEASE) in ("R1", "R6"):
             raise ValueError("the MT Module needs Release 2-5 (MD00378 1.1; Release 6 "
                              "has none)")
-        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp,
-                                                  mt=mt and not self.nano, arch=self.arch)
+        if msa is None:
+            msa = isa.msa if isa is not None else False
+        if isa is not None and isa.msa != bool(msa):
+            raise ValueError(f"isa {'has' if isa.msa else 'has no'} MSA rows, msa={msa!r}")
+        if msa and (self.nano or (isa.release if isa is not None else release
+                                  or ISA.DEFAULT_RELEASE) not in ("R5", "R6")):
+            raise ValueError("MSA needs MIPS32 / MIPS64 Release 5+ (MD00866 1.1; "
+                             "nanoMIPS has none)")
+        if msa and mt:
+            raise ValueError("MSA with the MT Module: no MT core has MSA (the 34K, "
+                             "1004K, interAptiv); per-TC MSA contexts are not modelled")
+        if msa_wrp and not msa:
+            raise ValueError("vector register partitioning (msa_wrp) needs MSA")
+        # (the shared table of the release: decoding is a pure function)
+        self.isa = isa if isa is not None else ISA.for_release(
+            release, dsp, mt and not self.nano, arch="mips32" if self.nano else self.arch,
+            msa=bool(msa))
         # (a nanoMIPS core keeps MIPS32 Release 6's table: nothing decodes with it)
         if self.isa.arch != (self.arch if not self.nano else "mips32"):
             raise ValueError(f"a {self.arch} machine needs a {self.arch} ISA, "
@@ -2020,6 +2091,21 @@ class Machine:
         self.dspctl = 0
         self.dsp_hi: list[int] = [0] * 4
         self.dsp_lo: list[int] = [0] * 4
+        #: MSA (emips.msa, MD00866): the vector registers' bits 127..64
+        #: (63..0 are ``fpr``), MSACSR, MSAIR, the partitioning registers
+        #: (WRP; phase 2f)
+        self.msa = bool(msa)
+        self.wh: list[int] = [0] * 32
+        self.msacsr = 0
+        self.msair = _V.MSAIR | (_V.MSAIR_WRP if msa_wrp else 0)
+        #: MSAIR.WRP's partitioning (emips.msa.Partitions; ``msa_wrp`` physical
+        #: vector registers, 3.4.3-3.4.8 / Appendix A) or None
+        self.msa_wrp: Any = _V.Partitions(msa_wrp) if msa_wrp else None
+        #: when an element-misaligned LD / ST traps (decision 9; a core
+        #: preset's): "uncached" (the P5600, MD01025 8.8.9; the P6600
+        #: 3.13.4), "page16k" (one crossing a 16 KB boundary: the P6600
+        #: 3.13.3); empty = done in hardware, as MD00866 allows
+        self.msa_ade: frozenset[str] = frozenset()
         #: FPU: 32 64-bit FPRs (see fpr_* for the FR=0 / FR=1 views),
         #: FCSR (FCR31) and the read-only FIR (FCR0).
         #: an FPU (CP1) is implemented (Config1.FP; the 24Kf, not the 24Kc:
@@ -2029,9 +2115,9 @@ class Machine:
         self.fpr: list[int] = [0] * 32
         self.fcsr: int = 0
         self.fir: int = FIR if self.release != "R1" else FIR_R1
-        if self.release == "R6":                   # IEEE 754-2008 FPU
-            self.fir |= FIR_HAS2008
-            self.fcsr = FCSR_RO_2008
+        if self.release == "R6" or msa or fpu2008:  # IEEE 754-2008 FPU (an MSA
+            self.fir |= FIR_HAS2008                 # core's too: MD00866 3.3.2;
+            self.fcsr = FCSR_RO_2008                # the P5600's: MD01025 13.10.7)
         #: PRId (CP0 15.0): Company ID 23:16, Processor ID 15:8, Revision 7:0
         #: (0: no licensed core); FIR 15:0 repeats Processor ID / Revision
         #: (MD00343 Table 3.6)
@@ -2066,6 +2152,12 @@ class Machine:
         self.vp_id = 0
         if mt:                                  # Config3.MT, ULRI (MD00378 6.25.7)
             self.cp0[C.CONFIG3]["value"] |= C.CFG3_MT | C.CFG3_ULRI
+        # Config3.MSAP, Config5.MSAEn: R/W with MSA, else R0 (MD00866 3.2)
+        cfg5 = self._wmask.get((16, 5), M32)
+        self._wmask[(16, 5)] = cfg5 | _V.CFG5_MSAEN if msa else cfg5 & ~_V.CFG5_MSAEN
+        if msa:
+            self.cp0[C.CONFIG3]["value"] |= _V.CFG3_MSAP | 1 << 31      # (M: Config4)
+            self.cp0[(16, 4)]["value"] |= 1 << 31                       # (M: Config5)
         if dsp:                                 # Config3.DSPP / DSP2P, Status.MX R/W
             self.cp0[C.CONFIG3]["value"] |= C.CFG3_DSPP | (C.CFG3_DSP2P if dsp > 1 else 0)
             self._wmask[C.STATUS] |= C.ST_MX    # (MD00374 3.11; reset 0: MD00622 Table 7.32)
@@ -3564,7 +3656,7 @@ class Machine:
                 except ISADecodeError as exc:
                     if self.exceptions == "raise":
                         raise
-                    raise _Arch(C.RI) from exc
+                    raise self.reserved(word) from exc
                 self._m16 = self._mm = None
             self.r6_slot_check(dec, in_slot, forbidden)
             if in_slot and dec.name in _MM_NO_SLOT:
@@ -3689,7 +3781,7 @@ class Machine:
             return got[0]
         try:
             i = MM.decode(h, second, release=self.release, dsp=self.dsp,
-                          mt=self.mt is not None, arch=self.arch)
+                          mt=self.mt is not None, arch=self.arch, msa=self.msa)
             word = MM.expand(i)
             dec = Decode(i.raw, MM.ENTRIES[i.form]) if word is None else \
                 self._twin_isa(i).decode(word)
@@ -3698,7 +3790,7 @@ class Machine:
             self._insn_raw = h << 16 | got[0] if got else h
             if self.exceptions == "raise":
                 raise
-            raise _Arch(C.RI) from exc
+            raise self.reserved(self._insn_raw, micromips=True) from exc
         self._mm = i
         self._insn_raw = i.raw
         return i.size, (i.raw if word is None else word), dec
@@ -3892,9 +3984,15 @@ class Machine:
         status = self.status
         if entry.get("ase") in ("dsp", "dspr2") and not status & C.ST_MX:
             raise _Arch(C.DSPDIS)               # MD00374 Table 3.7
+        if entry.get("ase") == "msa" and family != "alu":
+            self.msa_gate()                     # (LSA / DLSA: Config3.MSAP only)
+            if self.msa_wrp is not None:
+                return self._partitioned(entry, word)
         if family in FPU_FAMILIES or name in ("MOVF", "MOVT", "PREFX"):
             if not status & C.ST_CU1:
                 raise _Arch(C.CPU, ce=1)
+            if self.msa_wrp is not None and classify(entry) == BUCKET_EXEC:
+                return self._partitioned(entry, word)       # (FPRs = vector registers)
         if family == "cop2":
             raise _Arch(C.CPU, ce=2)                # CU2 is hardwired 0
         if name in EVA_NAMES:
@@ -3921,11 +4019,65 @@ class Machine:
             raise UnimplementedError(
                 f"not executed yet: {name}", name=name, word=word, addr=self.pc)
         run = _EXECUTORS[name]
-        if entry.get("ase") not in ("dsp", "dspr2") and family not in FPU_FAMILIES \
+        if entry.get("ase") not in ("dsp", "dspr2", "msa") and family not in FPU_FAMILIES \
                 and name not in ("MOVF", "MOVT", "PREFX") and family != "cop2" \
                 and name not in EVA_NAMES and name not in PRIVILEGED_NAMES:
             _PLAIN[id(entry)] = (entry, run)    # (the checks above never apply to it)
         return run(self, word)
+
+    def msa_gate(self) -> None:
+        """MSA's checks before an MSA instruction runs (MD00866 3.2, 3.3.2,
+        3.5; the Answers' order, QEMU's P5600 / I6400 agree): RI when the
+        FPU is usable in 32-bit mode (Status.CU1 = 1, FR = 0), MSA Disabled
+        when Config5.MSAEn = 0 (Config3.MSAP = 0: the word does not decode,
+        RI)."""
+        status = self.status
+        if status & C.ST_CU1 and not status & C.ST_FR:
+            raise _Arch(C.RI)
+        if not self.cp0[(16, 5)]["value"] & _V.CFG5_MSAEN:
+            raise _Arch(C.MSADIS)
+
+    def _partitioned(self, entry: Mapping[str, Any], word: int) -> int | None:
+        """An MSA / FPU instruction with MSAIR.WRP: MSA Disabled while one of
+        its vector registers is not mapped or not saved (MSARequest), then
+        the instruction, then MSAModify |= what it wrote (3.4.5 / 3.4.6)."""
+        accessed, written = _V.registers_of(entry, word, self)
+        self.msa_wrp.check(self, accessed)
+        result = _EXECUTORS[entry["name"]](self, word)
+        self.msa_wrp.done(written)
+        return result
+
+    def reserved(self, word: int, *, micromips: bool = False) -> _Arch:
+        """The exception of a word that decodes to no instruction: RI — but
+        on an MSA core a word of MSA's opcode space takes MSA's gate first
+        (MD00866 3.5, 1.11: "reserved MSA opcodes" raise MSA Disabled while
+        Config5.MSAEn = 0)."""
+        if self.msa and _V.in_space(word, micromips, self.arch):
+            try:
+                self.msa_gate()
+            except _Arch as exc:
+                return exc
+        return _Arch(C.RI)
+
+    def msa_address(self, addr: int, *, store: bool) -> int:
+        """LD / ST.df's address check: the segment rights, data breakpoints
+        and watches of the 16 bytes; no alignment restriction (MD00866 LD /
+        ST: misaligned in hardware, decision 9)."""
+        addr &= self.vamask
+        if self.agent_watch:
+            self._agent_watch(addr, 16, store, None)
+        if self._dhw and not self._dm:
+            self._data_checks(addr, 16, store, None)
+        if not self.address_ok(addr) or not self.address_ok((addr + 15) & self.vamask):
+            raise _Arch(C.ADES if store else C.ADEL, badvaddr=addr)
+        return addr
+
+    def msa_misaligned(self, addr: int, *, store: bool) -> None:
+        """An element-misaligned LD / ST on a core that traps some (the
+        preset's :attr:`msa_ade`): Address Error."""
+        if "page16k" in self.msa_ade and (addr & 0x3FFF) + 16 > 0x4000 or \
+                "uncached" in self.msa_ade and self._cca(addr) not in self.cached_cca:
+            raise _Arch(C.ADES if store else C.ADEL, badvaddr=addr)
 
     def _take_exception(self, exc: _Arch, pc: int, word: int | None,
                         dec: Decode | None, in_slot: bool) -> None:
@@ -6207,6 +6359,9 @@ _MM_EXECUTORS: dict[str, Executor] = {
     "MM.BC1F": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 0),
     "MM.BC1T": _emm_branch(lambda m, f: _fcc(m, f["c"]) == 1),
     "MM.BEQZC": _emm_compact(lambda m, f: m.read_reg(f["s"]) == 0),
+    # MSA (MD00870 / MD00872): no delay slot, a halfword offset
+    **{f"MM.{name}": _emm_compact((lambda c: lambda m, f: c(_V.vec(m, f["V"])))(cond))
+       for name, cond in _V.CONDITIONS.items()},
     "MM.BNEZC": _emm_compact(lambda m, f: m.read_reg(f["s"]) != 0),
     "MM.JALR": _emm_jalr, "MM.JALR.HB": _emm_jalr, "MM.JALRS": _emm_jalr,
     "MM.JALRS.HB": _emm_jalr,
@@ -6278,6 +6433,9 @@ from . import sim64 as _S64  # noqa: E402  (it builds on everything above)
 _EXECUTORS.update(_S64.EXECUTORS)
 from . import simnano as _SN  # noqa: E402  (nanoMIPS: emips.simnano)
 _EXECUTORS.update(_SN.EXECUTORS)
+_EXECUTORS.update(_V.EXECUTORS)                 # MSA (PLAN M24)
+_EXECUTORS["LSA@MSA"] = _EXECUTORS["LSA"]       # MSA's LSA / DLSA before Release 6
+_EXECUTORS["DLSA@MSA"] = _EXECUTORS["DLSA"]
 PRIVILEGED_NAMES = PRIVILEGED_NAMES | _SN.PRIVILEGED
 EVA_NAMES = EVA_NAMES | _SN.EVA
 
@@ -6285,3 +6443,8 @@ EVA_NAMES = EVA_NAMES | _SN.EVA
 #: the MIPS32 rows with an executor (MIPS16e's own M16.* executors are not rows)
 EXEC_NAMES: frozenset[str] = frozenset(n for n in _EXECUTORS
                                       if not n.startswith(("M16.", "MM.", "NM.")))
+#: MSA's rows without an executor yet (PLAN M24 phase 2 adds them; no core
+#: decodes MSA before Machine(msa=) exists)
+DEFER_NAMES = DEFER_NAMES | frozenset(
+    e["name"] for e in ISA.for_release("R6", arch="mips64", msa=True).instructions
+    if e.get("ase") == "msa" and e["name"] not in _EXECUTORS)

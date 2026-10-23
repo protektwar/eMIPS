@@ -27,7 +27,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import (BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, NANO_CRC,
+from .options import (BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
                       NANO_GINV, Options)
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
@@ -974,12 +974,35 @@ class Debugger(cmd.Cmd):
             dbl = struct.unpack(">d", raw.to_bytes(8, "big"))[0]
             self.say(f"  $f{i:<2} 0x{raw:016x}  {single:<14.7g} {dbl:.15g}")
         self.say(f"  fcsr 0x{m.fcsr:08x}")
+        if m.msa:
+            self.say("  (MSA: $fN is bits 63..0 of the vector register $wN — `msa` shows "
+                     "all 128 bits)")
 
     def do_dsp(self, arg: str) -> None:
         """dsp   the DSP Module: its revision, Status.MX, DSPControl (pos,
         scount, c, EFI, ccond, ouflag) and the accumulators ac0-ac3"""
         self._need_program()
         for line in self.s.dsp_lines():
+            self.say(f"  {line}")
+
+    def do_msa(self, arg: str) -> None:
+        """msa [$wN ...] [b|h|w|d|w.f|d.f]   MSA: Config5.MSAEn / Status.FR,
+        MSAIR, MSACSR (RM, Flags, Enables, Cause, NX, FS), the partitioning
+        registers, and the vector registers (every non-zero one, or those
+        named) as 128-bit values or element by element in the format given
+        (element 0 first; w.f / d.f as floating point)"""
+        self._need_program()
+        regs, fmt = [], ""
+        for tok in arg.split():
+            t = tok.lower()
+            if t in Session.MSA_FORMATS:
+                fmt = t
+                continue
+            n = t.lstrip("$").lstrip("w")
+            if not t.startswith(("$w", "w")) or not n.isdigit() or int(n) > 31:
+                raise CliError(f"msa: $w0 ... $w31 or a format (b h w d w.f d.f), not {tok}")
+            regs.append(int(n))
+        for line in self.s.msa_lines(regs or None, fmt):
             self.say(f"  {line}")
 
     def do_mt(self, arg: str) -> None:
@@ -1564,8 +1587,7 @@ class Debugger(cmd.Cmd):
         if word in PSEUDO_HINTS:
             self.say(f"{word} is a pseudo-instruction; the assembler writes: "
                      f"{PSEUDO_HINTS[word]}")
-        rows = [r for r in tools.reference(self.s.release, arch=self.s.options.arch)
-                if r.matches(arg)]
+        rows = tools.search(tools.reference(self.s.release, arch=self.s.options.arch), arg)
         if not rows and word not in PSEUDO_HINTS:
             self.say("nothing found")
         for r in rows[:40]:
@@ -1611,7 +1633,8 @@ class Debugger(cmd.Cmd):
         cores 1..6 | shadow-sets 1..16 | board flat|malta[:RAM_MB[:SWITCHES]] |
         disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off |
         compressed auto|none|mips16e|micromips|micromips-only | fpu on|off |
-        dsp auto|none|dsp|dspr2 (the DSP Module) |
+        dsp auto|none|dsp|dspr2 (the DSP Module) | msa auto|none|msa (MSA, SIMD) |
+        msa-wrp 0..32 (MSA vector register partitioning: physical registers) |
         mt auto|none|VPES:TCS (the MT Module: 1-3 VPEs, up to 9 TCs) |
         mt-pm rr|wrr|wrr2 (its policy manager) | itc auto|none|FIFOS:SEMAPHORES |
         vps 1..4 (Release 6 VPs a core: a CM3 system) |
@@ -1704,6 +1727,12 @@ class Debugger(cmd.Cmd):
             if value.lower() == "dsp" and self.s.release == "R6":
                 raise CliError("Release 6 has only DSP Revision 3: set dsp dspr2")
             o.dsp = value.lower()
+        elif key == "msa" and value.lower() in MSA_LEVELS:
+            if value.lower() == "msa" and self.s.release not in ("R5", "R6"):
+                raise CliError("MSA needs Release 5 or later (set release R5)")
+            o.msa = value.lower()
+        elif key == "msa-wrp" and value.isdigit() and 0 <= int(value) <= 32:
+            o.msa_wrp = int(value)
         elif key == "mt":
             from .mt import parse_spec
             v = value.lower()
@@ -1947,6 +1976,8 @@ def options_from_args(args) -> Options:
                    compressed=getattr(args, "compressed", None) or "auto",
                    fpu=not getattr(args, "no_fpu", False),
                    dsp=getattr(args, "dsp", None) or "auto",
+                   msa=getattr(args, "msa", None) or "auto",
+                   msa_wrp=getattr(args, "msa_wrp", None) or 0,
                    mt=getattr(args, "mt", None) or "auto",
                    mt_pm=getattr(args, "mt_pm", None) or "rr",
                    itc=getattr(args, "itc", None) or "auto",
@@ -1964,8 +1995,8 @@ def explicit_fields(args) -> set[str]:
     on purpose: a core preset (``--core``) sets only the others."""
     out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
     for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
-                 "compressed", "dsp", "mt", "mt_pm", "itc", "vps", "itu", "arch", "crc",
-                 "ginv"):
+                 "compressed", "dsp", "msa", "msa_wrp", "mt", "mt_pm", "itc", "vps", "itu",
+                 "arch", "crc", "ginv"):
         if getattr(args, name, None) is not None:
             out.add(name)
     for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer"), ("nms", "nms")):
@@ -2019,7 +2050,7 @@ def session_from_args(args) -> Session:
     given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
                             ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"),
                             ("model", "model"), ("compressed", "compressed"), ("dsp", "dsp"),
-                            ("mt", "mt"), ("vps", "vps"), ("arch", "arch"), ("board", "board"))
+                            ("msa", "msa"), ("mt", "mt"), ("vps", "vps"), ("arch", "arch"), ("board", "board"))
              if getattr(args, a, None) not in (None, "kernel")}
     if options.core:
         given |= {"core"} | explicit_fields(args)

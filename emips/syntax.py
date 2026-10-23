@@ -192,6 +192,27 @@ KINDS: dict[str, Kind] = {k.name: k for k in [
     _k("bp3", (6, 3)),             # DALIGN byte position 0..7
     _k("pc18", (0, 18)),           # LDPC: an address, (PC & ~7) + offset * 8
     _k("rs2"),                     # DAHI / DATI: rs again (the manual's "DAHI rs, rs")
+    # MSA (PLAN M24; MD00866 3.7: the I8 ... MI10 formats)
+    _k("wd", (6, 5)), _k("ws", (11, 5)), _k("wt", (16, 5)),   # $w0 ... $w31
+    _k("rd6", (6, 5)),             # COPY_S / COPY_U / CFCMSA: the GPR rd in wd's place
+    _k("rs11", (11, 5)),           # FILL / INSERT / CTCMSA: the GPR rs in ws's place
+    _k("mcs", (11, 5)),            # CFCMSA: the MSA control register cs ($1)
+    _k("mcd", (6, 5)),             # CTCMSA: the MSA control register cd
+    _k("u5", (16, 5)),             # I5: unsigned 0..31
+    _k("s5", (16, 5)),             # I5: signed -16..15
+    _k("m3", (16, 3)), _k("m4", (16, 4)), _k("m5", (16, 5)), _k("m6", (16, 6)),  # BIT: m
+    _k("u8", (16, 8)),             # I8: 0..255
+    _k("s10", (11, 10)),           # LDI: signed -512..511
+    # LD / ST: s10(rs), the offset in bytes = s10 x the element size
+    _k("vmem_b", (16, 10), (11, 5)), _k("vmem_h", (16, 10), (11, 5)),
+    _k("vmem_w", (16, 10), (11, 5)), _k("vmem_d", (16, 10), (11, 5)),
+    # ELM: ws[n] / wd[n], n in the low 4 / 3 / 2 / 1 bits of df/n
+    _k("elm4", (11, 5), (16, 4)), _k("elm3", (11, 5), (16, 3)),
+    _k("elm2", (11, 5), (16, 2)), _k("elm1", (11, 5), (16, 1)),
+    _k("elmd4", (6, 5), (16, 4)), _k("elmd3", (6, 5), (16, 3)),
+    _k("elmd2", (6, 5), (16, 2)), _k("elmd1", (6, 5), (16, 1)),
+    _k("ws0", (11, 5)),            # INSVE: ws[0]
+    _k("elmr", (11, 5), (16, 5)),  # SLD / SPLAT: ws[rt], rt a GPR
 ]}
 
 
@@ -383,9 +404,55 @@ MT_SPECS: dict[str, tuple[str, ...]] = {
 }
 
 
+def msa_spec(entry: dict) -> tuple[str, ...]:
+    """The operands of an MSA row (PLAN M24), by its format (``instrType``,
+    MD00866 3.7) and the fields of its template (letters: ``corrections.json``),
+    in the manual's and GNU as' order."""
+    name, enc, fmt = entry["name"], entry["encode"], entry["instrType"]
+    if name in ("LSA@MSA", "DLSA@MSA"):
+        return ("rd", "rs", "rt", "sa2")
+    df = name.rsplit(".", 1)[-1].lower()
+    n, m = enc.count("N"), enc.count("M")
+    if fmt == "COP1":
+        return ("wt", "br")
+    if fmt == "MI10":
+        return ("wd", f"vmem_{df}")
+    if fmt == "I10":
+        return ("wd", "s10")
+    if fmt == "I8":
+        return ("wd", "ws", "u8")
+    if fmt == "I5":
+        return ("wd", "ws", "s5" if "G" in enc else "u5")
+    if fmt == "BIT":
+        return ("wd", "ws", f"m{m}")
+    if fmt == "ELM":
+        if name == "CFCMSA":
+            return ("rd6", "mcs")
+        if name == "CTCMSA":
+            return ("mcd", "rs11")
+        if name == "MOVE.V":
+            return ("wd", "ws")
+        if name.startswith("COPY_"):
+            return ("rd6", f"elm{n}")
+        if name.startswith("INSERT."):
+            return (f"elmd{n}", "rs11")
+        if name.startswith("INSVE."):
+            return (f"elmd{n}", "ws0")
+        return ("wd", f"elm{n}")                   # SLDI, SPLATI
+    if fmt == "2R" and name.startswith("FILL."):
+        return ("wd", "rs11")
+    if fmt in ("2R", "2RF"):
+        return ("wd", "ws")
+    if "t" in enc:
+        return ("wd", "elmr")                      # SLD, SPLAT
+    return ("wd", "ws", "wt")                      # 3R, 3RF, VEC
+
+
 def operand_spec(entry: dict) -> tuple[str, ...]:
     """Operand kinds of a row (``[kind]`` = optional)."""
     name, fam = entry["name"], entry["family"]
+    if entry.get("ase") == "msa":
+        return msa_spec(entry)
     if entry.get("ase") == "mt":
         return MT_SPECS[name]
     if entry.get("ase"):

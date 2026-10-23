@@ -120,16 +120,19 @@ def _cmd_cc(args) -> None:
             sys.exit("--nms is a nanoMIPS option (--arch nanomips)")
         release = args.release or (core.release if core is not None else
                                    "R6" if arch == "nanomips" else
-                                   "R5" if args.micromips else "R2")
+                                   "R5" if args.micromips or args.msa else "R2")
         if core is not None and release != core.release:
             sys.exit(f"the {core.title} is a Release {core.release[1:]} core")
         fpu = not args.no_fpu and (core is None or core.build["fpu"])
         dsp = {"dsp": 1, "dspr2": 2}.get(args.dsp or (core.build["dsp"] if core else ""), 0)
         if core is not None and args.dsp and not core.allows("dsp", args.dsp):
             sys.exit(f"the {core.title} is built with {core.choices('dsp')}")
+        msa = args.msa or bool(core is not None and core.build.get("msa") == "msa")
+        if core is not None and args.msa and "msa" not in core.msa:
+            sys.exit(f"the {core.title} has no MSA")
         log = build(args.sources, out, release=release, endian=args.endian,
                     optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips,
-                    fpu=fpu, dsp=dsp, arch=arch, nms=args.nms)
+                    fpu=fpu, dsp=dsp, arch=arch, nms=args.nms, msa=msa)
     except BuildError as exc:
         sys.exit(str(exc))
     if args.verbose:
@@ -678,6 +681,15 @@ def build_parser() -> argparse.ArgumentParser:
                                 "when the program has DSP instructions; none; dsp = "
                                 "Revision 1 (the 24KE); dspr2 = Revision 2 (Revision 3 on "
                                 "Release 6); Config3.DSPP / DSP2P, Status.MX enables it")
+            p.add_argument("--msa", default=None, type=str.lower,
+                           choices=["auto", "none", "msa"],
+                           help="MSA, the MIPS SIMD Architecture (MD00866, Release 5 / 6): "
+                                "auto (default) = when the program has MSA instructions; "
+                                "none; msa (Config3.MSAP; Config5.MSAEn enables it)")
+            p.add_argument("--msa-wrp", default=None, type=int, metavar="N",
+                           help="MSA vector register partitioning (MSAIR.WRP, MD00866 "
+                                "3.4.3): N physical vector registers (1-32; no real "
+                                "core has it)")
             p.add_argument("--mt", default=None, type=str.lower, metavar="VPES:TCS",
                            help="the MT Module (MD00378): auto (default) = 2 VPEs and 5 "
                                 "TCs (a 34K) when the program has MT instructions; none; "
@@ -783,6 +795,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "__builtin_mips_* functions)")
     c.add_argument("--dspr2", dest="dsp", action="store_const", const="dspr2",
                    help="... Revision 2 (-mdspr2)")
+    c.add_argument("--msa", action="store_true",
+                   help="the C files may use MSA (-mmsa: msa.h, __builtin_msa_*, the "
+                        "auto-vectorizer at -O3); every object -mfp64 -mnan=2008; "
+                        "Release 5 by default")
     c.add_argument("--core", default=None, type=str.lower, choices=list(CORES),
                    help="build for this core: its release, soft-float without an FPU, "
                         "its DSP Module")

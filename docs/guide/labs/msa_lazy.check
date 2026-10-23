@@ -1,0 +1,5 @@
+# Lab 71 — MSA on first use: the checks of a solution
+# (python3 -m emips check docs/guide/labs/msa_lazy.asm finds them by itself)
+check: output is "12"   (5 + 7: no MSA instruction skipped)
+check: exceptions == 1   (only the first MSA instruction traps)
+check: $w1.w[3] == 5   (the trapping ldi.w ran after the handler)

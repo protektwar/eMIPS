@@ -158,6 +158,19 @@ def _arch_fits(elf_release: str, core_release: str) -> bool:
     return elf_release == "R1" or core_release != "R1"
 
 
+def _lane_text(e: int, bits: int, how: str) -> str:
+    """One MSA element as the MSA tab shows it: hex, signed, unsigned or
+    an IEEE single / double."""
+    if how == "x":
+        return f"{e:0{bits // 4}x}"
+    if how == "u":
+        return str(e)
+    if how == "s":
+        return str(e - (1 << bits) if e >> (bits - 1) & 1 else e)
+    import struct
+    return f"{struct.unpack('>f' if bits == 32 else '>d', e.to_bytes(bits // 8, 'big'))[0]:.7g}"
+
+
 @dataclass
 class Session:
     release: str = "R5"
@@ -340,7 +353,7 @@ class Session:
             return (run[0] <= entry <= run[-1] or a < 0x10000000
                     or 0x80000000 <= a < 0x90000000)
 
-        isa = ISA.for_release(self.release, self.dsp_level())
+        isa = ISA.for_release(self.release, self.dsp_level(), msa=self.msa_enabled())
         code = [a for r in runs if is_code(r) for a in r]
         data = [a for r in runs if not is_code(r) for a in r]
         lines = [f"# Intel HEX image: {len(image)} bytes, entry 0x{entry:08x}",
@@ -435,7 +448,7 @@ class Session:
             self.c_build = build([src], out, release=self.release, endian=self.endian,
                                  optimize=optimize, mips16=isa == "mips16e",
                                  micromips=isa == "micromips", fpu=self.options.fpu,
-                                 dsp=self._c_dsp(text),
+                                 dsp=self._c_dsp(text), msa=self._c_msa(text),
                                  arch=self.options.arch, nms=self.options.nms)
         except BuildError as exc:
             text_ = str(exc).replace(str(src), src.name)
@@ -494,7 +507,7 @@ class Session:
                        functions=sorted((sym.value, sym.value + max(sym.size, 2 if nano
                                                                      else 4), sym.name)
                                         for sym in img.symbols if sym.kind == "func"),
-                       dsp=img.dsp, arch=img.arch, needs=img.needs)
+                       dsp=img.dsp, arch=img.arch, needs=img.needs, msa=img.msa)
         for name, addr, size, _x in img.sections:
             prog.segments[name] = (addr, addr + size)
         labels = {}
@@ -503,7 +516,8 @@ class Session:
                 labels.setdefault(sym.value, sym.name)
         isa = None if nano else ISA.for_release(img.release, self.dsp_level() or (
             img.dsp if self.options.dsp == "auto" and not self.options.core   # (its ABI
-            and img.release not in ("R1", "R6") else 0), arch=img.arch)    # flags' DSP)
+            and img.release not in ("R1", "R6") else 0), arch=img.arch,    # flags' DSP)
+            msa=img.release in ("R5", "R6") and self.options.msa != "none")
         texts = _SourceFiles()
         entry_name = labels.get(img.entry, "")
         lines = [f"# ELF executable {Path(path).name if path else ''}: {img.arch_name}, "
@@ -511,6 +525,13 @@ class Session:
                  + (f" ({entry_name})" if entry_name else ""),
                  "# read-only listing: each source line (DWARF line table) above its "
                  "instructions"]
+        core = cores.get(self.options.core)
+        if not nano and not img.nan2008 and img.release != "R6" and (
+                img.msa or self.options.msa == "msa" or core is not None and core.fpu2008):
+            img.notes.append("the code uses legacy NaNs (no EF_MIPS_NAN2008) but this "
+                             "core's FPU is IEEE 754-2008 (FCSR.NAN2008 = 1): a NaN's "
+                             "quiet / signaling bit means the opposite — build with "
+                             "-mnan=2008")
         lines += [f"# note: {n}" for n in img.notes]
         last = None
         from . import micromips, mips16, nanomips
@@ -677,6 +698,12 @@ class Session:
             self.program_notes = [f"model 24k -> 5-stage: the program has microMIPS code; "
                                   f"{rule.why}"]
             self.adjusted += self.program_notes
+        if self.options.model == "24k" and self.msa_enabled():
+            self.options = replace(self.options, model="5-stage")
+            note = ("model 24k -> 5-stage: the core has MSA; the 24K has none (the MSA "
+                    "cores — P5600, P6600, I6400 — run on the 5-stage pipeline)")
+            self.program_notes.append(note)
+            self.adjusted.append(note)
         if (self.wide or self.nano) and self.mode == "pipeline" \
                 and self.mt_config() is not None:
             note = MT_NANO_INSTRUCTION_MODE if self.nano else MT64_INSTRUCTION_MODE
@@ -944,7 +971,10 @@ class Session:
                     fpu=o.fpu and not (mt and cps is None and cpu)
                     and not (mt and cps is not None and cpu % cps.vpes) and not self.nano,
                     prid=core.prid if core is not None else 0,
-                    dsp=self.dsp_level(), mt=mt, **(self._nano_core() if self.nano else {}))
+                    dsp=self.dsp_level(), mt=mt, **(self._nano_core() if self.nano else {}),
+                    **self._msa_core(mt, core))
+        if m.msa and core is not None:          # the preset's misaligned LD / ST traps
+            m.msa_ade = core.msa_ade
         m.tracing = True
         m.ccres = o.count_rate
         m.agent_watch = self.watchpoints
@@ -1072,6 +1102,20 @@ class Session:
             return "mips16e"
         return "mips16e" if prog is not None and prog.m16 else None
 
+    def _c_msa(self, text: str) -> bool:
+        """MSA for a C program: Options.msa "msa", or with "auto" when the
+        source includes msa.h or calls the builtins (the auto-vectorizer
+        never adds MSA by itself: -mmsa has to be given) — and the core
+        may have it (Release 5 / 6, an FPU, a preset with MSA)."""
+        if self.nano or self.release not in ("R5", "R6") or not self.options.fpu:
+            return False
+        if self.options.msa in ("msa", "none"):
+            return self.options.msa == "msa"
+        core = cores.get(self.options.core)
+        if core is not None and "msa" not in core.msa:
+            return False
+        return "msa.h" in text or "__builtin_msa_" in text
+
     def _c_dsp(self, text: str) -> int:
         """The DSP Module a C program is built for: Options.dsp, or with
         "auto" Revision 2 when it calls the DSP builtins (``__builtin_mips_``
@@ -1087,6 +1131,31 @@ class Session:
             return level
         auto = self.options.dsp == "auto" and not self.options.core
         return 2 if auto and "__builtin_mips_" in text else 0
+
+    def msa_enabled(self) -> bool:
+        """MSA on the core (emips.msa, PLAN M24): Options.msa "msa" (Release 5
+        / 6, MIPS32 / MIPS64), "none", "auto" = when the program has MSA
+        instructions (Program.msa) and the core can have it (a preset: one
+        with MSA among its choices)."""
+        if self.nano or self.release not in ("R5", "R6") or not self.options.fpu:
+            return False
+        choice = self.options.msa
+        if choice in ("msa", "none"):
+            return choice == "msa"
+        core = cores.get(self.options.core)
+        if core is not None and "msa" not in core.msa:
+            return False
+        prog = getattr(self, "program", None)
+        return bool(prog is not None and getattr(prog, "msa", False))
+
+    def _msa_core(self, mt: bool, core) -> dict:
+        """Machine arguments for MSA: msa, msa_wrp, fpu2008 (a P5600's FPU is
+        IEEE 754-2008 with or without MSA)."""
+        msa = self.msa_enabled() and not mt
+        out: dict = {"fpu2008": bool(core is not None and core.fpu2008)}
+        if msa:
+            out.update(msa=True, msa_wrp=self.options.msa_wrp)
+        return out
 
     def dsp_level(self) -> int:
         """The core's DSP Module (emips.dsp): 0 = none, 1 = Revision 1, 2 =
@@ -2153,6 +2222,90 @@ class Session:
             hi, lo = D._half(m, n, True) & m.amask, D._half(m, n, False) & m.amask
             lines.append(f"ac{n} 0x{hi:0{digits}x} {lo:0{digits}x}"
                          + ("  (HI / LO)" if n == 0 else ""))
+        return lines
+
+    #: MSA lane formats the views show: (element bits, floating point)
+    MSA_FORMATS = {"b": (8, False), "h": (16, False), "w": (32, False), "d": (64, False),
+                   "w.f": (32, True), "d.f": (64, True)}
+
+    def msa_lines(self, regs: list[int] | None = None, fmt: str = "") -> list[str]:
+        """MSA's state on the selected core (emips.msa; the debugger's
+        ``msa``): enabled or not and why, MSAIR, MSACSR field by field, the
+        partitioning registers (WRP), then the vector registers ``regs``
+        (default: every one not zero) as 128-bit values, or element by
+        element (element 0 first) in ``fmt`` (b / h / w / d, w.f / d.f)."""
+        from . import msa as V
+        m = self.machine
+        if not getattr(m, "msa", False):
+            return ["this core has no MSA (Config3.MSAP = 0): MSA instructions are Reserved "
+                    "Instructions (--msa msa on Release 5 / 6, or a program with MSA code)"]
+        en = bool(m.cp0_read(16, 5) & V.CFG5_MSAEN)
+        fr, cu1 = bool(m.status & C.ST_FR), bool(m.status & C.ST_CU1)
+        why = ("" if en and (fr or not cu1) else
+               " — MSA instructions take MSA Disabled (set Config5.MSAEn)" if not en else
+               " — MSA instructions are RI: CU1 = 1 with FR = 0 (set Status.FR)")
+        csr = m.msacsr
+        rm = ("nearest", "toward zero", "toward +inf", "toward -inf")[csr & 3]
+        bits = lambda v: "".join(b for b, k in zip("EVZOUI", range(5, -1, -1))  # noqa: E731
+                                 if v >> k & 1) or "-"
+        lines = [f"MSA (Config3.MSAP = 1): Config5.MSAEn = {int(en)}, Status.FR = {int(fr)}"
+                 f", CU1 = {int(cu1)}{why}",
+                 f"MSAIR 0x{m.msair:08x}: WRP {m.msair >> 16 & 1}, ProcessorID "
+                 f"{m.msair >> 8 & 0xFF}, Revision {m.msair & 0xFF}",
+                 f"MSACSR 0x{csr:08x}: RM {csr & 3} ({rm}), Flags {bits(csr >> 2 & 0x1F)}, "
+                 f"Enables {bits(csr >> 7 & 0x1F)}, Cause {bits(csr >> 12 & 0x3F)}, "
+                 f"NX {csr >> 18 & 1}, FS {csr >> 24 & 1}"]
+        p = m.msa_wrp
+        if p is not None:
+            lines.append(f"partitioning: {len(p.store)} physical registers; MSAAccess "
+                         f"0x{p.access:08x}, MSASave 0x{p.save:08x}, MSAModify "
+                         f"0x{p.modify:08x}, MSARequest 0x{p.request:08x}")
+        if regs is None:
+            regs = [n for n in range(32) if V.vec(m, n)] or [0]
+        if regs == []:
+            return lines
+        size, fp = self.MSA_FORMATS.get(fmt, (0, False))
+        for n in regs:
+            v = V.vec(m, n)
+            if not size:
+                lines.append(f"$w{n:<2} 0x{v >> 64:016x}_{v & V.M64:016x}")
+                continue
+            es = V.lanes(v, size)
+            if fp:
+                import struct
+                vals = [repr(struct.unpack(">f" if size == 32 else ">d",
+                                           e.to_bytes(size // 8, "big"))[0]) for e in es]
+            else:
+                vals = [f"0x{e:0{size // 4}x}" for e in es]
+            lines.append(f"$w{n:<2} {fmt}: " + " ".join(f"[{i}] {x}" for i, x in enumerate(vals)))
+        return lines
+
+    #: the MSA tab's element views: key -> (element bits, how shown)
+    MSA_VIEWS = {f"{df}.{how}": (bits, how) for df, bits in
+                 (("b", 8), ("h", 16), ("w", 32), ("d", 64))
+                 for how in ("x", "s", "u")}
+    MSA_VIEWS.update({"w.f": (32, "f"), "d.f": (64, "f")})
+
+    def msa_rows(self, view: str = "w.x") -> list[tuple[str, int, list[str]]]:
+        """``(name, value, element texts)`` of the 32 vector registers in
+        ``view`` (:data:`MSA_VIEWS`: b / h / w / d as hex "x", signed "s",
+        unsigned "u", or w / d as float "f"; element 0 first) — the register
+        pane's MSA tab (empty without MSA)."""
+        from . import msa as V
+        m = self.machine
+        if m is None or not getattr(m, "msa", False):
+            return []
+        bits, how = self.MSA_VIEWS[view]
+        rows = []
+        for n in range(32):
+            v = V.vec(m, n)
+            rows.append((f"$w{n}", v, [_lane_text(e, bits, how) for e in V.lanes(v, bits)]))
+        return rows
+
+    def msa_control_lines(self) -> list[str]:
+        """MSA's enable state, MSAIR and MSACSR decoded (and the partition
+        registers): the head of ``msa_lines``."""
+        lines = self.msa_lines([])
         return lines
 
     def dsp_rows(self) -> list[tuple[str, int, str]]:

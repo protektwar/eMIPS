@@ -36,8 +36,8 @@ from .cache import Geometry
 #: MIPS Technologies' Company ID (PRId 23:16; every manual here: 1)
 COMPANY_MIPS = 1
 #: the settings a preset decides (Options fields) and the release
-FIELDS = ("release", "compressed", "fpu", "dsp", "mt", "mmu", "icache", "dcache", "l2", "l3",
-          "cores", "vps", "shadow_sets", "model")
+FIELDS = ("release", "compressed", "fpu", "dsp", "msa", "mt", "mmu", "icache", "dcache", "l2",
+          "l3", "cores", "vps", "shadow_sets", "model")
 
 
 def _pow2(n: int) -> bool:
@@ -165,6 +165,13 @@ class Core:
     #: L1 caches of this size (KB) are built only with an MPU (the I7200's
     #: 128 KB, MD01227 Table 2); 0: none
     mpu_l1_kb: int = 0
+    #: MSA it may have (PLAN M24): "none", "msa"
+    msa: tuple[str, ...] = ("none",)
+    #: when its element-misaligned MSA LD / ST trap (Machine.msa_ade)
+    msa_ade: frozenset = frozenset()
+    #: its FPU is IEEE 754-2008 (FCSR.NAN2008 / ABS2008 read-only 1) even in
+    #: Release 5 (the P5600: MD01025 13.10.7)
+    fpu2008: bool = False
 
     @property
     def prid(self) -> int:
@@ -189,6 +196,8 @@ class Core:
                 return mmu_key(value) in self.mmu
             except (ValueError, IndexError):
                 return False
+        if name == "msa" and value == "auto":   # (what the program needs, within these)
+            return True
         return value in getattr(self, name)
 
     def choices(self, name: str) -> str:
@@ -209,6 +218,8 @@ class Core:
                                    for d in self.dsp)
             return " or ".join({"none": "no DSP Module", "dsp": "the DSP Module (Revision 1)",
                                 "dspr2": "the DSP Module Revision 2"}[d] for d in self.dsp)
+        if name == "msa":
+            return " or ".join({"none": "no MSA", "msa": "MSA"}[x] for x in self.msa)
         if name == "mt":
             if self.mt == ("none",):
                 return "no MT Module"
@@ -388,8 +399,8 @@ CORES: dict[str, Core] = {c.name: c for c in (
          CacheChoice(sizes=(32, 64)), CacheChoice(sizes=(32, 64)),
          CacheChoice(sizes=(512, 1024, 2048, 4096, 8192), ways=(8,), lines=(32, 64)),
          (1, 2, 3, 4, 5, 6), (1,), ("5-stage", "24k"),
-         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:64:128x4+sc",
-                    icache="32K:4:32",
+         build=dict(compressed="none", fpu=True, dsp="none", msa="msa", mt="none",
+                    mmu="ftlb:64:128x4+sc", icache="32K:4:32",
                     dcache="32K:4:32", l2="512K:8:32", l3="none", cores=2, shadow_sets=1,
                     model="5-stage"),
          source="MD01024 (P5600 datasheet: up to 6 cores, L1 32 / 64 KB 4-way, the 8-way "
@@ -397,9 +408,11 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "Table 2.11 (PRId 0xA8), Table 2.3 (MT 1 / 4), Table 2.6 (SC = 1, no "
                 "MIPS16e / microMIPS), Table 2.68 (one GPR set)",
          missing=("the out-of-order superscalar pipeline (no model: the 5-stage or the "
-                  "24K's)", "MSA (M24)", "the virtualization ASE (VZ)", "XPA",
-                  "the FPU's IEEE 754-2008 mode"),
-         notes=_CPS_NOTE),
+                  "24K's)", "the virtualization ASE (VZ)", "XPA",
+                  "MSA's 128-bit EJTAG data breakpoints (DBCS / DBVS, ganged mode)"),
+         notes=_CPS_NOTE + ("MSA with the FPU (\"FPU3\", MD01025 13.4); MSAIR = 0x300 (the "
+                            "manual: Preset; QEMU's P5600 leaves 0)",),
+         msa=("msa", "none"), msa_ade=frozenset({"uncached"}), fpu2008=True),
     Core("m14k", "MIPS M14K", "R2", 0x9B, ("micromips", "micromips-only", "none"), (False,),
          ("none",), ("none",), ("fixed",), NO_CACHE, NO_CACHE, None, (1,), (1, 2, 4, 8, 16), ("5-stage",),
          build=dict(compressed="micromips", fpu=False, dsp="none", mt="none", mmu="fixed",
@@ -467,9 +480,9 @@ CORES: dict[str, Core] = {c.name: c for c in (
          CacheChoice(sizes=(32, 64)), CacheChoice(sizes=(32, 64)),
          CacheChoice(sizes=(512, 1024, 2048, 4096, 8192), ways=(8,), lines=(32, 64)),
          (1, 2, 3, 4, 5, 6), (1,), ("5-stage",),
-         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:64:128x4+sc",
-                    icache="32K:4:32", dcache="32K:4:32", l2="512K:8:32", l3="none", cores=2,
-                    shadow_sets=1, model="5-stage"),
+         build=dict(compressed="none", fpu=True, dsp="none", msa="msa", mt="none",
+                    mmu="ftlb:64:128x4+sc", icache="32K:4:32", dcache="32K:4:32",
+                    l2="512K:8:32", l3="none", cores=2, shadow_sets=1, model="5-stage"),
          source="MD01137 (P6600 datasheet: up to six MIPS64 Release 6 cores, L1 32 / 64 KB "
                 "4-way, the 8-way L2 of 512 KB-8 MB, VTLB 64 + FTLB 512 dual entries in "
                 "128 sets x 4 ways, an optional FPU), MD01138 (Table 2.11 PRId 0xA4; Config1: "
@@ -477,19 +490,19 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "configuration, ISA = 0 and DSPP = 0: no microMIPS, no DSP Module; SRSCtl."
                 "HSS = 0; ch. 6-8: the CM2, CPC and GIC, with 40-bit physical addresses)",
          missing=("the P6600's out-of-order superscalar pipeline (eMIPS: the textbook "
-                  "5-stage)", "MSA (M24)", "the virtualization ASE (VZ)", "the IOCU and its "
+                  "5-stage)", "the virtualization ASE (VZ)", "the IOCU and its "
                   "IOMMU", "40-bit physical addresses (eMIPS: 32 — the CM's _UPPER registers "
                   "are kept, a block they move above 4 GB is out of reach)",
                   "48-bit virtual addresses (eMIPS: SEGBITS 40)"),
          notes=_CPS_NOTE,
-         arch="mips64"),
+         arch="mips64", msa=("msa", "none"), msa_ade=frozenset({"uncached", "page16k"})),
     Core("i6400", "MIPS I6400", "R6", 0xA9, ("none",), (True,), ("none",), ("none",),
          ("ftlb:16:64x4",), _L1_I6400, _L1_I6400,
          CacheChoice(sizes=(256,), ways=(8,), lines=(64,)), (1, 2, 3, 4, 5, 6), (1,),
          ("5-stage",),
-         build=dict(compressed="none", fpu=True, dsp="none", mt="none", mmu="ftlb:16:64x4",
-                    icache="64K:4:64", dcache="64K:4:64", l2="256K:8:64", l3="none", cores=1,
-                    vps=1, shadow_sets=1, model="5-stage"),
+         build=dict(compressed="none", fpu=True, dsp="none", msa="msa", mt="none",
+                    mmu="ftlb:16:64x4", icache="64K:4:64", dcache="64K:4:64", l2="256K:8:64",
+                    l3="none", cores=1, vps=1, shadow_sets=1, model="5-stage"),
          source="MD01196 (the I6400 Programmer's Guide 1.00: MIPS64 Release 6, 1.2; 16 "
                 "VTLB entries per VP and the FTLB of 64 sets x 4 ways, 2.2.1-2.2.2 / "
                 "Config4; L1 32 / 64 KB 4-way, 64-byte lines, 3.4 / Config1; the L2 of "
@@ -503,14 +516,14 @@ CORES: dict[str, Core] = {c.name: c for c in (
                   "the MMIO regions' ports and request limit (stored: one memory port)",
                   "the L2 prefetcher (GCR_L2_PFT_CONTROL.NPFT = 0)",
                   "the 16-way L2 of 512 KB-8 MB (eMIPS's L2 has 1-8 ways: Config2.SA)",
-                  "64 KB FTLB pages (eMIPS: 4 / 16 KB)", "MSA (M24)",
+                  "64 KB FTLB pages (eMIPS: 4 / 16 KB)",
                   "the virtualization ASE (VZ)", "MMID and GINVT",
                   "48-bit virtual and physical addresses (eMIPS: 40 / 32)", "L1 ECC"),
          notes=("MD01196 1.3 calls the FTLB \"512 dual-entry\", 2.2.1 / Config4 64 sets x 4 "
                 "ways: eMIPS follows the registers (256 entries)",
                 "eMIPS builds the CM3 system (CM, CPC, GIC, ITU) with 2 or more cores or "
                 "VPs"),
-         arch="mips64", vps=(1, 2, 4), cm="cm3"),
+         arch="mips64", vps=(1, 2, 4), cm="cm3", msa=("msa",)),
 
     # -- nanoMIPS (PLAN M23 phase 5c) --
     Core("i7200", "MIPS I7200", "R6", 0x00, ("none",), (False,), ("dspr2", "none"),
@@ -601,6 +614,8 @@ def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
         changes["arch"] = core.arch
     if "vps" not in keep:
         changes.setdefault("vps", 1)
+    if "msa" not in keep:                       # (the builds before M24 have none)
+        changes.setdefault("msa", "none")
     return replace(o, core=core.name, **changes), core.release
 
 

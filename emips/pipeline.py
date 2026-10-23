@@ -64,6 +64,7 @@ from typing import Any, Callable
 
 from . import cp0 as C
 from . import dsp as DSP
+from . import msa as MSA
 from .disasm import text_at
 from .exceptions import Blocked, FetchError, WatchpointHit
 from .isa import Decode, ISADecodeError
@@ -86,6 +87,13 @@ LATENCY: dict[str, int] = {
     "DDIV": 67,        # DDIV / DDIVU: MDU busy; R6 DDIV / DMOD ...: hold EX
     "FP_ADD": 4, "FP_MUL": 4, "FP_MADD": 4, "FP_CVT": 4, "FP_CMP": 1,
     "FP_DIV_S": 17, "FP_DIV_D": 32, "FP_SQRT_S": 17, "FP_SQRT_D": 32,
+    # MSA (M24): the P6600's MSA unit, MD01138 Table 15.3 — integer / logic /
+    # compares / permutes 2, PCNT / SAT 3, FP add / converts 4, multiplies /
+    # dot products / FMUL / FEXP2 5, FMADD / FMSUB 4 to the add operand (8 to
+    # a multiply operand: a blocking EX keeps the accumulation chain's 4);
+    # its "variable" divides: the FPU's divide / square root, DIV_S ... MOD_U
+    # the MDU's 32-bit divide (an eMIPS assumption, sim.DEVIATIONS["MSA"])
+    "MSA": 2, "MSA_COUNT": 3, "MSA_FP": 4, "MSA_MUL": 5, "MSA_FMADD": 4, "MSA_DIV": 35,
 }
 
 _LOADS_TO_RT = {"LB", "LBU", "LH", "LHU", "LW", "LWL", "LWR", "LL", "LBE",
@@ -119,7 +127,9 @@ _COND_MOVES = ("MOVZ.", "MOVN.", "MOVF.", "MOVT.")
 
 Res = tuple[str, int] | str          # ("r", 5), ("f", 2), "hi", "lo", "fcc",
 #                                      ("hi", 1) ... ("lo", 3): the DSP Module's
-#                                      ac1-ac3, "dspctl": its DSPControl
+#                                      ac1-ac3, "dspctl": its DSPControl,
+#                                      "msacsr": MSA's control registers;
+#                                      ("f", n) is $fN and MSA's $wN (one register)
 
 
 def is_accumulator(r: Res) -> bool:
@@ -168,6 +178,8 @@ _ANALYZED: dict[tuple, tuple[dict, Info]] = {}
 
 def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
     e = dec.entry
+    if e.get("ase") == "msa":
+        return _analyze_msa(dec, latency)
     name, fam = e["name"], e["family"]
     w = dec.word
     f5 = lambda lsb: (w >> lsb) & 31                     # noqa: E731
@@ -272,6 +284,88 @@ def _analyze(dec: Decode, latency: dict[str, int]) -> Info:
                 fam in ("branch_compact", "jump_compact"))
 
 
+#: MSA (PLAN M24): the P6600's MSA latencies (MD01138 Table 15.3 — the
+#: only MIPS manual that gives them; the P5600's MD01025 13.5 names the same
+#: two units, short and long, without numbers): what EX holds, as the FPU's
+_MSA_COUNT = {"PCNT", "SAT_S", "SAT_U"}
+_MSA_MUL = {"MULV", "MADDV", "MSUBV", "DOTP_S", "DOTP_U", "DPADD_S", "DPADD_U", "DPSUB_S",
+            "DPSUB_U", "MUL_Q", "MULR_Q", "MADD_Q", "MADDR_Q", "MSUB_Q", "MSUBR_Q", "FMUL",
+            "FEXP2"}
+_MSA_FP = {"FADD", "FSUB", "FEXDO", "FEXUPL", "FEXUPR", "FFINT_S", "FFINT_U", "FFQL", "FFQR",
+           "FRINT", "FTINT_S", "FTINT_U", "FTQ", "FTRUNC_S", "FTRUNC_U"}
+_MSA_DIVIDE = {"FDIV": "FP_DIV", "FRCP": "FP_DIV", "FSQRT": "FP_SQRT", "FRSQRT": "FP_SQRT",
+               "DIV_S": "MSA_DIV", "DIV_U": "MSA_DIV", "MOD_S": "MSA_DIV", "MOD_U": "MSA_DIV"}
+#: no latency in Table 15.3 ("n/a": nothing in the vector registers waits
+#: for them): EX one cycle
+_MSA_NA = {"CFCMSA", "CTCMSA", "COPY_S", "COPY_U", "INSERT", "ST", "LD", "BZ", "BNZ"}
+
+
+def _analyze_msa(dec: Decode, latency: dict[str, int]) -> Info:
+    """:func:`analyze` of an MSA row (PLAN M24 phase 3b): its fields by
+    template letter — wt / ws (V / W) read, wd (Y) written (read too by a
+    store and :data:`emips.msa.READS_WD`), rs / rt read, rd written, the
+    control registers as "msacsr"; a vector register is the FPR of that
+    number (MD00866 3.1: $fN = bits 63..0 of $wN — one resource).  Every
+    floating-point row but FCLASS reads MSACSR (RM, NX, FS, the enables)
+    and writes it (Cause, Flags)."""
+    e = dec.entry
+    name, enc, w = e["name"], e["encode"], dec.word
+    base = name.rpartition(".")[0] or name
+    base = base.split("@")[0]
+    reads: set = set()
+    writes: set = set()
+
+    def field(ch: str) -> int:
+        lsb = 31 - enc.rindex(ch)
+        return (w >> lsb) & ((1 << enc.count(ch)) - 1)
+
+    for ch in "VW":
+        if ch in enc:
+            reads.add(("f", field(ch)))
+    if "Y" in enc:
+        n = field("Y")
+        if base == "ST":
+            reads.add(("f", n))
+        else:
+            writes.add(("f", n))
+            if base in MSA.READS_WD:
+                reads.add(("f", n))
+    for ch in "st":
+        if ch in enc:
+            reads.add(("r", field(ch)))
+    if "d" in enc:
+        writes.add(("r", field("d")))
+    if "C" in enc:
+        reads.add("msacsr")
+    if "E" in enc:
+        writes.add("msacsr")
+    if base.startswith("F") and base not in ("FILL", "FCLASS"):
+        reads.add("msacsr")
+        writes.add("msacsr")
+    writes.discard(("r", 0))
+    reads.discard(("r", 0))
+    control = "branch" if e["family"] == "msa_branch" else ""
+    size = {"W": "S", "D": "D"}.get(name.rpartition(".")[2], "S")
+    if base in _MSA_NA or base in ("LSA", "DLSA"):
+        ex = 1
+    elif base in _MSA_DIVIDE:
+        key = _MSA_DIVIDE[base]
+        ex = latency[key if key == "MSA_DIV" else f"{key}_{size}"]
+    elif base in ("FMADD", "FMSUB"):
+        ex = latency["MSA_FMADD"]
+    elif base in _MSA_MUL:
+        ex = latency["MSA_MUL"]
+    elif base in _MSA_FP:
+        ex = latency["MSA_FP"]
+    elif base in _MSA_COUNT:
+        ex = latency["MSA_COUNT"]
+    else:
+        ex = latency["MSA"]
+    return Info(frozenset(reads) if control else frozenset(),
+                frozenset() if control else frozenset(reads), frozenset(writes),
+                "MEM" if base == "LD" else "EX", max(ex, 1), 0, control)
+
+
 #: the registers the MIPS16e / microMIPS instructions without a MIPS32
 #: twin read and write (their executors in emips.sim): form -> (reads,
 #: writes) as instruction fields ("rx", "s" ...) or GPR numbers
@@ -305,6 +399,7 @@ _MM_REGS: dict[str, tuple[tuple, tuple]] = {
     **dict.fromkeys(("LDP", "SDP", "LDM", "SDM"), (("b",), ())), "LWUPC": ((), ("t",)),
     "BC1F": ((), ()), "BC1T": ((), ()), "BC1EQZC": ((), ()), "BC1NEZC": ((), ()),
 }
+_MM_MSA_BRANCHES = frozenset(f"{b}.{df}" for b in ("bz", "bnz") for df in "vbhwd")
 _COMPRESSED_LOADS = {"M16.LWPC", "M16.LDPC", "M16.RESTORE", "MM.LWPC", "MM.LWXS", "MM.LWP", "MM.LWM16",
                      "MM.LWM32", "MM.LWUPC", "MM.LDP", "MM.LDM"}
 
@@ -362,6 +457,8 @@ def _analyze_compressed(dec: Decode, insn: Any) -> Info:
         reads.add("dspctl")
     if name in ("MM.BC1EQZC", "MM.BC1NEZC"):
         reads.add(("f", f["T"]))
+    if form.lower() in _MM_MSA_BRANCHES:         # MSA's BZ / BNZ (MD00870): $wt
+        reads.add(("f", f["V"]))
     writes.discard(("r", 0))
     reads.discard(("r", 0))
     control = ("branch" if fam in ("branch", "branch_fpu", "branch_compact")
@@ -460,6 +557,8 @@ _SIGNALS: dict[tuple, dict[str, Any]] = {}
 
 def _signals(e, info: Info) -> dict[str, Any]:
     fam, name = e["family"], e["name"]
+    if e.get("ase") == "msa" and fam != "alu":   # (LSA@MSA / DLSA@MSA: the ALU)
+        return _msa_signals(e, info)
     spec = [kind_of(k)[0] for k in operand_spec(e)]
     gpr_write = any(r[0] == "r" for r in info.writes if isinstance(r, tuple))
     load = info.ready == "MEM"
@@ -476,6 +575,23 @@ def _signals(e, info: Info) -> dict[str, Any]:
         "Jump": info.control == "jump",
         "ALUOp": name.lower(),
     }
+
+
+def _msa_signals(e, info: Info) -> dict[str, Any]:
+    """The main control's signals for an MSA instruction (MD00866): the
+    vector unit does the work beside the ALU; the integer datapath writes
+    a GPR only for COPY_S / COPY_U / CFCMSA (rd in bits 10..6, not 15..11:
+    "rd6"), computes LD / ST's address (base + the scaled s10: ALUSrc imm)
+    and moves its memory data (MemRead / MemWrite; the loaded data goes to
+    the vector register, not a GPR); BZ / BNZ are branches decided in ID."""
+    name, fam = e["name"], e["family"]
+    gpr = any(isinstance(r, tuple) and r[0] == "r" for r in info.writes)
+    memory = fam == "msa_mem"
+    load = memory and name.startswith("LD.")
+    return {"RegDst": "rd6" if gpr else "-", "ALUSrc": "imm" if memory else "-",
+            "MemtoReg": load, "RegWrite": gpr, "MemRead": load,
+            "MemWrite": memory and not load, "Branch": fam == "msa_branch",
+            "Jump": False, "ALUOp": name.lower()}
 
 
 # --------------------------------------------------------------- the pipe
@@ -665,14 +781,17 @@ def _pop_run(runs: list) -> str | None:
     return key
 
 
-def _rname(r: Res, abi: bool | str = True) -> str:
-    """A resource's name (``abi="n64"``: a MIPS64 core's register names)."""
+def _rname(r: Res, abi: bool | str = True, vec: bool = False) -> str:
+    """A resource's name (``abi="n64"``: a MIPS64 core's register names;
+    ``vec``: an MSA core, whose $fN is the low half of $wN)."""
     if isinstance(r, tuple):
         from .syntax import gpr_name
         if r[0] in ("hi", "lo"):
             return f"{r[0].upper()}{r[1]} ($ac{r[1]})"
-        return gpr_name(r[1], abi) if r[0] == "r" else f"$f{r[1]}"
-    return {"fcc": "FCC", "dspctl": "DSPControl"}.get(r, r.upper())
+        if r[0] == "r":
+            return gpr_name(r[1], abi)
+        return f"$w{r[1]} / $f{r[1]}" if vec else f"$f{r[1]}"
+    return {"fcc": "FCC", "dspctl": "DSPControl", "msacsr": "MSACSR"}.get(r, r.upper())
 
 
 def fetch_compressed(p, m: Machine, pc: int) -> Slot:
@@ -781,6 +900,7 @@ class Pipeline:
                  memory: dict[str, int] | None = None, nonblocking: bool = False) -> None:
         self.m = machine
         self._abi: bool | str = machine.names            # (register names)
+        self._vec = bool(getattr(machine, "msa", False))
         machine.tracing = trace
         self.forwarding = forwarding
         self.latency = dict(LATENCY, **(latency or {}))
@@ -897,7 +1017,8 @@ class Pipeline:
             for r in sorted(needs, key=str):
                 ready = self.reg_ready.get(r, 0)
                 if ready > self.cycles:
-                    return ("miss-wait", f"{_rname(r, self._abi)} from a load still missing "
+                    name = _rname(r, self._abi, self._vec)
+                    return ("miss-wait", f"{name} from a load still missing "
                                          f"({ready - self.cycles} more cycle(s))")
         for prod, where in ((ex, "EX"), (mem, "MEM")):
             if prod is None or prod.info is None:
@@ -905,7 +1026,7 @@ class Pipeline:
             common = {r for r in needs & prod.info.writes if not is_accumulator(r)}
             if not common:
                 continue
-            r = _rname(sorted(common, key=str)[0], self._abi)
+            r = _rname(sorted(common, key=str)[0], self._abi, self._vec)
             if not self.forwarding:
                 return ("no-forwarding", f"{r} not written back yet "
                                          f"({prod.text} in {where})")
@@ -1006,7 +1127,7 @@ class Pipeline:
                     if ex.dec is None:
                         if m.exceptions == "raise":
                             m.isa.decode(ex.word)        # raises ISADecodeError
-                        raise _Arch(C.RI)
+                        raise m.reserved(ex.word)        # (MSA's space: its gate first)
                     m.r6_slot_check(ex.dec, ex.in_slot, ex.forbidden)
                     if ex.info.control == "":
                         srcs = self._note_forwarding(ex, ex.info.reads_ex, "EX", ev)
@@ -1284,7 +1405,7 @@ class Pipeline:
             if not common:
                 continue
             for r in sorted((r for r in common if not is_accumulator(r)), key=str):
-                ev.append(f"forward {_rname(r, self._abi)}: {path} -> {stage} "
+                ev.append(f"forward {_rname(r, self._abi, self._vec)}: {path} -> {stage} "
                           f"({prod.text} -> {s.text})")
                 sources[r] = f"forwarded {path} -> {stage} from {prod.text}"
                 needs = needs - {r}

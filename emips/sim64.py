@@ -173,8 +173,8 @@ def _is_64bit_op(e: dict) -> bool:
     """Needs 64-bit operations enabled (Vol. III 6.2.21): a doubleword
     instruction (⊥ in the opcode tables), a COP1 instruction whose rs is
     L or PS, any COP1X instruction."""
-    if e.get("arch") == "mips64":
-        return True
+    if e.get("arch") == "mips64":                # (MSA's COPY_S.D / FILL.D ... pages
+        return e.get("ase") != "msa" or e["name"] == "DLSA@MSA"   # have no such check)
     v = e["decode"]["value"]
     return (v >> 26 == 0x11 and (v >> 21) & 31 in (0x15, 0x16)) or v >> 26 == 0x13
 
@@ -197,14 +197,14 @@ class Machine64(S.Machine):
     def __init__(self, isa: ISA | None = None, memory: Any = None, pc: int = 0, *,
                  release: str | None = None, compressed: str | None = None,
                  dsp: int | None = None, mt: bool = False, arch: str = "mips64",
-                 **kwargs: Any) -> None:
+                 msa: bool | None = None, **kwargs: Any) -> None:
         if isa is None:
-            isa = ISA.for_release(release, dsp or 0, mt, arch="mips64")
+            isa = ISA.for_release(release, dsp or 0, mt, arch="mips64", msa=bool(msa))
         if compressed not in (None, "mips16e") and (release or isa.release) in ("R1", "R2"):
             raise ValueError("microMIPS64 needs Release 3+ (MD00594 3.1: microMIPS "
                              "came with Release 3)")
         super().__init__(isa, memory, pc, release=release, compressed=compressed, dsp=dsp,
-                         mt=mt, **kwargs)
+                         mt=mt, msa=msa, **kwargs)
         #: Config.AT: 2 = 64-bit addresses (a TLB of 64-bit VPN2s:
         #: emips.tlb.TLBMMU.va64), else 1
         self.at = 2 if getattr(self.mmu, "va64", False) else 1

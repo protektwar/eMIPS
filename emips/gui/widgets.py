@@ -12,6 +12,7 @@ from .i18n import N_, tr
 from .qt import QtCore, QtGui, QtWidgets, Signal
 from ..mmu import cca_name
 from ..session import Session
+from ..trace import digits_of
 
 Qt = QtCore.Qt
 
@@ -426,6 +427,16 @@ def _set(t: QtWidgets.QTableWidget, r: int, c: int, text: str,
     item.setFont(f)
 
 
+#: the MSA tab's element views (Session.MSA_VIEWS)
+MSA_VIEW_TEXTS = (("b.x", N_("16 bytes, hex")), ("b.s", N_("16 bytes, signed")),
+                  ("b.u", N_("16 bytes, unsigned")), ("h.x", N_("8 halfwords, hex")),
+                  ("h.s", N_("8 halfwords, signed")), ("h.u", N_("8 halfwords, unsigned")),
+                  ("w.x", N_("4 words, hex")), ("w.s", N_("4 words, signed")),
+                  ("w.u", N_("4 words, unsigned")), ("w.f", N_("4 singles (float)")),
+                  ("d.x", N_("2 doublewords, hex")), ("d.s", N_("2 doublewords, signed")),
+                  ("d.u", N_("2 doublewords, unsigned")), ("d.f", N_("2 doubles")))
+
+
 class RegisterView(QtWidgets.QTabWidget):
     """GPRs (changed ones highlighted), PC/HI/LO/CP0/FCSR, the FPRs, the
     interrupt system and shadow sets, and EJTAG (Debug Mode)."""
@@ -451,6 +462,36 @@ class RegisterView(QtWidgets.QTabWidget):
         self.setTabToolTip(self.dsp_tab, tr("The DSP Module: DSPControl and the four "
                                             "accumulators (Status.MX enables it)"))
         self._dsp_prev: list[int] = []
+        # MSA (Session.msa_rows): the 32 vector registers element by element in
+        # the chosen view, MSAIR / MSACSR above; changed elements highlighted
+        self.msa = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(self.msa)
+        lay.setContentsMargins(2, 2, 2, 2)
+        self.msa_text = QtWidgets.QLabel()
+        self.msa_text.setWordWrap(True)
+        self.msa_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(self.msa_text)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel(tr("Elements")))
+        self.msa_view = QtWidgets.QComboBox()
+        for key, text in MSA_VIEW_TEXTS:
+            self.msa_view.addItem(tr(text), key)
+        self.msa_view.setCurrentIndex(self.msa_view.findData("w.x"))
+        self.msa_view.setToolTip(tr("How the 128 bits are cut into elements (element 0 "
+                                    "first: the lowest bits) and shown"))
+        row.addWidget(self.msa_view, 1)
+        lay.addLayout(row)
+        self.msa_table = _table([tr("reg")])
+        self.msa_table.setRowCount(32)
+        lay.addWidget(self.msa_table, 1)
+        self.msa_tab = self.addTab(self.msa, tr("MSA"))
+        self.setTabToolTip(self.msa_tab, tr("MSA: the 32 vector registers of 128 bits "
+                                            "($fN is the low 64 bits of $wN), MSAIR and "
+                                            "MSACSR (Config5.MSAEn enables it)"))
+        self._msa_prev: list[int] = []
+        self._msa_old: list[int] = []
+        self._msa_key: tuple | None = None
+        self.msa_view.currentIndexChanged.connect(self._msa_view_changed)
         # the interrupt system (mode, request, next vector: Session.
         # interrupt_lines) and the GPR shadow sets (Release 2+, SRSCtl / SRSMap)
         self.sets = QtWidgets.QWidget()
@@ -513,11 +554,13 @@ class RegisterView(QtWidgets.QTabWidget):
             self.special.setRowCount(0)
             self.setTabVisible(self.sets_tab, False)
             self.setTabVisible(self.dsp_tab, False)
+            self.setTabVisible(self.msa_tab, False)
             self.setTabVisible(self.debug_tab, False)
             return
         self._session = s
         self._refresh_sets(s)
         self._refresh_dsp(s)
+        self._refresh_msa(s)
         self.setTabVisible(self.debug_tab, True)
         self.debug_text.setText("\n".join(ln.strip() for ln in s.debug_lines()))
         self.dint.setEnabled(not s.machine.debug_mode and not s.halted)
@@ -582,6 +625,44 @@ class RegisterView(QtWidgets.QTabWidget):
                        f"0x{value:02x}" if "ouflag" in name else str(value)), bg, hot)
             _set(self.dsp, i, 2, tr(note) if note else "", bg)
         self._dsp_prev = [v for _, v, _ in rows]
+
+    def _refresh_msa(self, s: Session) -> None:
+        """The MSA tab, when the core has MSA: every vector register in the
+        chosen view; an element the last step changed is highlighted (the
+        values before it are kept per step: a repaint or another view keeps
+        the marks)."""
+        on = bool(getattr(s.machine, "msa", False))
+        self.setTabVisible(self.msa_tab, on)
+        if not on:
+            return
+        self.msa_text.setText("\n".join(s.msa_control_lines()))
+        view = self.msa_view.currentData()
+        bits = Session.MSA_VIEWS[view][0]
+        rows = s.msa_rows(view)
+        values = [v for _, v, _ in rows]
+        key = (id(s.machine), s.steps)
+        if key != self._msa_key:                # a step (or a new machine) since
+            same = self._msa_key is not None and self._msa_key[0] == key[0]
+            self._msa_old = self._msa_prev if same and len(self._msa_prev) == 32 else values
+            self._msa_prev, self._msa_key = values, key
+        lanes = 128 // bits
+        t = self.msa_table
+        if t.columnCount() != lanes + 1:
+            t.setColumnCount(lanes + 1)
+            t.setHorizontalHeaderLabels([tr("reg")] + [f"[{i}]" for i in range(lanes)])
+        mask = (1 << bits) - 1
+        for r, (name, value, texts) in enumerate(rows):
+            old = self._msa_old[r]
+            hot_row = old != value
+            _set(t, r, 0, name, T().current_line if hot_row else None, hot_row)
+            for i, text in enumerate(texts):
+                hot = (old >> (i * bits) & mask) != (value >> (i * bits) & mask)
+                _set(t, r, i + 1, text, T().current_line if hot else None, hot)
+        t.resizeColumnsToContents()
+
+    def _msa_view_changed(self, *_args) -> None:
+        if self._session is not None and self._session.machine is not None:
+            self._refresh_msa(self._session)
 
     def _probe_toggled(self, *_args) -> None:
         on = self.probe_box.isChecked()
@@ -945,11 +1026,20 @@ class InstrPanel(QtWidgets.QTextBrowser):
         eff += [f"memory write <tt>0x{a:08x}</tt>: <tt>0x{o:0{2 * n}x}</tt> → <tt>0x{nw:0{2 * n}x}</tt>"
                 for a, n, o, nw in v.mem_writes]
         eff += [f"{e(name)}: <tt>0x{o:0{d}x}</tt> → <tt>0x{nw:0{d}x}</tt>"
-                for name, o, nw in v.reg_writes
-                for d in (w if name[0] == "$" and name[1] != "f" or name in ("hi", "lo")
-                          else 8,)]
+                for name, o, nw in v.reg_writes for d in (digits_of(name, w),)]
         if eff:
             parts.append("<h4>Effects</h4><p>" + "<br>".join(eff) + "</p>")
+        lanes = getattr(v, "lanes", None)
+        if lanes is not None:                   # MSA: element by element (trace.LaneView)
+            n = max(len(es) for _, _, _, es in lanes.rows)
+            head = "".join(f"<th>[{i}]</th>" for i in range(n))
+            body = "".join(
+                f"<tr><td>{e(role)} $w{reg}</td>"
+                + "".join(f"<td><tt>{x:0{size // 4}x}</tt></td>" for x in es) + "</tr>"
+                for role, reg, size, es in lanes.rows)
+            parts.append(f"<h4>{e(tr('Elements'))} ({lanes.size}-bit, "
+                         f"{e(tr('element 0 first'))})</h4>"
+                         f"<table cellspacing='4'><tr><th></th>{head}</tr>{body}</table>")
         if v.exception:
             parts.append(f"<h4 style='color:{T().breakpoint}'>Exception: {e(v.exception)}</h4>")
         self.setHtml("".join(parts))

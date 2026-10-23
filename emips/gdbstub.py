@@ -27,7 +27,11 @@ A nanoMIPS core (M23 phase 4c) has nanoMIPS GDB's description
 ``-dsp.xml``: hi0 ... lo3, dspctl at 36-44 — phase 5a; the MediaTek port's
 ``nanomips-tdep.c``): r0-r31, pc (32), status (33), badvaddr (34), cause
 (35) — no hi / lo (nanoMIPS has none outside the DSP ASE), no fpu feature (optional there,
-and the core has no FPU).  Breakpoints (``Z0`` / ``Z1``) are the
+and the core has no FPU).  With MSA (M24 phase 3c) the stub adds its own
+``org.gnu.gdb.mips.msa`` feature after the others (GDB 15 has none; its
+``tdesc_use_registers`` keeps registers no MIPS feature claims): w0-w31
+(128 bits, the bytes ST.D stores — doubleword 0 first, each in the
+target's order, as Linux's NT_MIPS_MSA regset), msacsr, msair.  Breakpoints (``Z0`` / ``Z1``) are the
 session's: nothing is written into the program, as in QEMU's stub.  The
 stub runs the session in slices and looks for GDB's interrupt between
 them; what the program prints goes to GDB as ``O`` packets.
@@ -53,6 +57,8 @@ SIGINT, SIGILL, SIGTRAP, SIGFPE, SIGBUS, SIGSEGV = 2, 4, 5, 8, 10, 11
 #: the number of registers of the g packet (without / with the DSP Module)
 NREGS = 72
 NREGS_DSP = 79
+#: MSA's feature: w0-w31, msacsr, msair after the others
+MSA_REGS = 34
 #: nanoMIPS: GDB's register numbers above r31 -> the MIPS ones the stub
 #: reads (pc, status, badvaddr, cause)
 NANO_REGS = {32: 37, 33: 32, 34: 35, 35: 36}
@@ -247,9 +253,20 @@ class GdbStub:
             return n
         return NANO_REGS[n] if n in NANO_REGS or not self.m.dsp else NANO_DSP_REGS[n]
 
+    def _msa_reg(self, n: int) -> int | None:
+        """MSA's register index (0-31 w0-w31, 32 msacsr, 33 msair) of GDB's
+        number ``n``, else None."""
+        if self.nano or not getattr(self.m, "msa", False):
+            return None
+        k = n - (NREGS_DSP if self.m.dsp else NREGS)
+        return k if 0 <= k < MSA_REGS else None
+
     def _size(self, n: int) -> int:
         if self.nano:
             return 4
+        k = self._msa_reg(n)
+        if k is not None:
+            return 16 if k < 32 else 4
         if self.m.wide:                         # MIPS64: features/mips64-*.xml
             return 4 if n == 78 else 8
         return 8 if 38 <= n <= 69 and self.fr64 else 4
@@ -266,7 +283,8 @@ class GdbStub:
         (nanoMIPS: r0-r31, pc, status, badvaddr, cause; the DSP ASE's 36-44)."""
         if self.nano:
             return 32 + len(NANO_REGS) + (len(NANO_DSP_REGS) if self.m.dsp else 0)
-        return NREGS_DSP if self.m.dsp else NREGS
+        return (NREGS_DSP if self.m.dsp else NREGS) + (
+            MSA_REGS if getattr(self.m, "msa", False) else 0)
 
     def available(self, n: int) -> bool:
         """f0-f31 / fcsr / fir exist only with an FPU (Config1.FP): GDB
@@ -285,6 +303,10 @@ class GdbStub:
 
     def get_reg(self, n: int) -> int:
         m = self.m
+        k = self._msa_reg(n)
+        if k is not None:                       # MSA: w0-w31, msacsr, msair
+            return (m.wh[k] << 64 | m.fpr[k] if k < 32 else
+                    m.msacsr if k == 32 else m.msair)
         n = self._mips_number(n)
         if n < 32:
             return m.read_reg(n)
@@ -318,6 +340,14 @@ class GdbStub:
         m = self.m
         if not self.available(n):
             raise KeyError(n)
+        k = self._msa_reg(n)
+        if k is not None:
+            from .msa import MSACSR_MASK
+            if k < 32:
+                m.fpr[k], m.wh[k] = value & M64, value >> 64 & M64
+            elif k == 32:
+                m.msacsr = value & MSACSR_MASK
+            return                              # (MSAIR is read-only)
         n = self._mips_number(n)
         if n < 32:
             m.write_dreg(n, value & m.amask)     # (the whole register)
@@ -368,11 +398,18 @@ class GdbStub:
 
     def _hex(self, value: int, size: int) -> str:
         order = "big" if self.m.big_endian else "little"
+        if size == 16:                          # an MSA register: as ST.D stores it
+            return ((value & M64).to_bytes(8, order)
+                    + (value >> 64 & M64).to_bytes(8, order)).hex()
         return (value & ((1 << 8 * size) - 1)).to_bytes(size, order).hex()
 
     def _unhex(self, text: str) -> int:
         order = "big" if self.m.big_endian else "little"
-        return int.from_bytes(bytes.fromhex(text), order)
+        raw = bytes.fromhex(text)
+        if len(raw) == 16:
+            return (int.from_bytes(raw[:8], order)
+                    | int.from_bytes(raw[8:], order) << 64)
+        return int.from_bytes(raw, order)
 
     def target_xml(self) -> str:
         """The target description: GDB's three MIPS features (G.5.8; the
@@ -429,7 +466,35 @@ class GdbStub:
                               f'regnum="{72 + 2 * (k - 1) + j}"/>'
                               for k in (1, 2, 3) for j, h in enumerate(("hi", "lo")))
                     + '<reg name="dspctl" bitsize="32" regnum="78"/></feature>')
-                   if self.m.dsp else "") + '</target>')
+                   if self.m.dsp else "") + self._msa_xml() + '</target>')
+
+    def _msa_xml(self) -> str:
+        """The stub's MSA feature (no GDB has one): the vector registers as a
+        union of the element views that hold in the target's byte order —
+        the doubleword views always; word / halfword / byte / single views
+        on little-endian only (there element i is at byte i x size; on
+        big-endian ST.D's image puts them out of order: ``monitor msa``)."""
+        if not getattr(self.m, "msa", False):
+            return ""
+        views = [("v2_int64", "v2i64"), ("v2_double", "v2f64")]
+        if not self.m.big_endian:
+            views += [("v4_int32", "v4i32"), ("v8_int16", "v8i16"), ("v16_int8", "v16i8"),
+                      ("v4_float", "v4f32")]
+        types = ('<vector id="v2i64" type="int64" count="2"/>'
+                 '<vector id="v2f64" type="ieee_double" count="2"/>'
+                 '<vector id="v4i32" type="int32" count="4"/>'
+                 '<vector id="v8i16" type="int16" count="8"/>'
+                 '<vector id="v16i8" type="int8" count="16"/>'
+                 '<vector id="v4f32" type="ieee_single" count="4"/>'
+                 '<union id="msa128">' + "".join(
+                     f'<field name="{name}" type="{t}"/>' for name, t in views)
+                 + '</union>')
+        base = NREGS_DSP if self.m.dsp else NREGS
+        regs = "".join(f'<reg name="w{i}" bitsize="128" type="msa128" group="vector"'
+                       + (f' regnum="{base}"' if i == 0 else "") + '/>' for i in range(32))
+        return ('<feature name="org.gnu.gdb.mips.msa">' + types + regs
+                + '<reg name="msacsr" bitsize="32" type="int" group="vector"/>'
+                '<reg name="msair" bitsize="32" type="int" group="vector"/></feature>')
 
     # -- memory --------------------------------------------------------------------------
 

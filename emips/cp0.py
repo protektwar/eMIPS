@@ -149,6 +149,9 @@ SYS, BP, RI, CPU, OV, TR = 8, 9, 10, 11, 12, 13
 FPE = 15
 #: DSP Module State Disabled (MD00374 Table 3.6): Status.MX = 0
 DSPDIS = 26
+#: MSA (MD00866 Table 3.5): MSA Floating-Point (MSACSR Cause & Enables) and
+#: MSA Disabled (Config5.MSAEn = 0)
+MSAFPE, MSADIS = 14, 21
 #: the MT Module's Thread exception (MD00378 Table 6.20; VPEControl.EXCPT
 #: says which)
 THREAD = 25
@@ -174,7 +177,8 @@ EXC_NAMES: dict[int, str] = {
     INT: "Int", MOD: "Mod", TLBL: "TLBL", TLBS: "TLBS", ADEL: "AdEL",
     ADES: "AdES", IBE: "IBE", DBE: "DBE", SYS: "Sys", BP: "Bp", RI: "RI",
     CPU: "CpU", OV: "Ov", TR: "Tr", FPE: "FPE", TLBRI: "TLBRI", TLBXI: "TLBXI",
-    WATCH: "WATCH", MCHECK: "MCheck", DSPDIS: "DSPDis", THREAD: "Thread", MPU: "MPU", CACHE_ERROR: "CacheErr", NMI: "NMI",
+    WATCH: "WATCH", MCHECK: "MCheck", DSPDIS: "DSPDis", THREAD: "Thread",
+    MSAFPE: "MSAFPE", MSADIS: "MSADis", MPU: "MPU", CACHE_ERROR: "CacheErr", NMI: "NMI",
     DSS: "DSS", DINT: "DINT", DDBLIMPR: "DDBLImpr", DDBSIMPR: "DDBSImpr",
     DIB: "DIB", DBP: "DBp", DDBL: "DDBL", DDBS: "DDBS",
 }

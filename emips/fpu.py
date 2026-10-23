@@ -182,13 +182,18 @@ def _round_int(m: Fraction, neg: bool, rm: int) -> int:
 def round_pack(v: Fraction, f: Fmt, rm: int, *, neg_zero: bool = False,
                flush: bool = False) -> tuple[int, set[str]]:
     """Round the exact value ``v`` to format ``f``.  ``neg_zero`` gives the
-    sign of an exact zero.  Returns ``(bits, flags)``."""
+    sign of an exact zero.  ``flush``: True flushes results tiny after
+    rounding to zero (FCSR.FS); ``"before"`` those tiny *before* rounding
+    (MSACSR.FS, MD00866 3.5.4) — both with Underflow and Inexact.  Returns
+    ``(bits, flags)``."""
     flags: set[str] = set()
     if v == 0:
         return (f.sign_bit if neg_zero else 0), flags
     neg = v < 0
     mag = -v if neg else v
     sgn = f.sign_bit if neg else 0
+    if flush == "before" and mag < Fraction(2) ** f.emin:
+        return sgn, {"U", "I"}
     e = max(_floor_log2(mag), f.emin)
     scaled = mag / Fraction(2) ** (e - f.fbits)          # [1, 2^p) or less
     q = _round_int(scaled, neg, rm)

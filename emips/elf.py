@@ -56,6 +56,13 @@ SHT_SYMTAB = 2
 #: the MIPS ABI flags section (Elf_MIPS_ABIFlags_v0) and its DSP ASE bits
 SHT_MIPS_ABIFLAGS = 0x7000002A
 AFL_ASE_DSP, AFL_ASE_DSPR2, AFL_ASE_DSPR3 = 0x1, 0x2, 0x2000
+#: ... MSA (binutils include/elf/mips.h AFL_ASE_MSA) and the FP ABIs
+#: (Val_GNU_MIPS_ABI_FP_*: the ABI flags' fp_abi byte) whose o32 code
+#: needs Status.FR = 0 — MSA's vector registers need FR = 1 (MD00866 3.1);
+#: n64's "double" is 64-bit FPRs already
+AFL_ASE_MSA = 0x200
+FP_ABI_FR0 = {1: "double precision, 32-bit FPRs (-mfp32)", 2: "single precision",
+              4: "the old 64-bit ABI (-mfp64 on o32 before 'FPXX')"}
 STT_OBJECT, STT_FUNC = 1, 2
 #: e_flags (binutils include/elf/mips.h)
 EF_MIPS_PIC, EF_MIPS_CPIC = 0x2, 0x4
@@ -136,6 +143,11 @@ class ElfImage:
     #: the DSP Module level its code needs (.MIPS.abiflags ases: AFL_ASE_DSP
     #: 1, AFL_ASE_DSPR2 / DSPR3 2; binutils include/elf/mips.h)
     dsp: int = 0
+    #: MSA code (.MIPS.abiflags ases: AFL_ASE_MSA): the core gets MSA and
+    #: Status.FR = 1 (the FP ABI must allow it: FPXX, FP64, FP64A)
+    msa: bool = False
+    #: e_flags EF_MIPS_NAN2008: the code's NaNs are IEEE 754-2008's
+    nan2008: bool = False
     #: "mips32" (ELFCLASS32, o32), "mips64" (ELFCLASS64, n64) or "nanomips"
     #: (EM_NANOMIPS, p32)
     arch: str = "mips32"
@@ -291,6 +303,7 @@ def _parse(data: bytes, path: str) -> ElfImage:
                        "64-bit ELF: eMIPS runs MIPS64 (and MIPS III / IV / V) code there")
     img = ElfImage(path, endian, va32(e_entry) if wide else e_entry, e_flags,
                    arch="mips64" if wide else "mips32")
+    img.nan2008 = bool(e_flags & EF_MIPS_NAN2008)
     if e_flags & EF_MIPS_M16:
         img.notes.append("MIPS16e code (EF_MIPS_ARCH_ASE_M16): the core gets MIPS16e")
     if e_flags & EF_MIPS_MICROMIPS:
@@ -335,6 +348,14 @@ def _parse(data: bytes, path: str) -> ElfImage:
             img.notes.append("DSP Module code (.MIPS.abiflags: "
                              + ("Revision 2" if img.dsp > 1 else "Revision 1")
                              + "): the core gets the DSP Module")
+        img.msa = bool(ases & AFL_ASE_MSA)
+        fp_abi = data[flags[4] + 7]
+        if img.msa and not wide and fp_abi in FP_ABI_FR0:   # (n64: "double" = FR 1)
+            raise ElfError(f"MSA code built for the FP ABI {FP_ABI_FR0[fp_abi]}: MSA's "
+                           "vector registers need Status.FR = 1 (MD00866 3.1) — build "
+                           "with -mfp64 (emips cc --msa does)")
+        if img.msa:
+            img.notes.append("MSA code (.MIPS.abiflags): the core gets MSA, Status.FR = 1")
     _read_lines(img, data, end, sections, wide)
     return img
 

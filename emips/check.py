@@ -290,6 +290,7 @@ def _string(text: str, line: int) -> str:
 
 
 _MEM = {"word": 4, "half": 2, "byte": 1, "float": 4, "double": 8}
+_ELEMENT = {"b": 8, "h": 16, "w": 32, "d": 64}       # MSA data formats
 
 
 def _subject(t: str, line: int) -> tuple:
@@ -311,13 +312,28 @@ def _subject(t: str, line: int) -> tuple:
         if n is None or n > 31:
             raise CheckError(line, f"not an FPU register: {fm.group(1)}")
         return ("fpr", n, (fm.group(2) or "").lower())
+    wm = re.fullmatch(r"\$w(\d+)(?:\.([bhwd])\s*\[\s*(\d+)\s*\](?:\.(f))?)?", t, re.I)
+    if wm:                                          # MSA: $wN, $wN.w[2], $wN.d[1].f
+        n, fmt = int(wm.group(1)), (wm.group(2) or "").lower()
+        if n > 31:
+            raise CheckError(line, f"not a vector register: $w{n}")
+        if not fmt:
+            return ("vec", n, "", 0, False)
+        size, index = _ELEMENT[fmt], int(wm.group(3))
+        if index >= 128 // size:
+            raise CheckError(line, f"$w{n}.{fmt} has elements 0..{128 // size - 1}")
+        if wm.group(4) and fmt not in "wd":
+            raise CheckError(line, f".f needs a word or a doubleword element: {t}")
+        return ("vec", n, fmt, index, bool(wm.group(4)))
+    if low == "msacsr":
+        return ("special", "msacsr")
     if t.startswith("$"):
         return ("reg", _gpr(t, line))
     mm = re.fullmatch(r"(word|half|byte|float|double)\s*\[\s*(.+?)\s*\]", t, re.I)
     if mm:
         return ("mem", mm.group(1).lower(), _location(mm.group(2), line))
     raise CheckError(line, f"unknown subject {t!r} (output, $reg, hi, lo, pc, $fN[.s|.d], "
-                           "word / half / byte / float / double[LOC], cycles, instructions, "
+                           "$wN[.b|.h|.w|.d[I][.f]], msacsr, word / half / byte / float / double[LOC], cycles, instructions, "
                            "steps, stalls [KIND], exceptions, exit code)")
 
 
@@ -358,7 +374,7 @@ def _location(t: str, line: int) -> tuple:
 
 
 def _number(t: str, subject: tuple, line: int) -> Any:
-    floating = subject[0] == "fpr" and subject[2] or \
+    floating = subject[0] == "fpr" and subject[2] or subject[0] == "vec" and subject[4] or \
         subject[0] == "mem" and subject[1] in ("float", "double")
     if floating:
         try:
@@ -579,6 +595,23 @@ def _read(s, subject: tuple) -> tuple[Any, int | None, str]:
     if kind == "reg":
         v = m.read_reg(_reg(m, subject[1]))
         return v, 32, _hex(v, 32)
+    if kind == "special" and subject[1] == "msacsr":
+        if not m.msa:
+            raise _Unavailable("msacsr: this core has no MSA (eMIPS: --msa msa)")
+        return m.msacsr, 32, _hex(m.msacsr, 32)
+    if kind == "vec":
+        if not m.msa:
+            raise _Unavailable(f"$w{subject[1]}: this core has no MSA (eMIPS: --msa msa)")
+        _, n, fmt, index, floating = subject
+        v = m.wh[n] << 64 | m.fpr[n]
+        if not fmt:
+            return v, 128, f"0x{v:032x}"
+        size = _ELEMENT[fmt]
+        e = (v >> (index * size)) & ((1 << size) - 1)
+        if floating:
+            f = struct.unpack(">f" if size == 32 else ">d", e.to_bytes(size // 8, "big"))[0]
+            return f, size, repr(f)
+        return e, size, _hex(e, size)
     if kind == "special":
         v = {"hi": lambda: m.hi, "lo": lambda: m.lo,
              "pc": lambda: s.current_pc() if s.current_pc() is not None else m.pc}[subject[1]]()

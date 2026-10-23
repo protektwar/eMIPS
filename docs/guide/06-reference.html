@@ -408,7 +408,7 @@ ones a student program uses:</p>
 <tr>
 <td style="text-align: right;">16, 4 / 5</td>
 <td>Config4 / Config5</td>
-<td>IE (30–29) TLB invalidate instructions; the FTLB's page size, ways, sets / Config5: K (30), CV (29), EVA (28)</td>
+<td>IE (30–29) TLB invalidate instructions; the FTLB's page size, ways, sets / Config5: K (30), CV (29), EVA (28), MSAEn (27): MSA instructions allowed (else MSA Disabled; Config3.MSAP (28) says MSA exists)</td>
 </tr>
 <tr>
 <td style="text-align: right;">16, 7</td>
@@ -718,6 +718,65 @@ line early (hints 0–7), writes one back and invalidates it (25) or
 allocates a zeroed line for a store (30); hint 25 also sends a gathered
 uncached accelerated block.  <code>sync</code> empties the write buffer's waiting
 entries.  Without caches all of them do nothing.</p>
+<h3 id="msa-control-registers-msair-and-msacsr">MSA control registers: MSAIR and MSACSR</h3>
+<p>Read with <code>cfcmsa rd, $N</code>, write with <code>ctcmsa $N, rs</code> (GNU as takes
+the numbers only).  Registers 2–7 (MSAAccess, MSASave, MSAModify,
+MSARequest, MSAMap, MSAUnmap) exist only with vector register partitioning
+(MSAIR.WRP = 1, <code>--msa-wrp N</code>) and are privileged.</p>
+<table>
+<thead>
+<tr>
+<th>Register, bits</th>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 MSAIR: 16</td>
+<td>WRP</td>
+<td>vector register partitioning implemented (0 on every real core)</td>
+</tr>
+<tr>
+<td>0 MSAIR: 15–8 / 7–0</td>
+<td>ProcID / Rev</td>
+<td>implementation and revision (eMIPS: 0x03, 0x00 — QEMU's I6400); read-only</td>
+</tr>
+<tr>
+<td>1 MSACSR: 1–0</td>
+<td>RM</td>
+<td>rounding: 0 nearest, 1 toward zero, 2 toward +∞, 3 toward −∞</td>
+</tr>
+<tr>
+<td>1 MSACSR: 6–2</td>
+<td>Flags</td>
+<td>sticky V Z O U I of every element, since last cleared (not set when the instruction traps)</td>
+</tr>
+<tr>
+<td>1 MSACSR: 11–7</td>
+<td>Enables</td>
+<td>trap (MSA floating point, code 14) on V Z O U I</td>
+</tr>
+<tr>
+<td>1 MSACSR: 17–12</td>
+<td>Cause</td>
+<td>E V Z O U I of the last floating-point instruction, ORed over its elements</td>
+</tr>
+<tr>
+<td>1 MSACSR: 18</td>
+<td>NX</td>
+<td>non-trapping: an element with an enabled exception gets a signaling NaN holding its cause bits instead of a trap</td>
+</tr>
+<tr>
+<td>1 MSACSR: 24</td>
+<td>FS</td>
+<td>flush subnormal operands and results to zero</td>
+</tr>
+</tbody>
+</table>
+<p>An MSA core's FPU follows IEEE 754-2008 (FCSR.NAN2008 = ABS2008 = 1, as in
+Release 6), and <code>$fN</code> is the low 64 bits of <code>$wN</code>
+(<a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>, <a href="05-understanding.html#512-vectors-inside-msa">5.12</a>).</p>
 <h2 id="65-exception-codes">6.5 Exception codes</h2>
 <table>
 <thead>
@@ -799,6 +858,11 @@ entries.  Without caches all of them do nothing.</p>
 <td>a trap instruction's condition was true</td>
 </tr>
 <tr>
+<td style="text-align: right;">14</td>
+<td>MSAFPE</td>
+<td>(MSA) MSA floating point: an enabled IEEE exception in some element, or an unimplemented operation (MSACSR.Cause); nothing was written</td>
+</tr>
+<tr>
 <td style="text-align: right;">15</td>
 <td>FPE</td>
 <td>floating-point exception (an enabled IEEE flag)</td>
@@ -807,6 +871,11 @@ entries.  Without caches all of them do nothing.</p>
 <td style="text-align: right;">19 / 20</td>
 <td>TLBRI / TLBXI</td>
 <td>a load from a read-inhibited / a fetch from an execute-inhibited page (PageGrain.IEC = 1)</td>
+</tr>
+<tr>
+<td style="text-align: right;">21</td>
+<td>MSADis</td>
+<td>(MSA) MSA Disabled: an MSA instruction (or a reserved MSA encoding) with Config5.MSAEn = 0 — taken before it runs: return to EPC</td>
 </tr>
 <tr>
 <td style="text-align: right;">23</td>
@@ -1075,12 +1144,12 @@ Not included:</p>
   Trace itself (PDtrace and the TCB's on-chip trace memory) is simulated,
   like EJTAG Debug Mode, the hardware breakpoints, the watch registers,
   the TAP with a probe and PC sampling;</li>
-<li><strong>ASEs</strong>: MSA (SIMD), MCU, MIPS-3D, MIPS16e2, the
+<li><strong>ASEs</strong>: MCU, MIPS-3D, MIPS16e2, the
   virtualization ASE, paired-single floating point, COP2 (Coprocessor
   Unusable), the optional Release 6 modules (MIPS16e and microMIPS are
   simulated: <a href="02-writing-programs.html#219-mips16e-16-bit-instructions">Phase 2, 2.19 / 2.20</a>;
-  the DSP Module and the MT Module too: <code>--dsp</code>, <code>--mt</code>,
-  <a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a> / <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a>);
+  the DSP Module, the MT Module and MSA too: <code>--dsp</code>, <code>--mt</code>, <code>--msa</code>,
+  <a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a> / <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">2.22</a> / <a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>);
   of a real core (<a href="#611-real-mips-cores">6.11</a>), what is specific to
   it beyond its build options;</li>
 <li><strong>an external interrupt controller on one core</strong> — EIC mode needs the
@@ -1167,6 +1236,15 @@ MMU (and the I7200's MPU), several cores and the Malta work on it too
 (<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">Phase 2, 2.24</a>, Labs 63–67).</p>
 <p><strong>Where are my settings stored?</strong>  <code>~/.config/eMIPS/eMIPS.ini</code> (Linux;
 the equivalent per-user folder elsewhere).  Delete it to start fresh.</p>
+<p><strong>An MSA instruction stops my program with <em>Reserved Instruction</em> (or
+<em>MSA Disabled</em>).</strong>  MSA needs Release 5 or 6 (<code>--release R5</code>)
+and the FPU (no <code>--no-fpu</code>); a core preset without it (the 24K, the
+1004K ...) or <code>--msa none</code> refuses the program when it loads.  A core with
+MSA still raises Reserved Instruction while Status.CU1 = 1 and FR = 0 (the
+FPU in 32-bit mode), and MSA Disabled (code 21) while Config5.MSAEn = 0 —
+the boot firmware sets both; a program that starts in the reset state
+(<code>--boot reset</code>) or clears them must set them itself
+(<a href="05-understanding.html#msa-disabled-saving-vectors-only-when-needed">5.12</a>, Lab 71).</p>
 <h2 id="610-for-teachers">6.10 For teachers</h2>
 <p><strong>Worksheets as debugger scripts.</strong>  A file of debugger commands
 (<code>-x</code>) reproduces a session exactly — breakpoints, register values,
@@ -1199,7 +1277,7 @@ creates <code>emips/gui/translations/emips_ro.ts</code>; fill it with Qt Linguis
 as its datasheet and Software User's Manual let it be built: the release
 it implements, its compressed ISA, whether it has an FPU, its MMU, cache
 shapes, number of cores, shadow register sets and pipeline model, and its
-PRId (Processor ID), and whether it has the DSP Module and the MT Module.  Choose it with the window's <strong>Core</strong> box
+PRId (Processor ID), and whether it has the DSP Module, the MT Module and MSA.  Choose it with the window's <strong>Core</strong> box
 (Machine toolbar, Settings → Processor), <code>--core NAME</code>, <code>set core
 NAME</code> or a program's <code># eMIPS: --core NAME</code> line;
 <code>python3 -m emips cores</code> lists them.  The preset sets one build (the
@@ -1219,6 +1297,7 @@ note.</p>
 <th>FPU</th>
 <th>DSP Module</th>
 <th>MT Module</th>
+<th>MSA</th>
 <th>MMU</th>
 <th>L1 caches</th>
 <th>Pipeline model</th>
@@ -1232,6 +1311,7 @@ note.</p>
 <td>4Kc</td>
 <td>R1</td>
 <td>none</td>
+<td>no</td>
 <td>no</td>
 <td>no</td>
 <td>no</td>
@@ -1249,6 +1329,7 @@ note.</p>
 <td>no</td>
 <td>no</td>
 <td>no</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
 <td>none/8/16/32/64 KB, 4-way, 32-byte lines</td>
 <td>24k</td>
@@ -1261,6 +1342,7 @@ note.</p>
 <td>R2</td>
 <td>MIPS16e</td>
 <td>yes</td>
+<td>no</td>
 <td>no</td>
 <td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
@@ -1277,6 +1359,7 @@ note.</p>
 <td>no</td>
 <td>Revision 1</td>
 <td>1 or 2 VPEs, 1–9 TCs</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
 <td>none/8/16/32/64 KB, 4-way, 32-byte lines (or 1/2/4/8/16 KB direct-mapped)</td>
 <td>24k</td>
@@ -1291,6 +1374,7 @@ note.</p>
 <td>yes</td>
 <td>Revision 1</td>
 <td>1 or 2 VPEs, 1–9 TCs</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
 <td>none/8/16/32/64 KB, 4-way, 32-byte lines (or 1/2/4/8/16 KB direct-mapped)</td>
 <td>24k</td>
@@ -1305,6 +1389,7 @@ note.</p>
 <td>no</td>
 <td>Revision 1 or no</td>
 <td>1 or 2 VPEs, one TC each</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
 <td>8/16/32/64 KB, 4-way, 32-byte lines (or 0/1/2/4/8/16 KB direct-mapped)</td>
 <td>24k</td>
@@ -1319,6 +1404,7 @@ note.</p>
 <td>yes</td>
 <td>Revision 1 or no</td>
 <td>1 or 2 VPEs, one TC each</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:64, fixed</td>
 <td>8/16/32/64 KB, 4-way, 32-byte lines (or 0/1/2/4/8/16 KB direct-mapped)</td>
 <td>24k</td>
@@ -1333,6 +1419,7 @@ note.</p>
 <td>optional</td>
 <td>Revision 2 or no</td>
 <td>1 or 2 VPEs, 1–9 TCs</td>
+<td>no</td>
 <td>tlb:16+sc, tlb:32+sc, tlb:48+sc, tlb:64+sc</td>
 <td>4/8/16/32/64 KB, 4-way, 32-byte lines</td>
 <td>24k</td>
@@ -1347,6 +1434,7 @@ note.</p>
 <td>optional</td>
 <td>no</td>
 <td>no</td>
+<td>optional</td>
 <td>ftlb:64:128x4+sc, ftlb:64:128x4+sc+pw, tlb:64+sc, tlb:64+sc+pw</td>
 <td>32/64 KB, 4-way, 32-byte lines</td>
 <td>5-stage, 24k</td>
@@ -1358,6 +1446,7 @@ note.</p>
 <td>M14K</td>
 <td>R2</td>
 <td>microMIPS + MIPS32 / microMIPS only / none</td>
+<td>no</td>
 <td>no</td>
 <td>no</td>
 <td>no</td>
@@ -1375,6 +1464,7 @@ note.</p>
 <td>no</td>
 <td>no</td>
 <td>no</td>
+<td>no</td>
 <td>fixed, tlb:16, tlb:32</td>
 <td>0-64 KB, 1/2/3/4-way, 16-byte lines</td>
 <td>5-stage</td>
@@ -1388,6 +1478,7 @@ note.</p>
 <td>microMIPS + MIPS32 / microMIPS only / none</td>
 <td>optional</td>
 <td>Revision 2 or no</td>
+<td>no</td>
 <td>no</td>
 <td>fixed</td>
 <td>no cache</td>
@@ -1403,6 +1494,7 @@ note.</p>
 <td>no</td>
 <td>Revision 2 or no</td>
 <td>no</td>
+<td>no</td>
 <td>fixed, tlb:16, tlb:32</td>
 <td>0-64 KB, 1/2/3/4-way, 16-byte lines</td>
 <td>5-stage</td>
@@ -1414,6 +1506,7 @@ note.</p>
 <td>MIPS64 5Kc</td>
 <td>MIPS64 R1</td>
 <td>none</td>
+<td>no</td>
 <td>no</td>
 <td>no</td>
 <td>no</td>
@@ -1431,6 +1524,7 @@ note.</p>
 <td>yes</td>
 <td>no</td>
 <td>no</td>
+<td>no</td>
 <td>tlb:16, tlb:32, tlb:48, fixed</td>
 <td>0-64 KB, 1/2/3/4-way, 32-byte lines</td>
 <td>5-stage</td>
@@ -1443,6 +1537,7 @@ note.</p>
 <td>MIPS64 R1</td>
 <td>none</td>
 <td>yes</td>
+<td>no</td>
 <td>no</td>
 <td>no</td>
 <td>tlb:48</td>
@@ -1459,6 +1554,7 @@ note.</p>
 <td>yes</td>
 <td>no</td>
 <td>no</td>
+<td>yes</td>
 <td>ftlb:16:64x4</td>
 <td>32/64 KB, 4-way, 64-byte lines (L2 256 KB 8-way)</td>
 <td>5-stage</td>
@@ -1473,6 +1569,7 @@ note.</p>
 <td>optional</td>
 <td>no</td>
 <td>no</td>
+<td>optional</td>
 <td>ftlb:64:128x4+sc, ftlb:64:128x4+sc+pw</td>
 <td>32/64 KB, 4-way, 32-byte lines (L2 512 KB–8 MB 8-way)</td>
 <td>5-stage</td>
@@ -1487,6 +1584,7 @@ note.</p>
 <td>no</td>
 <td>optional (the nanoMIPS DSP ASE)</td>
 <td>1–3 VPEs, 1–9 TCs</td>
+<td>no</td>
 <td>tlb:16/32/64 (+sc: EVA), mpu:8–32, fixed+mpu:8–32</td>
 <td>4–64 KB (128 KB with the MPU), 4-way, 32-byte lines (L2 32 KB–8 MB 8-way)</td>
 <td>5-stage</td>
@@ -1749,7 +1847,19 @@ system with the Fast Debug Channel.</p>
 </tr>
 <tr>
 <td>SIMD</td>
-<td>single instruction, multiple data: one instruction on several values at once — the DSP Module's <code>.QB</code> (four bytes) and <code>.PH</code> (two halfwords) instructions on one GPR (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>)</td>
+<td>single instruction, multiple data: one instruction on several values at once — the DSP Module's <code>.QB</code> (four bytes) and <code>.PH</code> (two halfwords) instructions on one GPR (<a href="02-writing-programs.html#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>), MSA's on a 128-bit vector (<a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>)</td>
+</tr>
+<tr>
+<td>MSA</td>
+<td>the MIPS SIMD Architecture (Release 5 / 6): 32 vector registers of 128 bits over the FPU's, integer, fixed-point and IEEE floating-point instructions on all their elements, MSACSR; enabled by Config5.MSAEn (<a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>, <a href="05-understanding.html#512-vectors-inside-msa">5.12</a>)</td>
+</tr>
+<tr>
+<td>vector register, element (lane)</td>
+<td>one of MSA's <code>$w0</code>–<code>$w31</code>, 128 bits; an element is one of the 16 bytes / 8 halfwords / 4 words / 2 doublewords an instruction works on, numbered from the low end (element 0 = bits 7..0 of a <code>.b</code> vector)</td>
+</tr>
+<tr>
+<td>MSACSR</td>
+<td>MSA's control and status register: rounding mode, IEEE Flags / Enables / Cause over all elements, NX (non-trapping exceptions), FS (flush to zero) (<a href="06-reference.html#msa-control-registers-msair-and-msacsr">6.4</a>)</td>
 </tr>
 <tr>
 <td>saturation</td>

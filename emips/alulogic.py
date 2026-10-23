@@ -175,17 +175,20 @@ def _sx32(x: int) -> int:
     return x | (M64 ^ M32) if x & 0x80000000 else x
 
 
-def control_for(word: int, release: str = "R5", arch: str = "mips32") -> AluControl:
+def control_for(word: int, release: str = "R5", arch: str = "mips32",
+                msa: bool = False) -> AluControl:
     """The ALU control of an instruction word: the main control's ALUOp,
-    then the ALU control PLA's lines (:mod:`emips.controllogic`)."""
+    then the ALU control PLA's lines (:mod:`emips.controllogic`; ``msa``:
+    a core with MSA — LSA / DLSA are its rows before Release 6)."""
     from . import controllogic as cl
-    ev = cl.evaluate_main(cl.main_control(release, arch), word)
-    _, lines = cl.alu_control(release, arch).evaluate(cl.alu_input(ev.aluop, word))
+    ev = cl.evaluate_main(cl.main_control(release, arch, msa), word)
+    _, lines = cl.alu_control(release, arch, msa).evaluate(cl.alu_input(ev.aluop, word))
     funct = format(word & 0x3F, "06b") if ev.aluop == 0b0010 else None
     return AluControl(ev.aluop, funct, lines)
 
 
-def alu_logic(view, release: str = "R5", arch: str = "mips32") -> AluLogic | None:
+def alu_logic(view, release: str = "R5", arch: str = "mips32",
+              msa: bool = False) -> AluLogic | None:
     """The gates of the instruction ``view`` (an :class:`emips.trace.InstrView`)
     executed, or None when it used no ALU operation (``arch="mips64"``: the
     64-bit ALU)."""
@@ -200,7 +203,7 @@ def alu_logic(view, release: str = "R5", arch: str = "mips32") -> AluLogic | Non
         from .nanocontrol import control_for as nano_control
         ctl = nano_control(view.word, view.size)
     else:
-        ctl = control_for(view.word, release, arch)
+        ctl = control_for(view.word, release, arch, msa)
     top = 31 if width == 32 or ctl.word else 63
     out = AluLogic(view.text, ctl, a, b, None, alu.result, width=width, top=top)
     if ctl.other:

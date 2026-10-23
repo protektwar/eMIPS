@@ -43,7 +43,8 @@ with lab exercises you can check with eMIPS itself.</p>
 <li><a href="#59-more-than-one-core">5.9 More than one core</a></li>
 <li><a href="#510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</a></li>
 <li><a href="#511-floating-point-ieee-754">5.11 Floating point (IEEE 754)</a></li>
-<li><a href="#512-labs">5.12 Labs</a></li>
+<li><a href="#512-vectors-inside-msa">5.12 Vectors: inside MSA</a></li>
+<li><a href="#513-labs">5.13 Labs</a></li>
 </ul>
 <hr>
 <h2 id="51-how-an-instruction-is-encoded">5.1 How an instruction is encoded</h2>
@@ -2989,7 +2990,100 @@ the IEEE 754-2008 convention, the opposite (<code>0x7fc00000</code>).  eMIPS fol
 the selected release, and the number converter shows both.</p>
 <p><strong>Tools → Number Converter</strong> and <code>print</code> in the debugger take any value
 apart into sign, exponent and fraction.  See <a href="#lab-6--01--02--03">Lab 6</a>.</p>
-<h2 id="512-labs">5.12 Labs</h2>
+<h2 id="512-vectors-inside-msa">5.12 Vectors: inside MSA</h2>
+<p>MSA (<a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>) is the same idea as the ALU, repeated: one
+instruction, one opcode, sixteen 8-bit (or eight 16-bit, four 32-bit, two
+64-bit) operations side by side on the 128 bits of a vector register.
+The data format is part of the opcode (the <em>df</em> field, the
+<code>.b</code> / <code>.h</code> / <code>.w</code> / <code>.d</code> suffix): the hardware
+cuts the carry chain of its adders at every element boundary, which is
+why <code>addv.b</code> of 0xff and 0x01 gives 0x00 in that byte and leaves its
+neighbour alone.</p>
+<h3 id="elements-and-byte-order">Elements and byte order</h3>
+<p>An element's number is its position in the register — element 0 is the
+lowest bits — and <code>ld.df</code> / <code>st.df</code> put element 0 at the lowest
+address, each element stored in the core's byte order.  On a
+little-endian core that is the same as storing the 16 bytes in order,
+whatever the element size; on a big-endian one it is not.  The same 16
+bytes 01 02 03 ... 10 loaded both ways:</p>
+<pre><code class="language-mips">        ld.w    $w1, 0($t0)     # big-endian:    [0] 0x01020304 [1] 0x05060708 ...
+        ld.b    $w2, 0($t0)     #   (as words:   [0] 0x04030201 [1] 0x08070605 ...)
+                                # little-endian: both 0x04030201 0x08070605 ...
+</code></pre>
+<p>So on big-endian, load and store vectors with the element size the
+data has: <code>ld.h</code> for an array of halfwords, <code>ld.b</code> for pixels.
+The debugger's <code>msa $w1 $w2 w</code> shows the difference; the register
+pane's MSA tab can show the same register as bytes, halfwords, words or
+doublewords.  An address needs no alignment (MSA loads any 16 bytes),
+but a real core may trap on some misaligned ones: the P5600 raises an
+address error for a misaligned vector access to uncached memory, and
+<code>--core p5600</code> does too.</p>
+<h3 id="wrap-around-saturation-and-fixed-point">Wrap-around, saturation and fixed point</h3>
+<p><code>addv</code>, <code>subv</code> and <code>mulv</code> keep the low bits of each result:
+0xf0 + 0x50 is 0x40 in a byte.  The saturating forms clamp instead —
+<code>adds_u.b</code> gives 0xff, <code>adds_s.b</code> keeps a signed byte between
+-128 and 127 — which is what pixels and audio samples need (Lab 69).
+Nothing records that an element saturated (MSA has no ouflag, unlike the
+DSP Module).  <code>sat_s.w $w0, $w1, 15</code> clamps words into the range of 16-bit
+values before they are packed (<code>pckev.h</code>).</p>
+<p>Fixed point uses the same integers as fractions: a Q15 halfword is
+-1 to just under 1 in steps of 2<sup>-15</sup> (0x4000 = 0.5, 0x8000 =
+-1), Q31 the same in a word.  <code>mul_q.h</code> multiplies Q15 fractions and
+keeps the top 16 bits of the doubled product — it truncates;
+<code>mulr_q.h</code> adds half a step first — it rounds.  The one product that
+does not fit, -1 x -1 = +1, saturates to 0x7fff.  <code>madd_q.h</code> /
+<code>msub_q.h</code> (and their <code>r</code> forms) accumulate, <code>dotp_s.w</code>
+multiplies halfwords as integers and adds each pair into a word (a Q30
+sum of two Q15 products), <code>dpadd_s.w</code> adds that to the destination
+(Lab 70).</p>
+<h3 id="floating-point-in-every-element">Floating point in every element</h3>
+<p>MSA floating point is IEEE 754-2008 in every element: the rounding mode
+(RM), the six Cause bits (V Z O U I and E, unimplemented), the five Flags
+and Enables are in <strong>MSACSR</strong>, a control register of MSA's own
+(<code>cfcmsa</code> / <code>ctcmsa</code> register 1; register 0, <strong>MSAIR</strong>,
+says which MSA this is).  An instruction's Cause is the OR of its
+elements' exceptions: <code>fdiv.w</code> of four elements, one of them by
+zero, sets Z.  When an enabled exception happens in any element, the
+whole instruction is cancelled — no element is written, no Flag set — and
+the core takes the <em>MSA Floating Point</em> exception (code 14) with
+MSACSR.Cause saying why.  Without the enable the element gets IEEE's
+default result (a NaN, an infinity, a flushed zero) and the Flag sticks.</p>
+<p><strong>NX</strong> (MSACSR bit 18, non-trapping exception mode) changes the
+enabled case: instead of trapping, each element that raised an enabled
+exception gets a <em>signaling NaN</em> whose low bits hold its own cause
+— <code>0/0</code> with V enabled gives 0x7f800010 in that element — and the
+other elements their normal results, so a program can find which
+elements failed after a whole loop.  <strong>FS</strong> (bit 24) flushes
+subnormal operands and results to zero, as the FPU's FS does (MSA
+decides "tiny" before rounding).  The register pane's MSA tab and the
+debugger's <code>msa</code> decode MSACSR field by field.</p>
+<h3 id="msa-disabled-saving-vectors-only-when-needed">MSA Disabled: saving vectors only when needed</h3>
+<p>The 32 vector registers are 512 bytes of state per process.  An operating
+system clears <strong>Config5.MSAEn</strong> when it switches to a process; the
+first MSA instruction that process runs raises <em>MSA Disabled</em> (code
+21) before it does anything, and the handler saves the previous owner's
+vectors, loads this process's, sets MSAEn and returns to the same
+instruction (EPC, not EPC + 4: Lab 71).  A process that never uses MSA
+never pays for it.  The exception comes after two checks in the
+manual's order: a core without MSA (Config3.MSAP = 0) raises Reserved
+Instruction, and so does one whose FPU is in 32-bit mode (Status.CU1 = 1
+with FR = 0).  (MSA also defines <em>vector register partitioning</em> —
+fewer physical than architectural registers, mapped by the kernel through
+MSAIR.WRP's registers — which no real core built; <code>--msa-wrp N</code> lets you
+try it.)</p>
+<h3 id="msa-in-the-pipeline">MSA in the pipeline</h3>
+<p>On the 5-stage pipeline an MSA instruction executes in the FPU / MSA unit
+(part 18 of the datapath, <a href="03-the-gui.html#34-the-datapath">3.4</a>) and holds EX for its latency — the P6600's
+(MIPS's manuals give no other core's): 2 cycles for integer, logic and
+permute operations, 3 for <code>pcnt</code> / <code>sat</code>, 4 for floating-point
+adds and conversions, 5 for multiplies, dot products and <code>fmul</code>; divides
+and square roots take as long as the FPU's.  <code>$f5</code> and <code>$w5</code> are one
+register, so a scalar <code>add.d $f5</code> followed by <code>addv.d</code> reading
+<code>$w5</code> is a dependency like any other (without forwarding it waits for WB).
+<code>ld.df</code> is a load: its result comes after MEM (a load-use stall for an
+instruction that uses it right away).  The 24K model has no MSA: an MSA
+program in 24K mode runs on the 5-stage pipeline, with a note (Lab 68).</p>
+<h2 id="513-labs">5.13 Labs</h2>
 <p>Each lab gives a task, a way to check your answer with eMIPS, and the
 answer (click to open it — try first!).  The lab programs are in
 <code>docs/guide/labs/</code>.  The labs that ask you to write or change a
@@ -4640,6 +4734,117 @@ MIPS32's <code>checksum</code> has a <code>nop</code> after <code>bne</code> and
 <code>lsa</code> (shift and add: the end of the table), <code>bnec</code> / <code>bgec</code> (compare and
 branch — MIPS32 needs <code>slt</code> + <code>bne</code>), <code>bltic $a1, 2</code>, <code>blezc</code>.  Code size matters on a microcontroller-class core like the
 I7200: smaller code fits its caches and its flash.</p>
+</details>
+<h3 id="lab-68--four-at-a-time">Lab 68 — Four at a time</h3>
+<p><a href="labs/msa_add.asm"><code>labs/msa_add.asm</code></a> adds two arrays of 64 words
+twice over: <code>add_msa</code> four words per instruction (<code>ld.w</code>,
+<code>addv.w</code>, <code>st.w</code>: <a href="02-writing-programs.html#225-msa-128-bit-vectors">2.25</a>) and <code>add32</code> one at a time
+(<code>.eqv MSA, 0</code> chooses it).  Both print 2018016.  Run both on the 5-stage
+pipeline (<code>python3 -m emips pipe docs/guide/labs/msa_add.asm</code>): how many
+instructions and cycles does each program take, and how many of them are the
+addition itself?  Why is the vector loop not four times faster?</p>
+<details>
+<summary>Answer</summary>
+<p>The programs: 1341 and 1819 instructions, 1778 and 2336 cycles.  The
+additions alone (from the call to the return): 164 instructions in 212
+cycles with MSA, 642 in 770 without — 16 iterations of 10 instructions
+(the <code>bnez</code>'s delay slot is a <code>nop</code>) against 64.  A scalar
+iteration costs 12 cycles: 10 instructions, a load-use stall and a branch
+stall (<code>bnez</code> right after the <code>addiu</code> it tests).  A vector
+iteration costs 13: the same two stalls, and <code>addv.w</code> holds EX for two
+cycles (the P6600's MSA latency: 5.12).  So the loop is 3.6 times faster,
+not 4 — and the whole program only 1.3 times: setting up the arrays (with
+<code>mul</code>, which keeps the multiply unit busy) and summing them stay scalar,
+and they are most of the time.  That is Amdahl's law: speeding up a part
+helps only as much as the part's share.</p>
+</details>
+<h3 id="lab-69--saturation-sixteen-pixels-at-a-time">Lab 69 — Saturation, sixteen pixels at a time</h3>
+<p><a href="labs/msa_pixels.asm"><code>labs/msa_pixels.asm</code></a> brightens a 32-pixel image by
+0x50 with two vector additions — and as handed out, the bright pixels turn
+dark.  Find the instruction that does it and fix the program so that every
+pixel stops at white; <a href="labs/msa_pixels.check"><code>labs/msa_pixels.check</code></a>
+checks it (<code>python3 -m emips check docs/guide/labs/msa_pixels.asm</code>, or Run →
+Check in the window).  Why <code>adds_u.b</code> and not <code>adds_s.b</code>?</p>
+<details>
+<summary>Answer</summary>
+<p><code>addv.b</code> wraps around in each byte: 0xb0 + 0x50 = 0x100 keeps 0x00,
+so the third line prints 0xff001020 — white, then black, then dark grey.  The
+fix is <code>adds_u.b $w0, $w0, $w1</code> in both places: unsigned saturation,
+sixteen bytes per instruction, each stopping at 0xff (lines three, four and
+eight become 0xffffffff, line seven 0xd5e5f5ff).  <code>adds_s.b</code> saturates
+<em>signed</em> bytes, between -128 and 127: it treats 0x40 + 0x50 as 64 + 80 =
+144, too big, and clamps it to 0x7f — the first line becomes 0x5060707f, and
+pixels from 0x80 up (negative to it) still wrap.  Pixels are unsigned.  Neither
+form records that it saturated (MSA has no DSPControl ouflag).</p>
+</details>
+<h3 id="lab-70--fractions-rounded-and-truncated">Lab 70 — Fractions, rounded and truncated</h3>
+<p><a href="labs/msa_dot.asm"><code>labs/msa_dot.asm</code></a> multiplies eight pairs of Q15
+fractions twice — <code>mul_q.h</code> (truncating) and <code>mulr_q.h</code> (rounding) —
+and prints both vectors, then the dot product as one Q15 fraction, computed
+with <code>dotp_s.w</code> and <code>hadd_s.d</code>.  It prints 0x00003007 last.  Why do the
+two lines differ only in elements 5, 6 and 7?  What happened in elements 3 and
+4?  Add the eight rounded products up, and the eight truncated ones: why is
+neither 0x3007?</p>
+<details>
+<summary>Answer</summary>
+<p>A product of two Q15 fractions has 30 fraction bits; Q15 keeps 15 of them.
+Elements 0-3 drop only zeros (0.5 x 0.75 = 0.375 is 0x3000 exactly);
+elements 5-7 drop a part: 0x2aaa x 0x3000 is 4095.75 steps, truncated to
+0x0fff, rounded to 0x1000, and 1 x 0x7fff is 0.99997 of a step — 0 or 1.
+Element 4 is -1 x -1 = +1, which Q15 cannot hold: both saturate to 0x7fff;
+element 3, 0x7fff x -1 = -0.99997, fits (0x8001).  The rounded products add
+up to 0x3006, the truncated ones to 0x3003: every product lost a bit before
+the sum.  <code>dotp_s.w</code> keeps the full 30-bit products (two to a word),
+<code>hadd_s.d</code> adds the words, and the program rounds once at the end:
+0x3007, the closest Q15 value to the exact sum 0.37521 — and no saturation,
+-1 x -1 counts as 1.0.  Keep the precision until the end, round once: the same
+rule as the DSP Module's accumulators (Lab 50).</p>
+</details>
+<h3 id="lab-71--msa-on-first-use">Lab 71 — MSA on first use</h3>
+<p><a href="labs/msa_lazy.asm"><code>labs/msa_lazy.asm</code></a> clears Config5.MSAEn, as an
+operating system does for a new process, and then adds two vectors.  Its kernel
+handler enables MSA when the exception is <em>MSA Disabled</em> (code 21) and
+returns.  The program should print 12 (5 + 7) but prints 7.  Find the bug
+(<code>python3 -m emips debug docs/guide/labs/msa_lazy.asm</code>, <code>break
+0x80000180</code>, <code>msa</code>), fix it and check the fix
+(<a href="labs/msa_lazy.check"><code>labs/msa_lazy.check</code></a>).  How many times is the
+exception taken, and what must a real operating system's handler do besides?</p>
+<details>
+<summary>Answer</summary>
+<p>The handler adds 4 to EPC, as a system call handler does — but MSA Disabled
+happens <em>before</em> the instruction runs, so the <code>ldi.w $w1, 5</code> is
+skipped: <code>$w1</code> stays 0 and 0 + 7 is printed.  Delete the three lines that
+add 4; <code>eret</code> then returns to the <code>ldi.w</code>, which runs now that MSAEn
+is 1.  The exception is taken once: MSAEn stays set, the next MSA instructions
+just run (the check counts <code>exceptions == 1</code>).  A real handler also saves
+the vector registers of the process that used MSA last (512 bytes, and
+MSACSR) and loads this one's before it returns, and the scheduler clears
+MSAEn again when it switches to a process: a process that never uses MSA
+never pays for its registers.  (<code>ehb</code> before <code>eret</code> keeps the
+handler right on cores with CP0 hazards.)</p>
+</details>
+<h3 id="lab-72--what-the-compiler-vectorizes">Lab 72 — What the compiler vectorizes</h3>
+<p><a href="labs/c_msa.c"><code>labs/c_msa.c</code></a> fills two arrays of 256 ints, computes
+<code>c[i] = 3 * a[i] + b[i]</code> and sums <code>c</code> — plain C, no builtins.  It is
+built twice at <code>-O 3</code>: <code>c_msa_plain.elf</code> as usual and
+<code>c_msa.elf</code> with <code>cc --msa</code> (<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  Both print 130816.  How
+many instructions does each run, and how many of them are <code>main</code>'s?
+Compare the loops in the two listings (<code>python3 -m emips dis
+docs/guide/labs/c_msa.elf</code>): which ones did GCC vectorize, and how does it
+multiply by 3?</p>
+<details>
+<summary>Answer</summary>
+<p>9252 and 5293 instructions; <code>main</code> is 5397 of the first and 1438 of the
+second (the rest, about 3850, is the startup code clearing <code>.bss</code> and the
+exit, the same in both).  GCC vectorized all three loops by itself: the
+initialisation keeps the indexes 0 1 2 3 in a vector and adds 4 to them
+(<code>addvi.w</code>), the computation is <code>ld.w</code>, <code>ld.w</code>, <code>slli.w</code>,
+<code>addv.w</code>, <code>addv.w</code>, <code>st.w</code> — 3 x a as (a &lt;&lt; 1) + a, a shift and an
+add (2 + 2 cycles on the P6600) instead of <code>mulv.w</code> (5) — and the sum adds
+four partial sums in a vector, then the four words with <code>copy_s.w</code> and
+<code>addu</code>.  N = 256 is a multiple of 4, so there is no left-over loop.  The
+auto-vectorizer needs only <code>-mmsa</code> (and -O3): unlike the DSP Module's
+saturating adds (Lab 51), plain C arithmetic maps onto MSA directly.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

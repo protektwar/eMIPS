@@ -125,7 +125,7 @@ class ReferenceView(_Pane):
 
     def _filter(self) -> None:
         q = self.search.text()
-        self.shown = [r for r in self.rows if r.matches(q)]
+        self.shown = tools.search(self.rows, q)
         t = self.table
         t.setRowCount(len(self.shown))
         for i, r in enumerate(self.shown):
@@ -290,7 +290,9 @@ class ConverterView(QtWidgets.QWidget):
         parts = [f"<p><i>{E(n.source)}, {n.width} {E(tr('bits'))}</i></p>",
                  f"<table cellpadding=3>{table}</table>"]
         for fp, title in ((n.single, tr("as an IEEE-754 single (float)")),
-                          (n.double, tr("as an IEEE-754 double"))):
+                          (n.double, tr("as an IEEE-754 double")),
+                          (n.half, tr("as an IEEE-754 half (binary16: MSA's FEXDO.H, "
+                                      "FEXUPL / FEXUPR)"))):
             if fp is not None:
                 parts.append(self._float_html(fp, title))
         if n.notes:
@@ -299,7 +301,7 @@ class ConverterView(QtWidgets.QWidget):
 
     @staticmethod
     def _float_html(fp: tools.FloatParts, title: str) -> str:
-        ew = 8 if fp.width == 32 else 11
+        ew = {16: 5, 32: 8, 64: 11}[fp.width]
         fw = fp.width - 1 - ew
         cells = (_cell(f"<b>{E(tr('sign'))}</b><br><tt>{fp.sign}</tt>", theme.colors().fields[0])
                  + _cell(f"<b>{E(tr('exponent'))}</b> ({fp.exponent})<br>"

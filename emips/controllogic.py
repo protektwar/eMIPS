@@ -148,7 +148,7 @@ def aluop_code(dec, wide: bool = False) -> int:
         return _IMM_CODE[name]
     if wide and name in _ADD:
         return 0b1001
-    if name in _ADD or wide and name in _DADD or fam in ("load", "store") or name in (
+    if name in _ADD or wide and name in _DADD or fam in ("load", "store", "msa_mem") or name in (
             "LL", "SC", "LL@R6", "SC@R6", "PREF", "CACHE", "LWC1", "SWC1", "LDC1", "SDC1",
             "LWC2", "SWC2", "LDC2", "SDC2"):
         return 0b0000
@@ -193,7 +193,7 @@ def _row_signals(isa: ISA, name: str) -> dict[str, bool]:
     from .pipeline import analyze, control_signals
     dec = isa.decode(_probe_word(isa, name))
     c = control_signals(dec, analyze(dec))
-    dst = {"rt": 0, "rd": 1, "$ra": 2}[c["RegDst"]]
+    dst = {"rt": 0, "rd": 1, "$ra": 2, "rd6": 3, "-": 0}[c["RegDst"]]   # (rd6: MSA's 10..6)
     code = aluop_code(dec, isa.arch == "mips64")
     return {"RegDst1": bool(dst & 2), "RegDst0": bool(dst & 1),
             "ALUSrc": c["ALUSrc"] == "imm", "MemtoReg": bool(c["MemtoReg"]),
@@ -257,7 +257,8 @@ class MainControl:
 
 #: the fields tried, in order, to tell an escape opcode's instructions apart
 _CANDIDATES = (["funct"], ["rt"], ["rs"], ["rs", "funct"], ["rt", "funct"],
-               ["sa", "funct"], COMPARATORS, ["funct"] + COMPARATORS)
+               ["sa", "funct"], COMPARATORS, ["funct"] + COMPARATORS,
+               ["rs", "rt", "funct"])        # (MSA: the minor opcode + ELM's 25..16)
 
 
 def _field_values(rows: list, field: str) -> set[int]:
@@ -307,10 +308,10 @@ def _secondary_table(isa: ISA, op: int, fields: list[str], rows: list
 
 
 @lru_cache(maxsize=None)
-def main_control(release: str = "R5", arch: str = "mips32") -> MainControl:
+def main_control(release: str = "R5", arch: str = "mips32", msa: bool = False) -> MainControl:
     """The main control unit of a release (``arch="mips64"``: of MIPS64,
-    the doubleword rows too), as PLAs."""
-    isa = ISA.for_release(release, arch=arch)
+    the doubleword rows too; ``msa``: with MSA's rows), as PLAs."""
+    isa = ISA.for_release(release, arch=arch, msa=msa)
     rows = [e for e in isa.leads if isa.in_release(e["name"]) and e["name"] not in ALIASES]
     by_op: dict[int, list] = {}
     for e in rows:
@@ -407,10 +408,11 @@ def alu_function(isa: ISA, aluop: int, word: int) -> str | None:
 
 
 @lru_cache(maxsize=None)
-def alu_control(release: str = "R5", arch: str = "mips32") -> PLA:
+def alu_control(release: str = "R5", arch: str = "mips32", msa: bool = False) -> PLA:
     """The ALU control of a release (``arch="mips64"``: a MIPS64 core's,
-    with Word and Sh32), as a PLA."""
-    isa = ISA.for_release(release, arch=arch)
+    with Word and Sh32; ``msa``: MSA's LSA / DLSA before Release 6), as a
+    PLA."""
+    isa = ISA.for_release(release, arch=arch, msa=msa)
     wide = arch == "mips64"
     functions = ALUOP_FUNCTION64 if wide else ALUOP_FUNCTION
     r_function = _R_FUNCTION64 if wide else _R_FUNCTION

@@ -1,0 +1,5 @@
+# Lab 69 — Saturation, sixteen pixels at a time: the checks of a solution
+# (python3 -m emips check docs/guide/labs/msa_pixels.asm finds them by itself)
+check: output is "0x50607090\n0xb0d0eff0\n0xffffffff\n0xffffffff\n0x55657585\n0x95a5b5c5\n0xd5e5f5ff\n0xffffffff\n"   (every pixel + 0x50, at most white)
+check: $w0.b[15] == 0xff   (pixel 31: 0xf5 + 0x50 stops at 0xff)
+check: instructions <= 100   (sixteen pixels an instruction: no loop over pixels)

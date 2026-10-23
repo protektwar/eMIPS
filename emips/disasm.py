@@ -132,6 +132,31 @@ def operand_text(kind: str, word: int, pc: int, *, abi: bool | str = True,
         return _addr(((pc & ~7) + (_sx(word & 0x3FFFF, 18) << 3)) & M32, symbols)
     if kind == "rs2":                           # DAHI / DATI: rs, written twice
         return g(21)
+    if kind in ("wd", "ws", "wt", "ws0"):       # MSA (PLAN M24)
+        w = f"$w{_bits(word, KINDS[kind].fields[0][0], 5)}"
+        return w + "[0]" if kind == "ws0" else w
+    if kind in ("rd6", "rs11"):
+        return g(KINDS[kind].fields[0][0])
+    if kind in ("mcs", "mcd"):                  # GNU as takes $N only
+        return f"${_bits(word, KINDS[kind].fields[0][0], 5)}"
+    if kind == "u5":
+        return str(_bits(word, 16, 5))
+    if kind == "s5":
+        return str(_sx(_bits(word, 16, 5), 5))
+    if kind in ("m3", "m4", "m5", "m6", "u8"):
+        lsb, width = KINDS[kind].fields[0]
+        v = _bits(word, lsb, width)
+        return f"0x{v:x}" if v > 9 else str(v)
+    if kind == "s10":
+        return str(_sx(_bits(word, 11, 10), 10))
+    if kind.startswith("vmem_"):
+        scale = {"b": 1, "h": 2, "w": 4, "d": 8}[kind[-1]]
+        return f"{_sx(_bits(word, 16, 10), 10) * scale}({g(11)})"
+    if kind.startswith(("elm", "elmd")) and kind != "elmr":
+        (reg, _), (lsb, width) = KINDS[kind].fields
+        return f"$w{_bits(word, reg, 5)}[{_bits(word, lsb, width)}]"
+    if kind == "elmr":
+        return f"$w{_bits(word, 11, 5)}[{g(16)}]"
     raise KeyError(kind)
 
 
@@ -163,15 +188,15 @@ def _is_default(kind: str, name: str, word: int) -> bool:
 def disassemble(word: int, pc: int = 0, *, isa: ISA | None = None,
                 abi: bool | str = True, symbols: Mapping[int, str] | None = None,
                 style: str = "mars", release: str | None = None,
-                dsp: int = 0, mt: bool = False) -> str:
+                dsp: int = 0, mt: bool = False, msa: bool = False) -> str:
     """Assembly text of one instruction word at address ``pc``.
 
     A word that does not decode is printed as ``.word 0x........``.
     ``symbols`` maps addresses to label names for branch / jump targets;
     ``dsp`` = the DSP Module level whose instructions decode, ``mt`` = the
-    MT Module's (``isa``'s when given).
+    MT Module's, ``msa`` = MSA's (``isa``'s when given).
     """
-    isa = isa or ISA.for_release(release, dsp, mt)
+    isa = isa or ISA.for_release(release, dsp, mt, msa=msa)
     if abi is True and isa.arch == "mips64":    # MIPS64: the n64 names (PLAN M22)
         abi = "n64"
     try:

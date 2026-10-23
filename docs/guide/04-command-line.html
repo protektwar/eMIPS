@@ -264,6 +264,16 @@ output — the test suite re-runs them.</p>
 <td>the DSP Module (SIMD on bytes and halfwords, saturating fractional arithmetic, the accumulators <code>$ac1</code>–<code>$ac3</code>, DSPControl): <code>auto</code> (default) = Revision 2 when the program has DSP instructions, none otherwise (the 24K has none); <code>none</code>; <code>dsp</code> = Revision 1 (the 24KE, the 1004K); <code>dspr2</code> = Revision 2 (the interAptiv, the microAptiv; Revision 3 on Release 6); Release 2 or later; Config3.DSPP / DSP2P, Status.MX enables it.  With <code>--arch nanomips</code>: the nanoMIPS DSP ASE (the same instructions in nanoMIPS encodings, Revision 3)</td>
 </tr>
 <tr>
+<td><code>--msa auto|none|msa</code></td>
+<td>run, pipe, debug, gdb, check</td>
+<td>MSA, the MIPS SIMD Architecture (128-bit vectors over the FPU's registers: <a href="02-writing-programs.html#225-msa-128-bit-vectors">Phase 2, 2.25</a>): <code>auto</code> (default) = MSA when the program has MSA instructions (and the core preset may have it); <code>none</code>; <code>msa</code>.  Release 5 or 6 with an FPU, MIPS32 or MIPS64; Config3.MSAP, Config5.MSAEn enables it; the core's FPU is IEEE 754-2008.  The 24K model has none: pipeline mode uses the 5-stage model</td>
+</tr>
+<tr>
+<td><code>--msa-wrp N</code></td>
+<td>run, pipe, debug, gdb, check</td>
+<td>vector register partitioning (MSAIR.WRP): <code>N</code> physical vector registers shared by <code>$w0</code>–<code>$w31</code>, mapped by the kernel with MSAMap / MSAUnmap (<code>ctcmsa $6</code> / <code>$7</code>); 0 (default) = none, as every real core</td>
+</tr>
+<tr>
 <td><code>--mt auto|none|VPES:TCS</code></td>
 <td>run, pipe, debug, gdb</td>
 <td>the MT Module (thread contexts and VPEs: <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>): <code>auto</code> (default) = 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions, none otherwise; <code>none</code>; <code>VPES:TCS</code> = 1–2 VPEs, up to 9 TCs; Releases 2–5; with <code>--cores</code> every core has them (the 1004K, the interAptiv); pipeline mode runs the 34K's pipeline.  With <code>--arch nanomips</code>: the nanoMIPS MT ASE (the same thread contexts and VPEs, nanoMIPS encodings), in instruction mode</td>
@@ -670,6 +680,10 @@ condition and increment) gets a breakpoint on each.</p>
 <td>the DSP Module: its revision, Status.MX, DSPControl field by field (pos, scount, c, EFI, ccond, ouflag and what set each flag) and the accumulators <code>ac0</code>–<code>ac3</code></td>
 </tr>
 <tr>
+<td><code>msa [$wN ...] [b|h|w|d|w.f|d.f]</code></td>
+<td>MSA: Config5.MSAEn and Status.FR (and why MSA instructions would trap), MSAIR, MSACSR field by field, the partition registers; then the vector registers (every non-zero one, or those named) as 128 bits, or element by element in the format given (element 0 first; <code>w.f</code> / <code>d.f</code> as floats)</td>
+</tr>
+<tr>
 <td><code>mt</code> / <code>mt itc</code></td>
 <td>the MT Module: MVPControl, each VPE (VPEControl, VPEConf0, YQMask), the policy manager and every TC — its state, PC, flags (DA, IXMT, DT), group, the instructions it issued and what it waits for (<code>&gt;</code> = the TC that issues next); <code>mt itc</code> lists the ITC cells</td>
 </tr>
@@ -985,6 +999,10 @@ the program exited
 <td>the DSP Module (like <code>--dsp</code>)</td>
 </tr>
 <tr>
+<td><code>set msa auto|none|msa</code> / <code>set msa-wrp N</code></td>
+<td>MSA and its vector register partitioning (like <code>--msa</code> / <code>--msa-wrp</code>)</td>
+</tr>
+<tr>
 <td><code>set arch mips32|mips64|nanomips</code></td>
 <td>the architecture (like <code>--arch</code>): the program is assembled again for it</td>
 </tr>
@@ -1110,7 +1128,7 @@ nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
                     [--arch mips32|mips64|nanomips] [--nms] [--little] [-O 0|1|2|3|s]
-                    [--mips16 | --micromips] [--no-fpu] [--dsp | --dspr2] [--core NAME] [-v]
+                    [--mips16 | --micromips] [--no-fpu] [--dsp | --dspr2] [--msa] [--core NAME] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
 ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
@@ -1145,8 +1163,16 @@ flags, and the core that runs it gets the DSP Module.  A C program in
 the window or given to <code>run</code> is built with <code>-mdspr2</code> when it
 calls these builtins.  With <code>--arch nanomips</code>, <code>--dsp</code> is the
 nanoMIPS DSP ASE (<code>nanomips-elf-gcc -mdsp</code>, the same builtins).
+<code>--msa</code> lets the C use MSA (<code>-mmsa</code>: GCC's <code>msa.h</code> —
+<code>__builtin_msa_addv_w</code> ... on <code>v4i32</code>, <code>v8i16</code>, <code>v4f32</code> ... —
+and its auto-vectorizer, which turns plain loops into vector code at
+<code>-O 3</code>: Lab 72); every object is built <code>-mfp64 -mnan=2008</code> (MSA
+needs the FPU's 64-bit registers; an MSA core's FPU is IEEE 754-2008),
+Release 5 by default (or 6; MIPS32 or <code>--arch mips64</code>).  The ELF's ABI
+flags say MSA, so <code>run</code> gives the core MSA; a C program in the window or
+given to <code>run</code> is built with <code>-mmsa</code> when it includes <code>msa.h</code>.
 <code>--core NAME</code> builds for that core's
-release and DSP Module, soft-float when it has no FPU.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
+release, DSP Module and MSA (<code>--core p5600</code>: <code>-mmsa</code>), soft-float when it has no FPU.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
 <code>.c</code> file too (built for the session's release, byte order and
 architecture) and every
 command takes the <code>.elf</code>: <code>dis prog.elf</code> prints its listing — the
@@ -1339,7 +1365,12 @@ watched access by access, and what a watchpoint cannot see (DMA).</p>
 FPU registers (its MIPS description needs them) but shows them as
 <code>&lt;unavailable&gt;</code>.  With the DSP Module GDB also has
 <code>$hi1</code>, <code>$lo1</code> ... <code>$hi3</code>, <code>$lo3</code> and <code>$dspctl</code>
-(its <code>org.gnu.gdb.mips.dsp</code> registers, 72-78).</p>
+(its <code>org.gnu.gdb.mips.dsp</code> registers, 72-78).  With MSA the stub
+adds its own <code>org.gnu.gdb.mips.msa</code> feature (GDB has none, but keeps
+registers it does not know): <code>$w0</code>–<code>$w31</code> as unions of their
+element views (<code>p $w3.v2_int64</code>, <code>set var $w3.v4_int32[1] = 7</code> —
+the word, halfword and byte views on little-endian only), <code>$msacsr</code>
+and <code>$msair</code>; <code>monitor msa $w3 w</code> shows any view.</p>
 <p>A <strong>MIPS64</strong> program (<code>--arch mips64</code>, or an ELF64 from <code>cc --arch
 mips64</code>) gets GDB's 64-bit description: every register 64 bits wide,
 the architecture <code>mips:isa64</code> / <code>mips:isa64r2</code> / <code>mips:isa64r6</code>.  The
@@ -1368,6 +1399,7 @@ m14k:  MIPS M14K: MIPS32 Release 2, PRId 0x00019b00
   compressed: micromips, micromips-only, none
   fpu: no FPU
   dsp: no DSP Module
+  msa: no MSA
   mt: no MT Module
   mmu: fixed
   icache: no cache
@@ -1459,6 +1491,10 @@ be read: a script can check a folder of programs,
 <td>an FPU register's bits, or the single / double it (or memory) holds — the number is rounded to that format first</td>
 </tr>
 <tr>
+<td><code>$w3 == 0x...</code>, <code>$w3.w[2] == 12</code>, <code>$w3.h[7] &lt; 0</code>, <code>$w1.d[1].f == 2.5</code>, <code>msacsr == 0</code></td>
+<td>(MSA) a vector register's 128 bits, one element of it (<code>.b</code> / <code>.h</code> / <code>.w</code> / <code>.d</code>, element 0 = the lowest bits; <code>.f</code>: a word / doubleword as a float), or MSACSR</td>
+</tr>
+<tr>
 <td><code>cycles &lt;= 53</code></td>
 <td>clock cycles (pipeline mode; in instruction mode the machine's cycles)</td>
 </tr>
@@ -1540,7 +1576,7 @@ check: cycles &lt; 400
 <li><strong>Solve the exercise first</strong>, then write the checks and run them on your
   solution until they all pass — and on the program as you hand it out:
   it should fail exactly the checks the exercise is about.  The labs of
-  this guide that have checks (<a href="05-understanding.html#512-labs">5.12</a>) were
+  this guide that have checks (<a href="05-understanding.html#513-labs">5.13</a>) were
   made so: <code>docs/guide/labs/*.check</code> are examples.</li>
 <li><strong>Check what a correct program does, not how</strong>: its output, the values
   it leaves where the exercise says they go (a result in <code>$v0</code> by the

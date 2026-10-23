@@ -22,6 +22,7 @@ from . import fpu
 from .assembler import AsmError, assemble
 from .disasm import disassemble
 from .isa import ISA, Decode, ISADecodeError
+from .msa import H as _HALF                 # (MSA's binary16: the converter's half)
 from .sim import PRIVILEGED_NAMES, classify, has_delay_slot
 from .syntax import kind_of, operand_spec
 from .trace import Field, decode_fields, instruction_format
@@ -40,6 +41,13 @@ KIND_TEXT = {
     **{f"pos_{k}": "pos, size" for k in ("dext", "dextm", "dextu", "dins", "dinsm", "dinsu")},
     "bp3": "bp", "pc18": "label", "rs2": "rs", "rsd": "rs", "pc19": "label",
     "sa2": "sa", "sel6": "sel",
+    # MSA (PLAN M24): MD00866's operand names
+    "rd6": "rd", "rs11": "rs", "mcs": "cs", "mcd": "cd",
+    "m3": "m", "m4": "m", "m5": "m", "m6": "m",
+    **{f"vmem_{d}": "s10(rs)" for d in "bhwd"},
+    **{f"elm{k}": "ws[n]" for k in (1, 2, 3, 4)},
+    **{f"elmd{k}": "wd[n]" for k in (1, 2, 3, 4)},
+    "ws0": "ws[0]", "elmr": "ws[rt]",
 }
 
 def syntax_text(entry: dict) -> str:
@@ -80,14 +88,33 @@ class RefRow:
     privileged: bool
     delay_slot: bool
     #: an Application-Specific Extension's row: "dsp" / "dspr2" (the DSP
-    #: Module, MD00374: Revision 1 / 2), "" for the base architecture
+    #: Module, MD00374: Revision 1 / 2), "mt" (the MT Module), "msa" (MSA,
+    #: MD00866), "" for the base architecture
     ase: str = ""
 
     def matches(self, query: str) -> bool:
         q = query.strip().lower()
         return not q or any(q in s.lower() for s in (
             self.mnemonic, self.description, self.family, self.syntax,
-            "dsp module" if self.ase else ""))
+            _ASE_TEXT.get(self.ase, "")))
+
+
+def search(rows: list[RefRow], query: str) -> list[RefRow]:
+    """The rows matching ``query``, best first: the mnemonic itself, then
+    mnemonics starting with it, then mnemonics containing it, then the
+    matches in a description / family / syntax (``lw`` lists LW before
+    FCAF.D, "Compare Always False"); each group in the reference's order."""
+    q = query.strip().lower()
+
+    def rank(r: RefRow) -> int:
+        mn = r.mnemonic.lower()
+        return 0 if mn == q else 1 if mn.startswith(q) else 2 if q in mn else 3
+    return sorted((r for r in rows if r.matches(query)), key=rank)
+
+
+#: what a reference search for an ASE's rows may type
+_ASE_TEXT = {"dsp": "dsp module", "dspr2": "dsp module", "mt": "mt module",
+             "msa": "msa simd"}
 
 
 def reference(release: str = "R5", arch: str = "mips32") -> list[RefRow]:
@@ -180,14 +207,21 @@ def _dsp(release: str, dsp: int | None, arch: str = "mips32") -> int:
     return dsp if dsp is not None else (0 if release == "R1" else 2)
 
 
+def _msa(release: str, msa: bool | None) -> bool:
+    """MSA's rows decode in the tools: ``None`` = when the release can have
+    it (Release 5 and 6, PLAN M24)."""
+    return msa if msa is not None else release in ("R5", "R6")
+
+
 def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
                 abi: bool = True, dsp: int | None = None, arch: str = "mips32",
-                size: int | None = None) -> Decoded:
+                size: int | None = None, msa: bool | None = None) -> Decoded:
     """Decode a machine word (nanoMIPS: an encoding of ``size`` bytes, by
     default what its first halfword says — :func:`parse_nano`)."""
     if arch == "nanomips":
         return _nano_decode(word, size, pc, abi)
-    isa = ISA.for_release(release, _dsp(release, dsp, arch), arch=arch)
+    isa = ISA.for_release(release, _dsp(release, dsp, arch), arch=arch,
+                          msa=_msa(release, msa))
     dec = isa.decode(word)                      # ISADecodeError if reserved
     e = dec.entry
     return Decoded(word, disassemble(word, pc, isa=isa, abi=abi), e["name"],
@@ -326,7 +360,7 @@ def _nano_template(form: str) -> list[tuple[int, int, str, str]]:
 @dataclass
 class FloatParts:
     bits: int
-    width: int                # 32 or 64
+    width: int                # 16 (MSA's half precision), 32 or 64
     sign: int
     exponent: int             # raw biased field
     fraction: int
@@ -345,11 +379,11 @@ def float_parts(bits: int, width: int = 32, nan2008: bool = False) -> FloatParts
     """The IEEE fields of ``bits``.  NaNs are classified the MIPS way:
     legacy (``nan2008=False``, before Release 6) a NaN whose fraction MSB
     is 1 is *signalling*; IEEE 754-2008 (Release 6) the reverse."""
-    ew, fw, bias = (8, 23, 127) if width == 32 else (11, 52, 1023)
+    ew, fw, bias = {16: (5, 10, 15), 32: (8, 23, 127), 64: (11, 52, 1023)}[width]
     sign = bits >> (width - 1) & 1
     exp = bits >> fw & ((1 << ew) - 1)
     frac = bits & ((1 << fw) - 1)
-    value = struct.unpack(">f" if width == 32 else ">d",
+    value = struct.unpack({16: ">e", 32: ">f", 64: ">d"}[width],
                           bits.to_bytes(width // 8, "big"))[0]
     s = "-" if sign else "+"
     if exp == (1 << ew) - 1:
@@ -381,6 +415,10 @@ class Number:
     chars: str                # bytes as ASCII (big-endian order), '.' if not printable
     single: FloatParts | None = None      # the 32 bits as an IEEE single
     double: FloatParts | None = None      # 64 bits as an IEEE double
+    #: an IEEE half (binary16: MSA's FEXDO.H / FEXUPL / FEXUPR, MD00866
+    #: 3.5.2): the low 16 bits of a value that fits them, or a float's
+    #: nearest half
+    half: FloatParts | None = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -434,6 +472,14 @@ def convert(text: str, nan2008: bool = False) -> Number:
                 return _number(dbits, 64, f"float {t}", notes, nan2008)
             n = _number(single, 32, f"float {t}", notes, nan2008)
             n.double = float_parts(dbits, 64, nan2008)
+            if math.isnan(x):
+                n.half = float_parts(fpu.default_nan(_HALF, nan2008), 16, nan2008)
+            else:
+                try:
+                    n.half = float_parts(struct.unpack(">H", struct.pack(">e", x))[0], 16,
+                                         nan2008)
+                except OverflowError:               # (beyond 65504: no half)
+                    n.half = None
             stored = n.single.value
             if stored != x and not math.isnan(x):
                 n.notes.append(f"single precision cannot hold {t} exactly: stored "
@@ -460,6 +506,8 @@ def _number(bits: int, width: int, source: str, notes: list[str],
                notes=list(notes))
     if width == 32:
         n.single = float_parts(bits, 32, nan2008)
+        if bits <= 0xFFFF:
+            n.half = float_parts(bits, 16, nan2008)
     else:
         n.double = float_parts(bits, 64, nan2008)
     return n

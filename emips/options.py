@@ -35,6 +35,8 @@ MAX_SHADOW_SETS = 16
 COMPRESSED = ("auto", "none", "mips16e", "micromips", "micromips-only")
 #: the DSP Module a core may have (emips.dsp, MD00374)
 DSP_LEVELS = ("auto", "none", "dsp", "dspr2")
+#: MSA, the MIPS SIMD Architecture (emips.msa, MD00866; PLAN M24)
+MSA_LEVELS = ("auto", "none", "msa")
 #: the architecture (PLAN M22): MIPS32, or MIPS64 (emips.sim64: 64-bit
 #: registers; the 32-bit compatibility segments with the fixed mapping —
 #: Config.AT = 1 —, the 64-bit address space with a TLB — AT = 2), or
@@ -108,6 +110,13 @@ class Options:
     #: "none"; "dsp" (Revision 1, the 24KE); "dspr2" (Revision 2: the 34K,
     #: 74K, 1004K, interAptiv, microAptiv; on Release 6 Revision 3)
     dsp: str = "auto"
+    #: MSA (emips.msa, MD00866, Release 5 / 6): "auto" = the core has it when
+    #: the program has MSA instructions (and no core preset says otherwise);
+    #: "none"; "msa"
+    msa: str = "auto"
+    #: MSAIR.WRP: vector register partitioning with this many physical
+    #: registers (1-32; 0 = none, as every real core: MD00866 3.4.3)
+    msa_wrp: int = 0
     #: the MT Module (emips.mt, MD00378): "auto" = 2 VPEs and 5 TCs (a 34K)
     #: when the program has MT instructions, else none; "none"; "VPES:TCS"
     #: (1-3 VPEs, VPES-9 TCs: the 34K's 1-2, the I7200's 1-3; Release 2-5, nanoMIPS)
@@ -263,6 +272,10 @@ class Options:
             self.compressed = d.compressed
         if self.dsp not in DSP_LEVELS:
             self.dsp = d.dsp
+        if self.msa not in MSA_LEVELS:
+            self.msa = d.msa
+        if not 0 <= self.msa_wrp <= 32:
+            self.msa_wrp = d.msa_wrp
         if self.arch not in ARCHES:
             self.arch = d.arch
         if self.crc not in NANO_CRC:
