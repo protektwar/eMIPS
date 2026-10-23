@@ -942,7 +942,9 @@ def digits_of(name: str, w: int) -> int:
 def format_view(v: InstrView) -> str:
     """Multi-line, human-readable rendering of a view."""
     w = v.digits                        # (MIPS64: 16)
-    if v.name.startswith("NM."):        # nanoMIPS: its format, 16 / 32 / 48 bits
+    if getattr(v, "rv", False):         # RISC-V: its format, 16 / 32 bits
+        what = f"{v.format}, 0x{v.word:0{2 * v.size}x}"
+    elif v.name.startswith("NM."):      # nanoMIPS: its format, 16 / 32 / 48 bits
         what = f"nanoMIPS {8 * v.size}-bit {v.format}, 0x{v.word:0{2 * v.size}x}"
     else:
         what = f"{v.format}-format, 0x{v.word:08x}"
@@ -974,7 +976,8 @@ def format_view(v: InstrView) -> str:
         what = f"taken -> 0x{br.target:0{w}x}" if br.taken else (
             "not taken, delay slot nullified" if br.likely else "not taken")
         lines.append(f"  branch: {br.condition}: {what}"
-                     + (f"; link $ra = 0x{br.link:0{w}x}" if br.link is not None else ""))
+                     + (f"; link {getattr(v, 'link_name', '$ra')} = 0x{br.link:0{w}x}"
+                        if br.link is not None else ""))
     for addr, size, value in v.mem_reads:
         lines.append(f"  memory read  0x{addr:08x} ({size} byte(s)) = 0x{value:0{2 * size}x}")
     for addr, size, old, new in v.mem_writes:

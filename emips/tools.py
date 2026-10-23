@@ -20,6 +20,7 @@ from importlib import resources
 
 from . import fpu
 from .assembler import AsmError, assemble
+from .options import RV_EXTENSIONS
 from .disasm import disassemble
 from .isa import ISA, Decode, ISADecodeError
 from .msa import H as _HALF                 # (MSA's binary16: the converter's half)
@@ -117,13 +118,16 @@ _ASE_TEXT = {"dsp": "dsp module", "dspr2": "dsp module", "mt": "mt module",
              "msa": "msa simd"}
 
 
-def reference(release: str = "R5", arch: str = "mips32") -> list[RefRow]:
+def reference(release: str = "R5", arch: str = "mips32",
+              extensions: str = RV_EXTENSIONS) -> list[RefRow]:
     """Every instruction of a MIPS32 (``arch="mips64"``: MIPS64) release,
     sorted by mnemonic.  MIPS64: the DSP Module's rows are MD00375's (with
     LDX), the MT Module's MD00378's.  ``arch="nanomips"``: every nanoMIPS
     format (MD01247 ch. 2, emips.nanomips)."""
     if arch == "nanomips":
         return _nano_reference()
+    if arch in ("rv32", "rv64"):
+        return _rv_reference(arch, extensions)
     isa = ISA.for_release(release, arch=arch)
     rel = _releases()
     wide = arch == "mips64"
@@ -155,6 +159,8 @@ def template_fields(row_name: str, release: str = "R5", arch: str = "mips32"
     form)."""
     if arch == "nanomips":
         return _nano_template(row_name)
+    if arch in ("rv32", "rv64"):
+        return _rv_template(row_name)
     isa = ISA.for_release(release, arch=arch)
     entry = next(e for e in isa.instructions if e["name"] == row_name)
     template = entry["encode"]
@@ -181,6 +187,8 @@ class Decoded:
     def encoding(self, arch: str = "mips32") -> str:
         """The encoding as a listing prints it (nanoMIPS: its halfwords)."""
         from .cli import encoding
+        if arch in ("rv32", "rv64"):
+            return f"0x{self.word:0{2 * self.size}x}"
         return encoding(self.word, self.size, arch).rstrip() if arch == "nanomips" \
             else f"0x{self.word:08x}"
 
@@ -215,11 +223,15 @@ def _msa(release: str, msa: bool | None) -> bool:
 
 def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
                 abi: bool = True, dsp: int | None = None, arch: str = "mips32",
-                size: int | None = None, msa: bool | None = None) -> Decoded:
+                size: int | None = None, msa: bool | None = None,
+                extensions: str = RV_EXTENSIONS) -> Decoded:
     """Decode a machine word (nanoMIPS: an encoding of ``size`` bytes, by
-    default what its first halfword says — :func:`parse_nano`)."""
+    default what its first halfword says — :func:`parse_nano`; RISC-V: a
+    16-bit one when its low bits are not 11, 1.5)."""
     if arch == "nanomips":
         return _nano_decode(word, size, pc, abi)
+    if arch in ("rv32", "rv64"):
+        return _rv_decode(word, pc, abi, arch, extensions)
     isa = ISA.for_release(release, _dsp(release, dsp, arch), arch=arch,
                           msa=_msa(release, msa))
     dec = isa.decode(word)                      # ISADecodeError if reserved
@@ -231,7 +243,8 @@ def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
 
 def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
                 pseudo: bool = True, abi: bool = True,
-                dsp: int | None = None, arch: str = "mips32") -> list[Decoded]:
+                dsp: int | None = None, arch: str = "mips32",
+                extensions: str = RV_EXTENSIONS) -> list[Decoded]:
     """Assemble one source line at ``pc``: every machine word it becomes
     (a pseudo-instruction can be several), decoded.  Branch / jump targets
     are absolute addresses or ``.``-free numbers; no delay-slot nop is
@@ -239,6 +252,17 @@ def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
     line = text.strip()
     if not line:
         raise AsmError(1, "type an instruction")
+    if arch in ("rv32", "rv64"):            # GNU as + ld for RISC-V (emips.rvasm)
+        from .rvasm import assemble as rv_assemble
+        prog = rv_assemble(f".text\n{line}\n", arch=arch, extensions=extensions,
+                           relax=False, bases={"text": pc & M32}, strict=not pseudo)
+        out = []
+        for a in sorted(prog.rv):
+            raw = sum(prog.image[a + k] << 8 * k for k in range(prog.rv[a]))
+            out.append(_rv_decode(raw, a, abi, arch, extensions))
+        if not out:
+            raise AsmError(1, "no instruction on this line")
+        return out
     if arch == "nanomips":                  # GNU as + ld (emips.nanoasm): .text at pc
         prog = assemble(f".text\n{line}\n", pseudo=pseudo, arch=arch,
                         bases={"text": pc & M32},
@@ -264,7 +288,9 @@ def encode_or_decode(text: str, **kw) -> tuple[str, list[Decoded]]:
     ``"encode"``, words).  Raises ValueError / AsmError / ISADecodeError."""
     nano = kw.get("arch") == "nanomips"
     try:
-        word, size = parse_nano(text) if nano else (parse_word(text), None)
+        word, size = parse_nano(text) if nano else \
+            (parse_rv(text), None) if kw.get("arch") in ("rv32", "rv64") else \
+            (parse_word(text), None)
     except ValueError:
         return "encode", encode_text(text, **kw)
     kw.pop("pseudo", None)
@@ -353,6 +379,99 @@ def _nano_template(form: str) -> list[tuple[int, int, str, str]]:
         out.append((pos + w - 1, pos, name if m.group(1) or m.group(4) is None
                     else t, bits))
     return out
+
+
+# ---------------------------------------------------------------- RISC-V
+
+#: RISC-V's privileged instructions (the privileged spec: M / S-mode only)
+_RV_PRIVILEGED = frozenset(("mret", "sret", "wfi", "sfence.vma", "dret"))
+
+
+def parse_rv(text: str) -> int:
+    """A RISC-V encoding: 4 or 8 hex digits (as objdump prints them), or a
+    number (0x / 0b / decimal)."""
+    t = text.strip().replace("_", "").replace(" ", "")
+    if re.fullmatch(r"[0-9a-fA-F]{4}|[0-9a-fA-F]{8}", t):
+        return int(t, 16)
+    v = int(t, 0)
+    if not 0 <= v <= M32:
+        raise ValueError(f"{text.strip()} is not a 16 or 32-bit encoding")
+    return v
+
+
+def _rv_decode(raw: int, pc: int, abi: bool, arch: str, extensions: str) -> Decoded:
+    from .riscv import RVISA, size_of
+    from .sessionrv import _disassembler
+    from .tracerv import _format, fields
+    xlen = 32 if arch == "rv32" else 64
+    size = size_of(raw & 0xFFFF)
+    if size == 2 and raw >> 16:
+        raise ValueError(f"0x{raw:x}: its low bits say a 16-bit instruction, but it has "
+                         "more bits")
+    isa = RVISA.for_core(xlen, extensions)
+    i = isa.decode(raw, size or 4)              # RVDecodeError if illegal
+    d = _disassembler(xlen, isa.extensions, not abi)
+    what = f"{i.row.name}, {'+'.join(i.row.ext)}" + (
+        f" (compressed: the 32-bit {i.base.name})" if size == 2 else "")
+    return Decoded(raw, d.text(raw, i.size, pc), i.row.name, what, _format(i), fields(i),
+                   "privileged" if i.base.name in _RV_PRIVILEGED else "EXEC", i.size)
+
+
+def _rv_template(name: str) -> list[tuple[int, int, str, str]]:
+    """A RISC-V row's fields with letters for the operand bits."""
+    from .riscv import ROWS
+    from .tracerv import fields
+    row = next(r for r in ROWS if r.name == name)
+
+    class _I:                                   # (fields() reads row, raw, size, base)
+        pass
+    i = _I()
+    i.row, i.raw, i.size, i.base = row, row.match, row.size, row
+    out = []
+    for f in fields(i):
+        fixed = (row.mask >> f.lsb) & ((1 << (f.msb - f.lsb + 1)) - 1) == \
+            (1 << (f.msb - f.lsb + 1)) - 1
+        out.append((f.msb, f.lsb, f.name, f.bits if fixed else
+                    (f.name.rstrip("'")[0] if f.name else "x") * (f.msb - f.lsb + 1)))
+    return out
+
+
+@lru_cache(maxsize=8)
+def _rv_reference(arch: str, extensions: str) -> list[RefRow]:
+    from .riscv import _ARGS, RVISA
+    isa = RVISA.for_core(32 if arch == "rv32" else 64, extensions)
+    rows = []
+    for r in isa.rows:
+        names = []
+        for a in r.args:                        # (the fields: an immediate's parts once)
+            n = _ARGS[a][0][0]
+            if n not in names:
+                names.append(n)
+        width = 8 * r.size
+        enc = "".join("1" if r.match >> b & 1 else "0" if r.mask >> b & 1 else "x"
+                      for b in range(width - 1, -1, -1))
+        rows.append(RefRow(
+            name=r.name, mnemonic=r.name, syntax=f"{r.name} {', '.join(names)}".strip(),
+            description=f"{'+'.join(r.ext)}, {width}-bit", format=_format_of(r),
+            family="+".join(r.ext), encoding=enc, releases=(arch.upper(),),
+            since=arch.upper(), removed_in=None, execution="EXEC",
+            privileged=r.name in _RV_PRIVILEGED, delay_slot=False, ase="+".join(r.ext)))
+    return sorted(rows, key=lambda x: x.mnemonic)
+
+
+def _format_of(row) -> str:
+    """A row's format (tracerv._format without a decoded instruction)."""
+    from .tracerv import C_FORMATS
+    if row.size == 2:
+        return C_FORMATS.get(row.name, "C")
+    args = set(row.args)
+    for arg, fmt in (("rs3", "R4-type"), ("jimm20", "J-type"), ("imm20", "U-type"),
+                     ("bimm12hi", "B-type"), ("imm12hi", "S-type")):
+        if arg in args:
+            return fmt
+    if args & {"imm12", "shamtw", "shamtd", "csr", "zimm5"} or not args:
+        return "I-type"
+    return "R-type"
 
 
 # -------------------------------------------------------- number converter

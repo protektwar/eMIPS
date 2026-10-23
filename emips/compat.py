@@ -71,6 +71,32 @@ def _nano(o: Options) -> bool:
     return o.arch == "nanomips"
 
 
+def _rv(o: Options) -> bool:
+    return o.arch in ("rv32", "rv64")
+
+
+#: a RISC-V hart (PLAN M25) has none of the MIPS settings: (field, the value
+#: it goes back to, why)
+_RV_DEFAULTS = (
+    ("board", "flat", "the Malta's core cards carry MIPS CPUs (MD00048); a RISC-V program "
+                      "runs on the flat RARS memory map"),
+    ("cores", 1, "a generic RISC-V core is one hart here; several harts on one platform "
+                 "come with the P8700 preset (PLAN M25 phase 5)"),
+    ("model", "5-stage", "the 24K is a MIPS32 core (MD00343)"),
+    ("mmu", "fixed", "a RISC-V hart translates with satp (Sv32 / Sv39 / Sv48 / Sv57, the "
+                     "privileged spec ch. 12), not a MIPS MMU"),
+    ("compressed", "auto", "RISC-V has no ISA modes: its compressed instructions are the "
+                           "C extension (Options.rv_extensions)"),
+    ("dsp", "auto", "the DSP Module is a MIPS ASE"),
+    ("msa", "auto", "MSA is a MIPS ASE (RISC-V's vectors are the V extension)"),
+    ("mt", "auto", "the MT Module is a MIPS ASE"),
+    ("vps", 1, "Release 6 VPs belong to MIPS cores"),
+    ("nms", False, "the nanoMIPS subset belongs to nanoMIPS cores"),
+    ("shadow_sets", 4, "shadow register sets belong to MIPS cores"),
+    ("c_isa", "mips32", "MIPS16e / microMIPS are MIPS ISAs"),
+)
+
+
 #: why the nanoMIPS core has no FPU / ISA modes / ...
 _NANO_FPU = ("MD01247 defines no nanoMIPS FPU instructions (the CP1 cells of its opcode map "
              "are reserved; the I7200 has no FPU)")
@@ -94,6 +120,10 @@ class Rule:
 
 
 RULES = (
+    # first, RISC-V (PLAN M25): another architecture — none of the MIPS settings
+    *(Rule(f, "arch", (lambda f, v: lambda o, r: _rv(o) and getattr(o, f) != v)(f, v),
+           (lambda f, v: lambda o: setattr(o, f, v))(f, v), why)
+      for f, v, why in _RV_DEFAULTS),
     # first, nanoMIPS (PLAN M23): an architecture of its own, Release 6 based —
     # what its cores do not have (the rules below see the settings they leave)
     Rule("arch", "release", lambda o, r: _nano(o) and r != "R6",

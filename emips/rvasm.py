@@ -599,8 +599,10 @@ class Assembler:
     """GNU as for RISC-V (see the module docstring)."""
 
     def __init__(self, xlen: int = 64, extensions: str = "imafdc_zicsr_zifencei_zba_zbb",
-                 relax: bool = True) -> None:
+                 relax: bool = True, strict: bool = False) -> None:
         self.xlen = xlen
+        #: eMIPS's strict mode: GNU's macros refused (their expansion named)
+        self.strict = strict
         self.exts = closure(parse_extensions(extensions) | {"i"})
         self.default_relax = relax
         self.expr = _Expressions(self)
@@ -672,7 +674,7 @@ class Assembler:
             self.error(f"unknown pseudo-op: `{name.lower()}'")
         text = _scrub(text)
         name, sep, rest = text.partition(" ")
-        self.md_assemble(name.lower() + sep + rest)     # (read.c: the opcode lowercased)
+        self.md_assemble(name.lower() + sep + rest, source=True)   # (read.c: lowercased)
 
     # -- symbols ---------------------------------------------------------------
 
@@ -759,8 +761,11 @@ class Assembler:
 
     # -- instructions -------------------------------------------------------------
 
-    def md_assemble(self, text: str) -> None:
+    def md_assemble(self, text: str, source: bool = False) -> None:
         insn, imm, reloc = self.riscv_ip(text)
+        if source and self.strict and insn.mo.macro is not None:
+            self.error(f"`{insn.mo.name}' is a pseudo-instruction (strict mode): "
+                       f"{_STRICT_HINTS[insn.mo.macro]}")
         if insn.mo.macro is not None:
             self.macro(insn, imm, reloc)
         else:
@@ -1836,6 +1841,23 @@ class AsmObject:
         return self.asm.symbols
 
 
+#: strict mode: what each of GNU as's macros expands to
+_STRICT_HINTS = {
+    "M_LI": "lui and addi / addiw (and slli for 64-bit constants)",
+    "M_LA": "auipc rd, %pcrel_hi(sym) and addi rd, rd, %pcrel_lo(label of the auipc)",
+    "M_LLA": "auipc rd, %pcrel_hi(sym) and addi rd, rd, %pcrel_lo(label of the auipc)",
+    "M_LGA": "auipc rd, %got_pcrel_hi(sym) and a load (%pcrel_lo)",
+    "M_Lx": "auipc rd, %pcrel_hi(sym) and the load with %pcrel_lo(label of the auipc)",
+    "M_FLx": "auipc rt, %pcrel_hi(sym) and the load with %pcrel_lo(label of the auipc)",
+    "M_Sx_FSx": "auipc rt, %pcrel_hi(sym) and the store with %pcrel_lo(label of the auipc)",
+    "M_CALL": "auipc rt, %pcrel_hi(sym) and jalr rd, %pcrel_lo(label)(rt) — or jal",
+    "M_EXTH": "slli and srli / srai",
+    "M_ZEXTW": "slli and srli",
+    "M_SEXTB": "slli and srai",
+    "M_LA_TLS_GD": "auipc rd, %tls_gd_pcrel_hi(sym) and addi (%pcrel_lo)",
+    "M_LA_TLS_IE": "auipc rd, %tls_ie_pcrel_hi(sym) and a load (%pcrel_lo)",
+}
+
 #: md_apply_fix's relaxable relocations (an R_RISCV_RELAX follows them with
 #: -mrelax; GOT_HI20 only from la / lga, which eMIPS's linker refuses)
 _RELAXABLE = frozenset(("HI20", "LO12_I", "LO12_S", "TPREL_HI20", "TPREL_LO12_I",
@@ -2004,7 +2026,8 @@ BOOT_SP = 0x7FFFEFFC
 
 
 def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTENSIONS,
-             relax: bool = True, link_relax: bool = True, bases: dict | None = None):
+             relax: bool = True, link_relax: bool = True, bases: dict | None = None,
+             strict: bool = False):
     """Assemble and link a RISC-V ``source`` (``arch`` "rv32" / "rv64")
     into a :class:`emips.assembler.Program` (``arch`` set, ``rv`` = the
     instructions' sizes).  ``relax``: gas's -mrelax (its default) /
@@ -2013,7 +2036,7 @@ def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTEN
     from .assembler import Program, SourceLine
     if arch not in ("rv32", "rv64"):
         raise ValueError(f"arch must be rv32 or rv64, not {arch!r}")
-    asm = Assembler(32 if arch == "rv32" else 64, extensions, relax)
+    asm = Assembler(32 if arch == "rv32" else 64, extensions, relax, strict)
     obj = asm.assemble(source)
     try:
         linked = rvld.link(obj, bases, link_relax)
@@ -2022,11 +2045,12 @@ def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTEN
                        asm.lines[exc.line - 1] if 0 < exc.line <= len(asm.lines) else "") from None
     prog = Program(endian="little", release="RV", arch=arch)
     prog.image = linked.image
+    prog.rv_extensions = extensions
     for a, size, line in linked.insns:
         prog.rv[a] = size
         prog.source_map[a] = SourceLine(line, asm.lines[line - 1] if line else "")
     prog.symbols.update(linked.symbols)
-    prog.segments = linked.segments
+    prog.segments = {n.lstrip("."): span for n, span in linked.segments.items()}   # (text ...)
     for name in ("main", "_start", "__start"):
         if name in prog.symbols:
             prog.entry = prog.symbols[name]

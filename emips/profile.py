@@ -34,13 +34,17 @@ HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\
 PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
                   "shadow_sets", "boot", "compressed", "fpu", "dsp", "msa", "msa_wrp", "mt",
-                  "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv")
+                  "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv",
+                  "rv_extensions", "rv_modes", "rv_relax")
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="eMIPS:", add_help=False, exit_on_error=False)
     p.add_argument("--release", choices=RELEASES)
-    p.add_argument("--arch", choices=("mips32", "mips64", "nanomips"))
+    p.add_argument("--arch", choices=("mips32", "mips64", "nanomips", "rv32", "rv64"))
+    p.add_argument("--rv-ext", dest="rv_extensions")
+    p.add_argument("--rv-modes", dest="rv_modes", choices=("msu", "mu", "m"))
+    p.add_argument("--no-relax", dest="no_relax", action="store_true")
     p.add_argument("--nms", action="store_true")
     p.add_argument("--crc", choices=("auto", "none", "crc"))
     p.add_argument("--ginv", choices=("auto", "none", "ginvi", "ginvt"))
@@ -149,7 +153,8 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
     o: dict[str, Any] = {}
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
                  "shadow_sets", "boot", "cache_init", "compressed", "dsp", "msa", "msa_wrp",
-                 "mt", "mt_pm", "itc", "vps", "itu", "core", "arch", "crc", "ginv"):
+                 "mt", "mt_pm", "itc", "vps", "itu", "core", "arch", "crc", "ginv",
+                 "rv_extensions", "rv_modes"):
         v = getattr(ns, name)
         if v is not None:
             o[name] = v.lower() if isinstance(v, str) and name != "boot" else v
@@ -165,6 +170,8 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
             o[name] = True
     if ns.no_fpu:
         o["fpu"] = False
+    if ns.no_relax:
+        o["rv_relax"] = False
     check = replace(Options(), **o).validated()      # a bad value: say so
     for name, v in o.items():
         if getattr(check, name) != v:

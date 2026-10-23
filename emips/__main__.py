@@ -63,8 +63,8 @@ from .memory import PMemory
 from .cache import Geometry
 from .cores import CORES, describe as describe_core, get as get_core
 from .timing import MEMORY_TIMING
-from .options import (BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, NANO_CRC, NANO_GINV, Options,
-                      arch_title, gdb_program)
+from .options import (ARCHES, BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, NANO_CRC, NANO_GINV,
+                      RV_EXTENSIONS, RV_MODES, Options, arch_title, gdb_program)
 from .session import Session, StepResult
 from .sim import Machine
 from .trace import format_view
@@ -77,7 +77,10 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
     reorder = not getattr(args, "noreorder", False)
     board = getattr(args, "board", None) or "flat"
     arch = getattr(args, "arch", None) or "mips32"
-    nano = None
+    nano = rv = None
+    if arch in ("rv32", "rv64"):
+        rv = {"extensions": getattr(args, "rv_extensions", None) or RV_EXTENSIONS,
+              "relax": not getattr(args, "no_relax", False)}
     if arch == "nanomips":              # (as the session assembles: every ASE on)
         if release not in (None, "R6"):
             sys.exit(f"{path}: nanoMIPS is Release 6 based (MD01247 ch. 1): no --release "
@@ -87,7 +90,8 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
     try:
         return assemble(Path(path).read_text(), endian=endian, release=release,
                         pseudo=pseudo, reorder=reorder,
-                        bases=Options(board=board).segment_bases(), arch=arch, nano=nano)
+                        bases=Options(board=board).segment_bases(), arch=arch, nano=nano,
+                        rv=rv)
     except AsmError as exc:
         sys.exit(f"{path}: {exc}")
 
@@ -97,7 +101,7 @@ def _cmd_asm(args) -> None:
     apply_header(args)                  # (the program's # eMIPS: release, endian ...)
     prog = _assemble(args.file, args.endian, args.release, args)
     for addr, word, text, src in prog.listing(abi=not args.numeric):
-        size = prog.nm.get(addr) or prog.m16.get(addr) or prog.mm.get(addr) or 4
+        size = prog.size_at(addr)
         print(f"{addr:08x}  {encoding(word, size, prog.arch)}  {text:32} # {src}")
     for line in getattr(prog, "link_log", None) or ():    # nanoMIPS: what the linker did
         print(f"# ld: {line}")
@@ -147,9 +151,11 @@ def _cmd_dis(args) -> None:
             sys.exit(f"{args.file}: {s.errors[0]}")
         print(s.listing, end="")
         return
-    if args.arch == "nanomips":                 # 16 / 32 / 48-bit: the session's listing
-        s = Session(abi=not args.numeric, endian=args.endian, release="R6",
-                    options=Options(arch="nanomips", fpu=False))
+    if args.arch in ("nanomips", "rv32", "rv64"):    # 16 / 32 (/ 48)-bit: the session's
+        s = Session(abi=not args.numeric, endian=args.endian,   # listing
+                    release="R6" if args.arch == "nanomips" else "R5",
+                    options=Options(arch=args.arch, fpu=args.arch != "nanomips",
+                                    rv_extensions=args.rv_extensions or RV_EXTENSIONS))
         if not s.load_hex(Path(args.file).read_text()):
             sys.exit(f"{args.file}: {s.errors[0]}")
         print(s.listing, end="")
@@ -437,9 +443,10 @@ def _cmd_debug(args) -> None:
             sys.exit(1)
         s.type_keys(_keys(args))
     if not scripted:
-        d.intro = (f"eMIPS debugger — {arch_title(s.options.arch)} {s.release}, "
-                   f"{s.endian}-endian, "
-                   f"{s.mode} mode. Type help.")
+        what = (f"{arch_title(s.options.arch)} {s.options.rv_extensions}, modes "
+                f"{s.options.rv_modes.upper()}" if s.rv else
+                f"{arch_title(s.options.arch)} {s.release}, {s.endian}-endian")
+        d.intro = f"eMIPS debugger — {what}, {s.mode} mode. Type help."
         if s.machine is not None:
             d.intro += "\n" + d._where(s.current_pc())
     while True:
@@ -540,12 +547,21 @@ def build_parser() -> argparse.ArgumentParser:
                        const="little", default="big", help="little-endian")
         p.add_argument("--release", choices=RELEASES, default=None,
                        help="MIPS32 / MIPS64 release (default R5; nanoMIPS: R6)")
-        p.add_argument("--arch", choices=("mips32", "mips64", "nanomips"), default=None,
+        p.add_argument("--arch", choices=ARCHES, default=None,
                        help="the architecture: mips32 (default), mips64 (64-bit "
                             "registers and the doubleword instructions; the 32-bit "
-                            "compatibility address space) or nanomips (nanoMIPS32: "
+                            "compatibility address space), nanomips (nanoMIPS32: "
                             "16 / 32 / 48-bit instructions, Release 6, its own "
-                            "assembler — GNU as + ld's)")
+                            "assembler — GNU as + ld's), or rv32 / rv64 (a RISC-V "
+                            "hart: RARS's services and memory map, GNU as + ld's "
+                            "assembler)")
+        p.add_argument("--rv-ext", dest="rv_extensions", default=None, metavar="EXTS",
+                       help=f"RISC-V: the hart's extensions (default {RV_EXTENSIONS})")
+        p.add_argument("--rv-modes", dest="rv_modes", choices=RV_MODES, default=None,
+                       help="RISC-V: the privilege modes (default msu)")
+        p.add_argument("--no-relax", dest="no_relax", action="store_true",
+                       help="RISC-V: no linker relaxation (as -mno-relax, ld --no-relax; "
+                            "GNU relaxes by default)")
         p.add_argument("--nms", action="store_true",
                        help="nanoMIPS: the nanoMIPS subset core (Config5.NMS; programs "
                             "assembled as GNU as -march=32r6s)")

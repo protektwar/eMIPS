@@ -41,9 +41,19 @@ MSA_LEVELS = ("auto", "none", "msa")
 #: registers; the 32-bit compatibility segments with the fixed mapping —
 #: Config.AT = 1 —, the 64-bit address space with a TLB — AT = 2), or
 #: nanoMIPS (PLAN M23, emips.simnano: nanoMIPS32 Release 6, its own ISA)
-ARCHES = ("mips32", "mips64", "nanomips")
+ARCHES = ("mips32", "mips64", "nanomips", "rv32", "rv64")
 #: each architecture's name as the manuals write it
-ARCH_TITLES = {"mips32": "MIPS32", "mips64": "MIPS64", "nanomips": "nanoMIPS"}
+ARCH_TITLES = {"mips32": "MIPS32", "mips64": "MIPS64", "nanomips": "nanoMIPS",
+               "rv32": "RV32", "rv64": "RV64"}
+#: RISC-V (PLAN M25): the extensions of eMIPS's generic hart (emips.simrv;
+#: RV64GC with Zba / Zbb, the P8700's set) and its privilege modes
+RV_EXTENSIONS = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb"
+RV_MODES = ("msu", "mu", "m")
+
+
+def is_rv(arch: str) -> bool:
+    """A RISC-V architecture (rv32 / rv64)."""
+    return arch in ("rv32", "rv64")
 
 
 def arch_title(arch: str) -> str:
@@ -159,6 +169,13 @@ class Options:
     #: program has GINVT, 2 when it has GINVI only; "none" (GI 0), "ginvi"
     #: (GI 2: GINVI), "ginvt" (GI 3: GINVI and GINVT)
     ginv: str = "auto"
+    #: a RISC-V hart (PLAN M25): its extensions (the ISA string after
+    #: rv32 / rv64; the programs are assembled for them too), its privilege
+    #: modes ("msu", "mu", "m"), and the linker relaxation of its programs
+    #: (GNU's default: as -mrelax, ld relaxing; off = -mno-relax)
+    rv_extensions: str = RV_EXTENSIONS
+    rv_modes: str = "msu"
+    rv_relax: bool = True
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -282,6 +299,15 @@ class Options:
             self.crc = d.crc
         if self.ginv not in NANO_GINV:
             self.ginv = d.ginv
+        if self.rv_modes not in RV_MODES:
+            self.rv_modes = d.rv_modes
+        try:
+            from .riscv import RVISA, parse_extensions
+            if "i" not in parse_extensions(self.rv_extensions):
+                raise ValueError(self.rv_extensions)
+            RVISA.for_core(64, self.rv_extensions)
+        except (ValueError, KeyError):
+            self.rv_extensions = d.rv_extensions
         self.mt = (self.mt or "").strip().lower()
         if self.mt != "auto":
             from .mt import parse_spec
@@ -380,6 +406,8 @@ class Options:
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
         return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
-                self.c_isa, self.fpu, self.arch, self.nms, self.relax) != \
+                self.c_isa, self.fpu, self.arch, self.nms, self.relax, self.rv_extensions,
+                self.rv_relax) != \
             (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa,
-             other.fpu, other.arch, other.nms, other.relax)
+             other.fpu, other.arch, other.nms, other.relax, other.rv_extensions,
+             other.rv_relax)

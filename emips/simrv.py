@@ -86,6 +86,7 @@ CAUSE_NAMES = {
 CCA_CACHED, CCA_UNCACHED = 3, 2
 MMIO_BASE = 0xFFFF0000
 from .rvmmu import PA_BITS, RVMMU, pma_cca  # noqa: E402  (32-bit physical space, the PMAs)
+from . import tracerv  # noqa: E402  (the views of the instructions)
 
 
 class RVTrap(Exception):
@@ -461,28 +462,39 @@ class RVMachine(S.Machine):
             else:
                 self.advance(1)
                 return None
+        v = tracerv.begin(self, pc) if self.tracing else None   # (the view: emips.tracerv)
         try:
             if tm.icounts:
                 f = tm.icount()
                 if f is not None:
                     raise f
             i = self.fetch(pc)
+            if v is not None:
+                tracerv.fetched(self, v, i)
             nxt = EXECUTORS[i.base.name](self, i, pc)
         except Fired as f:
             self.advance(1)
             self._fire(f, pc)
             self._stepped()
+            if v is not None:
+                self.last_view = tracerv.finish(self, v, i, None, "a trigger fired")
             return i
         except EnterDebug as e:
             self.advance(1)
             self.enter_debug(e.cause, pc)
+            if v is not None:
+                self.last_view = tracerv.finish(self, v, i, None, "Debug Mode")
             return i
         except RVTrap as t:
             self.advance(1)
             self._trap(t, pc, i)
             self._stepped()
+            if v is not None:
+                self.last_view = tracerv.finish(self, v, i, None,
+                                                CAUSE_NAMES.get(t.cause, f"cause {t.cause}"))
             return i
-        except SimException as exc:
+        except SimException as exc:             # (a simulator halt)
+            self._mem_log = None
             self.exception_log.append({"name": getattr(exc, "name", None),
                                        "word": getattr(exc, "word", None),
                                        "addr": getattr(exc, "addr", pc),
@@ -494,6 +506,10 @@ class RVMachine(S.Machine):
         self.advance(1)
         self.counter_written.clear()
         self.pc = (pc + i.size if nxt is None else nxt) & self.amask
+        if self.call_hook is not None:          # (the debugger's call stack)
+            self.call_hook(pc, i, i.raw, self.pc)
+        if v is not None:
+            self.last_view = tracerv.finish(self, v, i, self.pc)
         if tm.after is not None:                # a timing-after trigger (5.7.12 hit = 3)
             f, tm.after = tm.after, None
             self._fire(f, self.pc)

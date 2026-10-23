@@ -306,6 +306,13 @@ def _subject(t: str, line: int) -> tuple:
         return ("stalls", sm.group(1))
     if low in ("hi", "lo", "pc"):
         return ("special", low)
+    rm = re.fullmatch(r"\$(f[tsa]\d+)(?:\.([sd]))?", t, re.I)   # RISC-V: $fa0, $ft1.d
+    if rm:
+        from .riscv import FPR_NAMES
+        name = rm.group(1).lower()
+        if name not in FPR_NAMES:
+            raise CheckError(line, f"not an FPU register: ${name}")
+        return ("fpr", FPR_NAMES.index(name), (rm.group(2) or "").lower())
     fm = re.fullmatch(r"(\$f\d+)(?:\.([sd]))?", t, re.I)
     if fm:
         n = parse_fpr(fm.group(1))
@@ -340,14 +347,21 @@ def _subject(t: str, line: int) -> tuple:
 def _gpr(t: str, line: int) -> str:
     """A GPR, kept by its name: resolved with the core's ABI when the check
     is evaluated (o32's names; MIPS64: n64's; nanoMIPS: p32's — $t0 is $8,
-    $12, $12); a name of no ABI is an error now."""
-    if all(gpr_number(t, abi) is None for abi in (True, "n64", "p32")):
+    $12, $12; RISC-V: $t0 is x5, $x5 too); a name of no ABI is an error now."""
+    from .sessionrv import gpr_number as rv_gpr
+    if all(gpr_number(t, abi) is None for abi in (True, "n64", "p32")) and rv_gpr(t) is None:
         raise CheckError(line, f"not a register: {t}")
     return t
 
 
 def _reg(m, name: str) -> int:
     """The number of the GPR ``name`` on core ``m`` (its ABI's names)."""
+    if m.rv:                                     # RISC-V: x0-x31, the ABI's names
+        from .sessionrv import gpr_number as rv_gpr
+        n = rv_gpr(name)
+        if n is None:
+            raise _Unavailable(f"{name} is not a RISC-V register name")
+        return n
     n = gpr_number(name, m.names)
     if n is None:
         raise _Unavailable(f"{name} is not a register name of this core's ABI "
@@ -613,9 +627,25 @@ def _read(s, subject: tuple) -> tuple[Any, int | None, str]:
             return f, size, repr(f)
         return e, size, _hex(e, size)
     if kind == "special":
+        if m.rv and subject[1] in ("hi", "lo"):
+            raise _Unavailable(f"{subject[1]}: RISC-V has no HI / LO (M's results go to rd)")
         v = {"hi": lambda: m.hi, "lo": lambda: m.lo,
              "pc": lambda: s.current_pc() if s.current_pc() is not None else m.pc}[subject[1]]()
         return v & M32, 32, _hex(v & M32, 32)
+    if kind == "fpr" and m.rv:                   # RISC-V: f0-f31 (FLEN bits)
+        n, fmt = subject[1], subject[2]
+        if not m.flen:
+            raise _Unavailable("this hart has no F / D extension")
+        raw = m.fpr[n]
+        if fmt == "d":
+            if m.flen < 64:
+                raise _Unavailable("this hart has no D extension")
+            v = struct.unpack("<d", raw.to_bytes(8, "little"))[0]
+            return v, 64, repr(v)
+        if fmt == "s":
+            v = struct.unpack("<f", (raw & M32).to_bytes(4, "little"))[0]
+            return v, 32, repr(v)
+        return raw, m.flen, _hex(raw, m.flen)
     if kind == "fpr":
         from .sim import fpr_get
         n, fmt = subject[1], subject[2]

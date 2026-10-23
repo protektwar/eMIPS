@@ -42,7 +42,8 @@ from .syntax import gpr_name
 from . import tap as TAPM
 from . import pdtrace as PDT
 from . import perf
-from .options import Options
+from .options import Options, is_rv
+from . import sessionrv as RV
 
 M32 = 0xFFFFFFFF
 READ_SERVICES = {5, 6, 7, 8, 12}
@@ -284,7 +285,8 @@ class Session:
                                     bases=self.options.segment_bases(),
                                     pseudo=self.options.pseudo,
                                     reorder=self.options.reorder,
-                                    arch=self.options.arch, nano=self._nano_assembler())
+                                    arch=self.options.arch, nano=self._nano_assembler(),
+                                    rv=self._rv_assembler())
         except AsmError as exc:
             self.errors = [str(exc)]
             self._drop_program()
@@ -331,8 +333,9 @@ class Session:
         self._release_note = self._nano_release()
         prog = Program(endian=self.endian, release=self.release, image=image,
                        entry=entry, arch=self.options.arch)
-        if self.nano:                           # nanoMIPS: 2, 4 or 6-byte instructions
-            self.listing = self._nano_hex_listing(prog, image, entry)
+        if self.nano or self.rv:                # nanoMIPS / RISC-V: 2, 4 (6)-byte ones
+            self.listing = (RV.hex_listing(self, prog, image, entry) if self.rv
+                            else self._nano_hex_listing(prog, image, entry))
             self.program = prog
             self.kind = "hex"
             self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
@@ -607,6 +610,17 @@ class Session:
         return True
 
     @property
+    def rv(self) -> bool:
+        """A RISC-V hart (Options.arch rv32 / rv64, emips.simrv; PLAN M25)."""
+        return is_rv(self.options.arch)
+
+    def _rv_assembler(self) -> dict | None:
+        """emips.rvasm's options: the hart's extensions, the relaxation."""
+        if not self.rv:
+            return None
+        return {"extensions": self.options.rv_extensions, "relax": self.options.rv_relax}
+
+    @property
     def nano(self) -> bool:
         """A nanoMIPS core (Options.arch, emips.simnano; PLAN M23)."""
         return self.options.arch == "nanomips"
@@ -704,6 +718,13 @@ class Session:
                     "cores — P5600, P6600, I6400 — run on the 5-stage pipeline)")
             self.program_notes.append(note)
             self.adjusted.append(note)
+        if self.rv:
+            self.endian = "little"              # (decision 6: no big-endian RISC-V
+            #                                     core; the CLI refuses --endian big)
+            if self.mode == "pipeline":
+                self.mode = "instruction"
+                self.program_notes.append(RV.RV_INSTRUCTION_MODE)
+                self.adjusted.append(RV.RV_INSTRUCTION_MODE)
         if (self.wide or self.nano) and self.mode == "pipeline" \
                 and self.mt_config() is not None:
             note = MT_NANO_INSTRUCTION_MODE if self.nano else MT64_INSTRUCTION_MODE
@@ -718,7 +739,13 @@ class Session:
         self._input_pos = 0
         self.services = None
         if self.syscalls and o.syscalls:
-            self.services = SyscallServices(read_line=self._read_line, write=self._emit)
+            if self.rv:                         # RARS's services (decision 10)
+                from .rvservices import RarsServices
+                self.services = RarsServices(read_line=self._read_line, write=self._emit)
+            else:
+                self.services = SyscallServices(read_line=self._read_line, write=self._emit)
+        if self.rv:                             # the console's lines -> MEIP
+            self.console.sink = RV.console_sink(self)
         mem = PMemory()
         #: the board (emips.malta), None: flat (every physical address RAM)
         self.board = o.make_board(big_endian=self.endian == "big")
@@ -802,7 +829,9 @@ class Session:
             for i in range(n) if boot else (0,):
                 m = self.machines[i]
                 self.program.load(m, boot=boot)
-                if o.boot == "user":            # KSU = user (Status.UM); MIPS64: PX,
+                if self.rv:
+                    RV.boot(self, m)
+                elif o.boot == "user":          # KSU = user (Status.UM); MIPS64: PX,
                     m._cp0_set(C.STATUS, m.status | (2 << C.ST_KSU_SHIFT)   # the 64-bit
                                | (1 << 23 if m.wide else 0))               # operations
                     if self.board is not None:  # its stack in kuseg (the TLB maps it)
@@ -956,6 +985,9 @@ class Session:
         FPU context: VPE 0's).  ``vp``: a Release 6 VP on its core's
         ``caches`` (its own FPU: a complete processor, MD01196 ch. 12)."""
         o = self.options
+        if self.rv:
+            return RV.make_core(self, cpu, mem, o.caches(core=cpu) if caches is False
+                                else caches)
         if caches is False:
             caches = o.caches(core=cpu, shared=cps is not None)
         if cps is not None and caches is None and cps.cm.l2 is not None:
@@ -1025,6 +1057,8 @@ class Session:
         m = self.machines[self.cpu if cpu is None else cpu] if self.machines else None
         if m is None:
             return "?"
+        if m.rv:
+            return RV.instruction_text(m, pc, self.abi)
         if m.nano:                              # nanoMIPS: 16 / 32 / 48 bits
             from . import nanomips
             i = self._nano_insn(m, pc)
@@ -1318,6 +1352,9 @@ class Session:
 
     def _core_needs_input(self, cpu: int) -> bool:
         m = self.machines[cpu]
+        if m.rv:
+            pc = self._next_executing_pc(cpu)
+            return pc is not None and RV.needs_input(m, pc)
         if m.read_reg(2) not in READ_SERVICES:  # (cheap: before the fetch)
             return False
         pc = self._next_executing_pc(cpu)
@@ -1496,7 +1533,9 @@ class Session:
 
     def _at_vector(self, m, pc: int) -> bool:
         """``pc`` is an exception vector (MIPS64: sign-extended, the XTLB
-        Refill ones too)."""
+        Refill ones too; RISC-V: mtvec / stvec)."""
+        if m.rv:
+            return RV.trap_vector(m, pc) is not None
         if not m.wide:
             return pc in self.VECTORS
         return pc >= 0xFFFFFFFF80000000 and pc & M32 in self.VECTORS64
@@ -1508,6 +1547,8 @@ class Session:
         m = self.machine
         if isinstance(exc, ProbeWaitError) or not isinstance(exc, FetchError) or m is None:
             return ""
+        if m.rv:
+            return RV.no_handler_hint(self, exc)
         if m.debug_mode and m.pc == m.debug_vector():
             st = self.debug_state()
             why = ", ".join(st["causes"]) or f"an exception in Debug Mode (DExcCode " \
@@ -1534,7 +1575,8 @@ class Session:
         if text is None or m.pc != text[1]:
             return ""
         return (" — the program ran past its last instruction: end it with "
-                + ("li $t4, 10 / syscall" if m.nano else "li $v0, 10 / syscall")
+                + (RV.EXIT_HINT if m.rv else "li $t4, 10 / syscall" if m.nano
+                   else "li $v0, 10 / syscall")
                 + " (exit)")
 
     def _moved_code_hint(self, exc: Exception) -> str:
@@ -1543,7 +1585,7 @@ class Session:
         program was loaded (the fixed mapping moves kuseg by 1 GB)."""
         from .exceptions import FetchError
         m = self.machine
-        if (not isinstance(exc, FetchError) or m is None or m.pc >= 0x80000000
+        if (not isinstance(exc, FetchError) or m is None or m.rv or m.pc >= 0x80000000
                 or m.pc not in self.code_addresses()):
             return ""
         erl = 1 if m.status & C.ST_ERL else 0
@@ -1637,6 +1679,8 @@ class Session:
 
     def _return_address(self, pc: int) -> int | None:
         m = self.machine
+        if m.rv:
+            return RV.return_address(m, pc)
         if m.nano:                              # BALC, MOVE.BALC, JALRC ... (no slot)
             from .simnano import link
             i = self._nano_insn(m, pc)
@@ -1682,6 +1726,9 @@ class Session:
         taken pushes a frame, ``jr $ra`` (R6: ``jalr $zero, $ra``, ``jrc
         $ra``) pops one — what the code does, not a guess from the stack
         memory."""
+        if m.rv:
+            m.call_hook = RV.call_hook(self, cpu, m)
+            return
         from .simnano import link, returns
 
         def hook(pc: int, dec, word: int, result, cpu=cpu) -> None:
@@ -2048,6 +2095,10 @@ class Session:
         """``(name, value, changed by the last step)`` for the 32 GPRs (MIPS64:
         the n64 names; nanoMIPS: the p32 ones)."""
         m = self.machine
+        if m.rv:
+            from .riscv import GPR_NAMES
+            return [(GPR_NAMES[i] if self.abi else f"x{i}", m.read_reg(i),
+                     m.read_reg(i) != self.prev_regs[i]) for i in range(32)]
         abi = m.names if self.abi else False
         return [(gpr_name(i, abi), m.read_reg(i), m.read_reg(i) != self.prev_regs[i])
                 for i in range(32)]
@@ -2070,6 +2121,8 @@ class Session:
     def hex_digits(self, name: str | None = None) -> int:
         """Digits of a register in the views: 16 for a MIPS64 GPR (``name``
         None) or 64-bit register, else 8."""
+        if self.rv:                             # RISC-V: XLEN-wide registers and CSRs
+            return 16 if self.options.arch == "rv64" else 8
         return 16 if self.wide and (name is None or name in self.WIDE_REGISTERS) else 8
 
     #: what sets each ouflag bit (MD00374 Table 3.5)
@@ -2979,6 +3032,17 @@ class Session:
 
     def special_registers(self) -> list[tuple[str, int]]:
         m = self.machine
+        if m.rv:                                    # pc, the trap CSRs, fcsr
+            c = m.csrs
+            rows = [("pc", m.pc), ("priv", m.priv), ("mstatus", c.mstatus_value()),
+                    ("mtvec", c.mtvec), ("mepc", c.mepc), ("mcause", c.mcause),
+                    ("mtval", c.mtval), ("mie", c.mie), ("mip", c.mip())]
+            if 1 in m.modes:
+                rows += [("stvec", c.stvec), ("sepc", c.sepc), ("scause", c.scause),
+                         ("stval", c.stval), ("satp", c.satp)]
+            if m.flen:
+                rows.append(("fcsr", m.fcsr))
+            return rows
         # (nanoMIPS: no HI / LO, no FPU, BadInstrX instead of BadInstrP — MD01251 9.28)
         rows = [("pc", m.pc)] + ([] if m.nano else [("hi", m.hi), ("lo", m.lo)])
         bad = [("BadInstr", (8, 1)), ("BadInstrP", (8, 2))]

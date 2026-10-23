@@ -871,6 +871,8 @@ class MainWindow(QtWidgets.QMainWindow):
         s.options = Options.from_strings(
             {k: v for k in Options().to_strings()
              if (v := self.settings.value(f"options/{k}")) is not None})
+        if s.options.arch in ("rv32", "rv64"):  # (the window's RISC-V: PLAN M25 4b)
+            s.options.arch = "mips32"
         self.mode.blockSignals(True)
         self.mode.setCurrentIndex(0 if s.mode != "pipeline" else
                                   (2 if s.options.model == "24k" else 1))
@@ -1180,7 +1182,15 @@ class MainWindow(QtWidgets.QMainWindow):
         goes together is kept so (emips.compat).  Returns True when
         something changed."""
         from ..compat import adjust
+        from ..options import is_rv
         s = self.session
+        if is_rv(prof.options.get("arch", "")):     # (the window's RISC-V: PLAN M25 4b)
+            text = tr("this is a RISC-V program ({flags}): the window runs RISC-V from "
+                      "a later version — use python3 -m emips run / debug "
+                      "FILE").format(flags=prof.describe())
+            self._log(text)
+            self.status.showMessage(text, 8000)
+            return False
         if not prof.differs(s.options, s.release, s.endian, s.mode, s.forwarding):
             return False
         options, _notes = adjust(prof.options_for(s.options), prof.release)

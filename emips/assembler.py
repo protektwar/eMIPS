@@ -156,6 +156,8 @@ class Program:
     nm: dict[int, int] = field(default_factory=dict)
     #: RISC-V code (emips.rvasm): instruction address -> its size (2 / 4)
     rv: dict[int, int] = field(default_factory=dict)
+    #: ... the extensions it was assembled for (the listing's disassembler)
+    rv_extensions: str = ""
     #: the assembler's warnings: (line, message)
     warnings: list = field(default_factory=list)
     #: what the nanoMIPS linker changed (gold's --debug=target lines)
@@ -177,18 +179,27 @@ class Program:
                 out.setdefault(addr, name)
         return out
 
-    def _load_rv(self, machine) -> None:
+    def _load_rv(self, machine, boot: bool = True) -> None:
         """A RISC-V program (emips.rvasm): the image at its addresses
-        (physical: an M-mode hart, satp Bare), the PC at the entry, sp
-        and gp as RARS sets them (gp = __global_pointer$, where the
-        linker's gp-relative accesses assume it)."""
+        (physical: an M-mode hart, satp Bare) and the PC at the entry.
+        ``boot`` plays the firmware (decision 11's "machine" boot): sp and
+        gp set (RARS's sp; gp = __global_pointer$, where the linker's
+        gp-relative accesses assume it, as GNU's crt0 sets it) and
+        mstatus.FS = Initial (the F / D registers usable, as a MIPS boot
+        sets CU1); without it the hart stays in its reset state (priv.
+        3.4: FS Off, sp / gp 0) with the program at the reset vector."""
         if not getattr(machine, "rv", False) or machine.arch != self.arch:
             raise ValueError(f"a {self.arch} program needs a {self.arch} core")
         for a, b in self.image.items():
             machine.phys_write_byte(a, b)
         machine.pc = self.entry & machine.amask
+        if not boot:
+            return
         machine.write_reg(2, 0x7FFFEFFC if self.arch == "rv32" else 0x7FFFEFF0)
         machine.write_reg(3, self.symbols.get("__global_pointer$", BOOT_GP))
+        if machine.flen:
+            from .rvcsr import FS_SHIFT
+            machine.csrs.mstatus |= 1 << FS_SHIFT          # Initial
 
     def load(self, machine, *, boot: bool = True) -> None:
         """Copy the image into ``machine`` and point its PC at the entry.
@@ -228,7 +239,7 @@ class Program:
         VA itself in the reset state, where Status.ERL = 1)."""
         from .exceptions import UnmappedAddress
         if self.arch in ("rv32", "rv64"):
-            self._load_rv(machine)
+            self._load_rv(machine, boot)
             return
         if machine.big_endian != (self.endian == "big"):
             raise ValueError(f"program is {self.endian}-endian, machine is not")
@@ -342,7 +353,8 @@ class Program:
 
     def size_at(self, addr: int) -> int:
         """The size in bytes of the instruction at ``addr`` (2 / 4 / 6)."""
-        return self.nm.get(addr) or self.m16.get(addr) or self.mm.get(addr) or 4
+        return (self.nm.get(addr) or self.m16.get(addr) or self.mm.get(addr)
+                or self.rv.get(addr) or 4)
 
     def encoding(self, addr: int, word: int) -> str:
         """The instruction at ``addr`` (its listing word) as a listing
@@ -410,6 +422,16 @@ class Program:
         from .disasm import disassemble
         labels = self.labels()
         out = []
+        if self.arch in ("rv32", "rv64"):          # RISC-V: objdump's text, its walk
+            from .riscv import Disassembler
+            d = Disassembler(32 if self.arch == "rv32" else 64,
+                             self.rv_extensions or "imafdc_zicsr", numeric=not abi,
+                             symbols=labels)
+            for a, s in sorted(self.source_map.items()):
+                n = self.rv.get(a, 4)
+                raw = sum(self.image.get(a + k, 0) << 8 * k for k in range(n))
+                out.append((a, raw, d.text(raw, n, a), s.text.strip()))
+            return out
         if self.arch == "nanomips":                # (a nanoMIPS one: 16 / 32 / 48 bits)
             from . import nanomips
             for a, s in sorted(self.source_map.items()):
@@ -2211,13 +2233,22 @@ def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,
              bases: dict[str, int] | None = None,
              release: str | None = None, pseudo: bool = True,
              reorder: bool = True, arch: str = "mips32",
-             nano: dict | None = None) -> Program:
+             nano: dict | None = None, rv: dict | None = None) -> Program:
     """Assemble ``source`` for a MIPS32 ``release`` (default R5; ``arch``
     "mips64": MIPS64; "nanomips": :mod:`emips.nanoasm`, GNU's nanoMIPS
     assembler and linker, Release 6 only); raises :class:`AsmError` on the
     first error.  ``pseudo=False``: strict mode; ``reorder=False``: start
     in ``.set noreorder``; ``nano``: :func:`emips.nanoasm.assemble`'s
-    options (the core's ``nms`` / ``crc`` ..., ``linkrelax``, ``link``)."""
+    options (the core's ``nms`` / ``crc`` ..., ``linkrelax``, ``link``);
+    ``arch`` "rv32" / "rv64": :mod:`emips.rvasm` (GNU as + ld for RISC-V,
+    little-endian), ``rv`` its ``extensions`` / ``relax``."""
+    if arch in ("rv32", "rv64"):
+        from . import rvasm
+        rv = rv or {}
+        relax = rv.get("relax", True)
+        return rvasm.assemble(source, arch=arch,
+                              extensions=rv.get("extensions", rvasm.DEFAULT_EXTENSIONS),
+                              relax=relax, link_relax=relax, bases=bases, strict=not pseudo)
     if arch == "nanomips":
         if release not in (None, "R6"):
             raise ValueError(f"nanoMIPS is Release 6 based: no {release}")

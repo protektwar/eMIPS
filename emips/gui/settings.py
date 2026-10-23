@@ -102,6 +102,9 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, release: str, endian: str, forwarding: bool, options: Options,
                  parent=None) -> None:
         super().__init__(parent)
+        #: the options given (what the dialog has no widget for passes through:
+        #: a RISC-V hart's, PLAN M25 — the window's RISC-V settings are phase 4b)
+        self._given = options
         self.setWindowTitle(tr("Settings"))
         self.tabs = QtWidgets.QTabWidget()
         for page, title in ((self._processor_tab(), tr("Processor")),
@@ -735,7 +738,8 @@ class SettingsDialog(QtWidgets.QDialog):
             mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
             core=self.core.currentData(), arch=self.arch.currentData(),
             nms=self.nms.isChecked(), crc=self.crc.currentData(),
-            ginv=self.ginv.currentData())
+            ginv=self.ginv.currentData(), rv_extensions=self._given.rv_extensions,
+            rv_modes=self._given.rv_modes, rv_relax=self._given.rv_relax)
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 

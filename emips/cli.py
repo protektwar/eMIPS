@@ -27,7 +27,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import (BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
+from .options import (ARCHES, RV_EXTENSIONS, RV_MODES, BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
                       NANO_GINV, Options)
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
@@ -75,7 +75,18 @@ class Debugger(cmd.Cmd):
             self.say(f"{Debugger.prompt}{line}")
         return line
 
+    #: commands of MIPS hardware (CP0, EJTAG, the CPS, the 24K ...): on a
+    #: RISC-V hart they say what to use instead
+    MIPS_ONLY = frozenset(("srs", "ejtag", "probe", "board", "disk", "trace", "tap", "cp0",
+                           "dsp", "msa", "mt", "vp", "tc", "translate", "cm", "cps", "gic",
+                           "tlb", "mpu", "perf", "core"))
+
     def onecmd(self, line: str) -> bool:
+        word = line.split()[0] if line.split() else ""
+        if word in self.MIPS_ONLY and self.s.rv:
+            self.say(f"error: {word} is a MIPS command; this is a RISC-V hart — "
+                     "regs, csr, fpu, mem, dis show its state")
+            return False
         try:
             return super().onecmd(line)
         except CliError as exc:
@@ -144,7 +155,8 @@ class Debugger(cmd.Cmd):
             if pc is None:
                 raise CliError("no instruction is about to execute")
             return pc
-        if t.startswith("$"):
+        if t.startswith("$") or (s.rv and t not in s.program.symbols
+                                 and self._gpr(t) is not None):    # (RISC-V: a0, x5)
             n = self._gpr(t)
             if n is None:
                 raise CliError(f"not a register: {t}")
@@ -484,6 +496,9 @@ class Debugger(cmd.Cmd):
             self.say("  ".join(f"{n:>5}{'*' if ch else ' '}0x{v:0{w}x}"
                                for n, v, ch in rows[i:i + 4]))
         m = s.machine
+        if m.rv:                                # (no HI / LO, no shadow sets)
+            self.say(f"   pc  0x{m.pc:0{w}x}    {_RV_MODE[m.priv]}-mode")
+            return
         hilo = "" if m.nano else f"    hi  0x{m.hi:0{w}x}    lo  0x{m.lo:0{w}x}"   # (none)
         self.say(f"   pc  0x{m.pc:0{w}x}{hilo}"
                  + (f"    shadow set {m.srs_field(C.SRS_CSS)} of 0-{m.hss}"
@@ -961,10 +976,53 @@ class Debugger(cmd.Cmd):
         for name, value in self.s.special_registers():
             self.say(f"{name:>9} = 0x{value:0{self.s.hex_digits(name)}x}")
 
+    def do_csr(self, arg: str) -> None:
+        """csr [NAME|NUMBER ...]   RISC-V: the hart's CSRs (default: the trap
+        and status ones — mstatus, mtvec, mepc, mcause ...)"""
+        self._need_program()
+        s, m = self.s, self.s.machine
+        if not m.rv:
+            raise CliError("csr is a RISC-V command (MIPS: cp0)")
+        if not arg.strip():
+            for name, value in s.special_registers():
+                self.say(f"{name:>9} = 0x{value:0{s.hex_digits(name)}x}")
+            return
+        from . import rvcsr
+        by_name = {v: k for k, v in rvcsr.NAMES.items()}
+        for tok in arg.split():
+            num = by_name.get(tok.lower())
+            if num is None:
+                try:
+                    num = int(tok, 0)
+                except ValueError:
+                    raise CliError(f"no CSR {tok!r}") from None
+            try:
+                value = m.csrs.read(num)
+            except Exception as exc:                        # noqa: BLE001
+                raise CliError(f"CSR 0x{num:03x}: {exc}") from None
+            name = rvcsr.NAMES.get(num, f"0x{num:03x}")
+            self.say(f"{name:>9} = 0x{value:0{s.hex_digits()}x}")
+
     def do_fpu(self, arg: str) -> None:
-        """fpu   the 32 FPU registers (as single / double) and FCSR"""
+        """fpu   the 32 FPU registers (as single / double) and FCSR (RISC-V: f0-f31,
+        fcsr's frm / fflags)"""
         self._need_program()
         m = self.s.machine
+        if m.rv:
+            if not m.flen:
+                self.say("  this hart has no F / D extension")
+                return
+            from .riscv import FPR_NAMES
+            for i, raw in enumerate(m.fpr):
+                single = struct.unpack("<f", (raw & M32).to_bytes(4, "little"))[0]
+                boxed = m.flen == 32 or raw >> 32 == M32
+                dbl = struct.unpack("<d", raw.to_bytes(8, "little"))[0] if m.flen == 64 else None
+                self.say(f"  {FPR_NAMES[i]:<4} 0x{raw:0{m.flen // 4}x}  "
+                         + (f"{single:<14.7g}" if boxed else " " * 14)
+                         + (f" {dbl:.15g}" if dbl is not None else ""))
+            self.say(f"  fcsr 0x{m.fcsr:08x}  frm {m.fcsr >> 5 & 7}  fflags "
+                     f"0b{m.fcsr & 31:05b} (NV DZ OF UF NX)")
+            return
         if not m.has_fpu:
             self.say("  this core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every "
                      "FPU instruction is Coprocessor Unusable")
@@ -1418,10 +1476,11 @@ class Debugger(cmd.Cmd):
         center = self.resolve(parts[0]) if parts else cur
         i = addrs.index(center) if center in addrs else 0
         lo = max(0, i - (count // 3 if not parts else 0))
-        nm = s.program.nm
+        prog = s.program
         for a, w, text, line in rows[lo:lo + count]:
             mark = "=>" if a == cur else " *" if a in s.breakpoints else "  "
-            enc = encoding(w, nm[a], "nanomips") if a in nm else f"{w:08x}"
+            enc = encoding(w, prog.size_at(a), prog.arch) \
+                if prog.arch in ("nanomips", "rv32", "rv64") else f"{w:08x}"
             self.say(f"{mark} 0x{a:08x}  {enc}  {text:<30} {line:>4}")
 
     def do_list(self, arg: str) -> None:
@@ -1519,9 +1578,19 @@ class Debugger(cmd.Cmd):
         if not t:
             raise CliError("print what?")
         as_float = False
-        if t.startswith("$f") and t[2:].isdigit() and self.s.machine is not None:
+        fpr = None
+        if self.s.rv and self.s.machine is not None:      # RISC-V: f10, fa0 (a single)
+            from .riscv import FPR_NAMES
+            name = t.lstrip("$").lower()
+            fpr = FPR_NAMES.index(name) if name in FPR_NAMES else \
+                int(name[1:]) if name[:1] == "f" and name[1:].isdigit() and int(name[1:]) < 32 \
+                else None
+        if fpr is not None:
+            t, as_float = f"0x{self.s.machine.fpr[fpr] & M32:08x}", True
+        elif t.startswith("$f") and t[2:].isdigit() and self.s.machine is not None:
             t, as_float = f"0x{self.s.machine.fpr[int(t[2:]) % 32] & M32:08x}", True
-        elif t.startswith("$") or (self.s.program is not None and t in self.s.program.symbols):
+        elif t.startswith("$") or (self.s.program is not None and t in self.s.program.symbols) \
+                or (self.s.rv and self.s.machine is not None and self._gpr(t) is not None):
             t = f"0x{self.resolve(t):08x}"
         else:
             try:
@@ -1558,20 +1627,24 @@ class Debugger(cmd.Cmd):
     def _tool(self, arg: str, decode: bool) -> None:
         s = self.s
         arch = s.options.arch
+        rv = {"extensions": s.options.rv_extensions} if s.rv else {}
         try:
             if decode and arch == "nanomips":
                 raw, size = tools.parse_nano(arg)
                 words = [tools.decode_word(raw, size=size, abi=s.abi, arch=arch)]
             elif decode:
-                words = [tools.decode_word(tools.parse_word(arg), release=s.release,
-                                           abi=s.abi, arch=arch)]
+                word = tools.parse_rv(arg) if s.rv else tools.parse_word(arg)
+                words = [tools.decode_word(word, release=s.release, abi=s.abi, arch=arch,
+                                           **rv)]
             else:
                 words = tools.encode_text(arg, release=s.release, abi=s.abi,
-                                          pseudo=s.options.pseudo, arch=arch)
+                                          pseudo=s.options.pseudo, arch=arch, **rv)
         except Exception as exc:                            # noqa: BLE001
             raise CliError(f"{type(exc).__name__}: {exc}") from None
         for d in words:
-            if arch == "nanomips":
+            if s.rv:
+                self.say(f"{d.encoding(arch)}  {d.text}    ({d.description}: {d.format})")
+            elif arch == "nanomips":
                 size = 2 if d.word < 1 << 16 else 4 if d.word < 1 << 32 else 6
                 self.say(f"{encoding(d.word, size, arch).rstrip()}  {d.text}    "
                          f"({d.description}: {d.format})")
@@ -1587,11 +1660,12 @@ class Debugger(cmd.Cmd):
         if word in PSEUDO_HINTS:
             self.say(f"{word} is a pseudo-instruction; the assembler writes: "
                      f"{PSEUDO_HINTS[word]}")
-        rows = tools.search(tools.reference(self.s.release, arch=self.s.options.arch), arg)
+        rows = tools.search(tools.reference(self.s.release, arch=self.s.options.arch,
+                                            extensions=self.s.options.rv_extensions), arg)
         if not rows and word not in PSEUDO_HINTS:
             self.say("nothing found")
         for r in rows[:40]:
-            notes = ([f"since {r.since}"] if not self.s.nano else []) + (
+            notes = ([f"since {r.since}"] if not (self.s.nano or self.s.rv) else []) + (
             [f"removed in {r.removed_in}"] if r.removed_in else [])
             notes += (["delay slot"] if r.delay_slot else []) + \
                 (["privileged"] if r.privileged else [])
@@ -1640,11 +1714,13 @@ class Debugger(cmd.Cmd):
         vps 1..4 (Release 6 VPs a core: a CM3 system) |
         itu auto|none|FIFOS:SINGLES[:DEPTH] (a CM3 core's ITU) |
         core NAME|generic (a real core's settings: python3 -m emips cores) |
-        arch mips32|mips64|nanomips (MIPS64: 64-bit registers, the doubleword
-        instructions; nanoMIPS: nanoMIPS32 Release 6) |
+        arch mips32|mips64|nanomips|rv32|rv64 (MIPS64: 64-bit registers, the
+        doubleword instructions; nanoMIPS: nanoMIPS32 Release 6; RISC-V: a hart) |
         nms on|off | crc auto|none|crc | ginv auto|none|ginvi|ginvt (a nanoMIPS
         core: the nanoMIPS subset, CRC32, global invalidate) | relax on|off
-        (nanoMIPS: the linker's relaxations, ld --relax)
+        (nanoMIPS: the linker's relaxations, ld --relax; RISC-V: as -mrelax and
+        ld's relaxation, on by default) | rv-ext EXTS | rv-modes msu|mu|m (a
+        RISC-V hart's extensions and privilege modes)
         (changes reassemble or restart the program; a setting the chosen core
         is not built with makes it the generic core)"""
         parts = arg.split()
@@ -1786,14 +1862,28 @@ class Debugger(cmd.Cmd):
             except ValueError as exc:
                 raise CliError(str(exc)) from None
             o.board = value.lower()
-        elif key == "arch" and value.lower() in ("mips32", "mips64", "nanomips"):
+        elif key == "arch" and value.lower() in ARCHES:
             o.arch = value.lower()
             if o.arch == "nanomips":
                 s.release = "R6"
         elif key == "nms":
             o.nms = on
-        elif key == "relax":
-            o.relax = on
+        elif key == "relax":                    # (RISC-V: as -mrelax + ld's relaxation)
+            if s.rv:
+                o.rv_relax = on
+            else:
+                o.relax = on
+        elif key == "rv-ext":
+            from .riscv import RVISA, parse_extensions
+            try:
+                if "i" not in parse_extensions(value):
+                    raise ValueError("an RV32I / RV64I base (i) is needed")
+                RVISA.for_core(64, value)
+            except (ValueError, KeyError) as exc:
+                raise CliError(f"rv-ext {value}: {exc}") from None
+            o.rv_extensions = value.lower()
+        elif key == "rv-modes" and value.lower() in RV_MODES:
+            o.rv_modes = value.lower()
         elif key == "crc" and value.lower() in NANO_CRC:
             o.crc = value.lower()
         elif key == "ginv" and value.lower() in NANO_GINV:
@@ -1877,6 +1967,9 @@ class Debugger(cmd.Cmd):
     def _gpr(self, tok: str) -> int | None:
         """A GPR name in the core's ABI (MIPS64: the n64 names, $t0 = $12;
         nanoMIPS: the p32 ones, $t4 = $2, $a4 = $8, and GNU as's $r0 ...)."""
+        if self.s.rv:                           # x5, t0, fp, $t0
+            from .sessionrv import gpr_number
+            return gpr_number(tok)
         from .syntax import gpr_number
         return gpr_number(tok, "p32" if self.s.nano else "n64" if self.s.wide else True)
 
@@ -1885,11 +1978,13 @@ class Debugger(cmd.Cmd):
         return v - (1 << bits) if v >> (bits - 1) else v
 
 
+_RV_MODE = {3: "M", 1: "S", 0: "U"}
+
 HELP = """\
 running      step [N] (s)   next [N] (n, over calls)   back [N]   continue [N] (c, run)
              until LOC (u)  finish   reset
 breakpoints  break [LOC] (b)   delete LOC|all (d)
-looking      regs [$r ...]   cp0   fpu   mem [-p] LOC [WORDS] (x)   translate LOC (t)
+looking      regs [$r ...]   cp0   csr (RISC-V)   fpu   mem [-p] LOC [WORDS] (x)   translate LOC (t)
              dis [LOC] [N]   list [LOC] (l)   cache [stats|last|I|D|L2 [set N|LOC]|LOC]
              tlb [all|entry N|set N|micro|stats|last|LOC]   perf [events|N EVENT]
              ejtag [dint|ib|db|watch|clear] (Debug Mode, breakpoints)   srs (interrupts)
@@ -1987,7 +2082,10 @@ def options_from_args(args) -> Options:
                    nms=getattr(args, "nms", False),
                    relax=getattr(args, "relax", False),
                    crc=getattr(args, "crc", None) or "auto",
-                   ginv=getattr(args, "ginv", None) or "auto")
+                   ginv=getattr(args, "ginv", None) or "auto",
+                   rv_extensions=getattr(args, "rv_extensions", None) or RV_EXTENSIONS,
+                   rv_modes=getattr(args, "rv_modes", None) or "msu",
+                   rv_relax=not getattr(args, "no_relax", False))
 
 
 def explicit_fields(args) -> set[str]:
@@ -1996,7 +2094,7 @@ def explicit_fields(args) -> set[str]:
     out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
     for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
                  "compressed", "dsp", "msa", "msa_wrp", "mt", "mt_pm", "itc", "vps", "itu",
-                 "arch", "crc", "ginv"):
+                 "arch", "crc", "ginv", "rv_extensions", "rv_modes"):
         if getattr(args, name, None) is not None:
             out.add(name)
     for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer"), ("nms", "nms")):
