@@ -48,10 +48,20 @@ M32 = 0xFFFFFFFF
 READ_SERVICES = {5, 6, 7, 8, 12}
 #: the stack of core N starts N x 64 KB below core 0's (the boot firmware)
 CORE_STACK = 0x10000
+#: why a nanoMIPS core has no MIPS Trace
+NANO_NO_TRACE = (
+    "MIPS Trace is not defined for nanoMIPS: PDtrace / TCB rev. 6.16 (MD00439) knows "
+    "MIPS32, MIPS64, MIPS16e and microMIPS code only (its ISAM field), and the I7200 "
+    "debugs through OCI (MD01227 3.7), not a PDtrace port")
 #: why the MT Module on MIPS64 runs in instruction mode
 MT64_INSTRUCTION_MODE = (
     "MT Module on MIPS64: instruction mode — eMIPS's multithreaded pipeline is the "
     "34K's, a MIPS32 core (MD00534), and no MIPS64 core had the MT Module")
+#: ... on nanoMIPS
+MT_NANO_INSTRUCTION_MODE = (
+    "MT ASE on nanoMIPS: instruction mode — eMIPS's multithreaded pipeline is the 34K's, "
+    "a MIPS32 core (MD00534); the I7200's 9-stage dual-issue pipeline (MD01227) is not "
+    "modelled")
 
 
 #: calls stepped over by :meth:`Session.step_over` (they write a return
@@ -255,12 +265,13 @@ class Session:
         self.source = text
         self.errors = []
         self.c_file = self.c_text = None
+        self._release_note = self._nano_release()       # (reset says so)
         try:
             self.program = assemble(text, endian=self.endian, release=self.release,
                                     bases=self.options.segment_bases(),
                                     pseudo=self.options.pseudo,
                                     reorder=self.options.reorder,
-                                    arch=self.options.arch)
+                                    arch=self.options.arch, nano=self._nano_assembler())
         except AsmError as exc:
             self.errors = [str(exc)]
             self._drop_program()
@@ -304,8 +315,17 @@ class Session:
             self._drop_program()
             return False
         entry = loader.start_address if loader.has_start else min(image)
+        self._release_note = self._nano_release()
         prog = Program(endian=self.endian, release=self.release, image=image,
-                       entry=entry)
+                       entry=entry, arch=self.options.arch)
+        if self.nano:                           # nanoMIPS: 2, 4 or 6-byte instructions
+            self.listing = self._nano_hex_listing(prog, image, entry)
+            self.program = prog
+            self.kind = "hex"
+            self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
+            self._media = {}
+            self.reset()
+            return True
         words = sorted({a & ~3 for a in image
                         if all((a & ~3) + i in image for i in range(4))})
         runs: list[list[int]] = []
@@ -342,6 +362,53 @@ class Session:
         self.reset()
         return True
 
+    def _nano_hex_listing(self, prog: Program, image: dict[int, int], entry: int) -> str:
+        """load_hex's listing of a nanoMIPS image: each run of halfwords
+        that holds the entry or lies below 0x10000000 / in kseg0 is code,
+        decoded instruction by instruction from its start (prog.nm, the
+        source map); the other halfwords are data."""
+        from . import nanomips
+        halves = sorted({a & ~1 for a in image if (a & ~1) in image and (a | 1) in image})
+        runs: list[list[int]] = []
+        for a in halves:
+            if runs and runs[-1][-1] + 2 == a:
+                runs[-1].append(a)
+            else:
+                runs.append([a])
+        lines = [f"# Intel HEX image: {len(image)} bytes, entry 0x{entry:08x}",
+                 f"# nanoMIPS32 R6, {self.endian}-endian — read-only disassembly "
+                 "(address, halfwords, instruction)", "", "# code"]
+        data = []
+        for run in runs:
+            a, end = run[0], run[-1] + 2
+            if not (a <= entry < end or a < 0x10000000 or 0x80000000 <= a < 0x90000000):
+                data += run
+                continue
+            while a < end:
+                h = prog.half(a)
+                size = nanomips.size_of(h)
+                if a + size > end:
+                    data += list(range(a, end, 2))
+                    break
+                raw = 0
+                for k in range(0, size, 2):
+                    raw = raw << 16 | prog.half(a + k)
+                try:
+                    i = nanomips.decode_raw(raw, size)
+                    text = nanomips.text(i, a, abi=self.abi)
+                except ISADecodeError:
+                    text = "(reserved)"
+                from .cli import encoding
+                text_ = f"{a:08x}  {encoding(raw, size, 'nanomips')}  {text}"
+                lines.append(text_)
+                prog.nm[a] = size
+                prog.source_map[a] = SourceLine(len(lines), text_)
+                a += size
+        if data:
+            lines += ["", "# data"]
+            lines += [f"{a:08x}  {prog.half(a):04x}" for a in data]
+        return "\n".join(lines) + "\n"
+
     def load_c(self, text: str, name: str = "program.c", *, optimize: str = "-O1") -> bool:
         """Build the C program ``text`` (emips.cc: crt0, libemips, the
         session's release and byte order) and load it.  It is compiled as
@@ -369,7 +436,7 @@ class Session:
                                  optimize=optimize, mips16=isa == "mips16e",
                                  micromips=isa == "micromips", fpu=self.options.fpu,
                                  dsp=self._c_dsp(text),
-                                 arch=self.options.arch)
+                                 arch=self.options.arch, nms=self.options.nms)
         except BuildError as exc:
             text_ = str(exc).replace(str(src), src.name)
             lines = text_.splitlines()
@@ -415,22 +482,26 @@ class Session:
         self.release, self.endian = release or img.release, img.endian
         if self.options.arch != img.arch:          # (reset adjusts what depends on it)
             self.options = replace(self.options, arch=img.arch)
+        nano = img.arch == "nanomips"
         symbols = {}
         for sym in sorted(img.symbols, key=lambda x: x.kind != "func"):
+            if nano and sym.name.startswith(("$", ".L")):  # (GCC's local labels: the
+                continue                                   # nanoMIPS linker relaxes)
             symbols.setdefault(sym.name, sym.value)
         prog = Program(endian=img.endian, release=self.release, image=img.image,
                        symbols=symbols, entry=img.entry, c_lines=img.source_lines(),
                        c_stmts=img.statement_starts(),
-                       functions=sorted((sym.value, sym.value + max(sym.size, 4), sym.name)
+                       functions=sorted((sym.value, sym.value + max(sym.size, 2 if nano
+                                                                     else 4), sym.name)
                                         for sym in img.symbols if sym.kind == "func"),
-                       dsp=img.dsp, arch=img.arch)
+                       dsp=img.dsp, arch=img.arch, needs=img.needs)
         for name, addr, size, _x in img.sections:
             prog.segments[name] = (addr, addr + size)
         labels = {}
         for sym in img.symbols:
             if sym.kind == "func":
                 labels.setdefault(sym.value, sym.name)
-        isa = ISA.for_release(img.release, self.dsp_level() or (
+        isa = None if nano else ISA.for_release(img.release, self.dsp_level() or (
             img.dsp if self.options.dsp == "auto" and not self.options.core   # (its ABI
             and img.release not in ("R1", "R6") else 0), arch=img.arch)    # flags' DSP)
         texts = _SourceFiles()
@@ -442,7 +513,8 @@ class Session:
                  "instructions"]
         lines += [f"# note: {n}" for n in img.notes]
         last = None
-        from . import micromips, mips16
+        from . import micromips, mips16, nanomips
+        from .cli import encoding
         for start, stop, code_isa in img.isa_ranges():
             if lines[-1] != "":
                 lines.append("")
@@ -478,6 +550,18 @@ class Session:
                             enc = (enc << 16) | prog.half(a + 2)
                     prog.mm[a] = size
                     text_ = f"{a:08x}  {enc:0{2 * size}x}{'    ' if size == 2 else ''}  {txt}"
+                elif code_isa == "nanomips":        # nanoMIPS: 2 / 4 / 6 bytes
+                    size = min(nanomips.size_of(prog.half(a)), max(stop - a, 2))
+                    raw = 0
+                    for k in range(0, size, 2):
+                        raw = raw << 16 | prog.half(a + k)
+                    try:
+                        txt = nanomips.text(nanomips.decode_raw(raw, size), a, abi=self.abi,
+                                            symbols=labels)
+                    except ISADecodeError:
+                        txt = "(reserved)"
+                    prog.nm[a] = size
+                    text_ = f"{a:08x}  {encoding(raw, size, 'nanomips')}  {txt}"
                 else:
                     size, w = 4, prog.word(a)
                     text_ = f"{a:08x}  {w:08x}  {disassemble(w, a, isa=isa, abi=self.abi)}"
@@ -500,6 +584,43 @@ class Session:
         self._media = {}                    # disk images are read again
         self.reset()
         return True
+
+    @property
+    def nano(self) -> bool:
+        """A nanoMIPS core (Options.arch, emips.simnano; PLAN M23)."""
+        return self.options.arch == "nanomips"
+
+    def _nano_release(self) -> str | None:
+        """nanoMIPS is Release 6 based: the session's release follows the
+        architecture (the note when it changes)."""
+        if self.nano and self.release != "R6":
+            note = (f"release {self.release} -> R6: nanoMIPS is Release 6 based "
+                    "(MD01247 ch. 1)")
+            self.release = "R6"
+            return note
+        return None
+
+    def _nano_assembler(self) -> dict | None:
+        """emips.nanoasm's core options: the nanoMIPS subset as the core is
+        built (it changes what the macros expand to), every ASE on — an
+        instruction the core lacks assembles and is a Reserved Instruction
+        when it runs, as on the hardware."""
+        if not self.nano:
+            return None
+        return {"nms": self.options.nms, "crc": True, "ginv": True, "eva": True, "tlb": True,
+                "dsp": True, "mt": True, "link": {"relax": self.options.relax}}
+
+    def _nano_core(self) -> dict:
+        """A nanoMIPS core's options (emips.simnano.NanoMachine): NMS, and
+        CRCP / GI as Options.crc / ginv say ("auto": what the program's
+        instructions need)."""
+        o, prog = self.options, getattr(self, "program", None)
+        needs = prog.needs if prog is not None and o.arch == prog.arch else frozenset()
+        crc = o.crc == "crc" or o.crc == "auto" and "crc" in needs
+        ginv = {"none": 0, "ginvi": 2, "ginvt": 3}.get(o.ginv)
+        if ginv is None:
+            ginv = 3 if "ginvt" in needs else 2 if "ginvi" in needs else 0
+        return {"nms": o.nms, "crc": crc, "ginv": ginv}
 
     def core_problem(self) -> str | None:
         """The loaded program's code needs an ISA the chosen core (a
@@ -544,7 +665,10 @@ class Session:
         entry (the firmware's job), the reset boot only core 0 (the others
         are powered down until the program starts them with the CPC)."""
         from .compat import adjust
+        release_note = self._nano_release() or self.__dict__.pop("_release_note", None)
         self.options, self.adjusted = adjust(self.options, self.release)
+        if release_note:
+            self.adjusted.insert(0, release_note)
         self.program_notes = []
         if self.options.model == "24k" and (self.compressed_isa() or "").startswith("micromips"):
             from .compat import RULES
@@ -553,10 +677,12 @@ class Session:
             self.program_notes = [f"model 24k -> 5-stage: the program has microMIPS code; "
                                   f"{rule.why}"]
             self.adjusted += self.program_notes
-        if self.wide and self.mode == "pipeline" and self.mt_config() is not None:
+        if (self.wide or self.nano) and self.mode == "pipeline" \
+                and self.mt_config() is not None:
+            note = MT_NANO_INSTRUCTION_MODE if self.nano else MT64_INSTRUCTION_MODE
             self.mode = "instruction"
-            self.program_notes.append(MT64_INSTRUCTION_MODE)
-            self.adjusted.append(MT64_INSTRUCTION_MODE)
+            self.program_notes.append(note)
+            self.adjusted.append(note)
         o = self.options
         self.output = ""
         self.console = MmioConsole(on_output=self._emit, tx_delay=o.tx_delay,
@@ -699,14 +825,16 @@ class Session:
     def mt_config(self) -> tuple[int, int] | None:
         """(VPEs, TCs) of the MT Module (emips.mt), or None: Options.mt
         "VPES:TCS"; "auto" = 2 VPEs and 5 TCs (a 34K) when the program has
-        MT instructions; only Release 2-5 (MIPS32 or MIPS64)."""
+        MT instructions; only Release 2-5 (MIPS32 or MIPS64) — and nanoMIPS,
+        whose MT ASE (MD01255) is the MT Module on a Release 6 based ISA."""
         from .mt import parse_spec
-        if self.release in ("R1", "R6"):
+        if self.release in ("R1", "R6") and not self.nano:
             return None
         spec = self.options.mt
         if spec == "auto":
             prog = getattr(self, "program", None)
-            if prog is None or not getattr(prog, "mt", False):
+            if prog is None or not (getattr(prog, "mt", False) if not self.nano else
+                                    prog.arch == "nanomips" and "mt" in prog.needs):
                 return None
             # (a 34K; on more than 4 cores one VPE each: 8 VPs at most, cps.MAX_VPS)
             return (2, 5) if self.options.cores <= 4 else (1, 5)
@@ -814,9 +942,9 @@ class Session:
                     shadow_sets=1 if mt else o.shadow_sets,
                     compressed=self.compressed_isa(),
                     fpu=o.fpu and not (mt and cps is None and cpu)
-                    and not (mt and cps is not None and cpu % cps.vpes),
+                    and not (mt and cps is not None and cpu % cps.vpes) and not self.nano,
                     prid=core.prid if core is not None else 0,
-                    dsp=self.dsp_level(), mt=mt)
+                    dsp=self.dsp_level(), mt=mt, **(self._nano_core() if self.nano else {}))
         m.tracing = True
         m.ccres = o.count_rate
         m.agent_watch = self.watchpoints
@@ -867,6 +995,11 @@ class Session:
         m = self.machines[self.cpu if cpu is None else cpu] if self.machines else None
         if m is None:
             return "?"
+        if m.nano:                              # nanoMIPS: 16 / 32 / 48 bits
+            from . import nanomips
+            i = self._nano_insn(m, pc)
+            return "?" if i is None else nanomips.text(i, pc, abi=self.abi,
+                                                       symbols=self._labels())
         try:
             isa = self.compressed_at(pc, cpu)
             if isa == "mips16e":
@@ -883,6 +1016,26 @@ class Session:
         except Exception:                                   # noqa: BLE001
             return "?"
 
+    @staticmethod
+    def _nano_insn(m: Machine, pc: int):
+        """The nanoMIPS instruction at ``pc`` as the core sees it (a view:
+        ``code_half``), or None (no code there, reserved)."""
+        from . import nanomips
+        try:
+            h = m.code_half(pc)
+            size = nanomips.size_of(h)
+            raw = h
+            for k in range(2, size, 2):
+                raw = raw << 16 | m.code_half((pc + k) & M32)
+            return nanomips.decode_raw(raw, size)
+        except (SimException, ISADecodeError, ValueError):
+            return None
+
+    def _labels(self) -> dict[int, str]:
+        """address -> label of the program (the disassembly's targets)."""
+        prog = self.program
+        return prog.labels() if prog is not None and self.kind == "asm" else {}
+
     def compressed_isa(self) -> str | None:
         """The core's compressed instruction set: Options.compressed
         ("auto": MIPS16e from Release 1 to 5, as the 24K; none in Release
@@ -893,6 +1046,8 @@ class Session:
         program has such code — no MIPS64 core eMIPS models has MIPS16e."""
         c = self.options.compressed
         prog = getattr(self, "program", None)
+        if self.nano:                           # no ISA modes (MD01251 3.5.4)
+            return None
         if self.wide:
             if self.options.core:
                 return None if c in ("none", "auto") else c
@@ -920,7 +1075,11 @@ class Session:
     def _c_dsp(self, text: str) -> int:
         """The DSP Module a C program is built for: Options.dsp, or with
         "auto" Revision 2 when it calls the DSP builtins (``__builtin_mips_``
-        — a compiler cannot use the DSP Module by itself)."""
+        — a compiler cannot use the DSP Module by itself).  nanoMIPS: 1 =
+        the DSP ASE (nanomips-elf-gcc -mdsp)."""
+        if self.nano:
+            d = self.options.dsp
+            return int(d in ("dsp", "dspr2") or d == "auto" and "__builtin_mips_" in text)
         if self.release in ("R1", "R6") or self.wide:
             return 0
         level = {"dsp": 1, "dspr2": 2}.get(self.options.dsp)
@@ -934,8 +1093,12 @@ class Session:
         Revision 2 (Revision 3 on Release 6).  Options.dsp: "auto" = Revision
         2 when the program has DSP instructions (the generic core is a 24K,
         which has none), "none", "dsp", "dspr2"; a core preset: what it is
-        built with."""
+        built with.  nanoMIPS: the DSP ASE (MD01249, Revision 3) = 2."""
         d = self.options.dsp
+        if self.nano:
+            prog = getattr(self, "program", None)
+            needs = prog.needs if prog is not None and prog.arch == "nanomips" else ()
+            return 2 if d in ("dsp", "dspr2") or d == "auto" and "dsp" in needs else 0
         if self.release == "R1":
             return 0
         if d in ("dsp", "dspr2"):
@@ -1091,6 +1254,9 @@ class Session:
         pc = self._next_executing_pc(cpu)
         if pc is None:
             return False
+        if m.nano:
+            i = self._nano_insn(m, pc)
+            return i is not None and i.row.name == "SYSCALL"
         try:
             word = m.code_word(pc)
             if word & 0xFC00003F != 0x0000000C:  # not SYSCALL: no decode needed
@@ -1299,7 +1465,8 @@ class Session:
         if text is None or m.pc != text[1]:
             return ""
         return (" — the program ran past its last instruction: end it with "
-                "li $v0, 10 / syscall (exit)")
+                + ("li $t4, 10 / syscall" if m.nano else "li $v0, 10 / syscall")
+                + " (exit)")
 
     def _moved_code_hint(self, exc: Exception) -> str:
         """The program has code at this kuseg address, but not at the
@@ -1401,6 +1568,10 @@ class Session:
 
     def _return_address(self, pc: int) -> int | None:
         m = self.machine
+        if m.nano:                              # BALC, MOVE.BALC, JALRC ... (no slot)
+            from .simnano import link
+            i = self._nano_insn(m, pc)
+            return None if i is None else link(i, pc)
         if self.compressed_at(pc) == "micromips":
             from . import micromips
             try:
@@ -1442,9 +1613,23 @@ class Session:
         taken pushes a frame, ``jr $ra`` (R6: ``jalr $zero, $ra``, ``jrc
         $ra``) pops one — what the code does, not a guess from the stack
         memory."""
+        from .simnano import link, returns
+
         def hook(pc: int, dec, word: int, result, cpu=cpu) -> None:
             name = dec.name
             stack = self.calls[cpu]
+            if name.startswith("NM."):              # nanoMIPS (emips.simnano)
+                i = m._nm
+                if i is None:
+                    return
+                ret = link(i, pc)
+                if ret is not None and m._redirect is not None:
+                    stack.append(Frame(pc, m._redirect, ret, m.read_reg(29)))
+                    if len(stack) > 10_000:
+                        del stack[:1000]
+                elif stack and returns(i):
+                    stack.pop()
+                return
             if name in _M16_CALLS:                  # MIPS16e: $ra says where it returns
                 target = result if result is not None else m._redirect
                 if target is not None:
@@ -1502,6 +1687,9 @@ class Session:
             return key is not None and a in self.program.c_stmts.get(key, ())
         m16 = self.program.m16 or self.program.mm
         back = 2 if m16.get((a - 2) & M32) == 2 else 4      # MIPS16e / microMIPS: 2 or 4
+        nm = self.program.nm                                # nanoMIPS: 2, 4 or 6
+        if nm:
+            back = next((k for k in (2, 4, 6) if nm.get((a - k) & M32) == k), 4)
         prev = self.program.source_map.get((a - back) & M32)
         here = self.program.source_map.get(a)
         return here is not None and (prev is None or prev.line != here.line)
@@ -1789,9 +1977,9 @@ class Session:
 
     def registers(self) -> list[tuple[str, int, bool]]:
         """``(name, value, changed by the last step)`` for the 32 GPRs (MIPS64:
-        the n64 names)."""
+        the n64 names; nanoMIPS: the p32 ones)."""
         m = self.machine
-        abi = "n64" if self.abi and m.wide else self.abi
+        abi = m.names if self.abi else False
         return [(gpr_name(i, abi), m.read_reg(i), m.read_reg(i) != self.prev_regs[i])
                 for i in range(32)]
 
@@ -1899,7 +2087,7 @@ class Session:
             hi, lo = m.hi, m.lo
             status = m.status
             d, mask = (16, m.amask) if m.wide else (8, M32)
-        names = "n64" if self.wide and self.abi else self.abi
+        names = m.names if self.abi else False
         out = [f"TC{n}: {p.state(tc)}, bound to VPE {tc.vpe}" + (
             " (issues next)" if tc is p.next else "")]
         out.append(f"TCStatus 0x{regs[TCSTATUS]:08x}  TCBind 0x{regs[TCBIND]:08x}  "
@@ -1996,7 +2184,7 @@ class Session:
         if not 0 <= n < len(m.shadow):
             raise ValueError(f"there is no shadow set {n} (sets 0-{len(m.shadow) - 1})")
         bank = m.shadow[n]
-        abi = "n64" if self.abi and m.wide else self.abi
+        abi = m.names if self.abi else False
         return [(gpr_name(i, abi), bank[i] & m.amask if i else 0) for i in range(32)]
 
     def interrupt_state(self) -> dict[str, Any]:
@@ -2111,11 +2299,14 @@ class Session:
             raise ValueError("no probe (probe on first)")
         prog = assemble(source, endian=self.endian, release=self.release,
                         pseudo=self.options.pseudo, reorder=self.options.reorder,
-                        arch=self.options.arch)
+                        arch=self.options.arch, nano=self._nano_assembler(),
+                        # (nanoMIPS: GNU as's .ktext N is a subsection — its
+                        # .ktext starts at the probe's debug vector)
+                        bases={"ktext": 0xFF200200} if self.nano else None)
         n = self.probe.load(prog.image)
         if not n:
             raise ValueError("nothing in dmseg (0xff200000-0xff2fffff): put the handler "
-                             "at .ktext 0xff200200")
+                             "in .ktext" + ("" if self.nano else " 0xff200200"))
         if self.program is not None:
             self.reset()
         return n
@@ -2204,6 +2395,8 @@ class Session:
         (EN — off with ``wait``: a start trigger turns it on —, CA, TM
         Trace-To or ``trace_from``, TLSIF; TR empties the trace memory unless
         ``keep``)."""
+        if self.nano:
+            raise ValueError(NANO_NO_TRACE)
         a = PDT.TA_ON | ((sync & 7) << PDT.TA_SYP_SHIFT)
         for k, bit in (("U", PDT.TA_U), ("S", PDT.TA_S), ("K", PDT.TA_K), ("E", PDT.TA_E),
                        ("D", PDT.TA_D)):
@@ -2633,7 +2826,12 @@ class Session:
 
     def special_registers(self) -> list[tuple[str, int]]:
         m = self.machine
-        rows = [("pc", m.pc), ("hi", m.hi), ("lo", m.lo)]
+        # (nanoMIPS: no HI / LO, no FPU, BadInstrX instead of BadInstrP — MD01251 9.28)
+        rows = [("pc", m.pc)] + ([] if m.nano else [("hi", m.hi), ("lo", m.lo)])
+        bad = [("BadInstr", (8, 1)), ("BadInstrP", (8, 2))]
+        if m.nano:
+            from .simnano import BADINSTRX
+            bad = bad[:1] + ([("BadInstrX", BADINSTRX)] if BADINSTRX in m.cp0 else [])
         for name, key in (("Status", (12, 0)), ("Cause", (13, 0)), ("EPC", (14, 0)),
                           ("BadVAddr", (8, 0)), ("Count", (9, 0)), ("Compare", (11, 0))):
             rows.append((name, m.cp0_read(*key)))
@@ -2647,6 +2845,8 @@ class Session:
             rows += [("Debug", m.cp0_read(*C.DEBUG)), ("DEPC", m.cp0_read(*C.DEPC)),
                      ("DESAVE", m.cp0_read(*C.DESAVE))]
         mt = getattr(m.mmu, "mt", 3)
+        if m.cdmm is not None:                      # the I7200's MPU (emips.mpu)
+            rows.append(("CDMMBase", m.cp0_read(15, 2)))
         if mt == 2:                                 # BAT: Index, bounds, base
             rows += [(name, m.cp0_read(*key)) for name, key in (
                 ("Index", (0, 0)), ("EntryHi", (10, 0)), ("EntryLo0", (2, 0)))]
@@ -2666,12 +2866,13 @@ class Session:
                 tlb += [("PWBase", (5, 5)), ("PWField", (5, 6)), ("PWSize", (5, 7)),
                         ("PWCtl", (6, 6))]
             if m.has_bad_instr:
-                tlb += [("BadInstr", (8, 1)), ("BadInstrP", (8, 2))]
+                tlb += bad
             rows += [(name, m.cp0_view(*key)) for name, key in tlb]
         elif m.has_bad_instr:
-            rows += [("BadInstr", m.cp0_read(8, 1)), ("BadInstrP", m.cp0_read(8, 2))]
+            rows += [(name, m.cp0_read(*key)) for name, key in bad]
         rows += [(name, m.cp0_read(*key)) for key, name in sorted(perf.NAMES.items())]
-        rows.append(("FCSR", m.fcsr))
+        if not m.nano:
+            rows.append(("FCSR", m.fcsr))
         return rows
 
     def current_pc(self, cpu: int | None = None) -> int | None:

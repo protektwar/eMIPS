@@ -166,3 +166,76 @@ def build(name: str, inputs: list[str], outputs: list[str],
                 pla.terms.append(t)
             pla.uses.setdefault(o, []).append(index[t])
     return pla
+
+
+# -- cubes: truth tables too large to list point by point -------------------------
+
+def intersects(a: Term, b: Term) -> bool:
+    """Do two cubes share a point?"""
+    return not (a[0] ^ b[0]) & a[1] & b[1]
+
+
+def contains(a: Term, b: Term) -> bool:
+    """Is cube ``b`` inside cube ``a``?"""
+    return a[1] & b[1] == a[1] and not (a[0] ^ b[0]) & a[1]
+
+
+def sharp(a: Term, b: Term) -> list[Term]:
+    """Cube ``a`` minus cube ``b``, as disjoint cubes."""
+    if not intersects(a, b):
+        return [a]
+    out: list[Term] = []
+    value, mask = a
+    rest = b[1] & ~mask
+    while rest:
+        bit = rest & -rest
+        rest &= rest - 1
+        out.append(((value & ~bit) | (~b[0] & bit), mask | bit))
+        value, mask = (value & ~bit) | (b[0] & bit), mask | bit
+    return out                          # (what is left lies inside b)
+
+
+def minimize_cubes(ones: list[Term], zeros: list[Term], n: int) -> list[Term]:
+    """Product terms over ``n`` inputs covering every cube in ``ones`` and
+    touching no cube in ``zeros`` (the rest: don't care) — :func:`minimize`
+    for a table given as cubes: each one-cube grows (literals dropped, the
+    most significant input first) while it touches no zero-cube, then a
+    greedy cover of the one-cubes."""
+    if not ones:
+        return []
+    grown: list[Term] = []
+    for value, mask in ones:
+        value &= mask
+        for i in range(n - 1, -1, -1):
+            bit = 1 << i
+            if mask & bit:
+                t = (value & ~bit, mask & ~bit)
+                if not any(intersects(t, z) for z in zeros):
+                    value, mask = t
+        if (value, mask) not in grown:
+            grown.append((value, mask))
+    left = list(range(len(ones)))
+    chosen: list[Term] = []
+    while left:
+        best = max(grown, key=lambda g: (sum(contains(g, ones[k]) for k in left),
+                                         -bin(g[1]).count("1")))
+        chosen.append(best)
+        left = [k for k in left if not contains(best, ones[k])]
+    return chosen
+
+
+def build_cubes(name: str, inputs: list[str], outputs: list[str],
+                table: list[tuple[Term, dict[str, bool]]]) -> PLA:
+    """:func:`build` from cubes: ``table`` lists (cube, the outputs that
+    matter there); points in no cube are don't cares."""
+    pla = PLA(name, inputs, outputs)
+    index: dict[Term, int] = {}
+    for o in outputs:
+        ones = [c for c, row in table if row.get(o) is True]
+        zeros = [c for c, row in table if row.get(o) is False]
+        for t in minimize_cubes(ones, zeros, len(inputs)):
+            if t not in index:
+                index[t] = len(pla.terms)
+                pla.terms.append(t)
+            pla.uses.setdefault(o, []).append(index[t])
+    return pla

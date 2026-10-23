@@ -1,4 +1,5 @@
-"""The TLB pane (PLAN M9 phase 8): the TLB entries (or the BAT entries),
+"""The TLB pane (PLAN M9 phase 8): the TLB entries (or the BAT entries,
+the I7200 MPU's segments and regions),
 the entry the last translation used (green: translated, red: TLB
 exception), how its virtual address was cut (VPN2 | even/odd | offset)
 and became a physical one (PFN | offset), the ITLB / DTLB copies, the
@@ -102,6 +103,15 @@ class TLBView(QtWidgets.QWidget):
             self.reset.setEnabled(False)
             return
         self.reset.setEnabled(True)
+        if tv.kind(m) == "mpu":                 # the I7200's MPU: segments, regions
+            self.address.setText("<b>" + "<br>".join(html.escape(x.strip())
+                                                     for x in m.mmu.lines()[:3]) + "</b>")
+            self._mpu(m)
+            self.micro.setRowCount(0)
+            self.micro.setColumnCount(0)
+            self.micro.setVisible(False)
+            self.stats.setPlainText("\n".join(tv.stats_lines(m)))
+            return
         acc = tv.last_access(s.tlb_accesses())
         self.address.setText(self._address_html(m, acc, s.tlb_accesses()))
         if tv.kind(m) == "bat":
@@ -209,6 +219,30 @@ class TLBView(QtWidgets.QWidget):
                      f"0x{e.pfn << 12:08x}", f"C{(e.lo >> 3) & 7} {tv.lo_flags(e.lo)}"]
             for c, text in enumerate(cells):
                 _set(t, i, c, text, bg, bold)
+        t.resizeColumnsToContents()
+
+    def _mpu(self, m) -> None:
+        """The MPU build's 16 segments, then every enabled region (a higher
+        region wins where they overlap; the FMT build: regions only)."""
+        mpu = m.mmu
+        heads = [tr("segment / region"), tr("addresses"), tr("CCA"), tr("inhibits")]
+        rows = []
+        if mpu.segments:
+            for k in range(16):
+                rows.append((tr("segment {n}").format(n=k),
+                             f"0x{k << 28:08x}-0x{(k << 28) | 0x0FFFFFFF:08x}", mpu.seg[k], None))
+        for r in range(mpu.n):
+            span = mpu.span(r)
+            if span is not None:
+                rows.append((tr("region {n}").format(n=r), f"0x{span[0]:08x}-0x{span[1] - 1:08x}",
+                             mpu.ctl[r] & 0x3F, T().valid_fill))
+        t = self.table
+        t.setColumnCount(len(heads))
+        t.setHorizontalHeaderLabels(heads)
+        t.setRowCount(len(rows))
+        for i, (name, span, bits, bg) in enumerate(rows):
+            for c, text in enumerate((name, span, f"C{bits & 7}", tv.mpu_flags(bits))):
+                _set(t, i, c, text, bg, False)
         t.resizeColumnsToContents()
 
     # -- the last translation -----------------------------------------------------------

@@ -22,7 +22,8 @@ the 24K MD00346 / MD00354 / MD00343, the 34K MD00418 / MD00534, the 1004K
 MD00584 / MD00622, the
 interAptiv MD00903 / MD00904, the P5600 MD01024 / MD01025, the M14K
 MD00666 / MD00668, the M14Kc MD00672 / MD00674, the microAptiv UC
-MD00931 / MD00934, the microAptiv UP MD00942, the 4K MD00016.
+MD00931 / MD00934, the microAptiv UP MD00942, the 4K MD00016, the nanoMIPS
+I7200 MD01227 / MD01232.
 """
 
 from __future__ import annotations
@@ -48,13 +49,16 @@ class CacheChoice:
     """The shapes a cache may be built with: ``sizes`` (KB, 0 = no cache)
     with ``ways`` ways, plus the ``direct`` sizes built direct-mapped; or,
     with ``way_kb`` (the smallest and largest way, KB, a power of two),
-    any number of ``ways`` of such ways up to ``max_kb``."""
+    any number of ``ways`` of such ways up to ``max_kb``.  ``min_kb``: (line,
+    the smallest size with that line) pairs (the I7200's L2: 32-byte lines
+    from 128 KB)."""
     sizes: tuple[int, ...] = ()
     ways: tuple[int, ...] = (4,)
     lines: tuple[int, ...] = (32,)
     direct: tuple[int, ...] = ()
     way_kb: tuple[int, int] | None = None
     max_kb: int = 0
+    min_kb: tuple[tuple[int, int], ...] = ()
 
     def allows(self, spec: str, level: int = 1) -> bool:
         try:
@@ -66,7 +70,7 @@ class CacheChoice:
         if g.line not in self.lines:
             return False
         kb, rest = divmod(g.size, 1024)
-        if rest:
+        if rest or kb < dict(self.min_kb).get(g.line, 0):
             return False
         if self.way_kb is not None:
             way, low, high = g.size // g.ways, self.way_kb[0] * 1024, self.way_kb[1] * 1024
@@ -87,6 +91,8 @@ class CacheChoice:
             if self.sizes[:1] == (0,) else "/".join(map(str, self.sizes))
         out = (f"{sizes} KB, {'/'.join(map(str, self.ways))}-way, "
                f"{'/'.join(map(str, self.lines))}-byte lines")
+        for line, kb in self.min_kb:
+            out += f" ({line}-byte lines from {kb} KB)"
         if self.direct:
             out += f" (or {'/'.join(map(str, self.direct))} KB direct-mapped)"
         return out
@@ -98,11 +104,17 @@ NO_CACHE = CacheChoice(sizes=(0,))
 
 def mmu_key(spec: str) -> str:
     """An MMU spec in one spelling: ``fixed``, ``bat``, ``tlb:N``,
-    ``ftlb:N:SxW``, then ``+sc`` / ``+pw`` in that order."""
+    ``ftlb:N:SxW``, then ``+sc`` / ``+pw`` in that order; ``mpu:N``,
+    ``fixed+mpu:N``."""
     text = (spec or "fixed").strip().lower().replace(" ", "")
     base, *flags = text.split("+")
     kind, _, rest = base.partition(":")
     parts = rest.split(":") if rest else []
+    if kind == "mpu":
+        return f"mpu:{parts[0] if parts and parts[0] else 16}"
+    if kind == "fixed" and flags and flags[0].startswith("mpu"):
+        n = flags[0].partition(":")[2]
+        return f"fixed+mpu:{n or 16}"
     if kind == "tlb":
         base = f"tlb:{parts[0] if parts and parts[0] else 32}"
     elif kind == "ftlb":
@@ -150,6 +162,9 @@ class Core:
     #: its Coherence Manager with more than one core: "cm2" (the 1004K /
     #: interAptiv / P5600 / P6600 generation) or "cm3" (the I6400's)
     cm: str = "cm2"
+    #: L1 caches of this size (KB) are built only with an MPU (the I7200's
+    #: 128 KB, MD01227 Table 2); 0: none
+    mpu_l1_kb: int = 0
 
     @property
     def prid(self) -> int:
@@ -189,18 +204,33 @@ class Core:
         if name == "fpu":
             return {(True,): "an FPU", (False,): "no FPU"}.get(self.fpu, "an FPU or none")
         if name == "dsp":
+            if self.arch == "nanomips":
+                return " or ".join({"none": "no DSP ASE", "dspr2": "the nanoMIPS DSP ASE"}[d]
+                                   for d in self.dsp)
             return " or ".join({"none": "no DSP Module", "dsp": "the DSP Module (Revision 1)",
                                 "dspr2": "the DSP Module Revision 2"}[d] for d in self.dsp)
         if name == "mt":
             if self.mt == ("none",):
                 return "no MT Module"
+            if self.arch == "nanomips":
+                vpes = sorted({int(x.split(":")[0]) for x in self.mt})
+                tcs = sorted({int(x.split(":")[1]) for x in self.mt})
+                return (f"the nanoMIPS MT ASE: {'/'.join(map(str, vpes))} VPE(s), "
+                        f"{tcs[0]}-{tcs[-1]} TCs")
             vpes = sorted({int(x.split(":")[0]) for x in self.mt if x != "none"})
             tcs = sorted({int(x.split(":")[1]) for x in self.mt if x != "none"})
             one = all(int(a) == int(b) for a, b in (x.split(":") for x in self.mt if x != "none"))
             return ("the MT Module: " + "/".join(map(str, vpes)) + " VPE(s), "
                     + ("one TC per VPE" if one else f"{tcs[0]}-{tcs[-1]} TCs"))
-        if name == "mmu":
-            return ", ".join(self.mmu)
+        if name == "mmu":                     # (MPU region counts in one item)
+            out: list[str] = []
+            for spec in self.mmu:
+                head, _, n = spec.rpartition(":")
+                if "mpu" in head and out and out[-1].startswith(head + ":"):
+                    out[-1] += "/" + n
+                else:
+                    out.append(spec)
+            return ", ".join(out)
         if name == "vps":
             return ("one VP a core (no Release 6 multi-threading)" if self.vps == (1,)
                     else "/".join(map(str, self.vps)) + " VPs a core (Release 6, a CM3)")
@@ -221,6 +251,8 @@ _L1_24K = CacheChoice(sizes=(0, 8, 16, 32, 64))
 _L2_SOCIT = CacheChoice(sizes=(0, 128, 256, 512, 1024, 2048, 4096, 8192), ways=(8,),
                         lines=(32, 64))
 _TLB_24K = ("tlb:16", "tlb:32", "tlb:64", "fixed")
+#: the I7200's MPU region counts (MD01232 Table 23)
+_I7200_REGIONS = (8, 12, 16, 20, 24, 28, 32)
 _MCU_L1 = CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(16,), way_kb=(1, 16), max_kb=64)
 _24K_MISSING = ("CorExtend (UDI)",)
 #: the 34K's MT build options (MD00534 1.1: 1 or 2 VPEs, 1-9 TCs)
@@ -479,6 +511,40 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "eMIPS builds the CM3 system (CM, CPC, GIC, ITU) with 2 or more cores or "
                 "VPs"),
          arch="mips64", vps=(1, 2, 4), cm="cm3"),
+
+    # -- nanoMIPS (PLAN M23 phase 5c) --
+    Core("i7200", "MIPS I7200", "R6", 0x00, ("none",), (False,), ("dspr2", "none"),
+         tuple(f"{v}:{t}" for v in (1, 2, 3) for t in range(v, 10)),
+         ("tlb:16", "tlb:32", "tlb:64", "tlb:16+sc", "tlb:32+sc", "tlb:64+sc")
+         + tuple(f"mpu:{n}" for n in _I7200_REGIONS)
+         + tuple(f"fixed+mpu:{n}" for n in _I7200_REGIONS),
+         CacheChoice(sizes=(4, 8, 16, 32, 64, 128)), CacheChoice(sizes=(4, 8, 16, 32, 64, 128)),
+         CacheChoice(sizes=(0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192), ways=(8,),
+                     lines=(32, 64), min_kb=((32, 128),)),
+         (1, 2, 3, 4), (1,), ("5-stage",),
+         build=dict(compressed="none", fpu=False, dsp="dspr2", mt="2:5", mmu="tlb:32",
+                    icache="32K:4:32", dcache="32K:4:32", l2="256K:8:32", l3="none", cores=1,
+                    shadow_sets=1, model="5-stage"),
+         source="MD01227 (I7200 datasheet 01.20: nanoMIPS32 Release 6, 1.1; the DSP ASE "
+                "optional; the MT ASE with 1-3 VPEs and 1-9 TCs a core; a JTLB of 16 / 32 / "
+                "64 dual entries per VPE, an MPU or the FMT, EVA, Table 2; L1 4-64 KB "
+                "4-way 32-byte lines, 128 KB with the MPU, Table 1; 1-4 cores on a CM 2.6 with the GIC, CPC, "
+                "ITU, Table 2), MD01232 (Programmer's Guide 01.20: ch. 4 the MPU, 8-32 "
+                "regions by 4; Table 30, the 8-way L2 of 32 / 64-byte lines; ch. 10 / 11 / "
+                "14), QEMU's I7200 model (PRId "
+                "0x00010000: neither manual gives the Processor ID, and Linux's MIPS "
+                "cpu.h has no I7200)",
+         missing=("the I7200's 9-stage dual-issue pipeline (eMIPS: the textbook 5-stage; "
+                  "MT in instruction mode)", "the scratchpad RAMs (ISPRAM, "
+                  "DSPRAM, USPRAM)", "the QoS policy manager (eMIPS: the 34K's round-robin "
+                  "/ weighted round-robin)", "OCI debug and the Fast Debug Channel (eMIPS: "
+                  "EJTAG 3.20)", "the CM 2.6's own registers (eMIPS: the CM2's)",
+                  "more than 8 VPs in a CPS (4 cores of 3 VPEs: 12)"),
+         notes=("the nanoMIPS DSP and MT ASEs (MD01249 / MD01255)",
+                "the MPU (MD01232 ch. 4): mpu:N = the MPU build (PA = VA, 16 segments, N "
+                "regions, 128 KB L1s allowed), fixed+mpu:N = the FMT build with N MPU "
+                "regions") + _CPS_NOTE,
+         arch="nanomips", mpu_l1_kb=128),
 )}
 
 #: the generic eMIPS core's name (no preset): any setting, PRId 0
@@ -497,12 +563,28 @@ def conflict(o, release: str, name: str) -> str | None:
         return None
     value = release if name == "release" else getattr(o, name)
     if core.allows(name, value):
-        return None
+        return _mpu_l1(core, o) if name in ("icache", "dcache", "mmu") else None
     shown = {"fpu": "an FPU" if value else "no FPU"}.get(name, str(value))
     label = {"shadow_sets": "shadow sets", "l2": "L2", "l3": "L3",
              "release": "release"}.get(name, name)
     return (f"the {core.title} is built with {label}: {core.choices(name)} "
             f"(not {shown}; {core.source.split(' (')[0]})")
+
+
+def _mpu_l1(core: Core, o) -> str | None:
+    """An L1 of :attr:`Core.mpu_l1_kb` without the MPU (the I7200's 128 KB)."""
+    if not core.mpu_l1_kb or mmu_key(o.mmu).startswith("mpu"):
+        return None
+    for name in ("icache", "dcache"):
+        try:
+            g = Geometry.parse(getattr(o, name), 1)
+        except ValueError:
+            continue
+        if g is not None and g.size == core.mpu_l1_kb * 1024:   # (larger: not at all)
+            return (f"the {core.title} is built with {core.mpu_l1_kb} KB L1 caches only "
+                    f"with the MPU (--mmu mpu:N; not {name} {getattr(o, name)} with "
+                    f"--mmu {o.mmu}; {core.source.split(' (')[0]})")
+    return None
 
 
 def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
@@ -524,7 +606,8 @@ def apply(o, name: str, keep: frozenset[str] | set[str] = frozenset()):
 
 def describe(core: Core) -> list[str]:
     """The core's settings, for the CLI / GUI."""
-    out = [f"{core.title}: {core.arch.upper()} Release {core.release[1:]}, "
+    from .options import arch_title
+    out = [f"{core.title}: {arch_title(core.arch)} Release {core.release[1:]}, "
            f"PRId 0x{core.prid:08x}"]
     for name in FIELDS[1:]:
         out.append(f"  {name.replace('_', ' ')}: {core.choices(name)}")

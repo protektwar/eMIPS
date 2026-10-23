@@ -9,7 +9,9 @@ DWARF 2 6.2 (the line number program); checked by reading it back with
 4c) gets an ELF64 — the gABI's 64-bit headers, the MIPS ELF-64 format's
 EF_MIPS_ARCH 64 / 64R2 / 64R6, no ABI flag: n64 — with 8-byte addresses
 in its DWARF, compatibility addresses sign-extended (as GNU ld's n64
--msym32 output).
+-msym32 output).  A nanoMIPS program (M23 phase 4c) gets an EM_NANOMIPS
+ELF32 with E_NANOMIPS_ABI_P32 (DN00179 5.1) and a line table whose
+minimum_instruction_length is 2 (16 / 32 / 48-bit instructions).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from .elf import EM_MIPS, ET_EXEC
+from .elf import E_NANOMIPS_ABI_P32, EM_MIPS, EM_NANOMIPS, ET_EXEC
 
 #: EF_MIPS_ARCH by release (32 / 32R2 / 32R6) and EF_MIPS_NOREORDER-free o32
 ARCH_FLAGS = {"R1": 0x50000000, "R6": 0x90000000}
@@ -73,13 +75,16 @@ def _sleb(n: int) -> bytes:
 
 
 def line_program(lines: dict[int, int], source: Path, order: str,
-                 addr_size: int = 4) -> bytes:
+                 addr_size: int = 4, sizes: dict[int, int] | None = None) -> bytes:
     """A DWARF 2 .debug_line unit: one sequence per run of consecutive
     instructions, a row per instruction (address -> line); ``addr_size``
-    8: 64-bit set_address operands (MIPS64)."""
+    8: 64-bit set_address operands (MIPS64); ``sizes``: each instruction's
+    size (nanoMIPS: 2 / 4 / 6 — minimum_instruction_length 2), else 4."""
     end = "<" if order == "little" else ">"
+    unit = 4 if sizes is None else 2
+    size = (lambda a: 4) if sizes is None else (lambda a: sizes.get(a, 2))   # noqa: E731
     std_lengths = bytes([0, 1, 1, 1, 1, 0, 0, 0, 1])   # opcodes 1-9 (opcode_base 10)
-    header = (struct.pack(f"{end}B", 4)                # minimum_instruction_length
+    header = (struct.pack(f"{end}B", unit)             # minimum_instruction_length
               + struct.pack(f"{end}B", 1)              # default_is_stmt
               + struct.pack(f"{end}b", -5)             # line_base
               + struct.pack(f"{end}B", 14)             # line_range
@@ -91,7 +96,7 @@ def line_program(lines: dict[int, int], source: Path, order: str,
     addrs = sorted(lines)
     runs: list[list[int]] = []
     for a in addrs:
-        if runs and runs[-1][-1] + 4 == a:
+        if runs and runs[-1][-1] + size(runs[-1][-1]) == a:
             runs[-1].append(a)
         else:
             runs.append([a])
@@ -101,14 +106,15 @@ def line_program(lines: dict[int, int], source: Path, order: str,
             else struct.pack(f"{end}I", run[0]))
         line = 1
         for i, a in enumerate(run):
-            if i:
-                prog += b"\x02" + _uleb(1)       # advance_pc 1 (x 4 bytes)
+            if i:                                # advance_pc (x minimum_instruction_length)
+                prog += b"\x02" + _uleb((a - run[i - 1]) // unit)
             delta = lines[a] - line
             if delta:
                 prog += b"\x03" + _sleb(delta)   # advance_line
                 line = lines[a]
             prog += b"\x01"                      # copy
-        prog += b"\x02" + _uleb(1) + b"\0" + _uleb(1) + b"\x01"   # end_sequence
+        prog += (b"\x02" + _uleb(size(run[-1]) // unit)
+                 + b"\0" + _uleb(1) + b"\x01")    # end_sequence
     unit = struct.pack(f"{end}H", 2) + struct.pack(f"{end}I", len(header)) + header + prog
     return struct.pack(f"{end}I", len(unit)) + unit
 
@@ -138,10 +144,11 @@ def debug_info(source: Path, low: int, high: int, order: str,
 def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> bytes:
     """ELF32 ``ET_EXEC`` bytes of ``program`` (an :class:`emips.assembler.
     Program`); ``source``: the assembly file (for the line table);
-    ``arch="mips64"``: an ELF64 (n64)."""
+    ``arch="mips64"``: an ELF64 (n64); ``"nanomips"``: EM_NANOMIPS, p32."""
     order = program.endian
     e = "<" if order == "little" else ">"
     wide = arch == "mips64"
+    nano = arch == "nanomips"
     # the structures of either class (the gABI's Elf32_* / Elf64_*)
     A = _sx if wide else (lambda a: a & M32)       # an address in the file
     SYM = f"{e}IBBHQQ" if wide else f"{e}IIIBBH"
@@ -182,9 +189,11 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     lines = {a: sl.line for a, sl in program.source_map.items()}
     src = source or Path("program.asm")
     size = 8 if wide else 4
-    debug_line = line_program(lines, src, order, size) if lines else b""
-    info, abbrev = (debug_info(src, min(lines), max(lines) + 4, order, size) if lines
-                    else (b"", b""))
+    sizes = program.nm if nano else None
+    debug_line = line_program(lines, src, order, size, sizes) if lines else b""
+    last = max(lines) if lines else 0
+    info, abbrev = (debug_info(src, min(lines), last + (sizes.get(last, 2) if nano else 4),
+                               order, size) if lines else (b"", b""))
     # layout: header, program headers, section data, section headers
     ehsize, phsize, shsize = (64, 56, 64) if wide else (52, 32, 40)
     off = ehsize + phsize * len(secs)
@@ -204,7 +213,9 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     off += (-off) % size
     shoff = off
     nsec = 1 + len(secs) + 6
-    if wide:                                     # n64: EF_MIPS_ARCH alone
+    if nano:                                     # E_NANOMIPS_ARCH_32R6 = 0
+        flags = E_NANOMIPS_ABI_P32
+    elif wide:                                   # n64: EF_MIPS_ARCH alone
         flags = ARCH_FLAGS64.get(program.release, ARCH64_R2)
     else:
         flags = ARCH_FLAGS.get(program.release, ARCH_R2) | 0x1000   # EF_MIPS_ABI_O32
@@ -214,7 +225,8 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
         flags |= 0x02000000                      # EF_MIPS_ARCH_ASE_MICROMIPS
     ident = b"\x7fELF" + bytes([2 if wide else 1, 2 if order == "big" else 1, 1, 0]) + bytes(8)
     out = bytearray(ident)
-    out += struct.pack(f"{e}HHI{'QQQ' if wide else 'III'}IHHHHHH", ET_EXEC, EM_MIPS, 1,
+    out += struct.pack(f"{e}HHI{'QQQ' if wide else 'III'}IHHHHHH", ET_EXEC,
+                       EM_NANOMIPS if nano else EM_MIPS, 1,
                        A(program.entry), ehsize, shoff, flags, ehsize, phsize, len(secs),
                        shsize, nsec, nsec - 1)
     for (name, lo, data, ex), o in zip(secs, placed):

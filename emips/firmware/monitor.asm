@@ -44,6 +44,16 @@
 # 64-bit addresses (Config.AT = 2), KX / SX / UX, and the XTLB refill
 # handler goes to 0x80000080 too.  emips.monitor assembles it for MIPS64
 # with the o32 temporaries ($t0-$t9) written as register numbers.
+#
+# On a nanoMIPS CPU ("#@if NANO"; eMIPS M23 phase 4d) emips.monitor
+# assembles the same code with the nanoMIPS assembler — GNU as's nanoMIPS
+# port takes the MIPS mnemonics (b, bal, beq, jr ... as their compact
+# forms; no delay slots) — for the nanoMIPS subset (it runs on any nanoMIPS
+# core), with the register numbers written $rN (the p32 ABI's names are
+# mandatory, DN00179 3.1), "lui rt, 0xNNNN" as li (nanoMIPS's LUI takes
+# bits 31:12), .balign for the fixed addresses; its functions follow the
+# p32 convention (the result in a0), its vector stub and TLB refill
+# handler are nanoMIPS code.
 
         .set reorder
         .eqv  MON_DESC, @MON_DESC@      # the application descriptor (the loader)
@@ -63,19 +73,25 @@ reset:  b     start                     # 0xbfc00010 is the REVISION register
 # ------------------------------------------------------------------ BEV vectors
 
         .text 0xbfc00200                # TLB refill (BEV = 1)
+bev_refill:
         j     bev_exception
         .text 0xbfc00300                # cache error (BEV = 1)
+bev_cache_error:
         j     bev_exception
         .text 0xbfc00380                # general exception (BEV = 1)
+bev_general:
         j     bev_exception
         .text 0xbfc00400                # interrupt, Cause.IV (BEV = 1)
+bev_interrupt:
         j     bev_exception
         .text 0xbfc00480                # EJTAG debug exception (no probe)
+bev_debug:
         j     debug_exception
 
 # ------------------------------------------------------------------ the function table
 
         .text 0xbfc00500                # 0x1fc00500 (yamon_api.h): kseg0 addresses
+functions:
         .word 0                                  # 0x00
         .word f_print_count - 0x20000000         # 0x04 print_count
         .word 0, 0, 0, 0, 0, 0                   # 0x08 - 0x1c
@@ -482,6 +498,17 @@ put_stub:                               # a0: a vector in RAM: jump to the handl
         sw    $t1, 12($a0)
         jr    $ra
 
+#@if NANO
+        .balign 4
+exc_stub:                               # (copied to the vectors: 16 bytes)
+        lui   $k0, %hi(mon_exception - 0x20000000)
+        ori   $k0, $k0, %lo(mon_exception - 0x20000000)
+        jrc   $k0
+        .space 6
+
+appl_return:                            # the application returned (jrc ra): its
+        b     f_exit                    # value is in a0 (the p32 ABI)
+#@else
 exc_stub:                               # (copied to the vectors)
         .set noreorder
         lui   $k0, %hi(mon_exception - 0x20000000)
@@ -493,11 +520,18 @@ exc_stub:                               # (copied to the vectors)
 appl_return:                            # the application returned (jr ra): v0
         move  $a0, $v0
         b     f_exit
+#@endif
 
 # ------------------------------------------------------------------ the TLB refill handler
 
+#@if NANO
+        .balign 4                       # (copied a word at a time)
+#@endif
 refill_start:
 @REFILL@
+#@if NANO
+        .balign 4                       # (copied a word at a time)
+#@endif
 refill_end:
 #@if WIDE
 xrefill_start:
@@ -791,8 +825,9 @@ exc_done:                               # back to the interrupted code
         .set at
 
 # ------------------------------------------------------------------ the functions
-# (called through the table with the o32 convention; they use the
-# caller's stack: none of them needs one)
+# (called through the table with the o32 convention — a nanoMIPS CPU's
+# monitor: the p32 one, the result in a0 — the RET marks); they use the caller's
+# stack: none of them needs one)
 
 f_print_count:                          # print_count(port, s, count): tty0
         lui   $t9, 0xb800
@@ -857,8 +892,10 @@ f_getchar:                              # getchar(port, *ch): 1 = a character
         lbu   $t1, 0x3f8($t9)
         sb    $t1, 0($a1)
         li    $v0, 1
+@RET@
         jr    $ra
 1:      move  $v0, $zero
+@RET@
         jr    $ra
 
 f_exit:                                 # exit(rc): the application is done
@@ -885,9 +922,11 @@ f_syscon_read:                          # syscon_read(id, *param, size): 0 = don
         li    $v0, @PCI_KHZ@
         beq   $a0, $t1, 8f
 9:      li    $v0, -1
+@RET@
         jr    $ra
 8:      sw    $v0, 0($a1)
         move  $v0, $zero
+@RET@
         jr    $ra
 
 f_flush_cache:                          # flush_cache(type): 0 the I-cache
@@ -961,8 +1000,10 @@ f_register_cpu_isr:                     # (cpu_int, isr, data, *ref): 0 = done
         beqz  $a3, 2f
         sw    $t2, 0($a3)
 2:      move  $v0, $zero
+@RET@
         jr    $ra
 9:      li    $v0, -1
+@RET@
         jr    $ra
 
 f_deregister_cpu_isr:                   # (ref)
@@ -981,6 +1022,7 @@ f_deregister_cpu_isr:                   # (ref)
         mtc0  $t3, $12
         sll   $zero, $zero, 3           # ehb
 1:      move  $v0, $zero
+@RET@
         jr    $ra
 
 f_register_ic_isr:                      # (ic_line, isr, data, *ref): the 8259s
@@ -1007,8 +1049,10 @@ f_register_ic_isr:                      # (ic_line, isr, data, *ref): the 8259s
         sll   $zero, $zero, 3           # ehb
         move  $ra, $t8
         move  $v0, $zero
+@RET@
         jr    $ra
 9:      li    $v0, -1
+@RET@
         jr    $ra
 
 f_deregister_ic_isr:                    # (ref)
@@ -1023,6 +1067,7 @@ f_deregister_ic_isr:                    # (ref)
         bal   ic_mask
         move  $ra, $t8
 1:      move  $v0, $zero
+@RET@
         jr    $ra
 
 ic_init:                                # the 8259s once: edge, cascade, vectors
@@ -1109,13 +1154,16 @@ f_register_esr:                         # (exception, esr, *ref, *retfunc)
         subu  $t0, $t0, $t1
         sw    $t0, 0($a3)
 3:      move  $v0, $zero
+@RET@
         jr    $ra
 9:      li    $v0, -1
+@RET@
         jr    $ra
 
 f_deregister_esr:                       # (ref)
         sw    $zero, 0($a0)
         move  $v0, $zero
+@RET@
         jr    $ra
 
 esr_return:                             # an ESR gives up: like an unhandled exception

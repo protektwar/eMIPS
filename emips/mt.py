@@ -14,8 +14,9 @@ round-robin policy manager).
 The model
 ---------
 
-A *processor* (:class:`Processor`) holds 1-2 VPEs and 1-9 thread
-contexts (TCs), as the 34K (MVPConf0.PVPE, PTC).  Each **VPE is an
+A *processor* (:class:`Processor`) holds 1-3 VPEs and 1-9 thread
+contexts (TCs), as the 34K (1-2 VPEs) and the I7200 (1-3; MVPConf0.PVPE,
+PTC).  Each **VPE is an
 :class:`emips.sim.Machine`** with its own CP0 (its own EBase.CPUNum,
 Status, Cause, TLB, Count / Compare, interrupt lines ...); the VPEs of a
 processor share the physical memory and the caches.  Each **TC** owns
@@ -68,6 +69,8 @@ SRSCONF0 = (6, 1)
 #: TCRestart (a PC) and TCContext (software's, a pointer)
 WIDE = frozenset({TCRESTART, TCCONTEXT})
 
+#: CDMMBase (CP0 15.2) of an MPU core (emips.mpu)
+CDMM_REGS = frozenset({(15, 2)})
 #: the MT registers (the Machine sends MFC0 / MTC0 of these here)
 REGISTERS = frozenset({MVPCONTROL, MVPCONF0, MVPCONF1, VPECONTROL, VPECONF0,
                        VPECONF1, YQMASK, VPESCHEDULE, VPESCHEFBACK, VPEOPT,
@@ -154,18 +157,19 @@ ASID = 0xFF
 _TC_ATTRS = ("pc", "hi", "lo", "dspctl", "slot_armed", "slot_target", "_forbidden",
              "_redirect", "isa_mode", "_m16", "_mm", "_m16_base", "_insn_raw",
              "_slot_raw", "_slot_back", "waiting", "wait_pc", "slept", "lr_addr",
-             "lr_pa", "lr_valid", "_linked", "_sst", "ss_pending")
+             "lr_pa", "lr_valid", "_linked", "_sst", "ss_pending", "lr_size")
 _FRESH = {"pc": 0, "hi": 0, "lo": 0, "dspctl": 0, "slot_armed": False,
           "slot_target": None, "_forbidden": False, "_redirect": None, "isa_mode": 0,
           "_m16": None, "_mm": None, "_m16_base": 0, "_insn_raw": None,
           "_slot_raw": None, "_slot_back": 4, "waiting": False, "wait_pc": 0,
           "slept": False, "lr_addr": None, "lr_pa": None, "lr_valid": False,
-          "_linked": False, "_sst": False, "ss_pending": False}
+          "_linked": False, "_sst": False, "ss_pending": False, "lr_size": 4}
 
 
 def parse_spec(spec: str) -> tuple[int, int] | None:
-    """``"none"`` / ``""`` -> None; ``"VPES:TCS"`` -> (VPEs, TCs): 1-2
-    VPEs and VPEs..9 TCs, as the 34K (MVPConf0.PVPE 0-1, PTC 0-8)."""
+    """``"none"`` / ``""`` -> None; ``"VPES:TCS"`` -> (VPEs, TCs): 1-3
+    VPEs and VPEs..9 TCs — the 34K's 1-2 VPEs (MVPConf0.PVPE 0-1, PTC 0-8),
+    the I7200's 1-3 (MD01227 Table 2)."""
     spec = (spec or "").strip().lower()
     if spec in ("", "none", "off", "no"):
         return None
@@ -175,8 +179,9 @@ def parse_spec(spec: str) -> tuple[int, int] | None:
         tcs = int(parts[1]) if len(parts) > 1 else vpes
     except ValueError:
         raise ValueError(f"MT spec {spec!r}: VPES:TCS, e.g. 2:5") from None
-    if len(parts) > 2 or not 1 <= vpes <= 2 or not vpes <= tcs <= 9:
-        raise ValueError(f"MT spec {spec!r}: 1-2 VPEs and VPEs..9 TCs (the 34K)")
+    if len(parts) > 2 or not 1 <= vpes <= 3 or not vpes <= tcs <= 9:
+        raise ValueError(f"MT spec {spec!r}: 1-3 VPEs and VPEs..9 TCs (the 34K: 1-2 VPEs, "
+                         "the I7200: 1-3)")
     return vpes, tcs
 
 
@@ -241,8 +246,8 @@ class Processor:
 
     def __init__(self, vpes: list, tcs: int, vpe0_max: int | None = None,
                  pm: str = "rr", itc: Any = None) -> None:
-        if not 1 <= len(vpes) <= 2 or not len(vpes) <= tcs <= 9:
-            raise ValueError("1-2 VPEs and VPEs..9 TCs (the 34K)")
+        if not 1 <= len(vpes) <= 3 or not len(vpes) <= tcs <= 9:
+            raise ValueError("1-3 VPEs and VPEs..9 TCs (the 34K: 1-2 VPEs, the I7200: 1-3)")
         if pm not in POLICY_MANAGERS:
             raise ValueError(f"policy manager {pm!r}: one of {', '.join(POLICY_MANAGERS)}")
         self.vpes = vpes
@@ -276,7 +281,10 @@ class Processor:
         self._own_tlbs: list = []
         if vpe0_max is None:
             vpe0_max = tcs - len(vpes)
-        self.tcs = [TC(i, 0 if i <= vpe0_max else 1) for i in range(tcs)]
+        # (the TCs above vpe0_max one per further VPE, the rest to the last:
+        # the 34K's VPE 1 takes them all, an I7200 of 3 VPEs one each)
+        self.tcs = [TC(i, 0 if i <= vpe0_max else min(i - vpe0_max, len(vpes) - 1))
+                    for i in range(tcs)]
         #: the TC bound to each VPE's Machine
         self.current: list[TC] = []
         #: MVPControl (EVP, VPC, STLB, CPA)
@@ -325,7 +333,9 @@ class Processor:
         state; Config3.MT / ULRI, EBase.CPUNum, Debug.OffLine writable."""
         m.mt = self
         m.vpe = v
-        m._ext_regs, m._ext = REGISTERS, self
+        # (an MPU's CDMMBase is the VPEs' one register, MVP-gated: MD01251 9.44)
+        m._ext_regs = REGISTERS | (CDMM_REGS if m.cdmm is not None else frozenset())
+        m._ext = self
         if m.wide:                              # "the same width as the processor
             m._wide_cp0 = m._wide_cp0 | WIDE    # GPRs" (MD00378 6.14 / 6.16)
         tc = next(t for t in self.tcs if t.vpe == v)
@@ -928,6 +938,8 @@ class Processor:
             return tc.context
         if key == SRSCONF0:
             return self.srsconf0(v)
+        if key in CDMM_REGS:                    # zeros without VPEConf0.MVP (MD01251 9.44)
+            return m.cp0[key]["value"] if self.mvp[v] or m._dm else 0
         raise KeyError(key)
 
     def write(self, m, key: tuple[int, int], value: int) -> None:
@@ -939,6 +951,11 @@ class Processor:
         mvp = self._mvp(m)
         if key in NO_PM:
             self._pm_write(tc, key, value)
+            return
+        if key in CDMM_REGS:                    # one CDMMBase for the VPEs; MVP-gated
+            if self.mvp[v] or m._dm:
+                for vm in self.vpes:
+                    vm.mmu.cp0_write(vm, key, value)
             return
         if key == VPECONF1:
             if self.mvpcontrol & VPC and mvp:   # writable in the configuration state

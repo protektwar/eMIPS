@@ -24,6 +24,17 @@ MIPS64 (``arch="mips64"``, PLAN M22): the n64 ABI (``-mabi=64``: 64-bit
 symbol in the 32-bit compatibility space: two-instruction addresses, as
 the MIPS64 assembler's programs); clang has no ``-msym32`` and loads
 addresses with its 64-bit sequences, the same values.
+
+nanoMIPS (``arch="nanomips"``, PLAN M23): MediaTek's ``nanomips-elf-gcc``
+(GCC 11.2, nanoMIPS-2022.03-01: the later releases ship no compiler) and
+its gold linker; the p32 ABI (DN00179), ``-march=32r6`` (an NMS core:
+``32r6s``, the nanoMIPS subset), soft float (nanoMIPS has no FPU),
+``emips/c/crt0_nano.S`` and ``emips/c/emips_nano.ld`` (the nanoMIPS
+assembler's layout: code at 0x00400000, at 0x10010000 the data, ``_gp``
+and the small data the compiler reaches from ``$gp``); ``emips.h`` as for
+MIPS32 (the services keep their register numbers).  The toolchain's
+libgcc (soft float, 64-bit division) when it has one for the byte order
+(nanoMIPS-2022.03-01: little-endian -march=32r6 only).
 """
 
 from __future__ import annotations
@@ -41,10 +52,14 @@ MARCH = {"R1": "mips32", "R2": "mips32r2", "R3": "mips32r2", "R5": "mips32r2",
 MARCH64 = {"R1": "mips64", "R2": "mips64r2", "R3": "mips64r2", "R5": "mips64r2",
            "R6": "mips64r6"}
 GCC_PREFIXES = ("mips-mti-elf", "mips-img-elf", "mips-elf", "mips-linux-gnu")
+#: the nanoMIPS toolchain's prefix (MediaTek's nanomips-elf tools)
+NANO_PREFIX = "nanomips-elf"
 
 
 #: a link error naming a soft-float routine (__addsf3, __fixdfsi, __ltsf2 ...)
 _SOFT_FP = re.compile(r"undefined reference to `__\w*[sd]f\w*'")
+#: ... any libgcc routine (gold quotes it '__divdi3', GNU ld `__divdi3')
+_LIBGCC = re.compile(r"undefined reference to [`']__\w+'")
 
 
 class BuildError(RuntimeError):
@@ -66,6 +81,13 @@ def find_toolchain(endian: str = "big", arch: str = "mips32") -> Toolchain:
     and binutils build both ABIs: ``-mabi=64`` and ``ld -m elf64*``.)"""
     el = endian == "little"
     wide = arch == "mips64"
+    if arch == "nanomips":                  # (one GCC, both byte orders; its gold)
+        gcc, ld = shutil.which(f"{NANO_PREFIX}-gcc"), shutil.which(f"{NANO_PREFIX}-ld")
+        if gcc and ld:
+            return Toolchain([gcc, "-EL" if el else "-EB"], [ld], "gcc")
+        raise BuildError("no nanoMIPS C compiler found: put the bin folder of MediaTek's "
+                         "nanoMIPS GNU tools (nanoMIPS-2022.03-01: the later releases ship "
+                         "no nanomips-elf-gcc) on PATH")
     for prefix in GCC_PREFIXES:
         for p in ((prefix.replace("mips-", "mipsel-", 1),) if el else ()) + (prefix,):
             gcc = shutil.which(f"{p}-gcc")
@@ -90,7 +112,11 @@ def find_toolchain(endian: str = "big", arch: str = "mips32") -> Toolchain:
 
 
 def cflags(release: str = "R2", optimize: str = "-O1", fpu: bool = True,
-           arch: str = "mips32", kind: str = "gcc") -> list[str]:
+           arch: str = "mips32", kind: str = "gcc", nms: bool = False) -> list[str]:
+    if arch == "nanomips":                  # p32, soft float (no nanoMIPS FPU)
+        return [f"-march={'32r6s' if nms else '32r6'}", "-m32", "-msoft-float",
+                "-ffreestanding", "-fno-common", "-nostdlib", "-g", optimize, "-Wall",
+                f"-I{C_DIR}"]
     if arch == "mips64":                    # n64 (clang: no -msym32)
         abi = [f"-march={MARCH64.get(release, 'mips64r2')}", "-mabi=64"] + (
             ["-msym32"] if kind == "gcc" else [])
@@ -105,7 +131,7 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           endian: str = "big", optimize: str = "-O1", extra: list[str] | None = None,
           toolchain: Toolchain | None = None, mips16: bool = False,
           micromips: bool = False, fpu: bool = True, dsp: int = 0,
-          arch: str = "mips32") -> str:
+          arch: str = "mips32", nms: bool = False) -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
     :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
@@ -122,7 +148,13 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
     GCC: clang has no microMIPS64), ``mips16`` MIPS16e64 (MD00077; GCC
     builds MIPS16 n64 code soft-float only — "'hard-float' MIPS16 code for
     ABIs other than o32 and o64" is unimplemented —, so the whole program
-    is soft-float, as without an FPU), ``dsp`` the DSP Module (MD00375)."""
+    is soft-float, as without an FPU), ``dsp`` the DSP Module (MD00375).
+    ``arch="nanomips"``: a p32 nanoMIPS executable (``nms``: for a core with
+    the nanoMIPS subset only; ``dsp``: the DSP ASE, ``-mdsp``); no compressed
+    ISAs."""
+    if arch == "nanomips":
+        return _build_nano(sources, output, endian, optimize, extra, toolchain, nms,
+                           mips16 or micromips, dsp)
     if mips16 and release == "R6":
         raise BuildError("Release 6 has no MIPS16e")
     if arch == "mips64" and micromips and release in ("R1", "R2"):
@@ -190,6 +222,55 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
                                  "has a hard-float one only)") from None
             raise
     return "\n".join(log)
+
+
+def _build_nano(sources, output, endian, optimize, extra, toolchain, nms, compressed,
+                dsp) -> str:
+    if compressed:
+        raise BuildError("nanoMIPS has no MIPS16e / microMIPS: its 16-bit instructions are "
+                         "part of the one nanoMIPS ISA (MD01247)")
+    tc = toolchain or find_toolchain(endian, "nanomips")
+    flags = cflags("R6", optimize, False, "nanomips", tc.kind, nms) + list(extra or [])
+    if dsp:                         # the DSP ASE (MD01249, Revision 3): GCC's -mdsp
+        flags.append("-mdsp")       # (__builtin_mips_*; .nanoMIPS.abiflags: DSPR3)
+    log: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="emips-cc-") as tmp:
+        objs = []
+        for src in [C_DIR / "crt0_nano.S", C_DIR / "libemips.c", *map(Path, sources)]:
+            obj = Path(tmp) / (("crt0_nano" if src.name == "crt0_nano.S"   # (the linker
+                                else f"{src.stem}_{len(objs)}") + ".o")    # script names it)
+            _run(tc.cc + flags + ["-c", str(src), "-o", str(obj)], log)
+            objs.append(str(obj))
+        # -n: no page alignment of the segments in the file (bare metal)
+        cmd = tc.ld + ["-EL" if endian == "little" else "-EB", "-n", "-T",
+                       str(C_DIR / "emips_nano.ld"), "-o", str(output)] + objs
+        lib = _nano_libgcc(tc, flags)
+        if lib is not None:                 # (soft float, 64-bit division ...)
+            cmd.append(lib)
+        try:
+            _run(cmd, log)
+        except BuildError as exc:
+            if lib is None and _LIBGCC.search(str(exc)):
+                march = next(f for f in flags if f.startswith("-march="))
+                raise BuildError(f"{exc}\n(the code calls libgcc's routines — soft-float "
+                                 "arithmetic, 64-bit division ...: this nanoMIPS toolchain "
+                                 f"has no libgcc for {endian}-endian {march})") from None
+            raise
+    return "\n".join(log)
+
+
+def _nano_libgcc(tc: Toolchain, flags: list[str]) -> str | None:
+    """The nanoMIPS GCC's libgcc.a for these flags (its multilib), or
+    None (nanoMIPS-2022.03-01 lists big-endian and -march=32r6s
+    multilibs it does not install: GCC then prints a bare ``libgcc.a``)."""
+    try:
+        r = subprocess.run(tc.cc + flags + ["-print-libgcc-file-name"], capture_output=True,
+                           text=True, timeout=30)
+    except OSError:
+        return None
+    path = r.stdout.strip()
+    return path if r.returncode == 0 and Path(path).is_absolute() and Path(path).is_file() \
+        else None
 
 
 def soft_libgcc(endian: str = "big", arch: str = "mips32") -> str | None:

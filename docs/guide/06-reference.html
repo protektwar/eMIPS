@@ -1159,6 +1159,12 @@ xkseg).  C (the n64 ABI), GDB, the compressed instruction sets, the DSP and
 MT Modules, several cores, the Malta board and the real MIPS64 cores work on
 it too, and so does the window (choose MIPS64 R1–R6 in the Machine toolbar)
 (<a href="02-writing-programs.html#223-mips64-64-bit-programs">Phase 2, 2.23</a>, Labs 58–62).</p>
+<p><strong>Can eMIPS run nanoMIPS?</strong>  Yes: <code>--arch nanomips</code> (or the
+I7200 preset) is a nanoMIPS32 core — the I7200's 16-, 32- and 48-bit
+instructions, no delay slots, the p32 register names, programs assembled and
+linked as nanoMIPS's own toolchain does; C, GDB, the DSP and MT ASEs, every
+MMU (and the I7200's MPU), several cores and the Malta work on it too
+(<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">Phase 2, 2.24</a>, Labs 63–67).</p>
 <p><strong>Where are my settings stored?</strong>  <code>~/.config/eMIPS/eMIPS.ini</code> (Linux;
 the equivalent per-user folder elsewhere).  Delete it to start fresh.</p>
 <h2 id="610-for-teachers">6.10 For teachers</h2>
@@ -1473,6 +1479,20 @@ note.</p>
 <td>1–6</td>
 <td><code>0x0001a400</code></td>
 </tr>
+<tr>
+<td><code>i7200</code></td>
+<td>MIPS I7200</td>
+<td>nanoMIPS R6</td>
+<td>none</td>
+<td>no</td>
+<td>optional (the nanoMIPS DSP ASE)</td>
+<td>1–3 VPEs, 1–9 TCs</td>
+<td>tlb:16/32/64 (+sc: EVA), mpu:8–32, fixed+mpu:8–32</td>
+<td>4–64 KB (128 KB with the MPU), 4-way, 32-byte lines (L2 32 KB–8 MB 8-way)</td>
+<td>5-stage</td>
+<td>1–4</td>
+<td><code>0x00010000</code></td>
+</tr>
 </tbody>
 </table>
 <p>A program finds out which core it runs on as an operating system's
@@ -1518,6 +1538,18 @@ has 40 / 32; the P6600's 40-bit physical addresses: the CM's _UPPER
 registers are kept), the I6400's issue of two instructions a cycle
 from four VPs and its Debug Unit, the P6600's out-of-order pipeline, MSA, virtualization and the I6400's
 16-way L2s.</p>
+<p>The <strong>I7200</strong> preset makes a <strong>nanoMIPS</strong> core (choosing it sets the
+architecture): nanoMIPS32 Release 6 with its MT ASE — 1 to 3 VPEs of 1
+to 9 thread contexts a core — and an optional DSP ASE, a 16 / 32 / 64-entry
+JTLB per VPE (with EVA's segmentation control or without), the memory
+protection unit with 8 to 32 regions (<code>mpu:N</code>, <a href="05-understanding.html#the-other-mmus">5.8</a>) or the fixed mapping
+with 8 to 32 MPU regions (<code>fixed+mpu:N</code>), 4–64 KB caches of 32-byte
+lines (128 KB with the MPU), the 8-way L2 of its Coherence Manager and 1
+to 4 cores (I7200 datasheet and Programmer's Guide).  Its PRId is QEMU's
+model's: neither manual gives the Processor ID.  Not modelled: its
+9-stage dual-issue pipeline (an MT nanoMIPS core runs in instruction
+mode), the scratchpad RAMs, the QoS policy manager and its OCI debug
+system with the Fast Debug Channel.</p>
 <h2 id="612-glossary">6.12 Glossary</h2>
 <table>
 <thead>

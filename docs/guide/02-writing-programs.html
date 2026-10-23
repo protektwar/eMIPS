@@ -56,6 +56,7 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21 The DSP Module: SIMD and fixed-point arithmetic</a></li>
 <li><a href="#222-the-mt-module-threads-in-hardware">2.22 The MT Module: threads in hardware</a></li>
 <li><a href="#223-mips64-64-bit-programs">2.23 MIPS64: 64-bit programs</a></li>
+<li><a href="#224-nanomips-16--32--and-48-bit-instructions">2.24 nanoMIPS: 16-, 32- and 48-bit instructions</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -1924,6 +1925,111 @@ GDB (<a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>), and t
 64-bit registers and memory (<a href="03-the-gui.html">Phase 3</a>).  Labs 58–62 add
 up unsigned words, count the instructions of a constant, use memory without
 the TLB, map pages above 4 GB and compare C for MIPS32 and MIPS64.</p>
+<h2 id="224-nanomips-16--32--and-48-bit-instructions">2.24 nanoMIPS: 16-, 32- and 48-bit instructions</h2>
+<p><strong>nanoMIPS</strong> is the instruction set of the MIPS I7200: a MIPS32
+Release 6 machine — the same registers, CP0, exceptions, caches and MMUs —
+with new encodings, chosen to make programs small.  It is an architecture of
+its own, not a mode: a nanoMIPS core runs only nanoMIPS code, and its
+assembler, linker and compiler are nanoMIPS's own.  A program asks for it with
+<code># eMIPS: --arch nanomips</code> (or <code>--arch nanomips</code>, the Machine toolbar's
+nanoMIPS R6, or the I7200 itself: <code>--core i7200</code>, <a href="06-reference.html#611-real-mips-cores">6.11</a>).  It is
+always Release 6 and has no FPU.</p>
+<p><strong>Three sizes.</strong>  An instruction has 16, 32 or 48 bits, and the
+first halfword says which (like microMIPS, <a href="#220-micromips-16--and-32-bit-instructions">2.20</a>, but
+there is no 32-bit "MIPS32 mode" to go back to).  The assembler picks the
+shortest form that fits, as GNU <code>as</code> does:</p>
+<table>
+<thead>
+<tr><th>16 bits</th><th>32 bits</th><th>48 bits</th></tr>
+</thead>
+<tbody>
+<tr><td>the common cases with small operands: <code>addu</code>, <code>and</code>, <code>lw</code> / <code>sw</code>
+with a small offset, <code>li</code> of -1..126, <code>move</code>, <code>bnezc</code> / <code>beqzc</code> close by,
+<code>jrc $ra</code>, <code>save</code> / <code>restore.jrc</code>, <code>syscall</code> — most of them only on the
+eight registers <code>$s0</code>–<code>$s3</code>, <code>$a0</code>–<code>$a3</code></td>
+<td>everything else: three registers, 16-bit immediates, <code>beqc</code> / <code>bnec</code> /
+<code>bltic</code> ..., <code>balc</code> / <code>bc</code> within ±32 MB, <code>lui</code>, <code>ext</code> / <code>ins</code>, <code>lsa</code></td>
+<td>a whole 32-bit constant: <code>li</code> and <code>addiu</code> of any word, <code>la</code> of a
+label (outside the <code>$gp</code> area), <code>lwpc</code> / <code>swpc</code></td></tr>
+</tbody>
+</table>
+<p>There are <strong>no delay slots</strong> and no forbidden slots: every branch and jump is
+compact, and many compare and branch in one instruction — <code>beqc $a0, $a1,
+L</code>, <code>bltic $a0, 10, L</code> (an immediate up to 127), <code>bbeqzc $a0, 3, L</code> (a bit).
+A call is <code>balc</code> (it links <code>$ra</code> to the next instruction), a return <code>jrc
+$ra</code>.</p>
+<p><strong>The p32 register names</strong> follow nanoMIPS's ABI: eight argument
+registers <code>$a0</code>–<code>$a7</code> (<code>$4</code>–<code>$11</code>), <code>$t0</code>–<code>$t3</code> (<code>$12</code>–<code>$15</code>), and
+<code>$t4</code> / <code>$t5</code> for <code>$2</code> / <code>$3</code> (MIPS32's <code>$v0</code> / <code>$v1</code>); results come
+back in <code>$a0</code> / <code>$a1</code>.  So a system call takes its number in <code>$t4</code> and its
+argument in <code>$a0</code>.  <code>$s0</code>–<code>$s7</code>, <code>$gp</code>, <code>$sp</code>, <code>$fp</code>, <code>$ra</code> are where
+they were.</p>
+<pre><code class="language-asm"># output: 55\n0x0000002a
+# arch: nanomips
+        .sdata
+n:      .word   10
+        .text
+main:   lw      $a0, n              # $gp-relative: 16 bits
+        balc    sum                 # a compact call: no delay slot
+        li      $t4, 1              # print_int ($t4 = $2: the service)
+        syscall
+        li      $a0, '\n'
+        li      $t4, 11
+        syscall
+        li      $a0, 0x2a
+        li      $t4, 34
+        syscall
+        li      $t4, 10
+        syscall
+
+sum:    save    16, $ra, $s0        # push $ra and $s0, a 16-byte frame
+        move    $s0, $a0
+        li      $a0, 0
+1:      addu    $a0, $a0, $s0
+        addiu   $s0, $s0, -1
+        bnezc   $s0, 1b
+        restore.jrc 16, $ra, $s0    # pop them, free the frame, return
+</code></pre>
+<p>What to know:</p>
+<ul>
+<li><strong>Frames in one instruction.</strong>  <code>save 16, $ra, $s0</code> stores <code>$ra</code> and
+<code>$s0</code> below <code>$sp</code> and lowers <code>$sp</code> by 16; <code>restore.jrc 16, $ra, $s0</code>
+loads them back, raises <code>$sp</code> and returns — the prologue and epilogue of a
+function, 16 bits each (<a href="05-understanding.html#lab-64--frames-in-one-instruction">Lab 64</a>).  <code>lwm</code> /
+<code>swm</code> load and store several consecutive registers.</li>
+<li><strong>Small data.</strong>  Words in <code>.sdata</code> / <code>.sbss</code> sit next to <code>$gp</code>, so <code>lw $a0,
+n</code> is one 16- or 32-bit <code>$gp</code>-relative load; data in <code>.data</code> needs a 48-bit
+address first (<a href="05-understanding.html#lab-63--how-big-is-an-instruction">Lab 63</a>).  <code>$gp</code> starts at the
+symbol <code>_gp</code>, where the toolchain's linker scripts put it.</li>
+<li><strong>The assembler and the linker</strong> are those of the nanoMIPS toolchain:
+eMIPS gives the bytes <code>nanomips-elf-as</code> and <code>ld</code> give, macros and data
+included.  With <code>.linkrelax</code> the assembler leaves calls, branches and
+<code>$gp</code> accesses relaxable and the linker finishes them: it expands what does
+not reach (a call 2 GB away becomes <code>li</code> + <code>jalrc</code>) and, with <code>--relax</code>
+(Settings → Assembler), shrinks what fits a shorter form once every address is
+known.  <code>python3 -m emips asm</code> prints what the linker did (<a href="05-understanding.html#lab-65--what-the-linker-does">Lab 65</a>).</li>
+<li><strong>The rest of the machine is MIPS32 Release 6's</strong>: CP0 (with BadInstrX),
+exceptions (<code>eret</code> returns to EPC; a handler skips a faulting instruction by
+its own size, 2, 4 or 6 bytes), interrupts, caches, every MMU (and the I7200's
+memory protection unit: <code>--mmu mpu:N</code>, <a href="05-understanding.html#the-other-mmus">5.8</a>,
+<a href="05-understanding.html#lab-66--a-guard-with-the-mpu">Lab 66</a>), several cores and the Malta board.
+<code>--nms</code> makes a core with the nanoMIPS <em>subset</em> (no 48-bit instructions, a
+smaller set of 32-bit ones; the assembler builds the macros without them).</li>
+<li><strong>The DSP and MT ASEs</strong> are the DSP and MT Modules
+(<a href="#221-the-dsp-module-simd-and-fixed-point-arithmetic">2.21</a>, <a href="#222-the-mt-module-threads-in-hardware">2.22</a>) with nanoMIPS encodings
+(<code>--dsp</code>, <code>--mt</code>; the I7200 always has the MT ASE).</li>
+<li><strong>The pipeline.</strong>  A nanoMIPS program runs instruction by instruction
+or on the 5-stage pipeline, which fetches one instruction a cycle whatever its
+size (the datapath's adder shows +2 / 4 / 6).  An MT program runs in
+instruction mode.</li>
+</ul>
+<p>C (<code>cc --arch nanomips</code>, nanoMIPS's GCC: <a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>,
+<a href="05-understanding.html#lab-67--c-in-fewer-bytes">Lab 67</a>), ELF executables and GDB
+(<code>nanomips-elf-gdb</code>, <a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>) work for nanoMIPS too, and the
+window shows its halfwords, its datapath and its control logic as gates
+(<a href="03-the-gui.html">Phase 3</a>).  Labs 63–67 measure instruction sizes, build frames
+with <code>save</code> / <code>restore</code>, watch the linker relax a program, guard memory with
+the MPU and compare C for MIPS32 and nanoMIPS.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

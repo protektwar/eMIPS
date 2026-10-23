@@ -147,6 +147,9 @@ class InstrView:
         self.exception = None
         #: hex digits of a register / address (MIPS64: 16)
         self.digits = 8
+        #: the instruction's size in bytes (a nanoMIPS one: 2, 4 or 6, its
+        #: whole encoding in ``word``)
+        self.size = 4
         self.fetch, self.cache, self.fetch_tlb, self.tlb = [], [], [], []
         self._raw = raw              # (dec, sources, _Frozen, before) + finish's
 
@@ -167,7 +170,7 @@ class _Frozen:
     built the machine has moved on."""
 
     __slots__ = ("regs", "supervisor", "isa", "twin", "compressed", "isa_mode", "mm", "m16",
-                 "release", "post", "lo", "redirect", "mask", "abi", "ea32")
+                 "release", "post", "lo", "redirect", "mask", "abi", "ea32", "nm")
 
     def read_reg(self, n: int) -> int:
         n &= 31
@@ -426,15 +429,18 @@ def begin(m, pc: int, word: int, dec: Decode, in_slot: bool = False,
     st.isa_mode = getattr(m, "isa_mode", 0)
     st.compressed, st.mm, st.m16 = m.compressed, m._mm, getattr(m, "_m16", None)
     st.isa, st.release, st.supervisor = m.isa, m.release, m.mmu.supervisor
-    st.mask, st.abi = m.amask, "n64" if m.wide else True    # (MIPS64: 64 bits, n64)
+    st.mask, st.abi = m.amask, m.names     # (MIPS64: 64 bits, n64; nanoMIPS: p32)
     st.ea32 = m.data_wrap()                 # (MIPS64: data addresses sign-extended)
     st.twin = _twin_isa(m) if st.isa_mode else None
-    special = dec.entry.get("isa") in ("mips16e", "micromips")   # no MIPS32 twin
+    st.nm = m._nm if m.nano else None       # (nanoMIPS: the decoded instruction)
+    special = dec.entry.get("isa") in ("mips16e", "micromips", "nanomips")   # no twin
     before = _snapshot(m, special or dec.entry["family"] not in _NO_CP0)
     st.regs = before[0][1]
     v = InstrView(pc, word, dec.name, in_slot, (dec, sources, st, before))
     if m.wide:
         v.digits = 16
+    if st.nm is not None:
+        v.size = st.nm.size
     m._mem_log = []
     if m.caches is not None:
         v.fetch = list(m.fetch_accesses)
@@ -478,6 +484,9 @@ def _build(v: InstrView) -> None:
     d = v.__dict__
     d.update(alu=None, address=None, branch=None, compressed="", source_text="",
              mem_reads=[], mem_writes=[])
+    if st.nm is not None:                       # nanoMIPS (emips.tracenano)
+        _build_nano(v, st, before, after, log, sources, failed, code)
+        return
     c = _compressed(st, pc)
     if dec.entry.get("isa") in ("mips16e", "micromips"):    # no MIPS32 twin: its own view
         label, text, raw16, size = c
@@ -521,6 +530,38 @@ def _build(v: InstrView) -> None:
     b = v.branch
     if b is not None and b.target is not None and st.compressed is not None:
         b.target &= ~1                  # (bit 0: the ISA mode there, not an address bit)
+
+
+def _build_nano(v: InstrView, st: _Frozen, before: tuple, after: tuple | None, log: list,
+                sources: dict | None, failed: bool, code: int | None) -> None:
+    """:func:`_build` of a nanoMIPS instruction (PLAN M23): its own
+    encoding's fields, the page's ALU / address / branch parts."""
+    from . import nanomips, tracenano
+    i = st.nm
+    text = nanomips.text(i, v.pc)
+    v.__dict__.update(text=text, format=i.row.form, source_text=text,
+                      fields=tracenano.fields(i, st.abi))
+    tracenano.operands(v, st, i, sources)
+    v.reg_writes = _diff(before, after, st.mask, st.abi) if after is not None else []
+    if code == C.OV and v.alu is not None:
+        v.alu.overflow = True
+    for entry in log:
+        xlat = entry[-1]
+        if entry[0] == "read":
+            v.mem_reads.append(entry[1:-1])
+        else:
+            v.mem_writes.append(entry[1:-1])
+        if v.address is not None and v.address.physical is None:
+            v.address.physical, v.address.cca = xlat.pa, xlat.cca
+            v.address.cached, v.address.how = xlat.cacheable, xlat.how
+    if after is None:
+        return
+    if v.alu is not None and v.alu.result is None and not failed:
+        reg = tracenano.result_register(i)
+        if reg is not None:
+            v.alu.result = st.read_post(reg)
+            v.alu.zero = v.alu.result == 0
+    tracenano.branch(v, st, i)
 
 
 def _operands(v: InstrView, st: _Frozen, word: int, name: str, fam: str,
@@ -717,7 +758,7 @@ def _diff(before: tuple, after: tuple, mask: int = M32,
 
 def _changes(m, before: tuple) -> list[tuple[str, int, int]]:
     """:func:`_diff` of ``before`` and the machine now."""
-    return _diff(before, _after(m, before), m.amask, "n64" if m.wide else True)
+    return _diff(before, _after(m, before), m.amask, m.names)
 
 
 _NAME = itemgetter(0)
@@ -728,13 +769,17 @@ _NAME = itemgetter(0)
 def format_view(v: InstrView) -> str:
     """Multi-line, human-readable rendering of a view."""
     w = v.digits                        # (MIPS64: 16)
+    if v.name.startswith("NM."):        # nanoMIPS: its format, 16 / 32 / 48 bits
+        what = f"nanoMIPS {8 * v.size}-bit {v.format}, 0x{v.word:0{2 * v.size}x}"
+    else:
+        what = f"{v.format}-format, 0x{v.word:08x}"
     lines = [f"0x{v.pc:0{w}x}: {v.text}" + ("   [delay slot]" if v.in_delay_slot else "")
-             + f"   ({v.format}-format, 0x{v.word:08x})"]
+             + f"   ({what})"]
     if v.compressed:
         lines.append(f"  {v.compressed}")
     lines.append("  decode: " + " | ".join(
-        f"{f.name}[{f.msb}:{f.lsb}]={f.bits} {f.meaning}" if f.msb != f.lsb
-        else f"{f.name}[{f.msb}]={f.bits} {f.meaning}" for f in v.fields))
+        (f"{f.name}[{f.msb}:{f.lsb}]={f.bits} {f.meaning}" if f.msb != f.lsb
+         else f"{f.name}[{f.msb}]={f.bits} {f.meaning}").rstrip() for f in v.fields))
     if v.alu:
         a = f"a = 0x{v.alu.a.value:0{w}x} from {v.alu.a.source}" if v.alu.a else ""
         b = f"b = 0x{v.alu.b.value:0{w}x} from {v.alu.b.source}" if v.alu.b else ""

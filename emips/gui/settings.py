@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 
+from ..cores import get as core_preset
 from ..cache import Geometry
 from ..pipeline import LATENCY
 from ..timing import MEMORY_TIMING
@@ -120,11 +121,13 @@ class SettingsDialog(QtWidgets.QDialog):
         self._constraining = True
         self.set_values(release, endian, forwarding, options)
         self._constraining = False
+        self.arch.currentIndexChanged.connect(self._arch_chosen)   # (before _constrain)
         for box in (self.arch, self.release, self.board, self.mmu, self.model, self.icache,
                     self.dcache, self.l2, self.l3, self.compressed, self.c_isa, self.dsp,
                     self.mt):
             box.currentIndexChanged.connect(self._constrain)
         self.fpu.toggled.connect(self._constrain)
+        self.nms.toggled.connect(self._constrain)
         for box in (self.icache, self.dcache, self.l2, self.l3):
             box.editTextChanged.connect(self._constrain)
         for spin in (self.cores, self.vps, self.shadow_sets):
@@ -154,7 +157,28 @@ class SettingsDialog(QtWidgets.QDialog):
         self.arch.addItem(tr("MIPS32"), "mips32")
         self.arch.addItem(tr("MIPS64: 64-bit registers, the doubleword instructions"),
                           "mips64")
+        self.arch.addItem(tr("nanoMIPS: the I7200's 16 / 32 / 48-bit instructions "
+                             "(Release 6)"), "nanomips")
         form.addRow(tr("Architecture"), self.arch)
+        # the nanoMIPS core's options (MD01251: Config5.NMS / CRCP / GI)
+        self.nms = QtWidgets.QCheckBox(tr("nanoMIPS subset only (NMS)"))
+        self.nms.setToolTip(tr("A core with the nanoMIPS subset (Config5.NMS = 1): the "
+                               "instructions MD01247 leaves out of it are Reserved "
+                               "Instructions"))
+        form.addRow("", self.nms)
+        self.crc = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: when the program has CRC32 instructions")),
+                          ("none", tr("None")), ("crc", tr("CRC32B ... CRC32CW"))):
+            self.crc.addItem(text, key)
+        self.crc.setToolTip(tr("nanoMIPS: the CRC32 instructions (Config5.CRCP)"))
+        form.addRow(tr("nanoMIPS CRC"), self.crc)
+        self.ginv = QtWidgets.QComboBox()
+        for key, text in (("auto", tr("Automatic: what the program uses")),
+                          ("none", tr("None")), ("ginvi", tr("GINVI (Config5.GI = 2)")),
+                          ("ginvt", tr("GINVI and GINVT (Config5.GI = 3)"))):
+            self.ginv.addItem(text, key)
+        self.ginv.setToolTip(tr("nanoMIPS: the global invalidate instructions (Config5.GI)"))
+        form.addRow(tr("nanoMIPS global invalidate"), self.ginv)
         self.release = QtWidgets.QComboBox()
         for r in RELEASES:
             self.release.addItem(tr("Release {n}").format(n=r[1:]), r)
@@ -204,7 +228,8 @@ class SettingsDialog(QtWidgets.QDialog):
                           ("none", tr("None")),
                           ("1:2", tr("1 VPE, 2 TCs")), ("1:5", tr("1 VPE, 5 TCs")),
                           ("2:2", tr("2 VPEs, 2 TCs")), ("2:5", tr("2 VPEs, 5 TCs (a 34K)")),
-                          ("2:9", tr("2 VPEs, 9 TCs (the 34K's largest)"))):
+                          ("2:9", tr("2 VPEs, 9 TCs (the 34K's largest)")),
+                          ("3:9", tr("3 VPEs, 9 TCs (the I7200's largest)"))):
             self.mt.addItem(text, key)
         self.mt.setToolTip(tr("The MT Module (MD00378): virtual processors (VPEs) with their "
                               "own CP0, thread contexts (TCs) issuing in turn; FORK, YIELD, "
@@ -257,6 +282,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.mmu.addItem(tr("VTLB 64 + FTLB 512 (P5600)"), "ftlb")
         self.mmu.addItem(tr("VTLB + FTLB, segmentation control, EVA, page table walker"),
                          "ftlb+sc+pw")
+        self.mmu.addItem(tr("MPU, 16 regions (I7200, nanoMIPS)"), "mpu:16")
+        self.mmu.addItem(tr("Fixed mapping + 16 MPU regions (I7200, nanoMIPS)"),
+                         "fixed+mpu:16")
         form.addRow(tr("MMU"), self.mmu)
         form.addRow("", _note(tr("Every MMU maps memory like the fixed mapping after boot "
                                  "(kuseg + 1 GB): the TLBs through the boot firmware's "
@@ -370,6 +398,11 @@ class SettingsDialog(QtWidgets.QDialog):
                                "there. Off: the next instruction you write is the delay "
                                "slot. A program can still switch with .set reorder / "
                                ".set noreorder.")))
+        self.relax = QtWidgets.QCheckBox(tr("nanoMIPS: link-time relaxation (ld --relax)"))
+        lay.addWidget(self.relax)
+        lay.addWidget(_note(tr("For a nanoMIPS program with .linkrelax: the linker shrinks "
+                               "the branches, calls and $gp accesses that fit a shorter "
+                               "form once every address is known.")))
         self.auto_assemble = QtWidgets.QCheckBox(tr("Assemble automatically when the "
                                                     "source changed (Run / Step)"))
         lay.addWidget(self.auto_assemble)
@@ -568,6 +601,9 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def set_values(self, release: str, endian: str, forwarding: bool, o: Options) -> None:
         self.arch.setCurrentIndex(max(0, self.arch.findData(o.arch)))
+        self.nms.setChecked(o.nms)
+        self.crc.setCurrentIndex(max(0, self.crc.findData(o.crc)))
+        self.ginv.setCurrentIndex(max(0, self.ginv.findData(o.ginv)))
         self.release.setCurrentIndex(max(0, RELEASES.index(release)
                                          if release in RELEASES else 3))
         self.release_note.setText(html.escape(tr(RELEASE_NOTES[self.release.currentData()])))
@@ -619,6 +655,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.pseudo.setChecked(o.pseudo)
         self.c_optimize.setCurrentIndex(max(0, self.c_optimize.findData(o.c_optimize)))
         self.reorder.setChecked(o.reorder)
+        self.relax.setChecked(o.relax)
         self.auto_assemble.setChecked(o.auto_assemble)
         for b in self.boot.buttons():
             b.setChecked(b.property("key") == o.boot)
@@ -644,6 +681,7 @@ class SettingsDialog(QtWidgets.QDialog):
                     "kernel")
         o = Options(
             pseudo=self.pseudo.isChecked(), reorder=self.reorder.isChecked(),
+            relax=self.relax.isChecked(),
             auto_assemble=self.auto_assemble.isChecked(),
             count_rate=self.count_rate.currentData(),
             latency={k: s.value() for k, s in self.latency.items()},
@@ -666,7 +704,9 @@ class SettingsDialog(QtWidgets.QDialog):
             compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData(),
             fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), mt=self.mt.currentData(),
             mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
-            core=self.core.currentData(), arch=self.arch.currentData())
+            core=self.core.currentData(), arch=self.arch.currentData(),
+            nms=self.nms.isChecked(), crc=self.crc.currentData(),
+            ginv=self.ginv.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 
@@ -696,6 +736,21 @@ class SettingsDialog(QtWidgets.QDialog):
         for e in self.disks.values():
             e.parentWidget().setEnabled(malta)
 
+    def _arch_chosen(self, _index: int = 0) -> None:
+        """nanoMIPS is Release 6 based (MD01247 ch. 1): choosing it chooses
+        Release 6 (otherwise the release would send it back to MIPS32)."""
+        if self.arch.currentData() == "nanomips" and self.release.currentData() != "R6":
+            self.release.blockSignals(True)
+            self.release.setCurrentIndex(self.release.findData("R6"))
+            self.release.blockSignals(False)
+            self.release_note.setText(html.escape(tr(RELEASE_NOTES["R6"])))
+        elif self.arch.currentData() != "nanomips" and not self.fpu.isEnabled() \
+                and getattr(core_preset(self.core.currentData()), "arch", "nanomips") \
+                == "nanomips":                  # (no core, or the I7200: it goes too)
+            self.fpu.blockSignals(True)         # (leaving nanoMIPS: the FPU it took)
+            self.fpu.setChecked(True)
+            self.fpu.blockSignals(False)
+
     def _constrain(self, *_args, note: bool = True) -> None:
         """Keep the settings together (emips.compat): adjust what depends
         on the release / board, disable the values that do not go with the
@@ -723,7 +778,7 @@ class SettingsDialog(QtWidgets.QDialog):
                                    (self.board, fixed.board.split(":")[0]),
                                    (self.c_isa, fixed.c_isa), (self.model, fixed.model),
                                    (self.dsp, fixed.dsp), (self.mt, fixed.mt),
-                                   (self.core, fixed.core)):
+                                   (self.core, fixed.core), (self.arch, fixed.arch)):
                     box.setCurrentIndex(max(0, box.findData(value)))
                 self._core_text()
             if note:
@@ -756,9 +811,13 @@ class SettingsDialog(QtWidgets.QDialog):
                 why = forbidden(field, 2, fixed, release)
                 spin.setRange(1, 1 if why else top)
                 spin.setToolTip(why or "")
+            self.fpu.setChecked(fixed.fpu)      # (nanoMIPS: none)
             why = forbidden("fpu", not fixed.fpu, fixed, release)
             self.fpu.setEnabled(why is None)
             self.fpu.setToolTip(why or self.fpu.toolTip())
+            nano = fixed.arch == "nanomips"
+            for w in (self.nms, self.crc, self.ginv):
+                w.setEnabled(nano)
             self.iocu.setChecked(fixed.iocu)
             why = forbidden("iocu", True, fixed, release)
             self.iocu.setEnabled(why is None)

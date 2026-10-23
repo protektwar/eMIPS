@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from . import cores as _cores
-from .options import Options
+from .options import Options, arch_title
 
 RELEASE_ORDER = ("R1", "R2", "R3", "R5", "R6")
 
@@ -59,6 +59,23 @@ def _mips64(o: Options) -> bool:
     return o.arch == "mips64"
 
 
+def _mmu_kind(o: Options) -> str:
+    """"mpu" (the MPU build), "fixed+mpu" (the FMT build's regions), or the
+    MMU's kind ("fixed", "tlb" ...)."""
+    base, *flags = o.mmu.lower().split("+")
+    kind = base.split(":")[0]
+    return "fixed+mpu" if kind == "fixed" and flags and flags[0].startswith("mpu") else kind
+
+
+def _nano(o: Options) -> bool:
+    return o.arch == "nanomips"
+
+
+#: why the nanoMIPS core has no FPU / ISA modes / ...
+_NANO_FPU = ("MD01247 defines no nanoMIPS FPU instructions (the CP1 cells of its opcode map "
+             "are reserved; the I7200 has no FPU)")
+
+
 @dataclass(frozen=True)
 class Rule:
     #: the setting that adjusts (the dependent)
@@ -77,7 +94,31 @@ class Rule:
 
 
 RULES = (
-    # first, MIPS64 (PLAN M22): the 64-bit core has none of these yet — the
+    # first, nanoMIPS (PLAN M23): an architecture of its own, Release 6 based —
+    # what its cores do not have (the rules below see the settings they leave)
+    Rule("arch", "release", lambda o, r: _nano(o) and r != "R6",
+         lambda o: setattr(o, "arch", "mips32"),
+         "nanoMIPS is Release 6 based (MD01247 ch. 1): there is no nanoMIPS Release 1-5"),
+    Rule("fpu", "arch", lambda o, r: _nano(o) and o.fpu, lambda o: setattr(o, "fpu", False),
+         _NANO_FPU),
+    Rule("compressed", "arch", lambda o, r: _nano(o) and o.compressed not in ("auto", "none"),
+         lambda o: setattr(o, "compressed", "auto"),
+         "a nanoMIPS core has no ISA modes (MD01251 3.5.4): its 16-bit instructions are "
+         "part of the one nanoMIPS ISA"),
+    Rule("model", "arch", lambda o, r: _nano(o) and o.model == "24k",
+         lambda o: setattr(o, "model", "5-stage"),
+         "the 24K is a MIPS32 core (MD00343): a nanoMIPS program runs on the 5-stage pipeline"),
+    Rule("mmu", "arch", lambda o, r: not _nano(o) and "mpu" in _mmu_kind(o),
+         lambda o: setattr(o, "mmu", "fixed"),
+         "the MPU is the I7200's (MD01232 ch. 4): a nanoMIPS core's"),
+    Rule("mmu", "board", lambda o, r: _malta(o) and _mmu_kind(o) == "mpu",
+         lambda o: setattr(o, "mmu", "fixed+mpu:" + (o.mmu.partition(":")[2] or "16")),
+         "with the MPU PA = VA (MD01232 ch. 4): the Malta's SDRAM is at physical 0, where "
+         "its kseg0 programs are not — the FMT build with MPU regions maps them there"),
+    Rule("c_isa", "arch", lambda o, r: _nano(o) and o.c_isa != "mips32",
+         lambda o: setattr(o, "c_isa", "mips32"),
+         "C for a nanoMIPS core is nanoMIPS code (nanomips-elf-gcc): no MIPS16e / microMIPS"),
+    # then MIPS64 (PLAN M22): the 64-bit core has none of these yet — the
     # rules below see the settings they leave
     Rule("compressed", "arch", lambda o, r: _mips64(o) and o.compressed.startswith("micromips")
          and not at_least(r, "R3"), lambda o: setattr(o, "compressed", "auto"),
@@ -91,7 +132,7 @@ RULES = (
     Rule("core", "arch", lambda o, r: (c := _cores.get(o.core)) is not None and c.arch != o.arch,
          lambda o: setattr(o, "core", ""),
          lambda o, r: (f"the {_cores.get(o.core).title} is a "
-                       f"{_cores.get(o.core).arch.upper()} core")),
+                       f"{arch_title(_cores.get(o.core).arch)} core")),
     Rule("compressed", "release", lambda o, r: o.compressed == "mips16e" and r == "R6",
          lambda o: setattr(o, "compressed", "auto"),
          "Release 6 has no MIPS16e (it was removed; microMIPS R6 is its 16-bit ISA)"),
@@ -125,7 +166,7 @@ RULES = (
          lambda o: setattr(o, "dsp", "dspr2"),
          "on Release 6 the DSP Module is Revision 3: Revision 2's instructions and "
          "BPOSGE32C (Config3.DSPP = DSP2P = 1, MD00374 3.11)"),
-    Rule("mt", "release", lambda o, r: _mt(o) and r in ("R1", "R6"),
+    Rule("mt", "release", lambda o, r: _mt(o) and r in ("R1", "R6") and not _nano(o),
          lambda o: setattr(o, "mt", "auto"),
          "the MT Module needs Release 2-5 (MD00378 1.1: Release 2; Release 6 replaced "
          "it with DVP / EVP and has none of its instructions)"),
@@ -186,6 +227,13 @@ RULES = (
     for name in _cores.FIELDS)
 
 
+def _shown(value) -> str:
+    """A setting's value in a note: on / off, generic for no core preset."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return str(value) if value != "" else "generic"
+
+
 def problems(o: Options, release: str) -> list[Rule]:
     """The rules this combination breaks."""
     return [r for r in RULES if r.broken(o, release)]
@@ -202,8 +250,8 @@ def adjust(o: Options, release: str, keep: frozenset[str] | set[str] = frozenset
         if rule.field not in keep and rule.broken(o, release):
             old, why = getattr(o, rule.field), rule.reason(o, release)
             rule.fix(o)
-            notes.append(f"{rule.field} {old or 'generic'} -> "
-                         f"{getattr(o, rule.field) or 'generic'}: {why}")
+            notes.append(f"{rule.field} {_shown(old)} -> {_shown(getattr(o, rule.field))}: "
+                         f"{why}")
     return o, notes
 
 
@@ -229,14 +277,25 @@ def program_problem(o: Options, kind: str, program=None) -> str | None:
         return ("C programs and ELF executables are linked for the flat memory layout "
                 "(code at 0x00400000): on the Malta that is not memory — choose the flat board")
     if kind == "elf" and getattr(program, "arch", o.arch) != o.arch:
-        return (f"the program is an {'ELF64 (n64)' if program.arch == 'mips64' else 'ELF32'}: "
-                f"it runs on {program.arch.upper()} — open it again, or choose "
-                f"{program.arch.upper()}")
+        what = {"mips64": "an ELF64 (n64)", "nanomips": "a nanoMIPS ELF (EM_NANOMIPS)"}.get(
+            program.arch, "an ELF32")
+        return (f"the program is {what}: it runs on {arch_title(program.arch)} — open it "
+                f"again, or choose {arch_title(program.arch)}")
     if (_mips64(o) and not o.mmu.startswith(("tlb", "ftlb"))
             and max(getattr(program, "image", None) or (0,)) > 0xFFFFFFFF):
         return ("the program has code or data above the 32-bit compatibility space (a "
                 "64-bit address): that needs 64-bit addressing, Config.AT = 2 — a TLB MMU "
                 f"(--mmu tlb; this is --mmu {o.mmu})")
+    if _nano(o) and o.nms and "xnms" in getattr(program, "needs", ()):
+        return ("the program is built for the full nanoMIPS ISA (.nanoMIPS.abiflags: "
+                "NANOMIPS_ASE_xNMS, DN00179 5.2): this core has the nanoMIPS subset only "
+                "(--nms) — build it with -march=32r6s (emips cc --nms)")
+    if _nano(o) and o.mt == "none" and "mt" in getattr(program, "needs", ()):
+        return ("the program has nanoMIPS MT ASE instructions (MD01255): the core has "
+                "none (--mt none)")
+    if _nano(o) and o.dsp == "none" and "dsp" in getattr(program, "needs", ()):
+        return ("the program has nanoMIPS DSP ASE instructions (MD01249): the core has "
+                "none (--dsp none)")
     core = _cores.get(o.core)
     if getattr(program, "mt", False) and o.mt == "none":
         return ("the program has MT Module instructions: " + (

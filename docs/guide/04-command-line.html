@@ -111,12 +111,27 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--release R1|R2|R3|R5|R6</code></td>
 <td>all</td>
-<td>the MIPS32 / MIPS64 release (default R5)</td>
+<td>the MIPS32 / MIPS64 release (default R5; nanoMIPS: R6, the only one)</td>
 </tr>
 <tr>
-<td><code>--arch mips32|mips64</code></td>
+<td><code>--arch mips32|mips64|nanomips</code></td>
 <td>all</td>
-<td>the architecture (default <code>mips32</code>): <code>mips64</code> = a MIPS64 core — 64-bit registers, HI / LO and PC, the doubleword instructions (<code>daddu</code>, <code>ld</code>, <code>dsll32</code>, <code>dmult</code> ...), <code>dli</code> / <code>dla</code>, the n64 register names (<code>$a4</code>–<code>$a7</code> = <code>$8</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>); with the fixed mapping it addresses the 32-bit compatibility segments (Config.AT = 1: any other 64-bit address is an Address Error), with a TLB (<code>--mmu tlb</code>, <code>ftlb</code>, <code>+sc</code>, <code>+pw</code>) the whole 64-bit address space (Config.AT = 2: xuseg, xsseg, xkphys, xkseg; the boot firmware sets Status.KX / SX / UX and handles the XTLB Refills); it runs in instruction mode and on the 5-stage pipeline (the 24K is a MIPS32 core: <code>--model 24k</code> becomes 5-stage; DMULT / DDIV take the MIPS64 5K's 9 / 67 cycles); the boot sets Status.FR (64-bit FPRs), the user boot Status.PX (64-bit operations in User Mode)</td>
+<td>the architecture (default <code>mips32</code>): <code>mips64</code> = a MIPS64 core — 64-bit registers, HI / LO and PC, the doubleword instructions (<code>daddu</code>, <code>ld</code>, <code>dsll32</code>, <code>dmult</code> ...), <code>dli</code> / <code>dla</code>, the n64 register names (<code>$a4</code>–<code>$a7</code> = <code>$8</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>); with the fixed mapping it addresses the 32-bit compatibility segments (Config.AT = 1: any other 64-bit address is an Address Error), with a TLB (<code>--mmu tlb</code>, <code>ftlb</code>, <code>+sc</code>, <code>+pw</code>) the whole 64-bit address space (Config.AT = 2: xuseg, xsseg, xkphys, xkseg; the boot firmware sets Status.KX / SX / UX and handles the XTLB Refills); it runs in instruction mode and on the 5-stage pipeline (the 24K is a MIPS32 core: <code>--model 24k</code> becomes 5-stage; DMULT / DDIV take the MIPS64 5K's 9 / 67 cycles); the boot sets Status.FR (64-bit FPRs), the user boot Status.PX (64-bit operations in User Mode).  <code>nanomips</code> = a nanoMIPS32 core (the I7200's instruction set): 16-, 32- and 48-bit instructions, Release 6 based, no delay slots, no FPU; the program is assembled and linked as the nanoMIPS toolchain's <code>as</code> and <code>ld</code> do (the same bytes); the p32 register names (<code>$t4</code> / <code>$t5</code> = <code>$2</code> / <code>$3</code>, <code>$a0</code>–<code>$a7</code> = <code>$4</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>) — so the system call number goes in <code>$t4</code>, its arguments in <code>$a0</code>–<code>$a2</code>; every MMU, caches and cores, the Malta (<code>--board malta</code>: its boot monitor as nanoMIPS code); instruction mode and the 5-stage pipeline (<code>--model 24k</code> becomes 5-stage: the 24K is a MIPS32 core); nanoMIPS ELF executables, C (<code>cc --arch nanomips</code>, <a href="#411-cc--build-a-c-program">4.11</a>) and GDB (<code>nanomips-elf-gdb</code>, <a href="#412-gdb--debugging-with-gdb">4.12</a>)</td>
+</tr>
+<tr>
+<td><code>--nms</code></td>
+<td>all</td>
+<td>nanoMIPS: a core of the nanoMIPS subset (Config5.NMS = 1: the 48-bit instructions, LWM / SWM, MOVEP ... are Reserved Instructions); the program is assembled for it (as <code>as -march=32r6s</code>: <code>li</code> of a 32-bit constant is <code>lui</code> + <code>ori</code>)</td>
+</tr>
+<tr>
+<td><code>--relax</code></td>
+<td>all</td>
+<td>nanoMIPS: the linker's relaxations (<code>ld --relax</code>) of a <code>.linkrelax</code> program — calls, branches and <code>$gp</code> accesses that fit a shorter form once every address is known are shrunk; <code>asm</code> prints what the linker did (<code># ld: ...</code> lines; the expansions of what does not reach happen without it) (<a href="05-understanding.html#lab-65--what-the-linker-does">Lab 65</a>)</td>
+</tr>
+<tr>
+<td><code>--crc auto|none|crc</code> / <code>--ginv auto|none|ginvi|ginvt</code></td>
+<td>run, pipe, debug, gdb, check</td>
+<td>nanoMIPS: the CRC32 instructions (Config5.CRCP) and the global invalidates (Config5.GI): <code>auto</code> (default) = the core has them when the program uses them; without them they are Reserved Instructions</td>
 </tr>
 <tr>
 <td><code>--little</code></td>
@@ -246,12 +261,12 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--dsp auto|none|dsp|dspr2</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the DSP Module (SIMD on bytes and halfwords, saturating fractional arithmetic, the accumulators <code>$ac1</code>–<code>$ac3</code>, DSPControl): <code>auto</code> (default) = Revision 2 when the program has DSP instructions, none otherwise (the 24K has none); <code>none</code>; <code>dsp</code> = Revision 1 (the 24KE, the 1004K); <code>dspr2</code> = Revision 2 (the interAptiv, the microAptiv; Revision 3 on Release 6); Release 2 or later; Config3.DSPP / DSP2P, Status.MX enables it</td>
+<td>the DSP Module (SIMD on bytes and halfwords, saturating fractional arithmetic, the accumulators <code>$ac1</code>–<code>$ac3</code>, DSPControl): <code>auto</code> (default) = Revision 2 when the program has DSP instructions, none otherwise (the 24K has none); <code>none</code>; <code>dsp</code> = Revision 1 (the 24KE, the 1004K); <code>dspr2</code> = Revision 2 (the interAptiv, the microAptiv; Revision 3 on Release 6); Release 2 or later; Config3.DSPP / DSP2P, Status.MX enables it.  With <code>--arch nanomips</code>: the nanoMIPS DSP ASE (the same instructions in nanoMIPS encodings, Revision 3)</td>
 </tr>
 <tr>
 <td><code>--mt auto|none|VPES:TCS</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the MT Module (thread contexts and VPEs: <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>): <code>auto</code> (default) = 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions, none otherwise; <code>none</code>; <code>VPES:TCS</code> = 1–2 VPEs, up to 9 TCs; Releases 2–5; with <code>--cores</code> every core has them (the 1004K, the interAptiv); pipeline mode runs the 34K's pipeline</td>
+<td>the MT Module (thread contexts and VPEs: <a href="02-writing-programs.html#222-the-mt-module-threads-in-hardware">Phase 2, 2.22</a>): <code>auto</code> (default) = 2 VPEs and 5 TCs, as a 34K, when the program has MT instructions, none otherwise; <code>none</code>; <code>VPES:TCS</code> = 1–2 VPEs, up to 9 TCs; Releases 2–5; with <code>--cores</code> every core has them (the 1004K, the interAptiv); pipeline mode runs the 34K's pipeline.  With <code>--arch nanomips</code>: the nanoMIPS MT ASE (the same thread contexts and VPEs, nanoMIPS encodings), in instruction mode</td>
 </tr>
 <tr>
 <td><code>--mt-pm rr|wrr|wrr2</code></td>
@@ -296,7 +311,7 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--mmu SPEC</code></td>
 <td>run, pipe, debug</td>
-<td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code>; on a MIPS64 core (<code>--arch mips64</code>) <code>fixed</code> and <code>bat</code> keep 32-bit addresses, a TLB gives the 64-bit address space — with <code>+sc</code> the xkphys regions of SegCtl1.XAM / SegCtl2.XR and a 64-bit EBase, with <code>+pw</code> 64-bit page tables (PWSize.PS, PWCtl.XK / XS / XU) (<a href="05-understanding.html#the-tlb">Phase 5</a>)</td>
+<td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code>; on a MIPS64 core (<code>--arch mips64</code>) <code>fixed</code> and <code>bat</code> keep 32-bit addresses, a TLB gives the 64-bit address space — with <code>+sc</code> the xkphys regions of SegCtl1.XAM / SegCtl2.XR and a 64-bit EBase, with <code>+pw</code> 64-bit page tables (PWSize.PS, PWCtl.XK / XS / XU) (<a href="05-understanding.html#the-tlb">Phase 5</a>); on a nanoMIPS core also <code>mpu[:N]</code> (the I7200's memory protection unit with N regions, 16 by default: PA = VA, segments and regions with RI / WI / XI) and <code>fixed+mpu[:N]</code> (the fixed mapping with N MPU regions) (<a href="05-understanding.html#the-other-mmus">Phase 5, The other MMUs</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -716,7 +731,11 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>tlb</code></td>
-<td>the TLB (<code>--mmu</code>): the entries in use, Wired, Random, the ASID; the six entries of a BAT</td>
+<td>the TLB (<code>--mmu</code>): the entries in use, Wired, Random, the ASID; the six entries of a BAT; the MPU's CDMMBase, MPU_Config, segments and enabled regions</td>
+</tr>
+<tr>
+<td><code>mpu [LOC]</code></td>
+<td>the I7200's MPU (<code>--mmu mpu:N</code> / <code>fixed+mpu:N</code>): as <code>tlb</code>; with LOC, the region or segment that holds it and what it inhibits</td>
 </tr>
 <tr>
 <td><code>tlb all</code></td>
@@ -966,8 +985,12 @@ the program exited
 <td>the DSP Module (like <code>--dsp</code>)</td>
 </tr>
 <tr>
-<td><code>set arch mips32|mips64</code></td>
+<td><code>set arch mips32|mips64|nanomips</code></td>
 <td>the architecture (like <code>--arch</code>): the program is assembled again for it</td>
+</tr>
+<tr>
+<td><code>set nms on|off</code> / <code>set crc auto|none|crc</code> / <code>set ginv auto|none|ginvi|ginvt</code></td>
+<td>a nanoMIPS core's subset, CRC32 and global invalidates (like <code>--nms</code>, <code>--crc</code>, <code>--ginv</code>)</td>
 </tr>
 <tr>
 <td><code>set mt auto|none|VPES:TCS</code> / <code>set mt-pm rr|wrr|wrr2</code> / <code>set itc auto|none|FIFOS:SEMS</code></td>
@@ -1086,8 +1109,8 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--arch mips32|mips64] [--little] [-O 0|1|2|3|s] [--mips16 | --micromips]
-                    [--no-fpu] [--dsp | --dspr2] [--core NAME] [-v]
+                    [--arch mips32|mips64|nanomips] [--nms] [--little] [-O 0|1|2|3|s]
+                    [--mips16 | --micromips] [--no-fpu] [--dsp | --dspr2] [--core NAME] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
 ld or ld.lld): crt0, <code>libemips.c</code> and the sources, linked for the eMIPS
@@ -1100,6 +1123,16 @@ GCC), <code>--micromips</code> as microMIPS
 linker turns the calls between the two ISAs into <code>jalx</code>.
 <code>--arch mips64</code> builds for MIPS64, the n64 ABI: an ELF64 (64-bit
 <code>long</code> and pointers; GNU ld's <code>elf64btsmip</code> / <code>elf64ltsmip</code>).
+<code>--arch nanomips</code> builds for nanoMIPS, the p32 ABI, with MediaTek's
+<code>nanomips-elf-gcc</code> on <code>PATH</code> (release nanoMIPS-2022.03-01, GCC 11.2:
+the later releases ship no compiler) and its linker: soft float (nanoMIPS
+has no FPU), the nanoMIPS assembler's memory map (code at 0x00400000; at
+0x10010000 the data, then <code>_gp</code> and the small data the compiler reaches
+from <code>$gp</code>), the result of <code>main</code> in <code>$a0</code>; <code>--nms</code> builds for a core
+of the nanoMIPS subset (<code>-march=32r6s</code>; a full-ISA ELF is refused on
+one).  That release has libgcc — the soft-float arithmetic, 64-bit
+division — for little-endian full-ISA code only: other builds work while
+they need none of it, and say so when they do.
 <code>--no-fpu</code> builds for a core without an FPU (<code>-msoft-float</code>):
 integer code needs nothing more, float arithmetic calls the soft-float
 routines (<code>__addsf3</code> ...) of a MIPS GCC's soft-float libgcc — a
@@ -1110,7 +1143,9 @@ Revision 1 / 2 (<code>-mdsp</code> / <code>-mdspr2</code>: GCC's
 <code>v4i8</code> / <code>v2q15</code>; Release 2, 3 or 5); the ELF says so in its ABI
 flags, and the core that runs it gets the DSP Module.  A C program in
 the window or given to <code>run</code> is built with <code>-mdspr2</code> when it
-calls these builtins.  <code>--core NAME</code> builds for that core's
+calls these builtins.  With <code>--arch nanomips</code>, <code>--dsp</code> is the
+nanoMIPS DSP ASE (<code>nanomips-elf-gcc -mdsp</code>, the same builtins).
+<code>--core NAME</code> builds for that core's
 release and DSP Module, soft-float when it has no FPU.  <code>-v</code> prints the commands it ran.  <code>run</code>, <code>pipe</code> and <code>debug</code> take a
 <code>.c</code> file too (built for the session's release, byte order and
 architecture) and every
@@ -1313,6 +1348,14 @@ the n64 ABI (<code>show mips abi</code>).  Its addresses are 64-bit: a kseg0 one
 <code>0xffffffff80001000</code>, and with a TLB the whole 64-bit space works —
 <code>x/1gx</code>, <code>watch</code> on a <code>long</code>, <code>set var $t0 = 0x1111222233334444</code>.  With
 Status.FR = 0 each FPR shows its 32-bit word.</p>
+<p>A <strong>nanoMIPS</strong> program (<code>--arch nanomips</code>, or an ELF from <code>cc --arch
+nanomips</code>) is debugged with the nanoMIPS toolchain's <code>nanomips-elf-gdb</code>:
+the stub gives it nanoMIPS GDB's description — <code>r0</code>–<code>r31</code> (shown with
+their p32 names), <code>pc</code>, <code>status</code>, <code>badvaddr</code>, <code>cause</code>; no
+<code>hi</code> / <code>lo</code> and no FPU registers, which a nanoMIPS core does not
+have.  The ELF eMIPS writes for an assembly program is a nanoMIPS one
+(EM_NANOMIPS, the p32 ABI), with a line table for the 16-, 32- and
+48-bit instructions.</p>
 <h2 id="413-cores--real-mips-cores">4.13 cores — real MIPS cores</h2>
 <pre><code class="language-text">python3 -m emips cores [NAME]
 </code></pre>

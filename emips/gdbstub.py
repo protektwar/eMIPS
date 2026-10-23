@@ -22,7 +22,12 @@ GDB's 64-bit description (``features/mips64-*.xml``): every register 64
 bits wide (dspctl 32), Status / Cause / FCSR / FIR sign-extended, an FPR
 of FR = 0 its word (as QEMU's stub), 64-bit addresses — a compatibility
 one sign-extended, kept 32-bit for the session's breakpoints.
-Breakpoints (``Z0`` / ``Z1``) are the
+A nanoMIPS core (M23 phase 4c) has nanoMIPS GDB's description
+(``features/nanomips-cpu.xml`` / ``-cp0.xml``, with the DSP ASE
+``-dsp.xml``: hi0 ... lo3, dspctl at 36-44 — phase 5a; the MediaTek port's
+``nanomips-tdep.c``): r0-r31, pc (32), status (33), badvaddr (34), cause
+(35) — no hi / lo (nanoMIPS has none outside the DSP ASE), no fpu feature (optional there,
+and the core has no FPU).  Breakpoints (``Z0`` / ``Z1``) are the
 session's: nothing is written into the program, as in QEMU's stub.  The
 stub runs the session in slices and looks for GDB's interrupt between
 them; what the program prints goes to GDB as ``O`` packets.
@@ -48,6 +53,14 @@ SIGINT, SIGILL, SIGTRAP, SIGFPE, SIGBUS, SIGSEGV = 2, 4, 5, 8, 10, 11
 #: the number of registers of the g packet (without / with the DSP Module)
 NREGS = 72
 NREGS_DSP = 79
+#: nanoMIPS: GDB's register numbers above r31 -> the MIPS ones the stub
+#: reads (pc, status, badvaddr, cause)
+NANO_REGS = {32: 37, 33: 32, 34: 35, 35: 36}
+#: ... with the DSP ASE (features/nanomips-dsp.xml, M23 phase 5a): hi0, lo0
+#: ... hi3, lo3, dspctl (36-44) -> HI, LO, the stub's 72-77, dspctl 78
+NANO_DSP_REGS = {36: 34, 37: 33, 38: 72, 39: 73, 40: 74, 41: 75, 42: 76, 43: 77, 44: 78}
+#: the pc / sp in a stop reply
+PC_REG, NANO_PC_REG, SP_REG = 37, 32, 29
 #: steps between looks at the socket while continuing
 SLICE = 2000
 #: pipeline mode: the most cycles a step (or a stop) waits for an instruction
@@ -218,7 +231,25 @@ class GdbStub:
     def m(self):
         return self.s.machine
 
+    @property
+    def nano(self) -> bool:
+        return bool(getattr(self.m, "nano", False))
+
+    @property
+    def pc_reg(self) -> int:
+        """The pc's number in GDB's description (nanoMIPS: 32)."""
+        return NANO_PC_REG if self.nano else PC_REG
+
+    def _mips_number(self, n: int) -> int:
+        """GDB's register number as the MIPS one the stub reads (nanoMIPS:
+        :data:`NANO_REGS`; KeyError for a number it does not have)."""
+        if not self.nano or n < 32:
+            return n
+        return NANO_REGS[n] if n in NANO_REGS or not self.m.dsp else NANO_DSP_REGS[n]
+
     def _size(self, n: int) -> int:
+        if self.nano:
+            return 4
         if self.m.wide:                         # MIPS64: features/mips64-*.xml
             return 4 if n == 78 else 8
         return 8 if 38 <= n <= 69 and self.fr64 else 4
@@ -231,13 +262,18 @@ class GdbStub:
 
     @property
     def nregs(self) -> int:
-        """The g packet's registers: the DSP Module's 72-78 with it."""
+        """The g packet's registers: the DSP Module's 72-78 with it
+        (nanoMIPS: r0-r31, pc, status, badvaddr, cause; the DSP ASE's 36-44)."""
+        if self.nano:
+            return 32 + len(NANO_REGS) + (len(NANO_DSP_REGS) if self.m.dsp else 0)
         return NREGS_DSP if self.m.dsp else NREGS
 
     def available(self, n: int) -> bool:
         """f0-f31 / fcsr / fir exist only with an FPU (Config1.FP): GDB
         needs the mips.fpu feature (G.5.8), so a core without one reports
         them unavailable (``xx`` in g / p: GDB shows ``<unavailable>``)."""
+        if self.nano:
+            return n < self.nregs
         if n >= NREGS:
             return n < self.nregs
         return n < 38 or self.m.has_fpu
@@ -249,6 +285,7 @@ class GdbStub:
 
     def get_reg(self, n: int) -> int:
         m = self.m
+        n = self._mips_number(n)
         if n < 32:
             return m.read_reg(n)
         if n == 32:
@@ -281,6 +318,7 @@ class GdbStub:
         m = self.m
         if not self.available(n):
             raise KeyError(n)
+        n = self._mips_number(n)
         if n < 32:
             m.write_dreg(n, value & m.amask)     # (the whole register)
         elif n == 32:
@@ -339,7 +377,25 @@ class GdbStub:
     def target_xml(self) -> str:
         """The target description: GDB's three MIPS features (G.5.8; the
         fpu one is required — without an FPU its registers are unavailable);
-        a MIPS64 core: their 64-bit forms (``features/mips64-*.xml``)."""
+        a MIPS64 core: their 64-bit forms (``features/mips64-*.xml``); a
+        nanoMIPS core: nanoMIPS GDB's cpu and cp0 features."""
+        if self.nano:
+            first = {0: ' regnum="0"'}
+            cpu = "".join(f'<reg name="r{i}" bitsize="32"{first.get(i, "")}/>'
+                          for i in range(32))
+            return ('<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd">'
+                    '<target version="1.0"><architecture>nanomips</architecture>'
+                    '<feature name="org.gnu.gdb.nanomips.cpu">' + cpu +
+                    '<reg name="pc" bitsize="32" regnum="32"/></feature>'
+                    '<feature name="org.gnu.gdb.nanomips.cp0">'
+                    '<reg name="status" bitsize="32" regnum="33"/>'
+                    '<reg name="badvaddr" bitsize="32" regnum="34"/>'
+                    '<reg name="cause" bitsize="32" regnum="35"/></feature>'
+                    + ('<feature name="org.gnu.gdb.nanomips.dsp">' + "".join(
+                        f'<reg name="{r}" bitsize="32" regnum="{36 + k}"/>' for k, r in
+                        enumerate(("hi0", "lo0", "hi1", "lo1", "hi2", "lo2", "hi3", "lo3",
+                                   "dspctl"))) + '</feature>' if self.m.dsp else "")
+                    + '</target>')
         from .sim import _fr64
         self.fr64 = _fr64(self.m)                           # Status.FR (R6: always 1)
         wide = self.m.wide
@@ -429,15 +485,18 @@ class GdbStub:
         if self._tcs() is not None:             # the TC that stopped (about to issue)
             self.tc = self._stopped_tc()
             with self._bound():
-                pc = self._hex(self.get_reg(37), self._size(37))
-                sp = self._hex(self.get_reg(29), self._size(29))
-            return (f"T{sig:02x}25:{pc};1d:{sp};thread:{self.tc + 1:x};core:{self.s.cpu:x};"
+                regs = self._stop_regs()
+            return (f"T{sig:02x}{regs}thread:{self.tc + 1:x};core:{self.s.cpu:x};"
                     + (f"{reason};" if reason else ""))
-        pc = self._hex(self.get_reg(37), self._size(37))
-        sp = self._hex(self.get_reg(29), self._size(29))
         cpu = self.s.cpu
-        return (f"T{sig:02x}25:{pc};1d:{sp};thread:{cpu + 1:x};core:{cpu:x};"
+        return (f"T{sig:02x}{self._stop_regs()}thread:{cpu + 1:x};core:{cpu:x};"
                 + (f"{reason};" if reason else ""))
+
+    def _stop_regs(self) -> str:
+        """``PC:value;SP:value;`` of a stop reply (GDB's numbers)."""
+        pc = self._hex(self.get_reg(self.pc_reg), self._size(self.pc_reg))
+        sp = self._hex(self.get_reg(SP_REG), self._size(SP_REG))
+        return f"{self.pc_reg:02x}:{pc};{SP_REG:02x}:{sp};"
 
     def resume(self, conn: Connection, *, step: bool) -> str:
         """Run (one instruction, or until something stops it) and say why
@@ -560,7 +619,7 @@ class GdbStub:
                 w = 2 * self._size(n)
                 if at + w > len(rest):
                     break
-                if n != 71 and self.available(n):
+                if (self.nano or n != 71) and self.available(n):
                     self.set_reg(n, self._unhex(rest[at:at + w]))
                 at += w
             return "OK"
@@ -612,7 +671,7 @@ class GdbStub:
             return ""
         if c in "cs":
             if rest:
-                self.set_reg(37, int(rest, 16))
+                self.set_reg(self.pc_reg, int(rest, 16))
             return self._resume(conn, c == "s")
         if c == "D":
             return "OK"

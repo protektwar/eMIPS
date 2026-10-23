@@ -8,6 +8,7 @@ import html
 from ..assembler import AsmError
 from ..isa import ISADecodeError
 from .. import tools
+from ..options import arch_title
 from .i18n import N_, tr
 from .qt import QtCore, QtWidgets, Signal
 from . import theme
@@ -66,7 +67,7 @@ class _Pane(QtWidgets.QWidget):
     @property
     def isa_name(self) -> str:
         """"MIPS32 R5" / "MIPS64 R6" ..."""
-        return f"{self.arch.upper()} {self.release}"
+        return f"{arch_title(self.arch)} {self.release}"
 
     def update_view(self) -> None:          # pragma: no cover - overridden
         pass
@@ -148,7 +149,7 @@ class ReferenceView(_Pane):
             return
         r = self.shown[row]
         facts = [tr("format {fmt}, family {family}").format(fmt=r.format, family=r.family),
-                 tr("since {arch} {since}").format(arch=self.arch.upper(), since=r.since)
+                 tr("since {arch} {since}").format(arch=arch_title(self.arch), since=r.since)
                  + (", " + tr("removed in {rel}").format(rel=r.removed_in)
                     if r.removed_in else ""),
                  _exec_text(r.execution)]
@@ -199,7 +200,12 @@ class EncoderView(_Pane):
             self.output.setHtml("<p>" + E(tr(
                 "Decode: type a 32-bit word in hex (0x8fa80004), binary (0b...) or "
                 "decimal. Encode: type an instruction (lw $t0, 4($sp)); a "
-                "pseudo-instruction shows every machine word it becomes.")) + "</p>")
+                "pseudo-instruction shows every machine word it becomes.")
+                if self.arch != "nanomips" else tr(
+                "Decode: type an instruction's halfwords in hex, as a listing shows them "
+                "(d205, 00a4 0007, 6080 5678 1234): its first halfword says whether it "
+                "is 16, 32 or 48 bits. Encode: type an instruction (lw $t0, 4($sp)); a "
+                "macro shows every instruction it becomes.")) + "</p>")
             return
         try:
             pc = int(self.pc.text().strip() or "0", 0) & 0xFFFFFFFF
@@ -218,15 +224,27 @@ class EncoderView(_Pane):
             return
         head = (tr("decoded") if mode == "decode" else
                 tr("assembled into {n} machine word(s)").format(n=len(words)))
+        if self.arch == "nanomips":
+            head = (tr("decoded") if mode == "decode" else
+                    tr("assembled into {n} instruction(s)").format(n=len(words)))
         parts = [f"<p><i>{E(head)}</i></p>"]
-        for i, d in enumerate(words):
+        a = pc
+        for d in words:                     # (nanoMIPS: 2, 4 or 6 bytes each)
             parts.append(
-                f"<h3><tt>0x{pc + 4 * i:08x}: 0x{d.word:08x} &nbsp; {E(d.text)}</tt></h3>"
+                f"<h3><tt>0x{a:08x}: {E(d.encoding(self.arch))} &nbsp; {E(d.text)}</tt></h3>"
                 f"<p>{E(d.description)} — {E(d.format)}-format, {E(d.name)}; "
                 f"{E(_exec_text(d.execution))}</p>"
                 + fields_html(d.fields)
-                + f"<p><tt>{tools.group_bits(d.word, 32)}</tt></p>")
+                + f"<p><tt>{tools.group_bits(d.word, 8 * d.size)}</tt></p>")
+            a += d.size
         self.output.setHtml("".join(parts))
+
+    def set_context(self, release: str, abi: bool = True, pseudo: bool = True,
+                    arch: str = "mips32") -> None:
+        self.input.setPlaceholderText(
+            tr("d205   or   00a4 0007   or   addiu $a0, $a0, 7") if arch == "nanomips"
+            else tr("0x01095020   or   add $t2, $t0, $t1"))
+        super().set_context(release, abi, pseudo, arch)
 
 
 class ConverterView(QtWidgets.QWidget):

@@ -797,8 +797,8 @@ class DisassemblyView(QtWidgets.QTableWidget):
             prog = s.program
             for r, (a, w, text, line) in enumerate(rows):
                 _set(self, r, 0, f"0x{a:08x}")
-                size = (prog.m16.get(a) or prog.mm.get(a) or 4) if prog is not None else 4
-                _set(self, r, 1, f"{w:0{2 * size}x}")
+                _set(self, r, 1, prog.encoding(a, w).rstrip() if prog is not None
+                     else f"{w:08x}")           # (nanoMIPS: its halfwords)
                 _set(self, r, 2, text)
                 if line is None:
                     _set(self, r, 3, "")

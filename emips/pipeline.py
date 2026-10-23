@@ -148,6 +148,8 @@ def analyze(dec: Decode, latency: dict[str, int] = LATENCY, insn: Any = None) ->
     e = dec.entry
     if e.get("isa") in ("mips16e", "micromips"):
         return _analyze_compressed(dec, insn)
+    if e.get("isa") == "nanomips":
+        return _analyze_nano(insn, latency)
     key = (dec.word, e["name"], id(latency))
     hit = _ANALYZED.get(key)
     if hit is not None and hit[0] == latency:
@@ -370,15 +372,61 @@ def _analyze_compressed(dec: Decode, insn: Any) -> Info:
                 control, fam in ("branch_compact", "jump_compact"))
 
 
+def _analyze_nano(i: Any, latency: dict[str, int]) -> Info:
+    """:func:`analyze` of a nanoMIPS instruction (PLAN M23 phase 4b): its
+    registers from :func:`emips.simnano.uses`; a branch or jump (every one
+    compact) resolves in ID; loads (and SC, RESTORE, LL) have their
+    result after MEM; MUL ... MODU hold EX as MIPS32 Release 6's do; a
+    multiple load / store (LWM / SWM, SAVE / RESTORE, LLWP / SCWP) moves
+    one word a cycle on the 32-bit data path."""
+    key = (i.raw, i.size, id(latency))
+    hit = _ANALYZED.get(key)
+    if hit is not None and hit[0] == latency:
+        return hit[1]
+    from .simnano import _FAMILY, twin, uses
+    page, f = i.row.name, i.f
+    dsp = twin(i)
+    if dsp is not None:                         # the DSP ASE: its MIPS32 twin's
+        info = analyze(dsp, latency)            # GPRs, accumulators, DSPControl, MDU
+        _ANALYZED[key] = (dict(latency), info)
+        return info
+    fam = _FAMILY[page]
+    r, w = uses(i)
+    reads = frozenset(("r", n) for n in r)
+    writes = frozenset(("r", n) for n in w)
+    control = ("branch" if fam == "branch_compact" else
+               "jump" if fam == "jump_compact" else "")
+    if page in ("LWM", "UALWM", "SWM", "UASWM"):
+        words = f["count"]
+    elif page in ("SAVE", "RESTORE"):
+        words = f["count"] + f["gp"]
+    elif page in ("LL", "SC"):
+        words = f["nbytes"] // 4
+    else:
+        words = 1
+    ex_cycles = (latency["MUL"] if page in ("MUL", "MUH", "MULU", "MUHU") else
+                 latency["DIV"] if page in ("DIV", "DIVU", "MOD", "MODU") else words)
+    if page == "BPOSGE32C":                     # (reads DSPControl.pos in ID)
+        reads = frozenset({"dspctl"})
+    info = Info(reads if control else frozenset(), frozenset() if control else reads,
+                writes, "MEM" if fam == "load" or page == "SC" else "EX",
+                max(ex_cycles, 1), 0, control, bool(control))
+    if len(_ANALYZED) >= 1 << 16:
+        _ANALYZED.clear()
+    _ANALYZED[key] = (dict(latency), info)
+    return info
+
+
 def control_signals(dec: Decode, info: Info) -> dict[str, Any]:
     """The textbook main-control signals for the instruction in ID."""
     e = dec.entry
     fam, name = e["family"], e["name"]
-    if e.get("isa") in ("mips16e", "micromips"):     # no MIPS32 twin: from what it does
+    if e.get("isa") in ("mips16e", "micromips", "nanomips"):   # no MIPS32 twin: from what it does
         gprs = sorted(r[1] for r in info.writes if isinstance(r, tuple) and r[0] == "r")
         return {
             "RegDst": "$ra" if gprs == [31] else ", ".join(f"${n}" for n in gprs) or "-",
-            "ALUSrc": "imm", "MemtoReg": info.ready == "MEM", "RegWrite": bool(gprs),
+            "ALUSrc": _nano_alusrc(e) if e["isa"] == "nanomips" else "imm",
+            "MemtoReg": info.ready == "MEM", "RegWrite": bool(gprs),
             "MemRead": info.ready == "MEM", "MemWrite": fam == "store",
             "Branch": info.control == "branch", "Jump": info.control == "jump",
             "ALUOp": e["mnemonic"],
@@ -390,6 +438,20 @@ def control_signals(dec: Decode, info: Info) -> dict[str, Any]:
             _SIGNALS.clear()
         hit = _SIGNALS[key] = _signals(e, info)
     return dict(hit)
+
+
+def _nano_alusrc(e: dict) -> str:
+    """A nanoMIPS page's ALU operand b (emips.tracenano: its ALU view):
+    "imm" (an immediate, an address offset), "reg" (a register, an index)
+    or "-" (no ALU operation)."""
+    from .tracenano import _ALU, _INDEXED, _MEMORY
+    page = e["mnemonic"].upper()
+    if page in _MEMORY:
+        return "reg" if page in _INDEXED else "imm"
+    spec = _ALU.get(page)
+    if spec is None or spec[2] is None:
+        return "-"
+    return "imm" if spec[2].startswith("i:") else "reg"
 
 
 #: (row, Info) -> its control signals (control_signals; depend on those only)
@@ -493,7 +555,11 @@ class StageView:
 
 
 def stage_word(slot) -> tuple[int | None, str]:
-    """(the MIPS32 word, the compressed encoding text) of a slot."""
+    """(the MIPS32 word, the compressed encoding text) of a slot (a
+    nanoMIPS one: no MIPS32 word; "nanoMIPS 32-bit ADDIU[32] 0x00a40007")."""
+    if slot.insn is not None and type(slot.insn).__name__ == "NM":
+        i = slot.insn
+        return None, f"nanoMIPS {8 * i.size}-bit {i.row.form} 0x{i.raw:0{2 * i.size}x}"
     if slot.insn is None:
         return slot.word, ""
     isa = "microMIPS" if type(slot.insn).__name__ == "MM" else "MIPS16e"
@@ -617,6 +683,7 @@ def fetch_compressed(p, m: Machine, pc: int) -> Slot:
     encoding rides the slot to EX."""
     from .trace import _compressed_text
     p._seq += 1
+    m._insn_raw = None
     try:
         size, word, dec, insn = m.fetch_compressed(pc)
     except FetchError as exc:
@@ -635,7 +702,7 @@ def fetch_compressed(p, m: Machine, pc: int) -> Slot:
                 "TLB refill" if exc.info.get("refill") else
                 "cache error" if exc.code == C.CACHE_ERROR else
                 C.EXC_NAMES.get(exc.code, str(exc.code)))
-        return Slot(p._seq, pc, None, None, f"(fetch: {what})", None, fetch_exc=exc,
+        return Slot(p._seq, pc, m._insn_raw, None, f"(fetch: {what})", None, fetch_exc=exc,
                     fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, isa=1, size=2)
     p.fetch_pc = m.seq_pc(pc + size)
     return Slot(p._seq, pc, word, dec, _compressed_text(m, insn, pc),
@@ -645,9 +712,50 @@ def fetch_compressed(p, m: Machine, pc: int) -> Slot:
 
 def enter(m: Machine, s: Slot) -> None:
     """Give the Machine the state of the instruction about to execute or
-    take its exception (its ISA mode, compressed form, delay slot)."""
-    if m.compressed is not None:
+    take its exception (its ISA mode, compressed form, delay slot; a
+    nanoMIPS one: the decoded instruction, its encoding and size —
+    BadInstr / BadInstrX)."""
+    if m.nano:
+        m.enter_nm(s.insn, s.word, s.size)
+    elif m.compressed is not None:
         m.enter(s.pc, s.isa, s.insn, s.in_slot, s.back, s.slot_raw)
+
+
+def fetch_nano(p, m: Machine, pc: int) -> Slot:
+    """Fetch the nanoMIPS instruction at ``pc`` (2, 4 or 6 bytes,
+    :meth:`emips.simnano.NanoMachine.fetch_compressed`) into a
+    :class:`Slot`; a fault, a reserved encoding or a format outside the
+    core's subset (RI, with its encoding for BadInstr) rides the slot to
+    EX.  One instruction a cycle, whatever its size."""
+    from . import nanomips
+    p._seq += 1
+    m._insn_raw = None
+    try:
+        size, raw, dec, insn = m.fetch_compressed(pc)
+    except FetchError as exc:
+        p.fetch_pc = m.seq_pc(pc + 2)
+        return Slot(p._seq, pc, None, None, "(no code here)", None, fetch_error=exc,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, size=2)
+    except ISADecodeError as exc:               # exceptions="raise": raised in EX
+        size = m._insn_size
+        p.fetch_pc = m.seq_pc(pc + size)
+        return Slot(p._seq, pc, m._insn_raw, None, "(reserved)", None,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, size=size,
+                    decode_error=exc)
+    except _Arch as exc:                        # AdEL / TLB / Cache Error / RI
+        raw, size = m._insn_raw, m._insn_size if m._insn_raw is not None else 2
+        p.fetch_pc = m.seq_pc(pc + size)
+        what = ("reserved instruction" if exc.code == C.RI else
+                "TLB refill" if exc.info.get("refill") else
+                "cache error" if exc.code == C.CACHE_ERROR else
+                C.EXC_NAMES.get(exc.code, str(exc.code)))
+        return Slot(p._seq, pc, raw, None, f"(fetch: {what})", None, fetch_exc=exc,
+                    fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, size=size)
+    p.fetch_pc = m.seq_pc(pc + size)
+    return Slot(p._seq, pc, raw, dec, nanomips.text(insn, pc),
+                analyze(dec, getattr(p, "latency", LATENCY), insn),
+                fetch_cache=m.fetch_accesses, fetch_tlb=m.fetch_tlb, imiss=m.fetch_missed,
+                size=size, insn=insn)
 
 
 def mark_slot(branch: Slot, nxt: Slot) -> None:
@@ -672,7 +780,7 @@ class Pipeline:
                  latency: dict[str, int] | None = None, trace: bool = True,
                  memory: dict[str, int] | None = None, nonblocking: bool = False) -> None:
         self.m = machine
-        self._abi: bool | str = "n64" if machine.wide else True   # (register names)
+        self._abi: bool | str = machine.names            # (register names)
         machine.tracing = trace
         self.forwarding = forwarding
         self.latency = dict(LATENCY, **(latency or {}))
@@ -733,6 +841,8 @@ class Pipeline:
 
     def _fetch_slot(self) -> Slot:
         m, pc = self.m, self.fetch_pc
+        if m.nano:                              # nanoMIPS: 16 / 32 / 48 bits
+            return fetch_nano(self, m, pc)
         if self.fetch_isa:
             return fetch_compressed(self, m, pc)
         self.fetch_pc = m.seq_pc(pc + 4)
@@ -820,6 +930,7 @@ class Pipeline:
         gated: Blocked | None = None            # EX blocked on gating storage
         nullify = False
         branch_target: int | None = None
+        redirected = False                      # the instruction in EX jumped (ERET ...)
 
         # WB: retire (the performance counters count it); the multiply/divide
         # unit works on
@@ -912,8 +1023,9 @@ class Pipeline:
                             if trace.ex_view is not None:
                                 trace.ex_view.fetch = ex.fetch_cache
                                 trace.ex_view.fetch_tlb = ex.fetch_tlb
-                        if m._redirect is not None:      # ERET
+                        if m._redirect is not None:      # ERET, RESTORE.JRC
                             flush_to = m.branch_pc(m._redirect)
+                            redirected = True
                             ev.append(f"{ex.text}: return to 0x{flush_to:08x}, "
                                       "flush IF/ID")
                         if m.halted:                     # exit syscall
@@ -1036,7 +1148,17 @@ class Pipeline:
 
         # advance the pipeline registers
         st["WB"] = st["MEM"]
-        if flush_to is not None:
+        if flush_to is not None and redirected and ex.busy > 0:
+            # a jump that still moves words (nanoMIPS RESTORE.JRC): it stays in
+            # EX for them while the fetch starts at its target
+            ex.busy -= 1
+            ev.append(f"EX busy: {ex.text} ({ex.busy + 1} more cycle"
+                      f"{'s' if ex.busy else ''})")
+            st["MEM"] = None
+            st["ID"] = st["IF"] = None
+            self._goto(flush_to)
+            st["IF"] = self._fetch() if self.fetching else None
+        elif flush_to is not None:
             st["MEM"] = ex if (ex is not None and ex.executed) else None
             st["EX"] = st["ID"] = st["IF"] = None
             self._goto(flush_to)

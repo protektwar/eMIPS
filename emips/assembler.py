@@ -147,9 +147,19 @@ class Program:
     dsp: int = 0
     #: it uses the MT Module's instructions (emips.mt, MD00378)
     mt: bool = False
-    #: the architecture it was made for: "mips32", or "mips64" (assembled
-    #: for MIPS64, an ELF64)
+    #: the architecture it was made for: "mips32", "mips64" (assembled
+    #: for MIPS64, an ELF64) or "nanomips" (emips.nanoasm)
     arch: str = "mips32"
+    #: nanoMIPS code (emips.nanoasm): instruction address -> its size (2 / 4 / 6)
+    nm: dict[int, int] = field(default_factory=dict)
+    #: the assembler's warnings: (line, message)
+    warnings: list = field(default_factory=list)
+    #: what the nanoMIPS linker changed (gold's --debug=target lines)
+    link_log: list = field(default_factory=list)
+    #: nanoMIPS: what its instructions need of the core besides the base
+    #: ISA: "crc", "ginvi", "ginvt", "eva", "tlb", "debug" (from
+    #: emips.nanomips.Row.need)
+    needs: frozenset = frozenset()
 
     def word(self, addr: int) -> int:
         data = bytes(self.image.get(addr + i, 0) for i in range(4))
@@ -182,7 +192,14 @@ class Program:
         kseg3 at PA = VA, like the fixed mapping) — on a MIPS64 core with
         64-bit addresses also the XTLB one at EBase + 0x080
         (:data:`emips.tlb.FIRMWARE_XTLB_REFILL`) and Status.KX / SX / UX;
-        MIPS64: Status.FR = 1 (the n64 ABI).  The image goes where
+        MIPS64: Status.FR = 1 (the n64 ABI).  A nanoMIPS program (PLAN M23)
+        boots the same way on a nanoMIPS core: no FPU (Status 0), the
+        refill handler in nanoMIPS code (``firmware_refill(arch=)``), ``$gp``
+        = its ``_gp`` (the start of the small data, as the toolchain's
+        linker scripts put it); with the I7200's MPU (:mod:`emips.mpu`) the
+        firmware enables the CDMM and, in the MPU build, makes kuseg /
+        kseg0's segments cacheable (its Config.K0 / KU / K23 read 0).  The
+        image goes where
         that mapping puts it even when the program has its own handler
         (whose page tables then know where the program is).
         ``boot=False`` keeps the hardware reset state (caches undefined,
@@ -195,7 +212,14 @@ class Program:
         from .exceptions import UnmappedAddress
         if machine.big_endian != (self.endian == "big"):
             raise ValueError(f"program is {self.endian}-endian, machine is not")
-        fixed = getattr(machine.mmu, "mt", 3) == 3
+        if (self.arch == "nanomips") != bool(getattr(machine, "nano", False)):
+            raise ValueError("a nanoMIPS program needs a nanoMIPS core (--arch nanomips)"
+                             if self.arch == "nanomips" else
+                             "a nanoMIPS core runs nanoMIPS programs only")
+        # (the I7200's MPU, emips.mpu: Config.MT 3 too, but PA = VA and no
+        # Config.K0 / KU / K23 — its segments hold the attributes)
+        mpu = getattr(machine.mmu, "segments", False)
+        fixed = getattr(machine.mmu, "mt", 3) == 3 and not mpu
         if self.dsp > getattr(machine, "dsp", 0):
             raise ValueError("the program uses DSP Module " + (
                 "Revision 2 " if self.dsp > 1 else "") + "instructions: the core needs "
@@ -216,19 +240,24 @@ class Program:
                 machine.boot64()
             config = machine.cp0_read(*C.CONFIG) & ~((7 << 28) | (7 << 25) | 7)
             ku_k23 = (2 << 28) | (cca << 25) if fixed else 0
-            machine._cp0_set(C.CONFIG, config | ku_k23 | cca)
+            machine._cp0_set(C.CONFIG, config | ku_k23 | (0 if mpu else cca))
             if machine.caches is not None:
                 machine.caches.initialize()
-            if not fixed:
+            if machine.cdmm is not None:               # the CDMM, an MPU's segments
+                machine.mmu.boot(machine, handler=False)
+            elif not fixed:
                 own = any(0x80000000 <= a < 0x80000100 for a in self.image)
                 tlb = machine.mmu.mt in (1, 4)              # BAT: no refill handler
                 machine.mmu.boot(machine, handler=tlb and not own)
                 if tlb and not own:                     # (MIPS64 with 64-bit addresses:
-                    text = firmware_refill(cca, user_window(machine))   # + the XTLB
-                    if getattr(machine, "at", 1) == 2:                  # Refill handler)
-                        text += firmware_xtlb_refill(cca, user_window(machine))
+                    text = firmware_refill(cca, user_window(machine),   # + the XTLB
+                                           arch=machine.arch)           # Refill handler;
+                    if getattr(machine, "at", 1) == 2:                  # nanoMIPS: its
+                        text += firmware_xtlb_refill(cca, user_window(machine))   # code)
+                    nano = {"nms": machine.nms, "tlb": True} if machine.nano else None
                     fw = assemble(text, endian=self.endian, release=machine.release,
-                                  arch=machine.arch)
+                                  arch=machine.arch, nano=nano,
+                                  bases={"ktext": 0x80000000} if nano else None)
                     for addr, byte in fw.image.items():
                         machine.write_byte(addr, byte)
                     machine.firmware = fw
@@ -236,10 +265,13 @@ class Program:
             if board is not None:                      # the board's firmware (YAMON)
                 board.firmware(machine)
                 machine.write_reg(29, board.stack_top())
-                machine.write_reg(28, self.segments.get("data", (0x80200000,))[0] + 0x8000)
+                machine.write_reg(28, self.board_gp())
             else:
                 machine.write_reg(29, BOOT_SP64 if machine.wide else BOOT_SP)
-                machine.write_reg(28, BOOT_GP)
+                # (nanoMIPS: _gp, the start of the small data, as the
+                # toolchain's linker scripts put it)
+                machine.write_reg(28, self.symbols.get("_gp", BOOT_GP) if machine.nano
+                                  else BOOT_GP)
         for addr, byte in self.image.items():
             try:
                 machine.write_byte(addr, byte)
@@ -266,6 +298,33 @@ class Program:
             machine._jump(machine.to_pc(self.entry))   # (MIPS64: sign-extended)
         else:
             machine.pc = machine.to_pc(self.entry)  # (MIPS64: sign-extended)
+
+    def board_gp(self) -> int:
+        """$gp on a board (the descriptor's): the data segment + 0x8000 as
+        MIPS's -G small data wants it; nanoMIPS: ``_gp``, the start of the
+        small data (the p32 ABI's offsets from $gp are unsigned)."""
+        if self.arch == "nanomips" and "_gp" in self.symbols:
+            return self.symbols["_gp"]
+        return self.segments.get("data", (0x80200000,))[0] + 0x8000
+
+    def size_at(self, addr: int) -> int:
+        """The size in bytes of the instruction at ``addr`` (2 / 4 / 6)."""
+        return self.nm.get(addr) or self.m16.get(addr) or self.mm.get(addr) or 4
+
+    def encoding(self, addr: int, word: int) -> str:
+        """The instruction at ``addr`` (its listing word) as a listing
+        prints it (emips.cli.encoding: a nanoMIPS one in halfwords)."""
+        from .cli import encoding
+        return encoding(word, self.size_at(addr), self.arch)
+
+    def nm_insn(self, addr: int):
+        """The nanoMIPS instruction at ``addr`` (emips.nanomips.NM)."""
+        from . import nanomips
+        size = self.nm[addr]
+        raw = 0
+        for k in range(0, size, 2):
+            raw = raw << 16 | self.half(addr + k)
+        return nanomips.decode_raw(raw, size)
 
     def to_ihex(self) -> str:
         """Intel HEX (types 04 / 00 / 05 / 01) of the image."""
@@ -317,8 +376,15 @@ class Program:
         from . import mips16
         from .disasm import disassemble
         labels = self.labels()
-        isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch)
         out = []
+        if self.arch == "nanomips":                # (a nanoMIPS one: 16 / 32 / 48 bits)
+            from . import nanomips
+            for a, s in sorted(self.source_map.items()):
+                i = self.nm_insn(a)
+                out.append((a, i.raw, nanomips.text(i, a, abi=abi, symbols=labels),
+                            s.text.strip()))
+            return out
+        isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch)
         for a, s in sorted(self.source_map.items()):
             if a in self.m16:
                 i = self.m16_insn(a)
@@ -2009,10 +2075,19 @@ _M64_MNEMONICS: frozenset[str] | None = None
 def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,
              bases: dict[str, int] | None = None,
              release: str | None = None, pseudo: bool = True,
-             reorder: bool = True, arch: str = "mips32") -> Program:
+             reorder: bool = True, arch: str = "mips32",
+             nano: dict | None = None) -> Program:
     """Assemble ``source`` for a MIPS32 ``release`` (default R5; ``arch``
-    "mips64": MIPS64); raises :class:`AsmError` on the first error.
-    ``pseudo=False``: strict mode; ``reorder=False``: start in ``.set
-    noreorder``."""
+    "mips64": MIPS64; "nanomips": :mod:`emips.nanoasm`, GNU's nanoMIPS
+    assembler and linker, Release 6 only); raises :class:`AsmError` on the
+    first error.  ``pseudo=False``: strict mode; ``reorder=False``: start
+    in ``.set noreorder``; ``nano``: :func:`emips.nanoasm.assemble`'s
+    options (the core's ``nms`` / ``crc`` ..., ``linkrelax``, ``link``)."""
+    if arch == "nanomips":
+        if release not in (None, "R6"):
+            raise ValueError(f"nanoMIPS is Release 6 based: no {release}")
+        from . import nanoasm
+        return nanoasm.assemble(source, endian=endian, bases=bases, pseudo=pseudo,
+                                reorder=reorder, **(nano or {}))
     return Assembler(endian=endian, isa=isa, bases=bases, release=release,
                      pseudo=pseudo, reorder=reorder, arch=arch).assemble(source)

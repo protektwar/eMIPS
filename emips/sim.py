@@ -262,7 +262,216 @@ DEVIATIONS: dict[str, str] = {
                  "the whole program -msoft-float).  No QEMU model has MIPS16e "
                  "on MIPS64: the oracle is the GNU simulator (sim/mips, "
                  "mipsisa64r2-elf), where it agrees with the manual.",
-    "DSP Module on MIPS64": "MD00375 rev. 3.02: MIPS32's DSP instructions on "
+    "nanoMIPS": "MD01247 rev. 01.01 / MD01251 rev. 06.09 (emips.nanomips, "
+                "emips.simnano; PLAN M23 phases 1-2).  The x fields are ignored as A.4.3 says: NOP[16] / "
+                "NOP[32] / EHB / PAUSE with x bits set are those instructions "
+                "(binutils' objdump wants them 0 and prints addiu zero / sll "
+                "zero).  BBEQZC / BBNEZC decode with bit 32-63 (their Operation "
+                "raises RI on a 32-bit core; objdump does not decode them).  "
+                "ADD is not in the nanoMIPS subset: its page says so, the "
+                "Instruction Summary leaves it out.  The opcode map's DSP and "
+                "MT cells (MD01249 / MD01255) are reserved until M23 phase 5; "
+                "its CP1, CP2, UDI, VZ, MCU and MIPS64 cells have no nanoMIPS32 "
+                "definition and stay reserved (the error names the cell).  The "
+                "text follows objdump's default aliases (li, move, lapc, beqzc "
+                "...; text(aliases=False) = -M no-aliases), with $ before register "
+                "names and CP0 registers by number; a SAVE / RESTORE list that "
+                "starts below $fp and wraps past $31 is written as its runs "
+                "(binutils reads past its register names there).  The Machine "
+                "(Machine(arch='nanomips')): a Release 6 core with no FPU "
+                "(MD01247 has no nanoMIPS FPU instructions), no ISA mode, the "
+                "fixed mapping by default; CP0 instructions need Kernel / Debug "
+                "Mode or Status.CU0 as MD01251 3.5.3 says (MD01247's "
+                "IsCoprocessor0Enabled leaves CU0 out from Release 2; QEMU "
+                "and MIPS32 Release 6 grant it).  A misaligned ordinary load "
+                "/ store completes (read_memory_at_va's 'optional' is the "
+                "implementation's choice and the I7200 manuals do not say; "
+                "QEMU raises AdE for its indexed, PC-relative and LWM / SWM "
+                "forms, the GNU simulator stops); SAVE / RESTORE and the "
+                "linked accesses check alignment as their pages do.  BBEQZC "
+                "/ BBNEZC with bit 32-63 raise RI only in User Mode (PX / UX "
+                "read 0) and otherwise test bit 31 (A.3.5: GPR values are "
+                "signed).  UNPREDICTABLE: MOVEP reads both inputs first, EXT "
+                "with pos + size > 32 reads zeros above bit 31, INS with size "
+                "< 1 is RI (QEMU), LWM reads its base once, RESTORE of $29 "
+                "ends with $29 + u, LLWP with rt = ru leaves ru's word, an SC "
+                "/ SCWP that does not match the last LL / LLWP (address or "
+                "size) fails.  MFC0 / MTC0 of a missing register read 0 / "
+                "ignore the write (their pages); with no extended registers "
+                "MFHC0 reads 0 and MTHC0 writes nothing.  PREF hints 24-30 "
+                "are NOPs (MD01247: not MIPS Release 6's RI).  CRC32 "
+                "(Config5.CRCP), GINVI / GINVT (Config5.GI) and NMS are core "
+                "options, off by default; LLWP / SCWP are present (Config5.XNP "
+                "= 0, RDHWR 5).  BadInstr holds a 16-bit instruction in bits "
+                "31:16, a 48-bit one's last halfword goes to BadInstrX (none on "
+                "an NMS core); there is no BadInstrP.  GINVI invalidates this "
+                "core's I-cache, GINVT its TLB (other cores: M23 phase 5).",
+    "nanoMIPS DSP ASE": "MD01249 rev. 0.04 (PLAN M23 phase 5a) is a preliminary "
+                        "document: its 154 formats come from binutils' D32 "
+                        "entries, checked against objdump, GNU as -mdsp, QEMU's "
+                        "I7200 and the diagrams eMIPS could read (CMP.cond.PH's "
+                        "prints the major opcode 0010000, seven digits).  Each "
+                        "page runs the MIPS DSP Module's operation (MD00374, "
+                        "emips.dsp, Revision 3: Config3.DSPP = DSP2P = 1) on "
+                        "nanoMIPS's fields — the same UNPREDICTABLE choices as on "
+                        "MIPS32.  BPOSGE32C's Operation text is MIPS32's (a "
+                        "17-bit offset, a slot at PC + 4): eMIPS follows its "
+                        "diagram (s[13:1] s[14]) and nanoMIPS's branch rule, the "
+                        "next instruction + the byte offset, as binutils does; "
+                        "QEMU decodes the offset unscaled and unsigned, and its "
+                        "MTHLIP takes the accumulator from bits 15..11 "
+                        "(tests/test_nanomips_dsp_unicorn.py compares those with "
+                        "the manual instead).  The registers each instruction "
+                        "reads and writes are its MIPS32 twin's (binutils' "
+                        "RD / WR flags are wrong for MTHLIP and others).",
+    "nanoMIPS MT ASE": "MD01255 rev. 1.17 (PLAN M23 phase 5b) is the MIPS MT Module "
+                       "(MD00378, emips.mt) on nanoMIPS32 — its chapters 4 and 6-10 "
+                       "differ from MD00378's only in typography, an "
+                       "implementation field in MVPControl (17:16, read 0 here) and "
+                       "a note on pre-fetching for suspended TCs — with the eight "
+                       "instructions in nanoMIPS encodings (from binutils' MT32 "
+                       "entries) and a 5-bit sel and no rx in MFTR / MTTR (Cop2 "
+                       "registers: n = rs).  The choices of 'MT Module' apply.  In "
+                       "pipeline mode an MT nanoMIPS core runs in instruction mode: "
+                       "the multithreaded pipeline is the 34K's (a MIPS32 core); "
+                       "the I7200's own 9-stage dual-issue pipeline is not "
+                       "modelled.  No oracle: QEMU's I7200 runs one TC.",
+    "nanoMIPS MPU": "The I7200's Memory Protection Unit (PLAN M23 phase 5d, "
+                    "emips.mpu; MD01232 ch. 4, Table 40): --mmu mpu:N (the MPU "
+                    "build: PA = VA for every mode, 16 segments, N regions) or "
+                    "fixed+mpu:N (Table 24's FMT build: the fixed mapping with N "
+                    "MPU regions), on nanoMIPS cores only.  Neither manual gives "
+                    "Config.MT for the MPU and the PRA has no encoding for it: it "
+                    "reads 3 (Table 24: 'the core operates in FMT mapping mode').  "
+                    "MPUL / MPUS (ExcCode 29) write BadVAddr, as the TLB "
+                    "exceptions do (the guide does not say); MPU_Config's last "
+                    "exception fields change when one is taken.  A PC-relative "
+                    "load is a data read (RI); CACHE and PREF are not checked "
+                    "(as the TLB's RI / XI).  In the FMT build regions are "
+                    "matched on the virtual address, as the segments are.  A "
+                    "region whose Size is not 5-28 matches nothing; a BaseAddress "
+                    "below the subregion size's alignment is aligned down.  The "
+                    "reset segments (Preset) are uncached with no inhibits; the "
+                    "unwritten region fields read 0.  The CDMM covers its "
+                    "instantiated blocks only (CDMMSize + 1); the Fast Debug "
+                    "Channel's three blocks before the MPU's read 0 and ignore "
+                    "writes (the FDC is not modelled); a cached access to the "
+                    "CDMM (UNPREDICTABLE, MD01251 ch. 5) fills a line from the "
+                    "registers.  In Debug Mode dseg (drseg and dmseg) is never "
+                    "checked; outside it the dseg addresses are ordinary memory "
+                    "(MD00047).  The boot firmware enables the CDMM at 0xBFC10000 "
+                    "(the MPU build: VA = PA, an uncached segment) or PA "
+                    "0x1FC10000 (the FMT build: reached at 0xBFC10000 through "
+                    "kseg1 — the guide's examples use that PA) and makes the MPU "
+                    "build's segments 0-9 cacheable, 10-15 uncached (as its "
+                    "Config.K0 / KU / K23); the Malta takes the FMT build only "
+                    "(its SDRAM is at physical 0).",
+    "nanoMIPS session": "PLAN M23 phase 4a: --arch nanomips / Options.arch "
+                        "'nanomips' (the release follows: R6).  The generic "
+                        "nanoMIPS core keeps the 24K's implementation registers "
+                        "(Config7, the micro-TLBs, EJTAG 3.20, the 24K's counter "
+                        "events) as every core preset does; it takes every MMU "
+                        "MD01251 defines (fixed, BAT, TLB / FTLB, Segmentation "
+                        "Control and EVA, the walker: its boot firmware's refill "
+                        "handler is nanoMIPS code), caches, a CPS and Release 6 "
+                        "VPs (MD01251 9.5 / 9.8).  Programs are assembled with "
+                        "every ASE on and the core's NMS: an instruction the core "
+                        "lacks assembles and is a Reserved Instruction when it "
+                        "runs (CRC32 / GINVI / GINVT: Options.crc / ginv 'auto' = "
+                        "the core has them when the program uses them).  The "
+                        "MARS syscall services keep their register numbers "
+                        "(the service and the result in $2 = p32's $t4, the "
+                        "arguments in $4-$6 = $a0-$a2), as UHI does on nanoMIPS "
+                        "(MD01069 ch. 2, DN00179); the FPU services 2 / 3 / 6 / "
+                        "7 are unknown services (no FPRs).  MIPS Trace is "
+                        "refused: MD00439 6.16 has no nanoMIPS ISAM and the I7200 "
+                        "debugs through OCI (MD01227 3.7).  The counters' events: "
+                        "every PC-relative branch (BC, BALC, BRSC ...) is a "
+                        "branch, JRC / JALRC a jump to a register, jrc $ra / "
+                        "RESTORE.JRC a return (jr31), a $0 destination a nop.  "
+                        "The views' decode fields are the format's tokens (the "
+                        "major opcode named by Tables B.2 / B.3, the decode "
+                        "pseudocode's arguments); a probe's handler is "
+                        "assembled with .ktext at 0xff200200 (GNU as's .ktext N "
+                        "is a subsection).  The 5-stage pipeline (phase 4b): one "
+                        "instruction a fetch whatever its size (2, 4 or 6 bytes); "
+                        "every branch is compact and resolves in ID (taken: the "
+                        "fetched instruction is squashed; no forbidden slots); LWM "
+                        "/ SWM, SAVE / RESTORE, LLWP / SCWP move one word a cycle "
+                        "in EX (the 32-bit data path); RESTORE.JRC jumps from EX "
+                        "after its first word ($ra) and the fetch at its target "
+                        "overlaps the other words; MUL ... MODU hold EX as Release "
+                        "6's do.  The 24K model is a MIPS32 core (refused).  "
+                        "ELF / C / GDB (phase 4c): EM_NANOMIPS executables of the "
+                        "p32 ABI (DN00179 ch. 5); nanoMIPS64 / p64 and ELFs whose "
+                        ".nanoMIPS.abiflags name the DSP / MT / MCU / VZ / MSA "
+                        "ASEs are refused; xNMS (built for the full ISA) refuses "
+                        "an --nms core, CRC / GINV switch the core's Config5.CRCP "
+                        "/ GI on ('auto'; GINV gives GINVI and GINVT).  C is "
+                        "nanomips-elf-gcc (GCC 11.2 of release nanoMIPS-2022.03-01: "
+                        "the later releases ship no compiler) and gold, soft float, "
+                        "-march=32r6 (32r6s on an NMS core), the nanoMIPS "
+                        "assembler's layout (code at 0x00400000; data at "
+                        "0x10010000, _gp and the gp-relative small data after it) "
+                        "and crt0_nano.S; that release installs libgcc for "
+                        "little-endian -march=32r6 only, so other builds that call "
+                        "its routines (soft float, 64-bit division) are refused "
+                        "with the reason.  GDB: nanoMIPS GDB's description (r0-r31, "
+                        "pc 32, status / badvaddr / cause 33-35; no fpu feature: "
+                        "the core has no FPU).  The Malta (phase 4d): see 'Boot "
+                        "monitor'.  The window (phase 4e): the 5-stage "
+                        "datapath shows a nanoMIPS instruction's halfwords, the "
+                        "registers its format reads (emips.simnano.uses), the "
+                        "immediate its decode steps make and a +2 / 4 / 6 adder; "
+                        "the main-control signals are the textbook's, from what "
+                        "the instruction does (ALUSrc from its page's ALU "
+                        "operand, RegDst the register it writes).  Its gates (phase "
+                        "4f, emips.nanocontrol) are eMIPS's design: no nanoMIPS "
+                        "decoder is published; the PLAs follow MD01247's opcode "
+                        "map (the major opcode, then a pool's fixed bits), "
+                        "RegDst names the format's destination field (3 bits) "
+                        "and ALUOp the ALU function (nanoMIPS has no common funct "
+                        "field).",
+    "nanoMIPS assembler": "emips.nanoasm (PLAN M23 phase 3) is GNU as's nanoMIPS "
+                          "port + gold for one source file: the bytes "
+                          "nanomips-elf-as + ld give (tests/test_nanomips_asm.py "
+                          "compares them).  Where gas cannot assemble a line "
+                          "eMIPS does not either, with gas's message -- except "
+                          "sh $r, label with the label defined later: gas gives "
+                          "the gp-relative SH the byte format and stops with an "
+                          "internal error; eMIPS emits the lui + sh it emits for "
+                          "a label defined earlier (an expansion that needs an "
+                          "instruction the core lacks, such as div $r, $s, -1's "
+                          "NEG on an NMS core, is refused: gas's internal error).  "
+                          "eMIPS lays the sections out itself (gas has no "
+                          "addresses): code at the text base, then at the data "
+                          "base .data, .rdata, .rodata, ALIGN(8), _gp, .ssdata / "
+                          ".ssbss / .sdata, ALIGN(4), .sbss, .bss (uhi32.ld's "
+                          "order, .data first as the MIPS32 assembler has it), "
+                          ".ktext / .kdata (eMIPS's kernel segments) at theirs; "
+                          "subsections (.text 1) are refused.  .asciiz is "
+                          ".asciz (MARS).  Not modelled: PIC / TLS relocation "
+                          "operators (%got ..., %tprel ...), the balc stubs "
+                          "(off by default in gas), .jumptable, .insn, .reloc, "
+                          "macros and conditional assembly (.macro, .if).  "
+                          "Strict mode (pseudo=False) refuses gas's macros and "
+                          "names what they expand to.  .linkrelax (phase 3b, "
+                          "emips.nanold: gold's expansions and, with link= "
+                          "{'relax': True}, its relaxations) keeps gold's own "
+                          "behaviour: a .set nolinkrelax takes effect after the "
+                          "instruction it precedes (gas sorts the NORELAX after "
+                          "that instruction's relocation) and a .set linkrelax "
+                          "one instruction late; only the first .align after a "
+                          "transformed instruction is padded again (a later one "
+                          "keeps its padding even when that misaligns what "
+                          "follows); an .align N, 0 in code loses its fill "
+                          "(BFD writes the absolute 0 as symbol 0) and ld "
+                          "crashes in write_insn when it must pad it again -- "
+                          "eMIPS stops with that error.  gold's options not "
+                          "modelled: the GOT / TLS / GP-setup and "
+                          "save / restore transformations (no PIC code), "
+                          "--finalize-relocs, sorting by reference.",
+    "DSP Module on MIPS64":"MD00375 rev. 3.02: MIPS32's DSP instructions on "
                             "64-bit registers and LDX; the 64-bit SIMD "
                             "instructions (octal bytes, quad halfwords, DSHILO, "
                             "BPOSGE64 ...) were deprecated in rev. 2.40 and are "
@@ -454,7 +663,8 @@ DEVIATIONS: dict[str, str] = {
                   "after a multiply-accumulate waits 4 cycles (2.4.2 says only that it "
                   "waits for the MDU). The 5-stage model has no Status.MX hazard (it "
                   "has no CP0 hazards).",
-    "MT Module": "emips.mt (MD00378 rev. 1.12, the 34K MD00534): 1-2 VPEs, 1-9 TCs, "
+    "MT Module": "emips.mt (MD00378 rev. 1.12, the 34K MD00534): 1-3 VPEs (the 34K's "
+                 "2, the I7200's 3), 1-9 TCs, "
                  "Releases 2-5; on a CPS per core (see CPS). Dispatch: one instruction "
                  "of one runnable "
                  "TC a cycle, chosen by the 34K's policy managers (MD00534 13.2: basic "
@@ -558,7 +768,7 @@ DEVIATIONS: dict[str, str] = {
                     "instruction / 2 data breakpoints, the micro-TLBs of 4 / 8 "
                     "entries, the 24K's cache line replacement, CCAs and performance "
                     "events); what a core has that eMIPS does not model is listed in "
-                    "Core.missing (the MCU ASE, MIPS16e2, MSA, "
+                    "Core.missing (the MCU ASE, MIPS16e2, MSA, the I7200's MPU, "
                     "VZ, XPA, the P5600's out-of-order pipeline: its preset offers the "
                     "5-stage or the 24K model), and eMIPS builds a CPS only with 2-6 "
                     "cores (a 1-core 1004K / interAptiv / P5600 has no CM here). The "
@@ -577,7 +787,11 @@ DEVIATIONS: dict[str, str] = {
                     "Coprocessor Unusable 1, the boot firmware leaves CU1 0, GDB sees "
                     "the FPU registers as unavailable (its MIPS description requires "
                     "the feature), C is built -msoft-float (the soft-float routines "
-                    "need a soft-float libgcc).",
+                    "need a soft-float libgcc).  The I7200 (M23 phase 5c): PRId "
+                    "0x00010000, QEMU's model's (neither MD01227 nor MD01232 gives "
+                    "the Processor ID, Linux's cpu.h has no I7200); 1-3 VPEs, so "
+                    "an MT processor holds up to 3 VPEs (the TCs above SI_Vpe0MaxTC "
+                    "one per further VPE at reset, the rest to the last).",
     "EJTAG": "Debug Mode as the 24K's EJTAG 3.20 (MD00343 ch. 11, MD00047 "
              "ch. 2 / 3): Debug.EJTAGver = 3, NoDCR = 0 (dseg present), "
              "CountDM R/W (reset 1), IBusEP / MCheckP read 0 (precise on the "
@@ -744,7 +958,18 @@ DEVIATIONS: dict[str, str] = {
                     "interface stays 32-bit (the descriptor's words, the table's "
                     "kseg0 pointers, a registered ISR / ESR: a compatibility "
                     "address) — its functions use only o32's temporaries, all "
-                    "caller-saved in n64 too.",
+                    "caller-saved in n64 too. On a nanoMIPS CPU (M23 phase 4d; "
+                    "QEMU's Malta has a nanoMIPS boot loader for its I7200, "
+                    "write_bootloader_nanomips, no YAMON) the same code is "
+                    "assembled as nanoMIPS for the nanoMIPS subset (GNU as's "
+                    "port takes the MIPS mnemonics as their compact forms; the "
+                    "registers as $rN, MIPS's lui as li, .balign to the fixed "
+                    "addresses); YAMON's table stays at 0x1fc00500, its functions "
+                    "follow the p32 convention (no YAMON for nanoMIPS exists: "
+                    "the arguments in $a0-$a3 as in o32, the result in $a0 — and "
+                    "in $2); the vector stub and the TLB refill handler are "
+                    "nanoMIPS code; a returning application's value is its $a0; "
+                    "$gp = _gp, the start of the small data (p32).",
     "IDE disks": "ATA/ATAPI-4 devices (T13 1153D rev. 18) on the PIIX4's IDE "
                  "channels (emips.ata). eMIPS choices where ATA-4 leaves it to "
                  "the device: the busy times (ata.TIMING_US: microseconds, not "
@@ -1682,12 +1907,21 @@ class Machine:
     #: the width of the virtual addresses the MMU sees (a MIPS64 core with
     #: 64-bit addressing, Config.AT = 2: 64 bits)
     vamask = M32
+    #: a nanoMIPS core (emips.simnano: 16 / 32 / 48-bit instructions only)
+    nano = False
+    #: the ABI's register names (emips.syntax.gpr_name): o32's, "n64"
+    #: (MIPS64), "p32" (nanoMIPS)
+    names: bool | str = True
+    #: the bytes the last LL linked (nanoMIPS LLWP: 8; emips.simnano)
+    lr_size = 4
 
     def __new__(cls, *args: Any, arch: str = "mips32", **kwargs: Any) -> "Machine":
-        if arch not in ("mips32", "mips64"):
-            raise ValueError(f"arch must be 'mips32' or 'mips64', not {arch!r}")
+        if arch not in ("mips32", "mips64", "nanomips"):
+            raise ValueError(f"arch must be 'mips32', 'mips64' or 'nanomips', not {arch!r}")
         if arch == "mips64" and cls is Machine:
             cls = _S64.Machine64
+        elif arch == "nanomips" and cls is Machine:
+            cls = _SN.NanoMachine
         return super().__new__(cls)
 
     def __init__(self, isa: ISA | None = None, memory: PMemory | None = None,
@@ -1711,15 +1945,16 @@ class Machine:
             raise ValueError("the DSP Module needs Release 2+ (MD00374 3.1)")
         if dsp == 1 and (isa.release if isa is not None else release) == "R6":
             raise ValueError("Release 6 has only DSP Revision 3 (DSPP = DSP2P = 1): dsp=2")
-        if isa is not None and mt and not isa.mt:
+        if isa is not None and mt and not isa.mt and not self.nano:
             raise ValueError("isa has no MT Module rows, mt=True")
-        if mt and (isa.release if isa is not None else release or ISA.DEFAULT_RELEASE) \
-                in ("R1", "R6"):
+        if mt and not self.nano and (isa.release if isa is not None else release
+                                     or ISA.DEFAULT_RELEASE) in ("R1", "R6"):
             raise ValueError("the MT Module needs Release 2-5 (MD00378 1.1; Release 6 "
                              "has none)")
-        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp, mt=mt,
-                                                  arch=self.arch)
-        if self.isa.arch != self.arch:
+        self.isa = isa if isa is not None else ISA(release=release, dsp=dsp,
+                                                  mt=mt and not self.nano, arch=self.arch)
+        # (a nanoMIPS core keeps MIPS32 Release 6's table: nothing decodes with it)
+        if self.isa.arch != (self.arch if not self.nano else "mips32"):
             raise ValueError(f"a {self.arch} machine needs a {self.arch} ISA, "
                              f"not {self.isa.arch}")
         #: MIPS32 release of this core (ISA, Config.AR, FPU width)
@@ -1729,6 +1964,8 @@ class Machine:
         self.ccres = C.CCRES
         #: address translation (Config.MT): emips.mmu.FixedMappingMMU
         self.mmu = mmu if mmu is not None else default_mmu()
+        #: the CDMM's devices of an MPU (emips.mpu; set by its attach)
+        self.cdmm: Any = None
         self._wmask = C.write_masks(self.release, supervisor=self.mmu.supervisor)
         #: physical memory, keyed by physical address
         self.mem = memory if memory is not None else PMemory()
@@ -1919,8 +2156,8 @@ class Machine:
         self.syscall_handler: Callable[[Machine, int], Any] | None = None
         #: Memory-mapped devices (emips.console.MmioConsole, ...): objects
         #: with covers(addr), load(m, addr, size), store(m, addr, v, size),
-        #: tick(m, cycles).
-        self.devices: list[Any] = []
+        #: tick(m, cycles).  First: the core's own CDMM (an MPU's registers).
+        self.devices: list[Any] = [self.cdmm] if self.cdmm is not None else []
         #: Set by an "exit" service: step() then does nothing.
         self.halted: bool = False
         #: One entry per exception / simulator error, in order.
@@ -3311,7 +3548,9 @@ class Machine:
             if self._ihw:                       # (the PC as it is: MIPS64 64-bit)
                 self.instruction_checks(pc)
             self._insn_raw = None
-            if self.isa_mode and self.compressed == "micromips":
+            if self.nano:                       # nanoMIPS: 16 / 32 / 48 bits (MD01247)
+                size, word, dec = self._fetch_nm(pc)
+            elif self.isa_mode and self.compressed == "micromips":
                 size, word, dec = self._fetch_mm(pc)
             elif self.isa_mode:                     # MIPS16e: 16 / 32-bit instructions
                 size, word, dec = self._fetch16(pc)
@@ -3339,6 +3578,8 @@ class Machine:
             if self.pdt.active:
                 self._trig = []
                 self._trace_cycle(False)
+            if word is None and self._insn_raw is not None:
+                word = self._insn_raw           # an RI found decoding what was fetched
             self._take_exception(exc, pc, word, dec, in_slot)
             return dec
         except WatchpointHit:                   # a debugger stop: this instruction again
@@ -3409,14 +3650,18 @@ class Machine:
         if not self.address_ok(pc):
             raise _Arch(C.ADEL, badvaddr=pc)
         h = self.fetch_half(pc)
+        got: list[int] = []
 
         def second() -> int:
             if not self.address_ok(pc + 2):
                 raise _Arch(C.ADEL, badvaddr=(pc + 2) & self.amask)
-            return self._second_half(pc + 2)
+            got.append(self._second_half(pc + 2))
+            return got[0]
         try:
             i = M16.decode(h, second, arch=self.arch)
         except ISADecodeError as exc:
+            # (BadInstr: the encoding fetched, Vol. III 9.25)
+            self._insn_raw = h << 16 | got[0] if got else h
             if self.exceptions == "raise":
                 raise
             raise _Arch(C.RI) from exc
@@ -3435,11 +3680,13 @@ class Machine:
         if not self.address_ok(pc):
             raise _Arch(C.ADEL, badvaddr=pc)
         h = self.fetch_half(pc)
+        got: list[int] = []
 
         def second() -> int:
             if not self.address_ok(pc + 2):
                 raise _Arch(C.ADEL, badvaddr=(pc + 2) & self.amask)
-            return self._second_half(pc + 2)
+            got.append(self._second_half(pc + 2))
+            return got[0]
         try:
             i = MM.decode(h, second, release=self.release, dsp=self.dsp,
                           mt=self.mt is not None, arch=self.arch)
@@ -3447,6 +3694,8 @@ class Machine:
             dec = Decode(i.raw, MM.ENTRIES[i.form]) if word is None else \
                 self._twin_isa(i).decode(word)
         except ISADecodeError as exc:
+            # (BadInstr: the encoding fetched, Vol. III 9.25)
+            self._insn_raw = h << 16 | got[0] if got else h
             if self.exceptions == "raise":
                 raise
             raise _Arch(C.RI) from exc
@@ -3690,6 +3939,8 @@ class Machine:
         if self.exceptions == "raise":
             self.exception_log.append(entry)
             raise _python_exception(exc, name, word, pc)
+        if "mpu" in exc.info:                   # MPU_Config: the last protection exception
+            self.mmu.exception_taken(self, exc.info["mpu"])
 
         status = self.status
         if self.perf.armed:
@@ -3771,9 +4022,9 @@ class Machine:
             entry["why"] = exc.info["why"]
         self.exception_log.append(entry)
 
-    #: exceptions that do not set BadInstr / BadInstrP (Vol. III 9.25):
-    #: not synchronous to an instruction
-    _NO_BADINSTR = frozenset({C.INT, C.MCHECK, C.IBE, C.DBE, C.CACHE_ERROR})
+    #: exceptions that do not set BadInstr / BadInstrP (Vol. III 6.02
+    #: 9.25: not synchronous to an instruction, and Watch)
+    _NO_BADINSTR = frozenset({C.INT, C.MCHECK, C.IBE, C.DBE, C.CACHE_ERROR, C.WATCH})
 
     def _bad_instr(self, exc: _Arch, pc: int, word: int | None, in_slot: bool) -> None:
         """BadInstr = the faulting instruction word, BadInstrP = the branch
@@ -3878,7 +4129,8 @@ class Machine:
         self._cp0_set(C.STATUS, status | C.ST_ERL)
         self.pc = self.to_pc(C.cache_error_vector(
             status, self.cp0[C.EBASE]["value"], self.release,
-            cv=getattr(self.mmu, "sc", False) and bool(self.cp0_read(16, 5) & (1 << 29)),
+            cv=(getattr(self.mmu, "sc", False) or getattr(self.mmu, "segments", False))
+            and bool(self.cp0_read(16, 5) & (1 << 29)),
             bev_base=self.bev_base))
         entry.update(epc=epc, bd=in_slot, vector=self.pc, cacheerr=exc.info["cacheerr"],
                      what=exc.info["what"])
@@ -6024,8 +6276,12 @@ _EXECUTORS.update(MT.EXECUTORS)
 # MIPS64 (PLAN M22): the 64-bit machine and the doubleword instructions
 from . import sim64 as _S64  # noqa: E402  (it builds on everything above)
 _EXECUTORS.update(_S64.EXECUTORS)
+from . import simnano as _SN  # noqa: E402  (nanoMIPS: emips.simnano)
+_EXECUTORS.update(_SN.EXECUTORS)
+PRIVILEGED_NAMES = PRIVILEGED_NAMES | _SN.PRIVILEGED
+EVA_NAMES = EVA_NAMES | _SN.EVA
 
 #: Row names with an executor (dispatched by name, never by ``funct``).
 #: the MIPS32 rows with an executor (MIPS16e's own M16.* executors are not rows)
 EXEC_NAMES: frozenset[str] = frozenset(n for n in _EXECUTORS
-                                      if not n.startswith(("M16.", "MM.")))
+                                      if not n.startswith(("M16.", "MM.", "NM.")))

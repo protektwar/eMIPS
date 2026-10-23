@@ -38,6 +38,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 EM_MIPS = 8
+#: nanoMIPS (the nanoMIPS ELF ABI supplement DN00179 5.1-5.3): e_flags
+#: EF_NANOMIPS_PIC / PID / ABI (15:12, P32 = 1) / ARCH (31:28, 32R6 = 0),
+#: the .nanoMIPS.abiflags section and its ASE bits
+EM_NANOMIPS = 249
+EF_NANOMIPS_PIC, EF_NANOMIPS_PID = 0x2, 0x8
+EF_NANOMIPS_ABI, E_NANOMIPS_ABI_P32 = 0xF000, 0x1000
+EF_NANOMIPS_ARCH = 0xF0000000
+SHT_NANOMIPS_ABIFLAGS = 0x70000000
+NANOMIPS_ASE_CRC, NANOMIPS_ASE_GINV, NANOMIPS_ASE_XNMS = 0x8000, 0x20000, 0x40000
+NANOMIPS_ASE_DSPR3, NANOMIPS_ASE_MT = 0x2000, 0x40
+#: ... the ASEs eMIPS's nanoMIPS core has no model of
+NANOMIPS_ASES_MISSING = {0x8: "the MCU ASE", 0x100: "the Virtualization ASE", 0x200: "MSA"}
 ET_EXEC = 2
 PT_LOAD = 1
 SHT_SYMTAB = 2
@@ -89,7 +101,8 @@ class Symbol:
     value: int
     size: int
     kind: str                       # "func", "object" or "other"
-    #: the code's ISA (st_other: STO_MIPS16 0xF0, STO_MICROMIPS 0x80)
+    #: the code's ISA (st_other: STO_MIPS16 0xF0, STO_MICROMIPS 0x80;
+    #: "nanomips" in an EM_NANOMIPS file)
     isa: str = "mips32"
 
 
@@ -123,31 +136,43 @@ class ElfImage:
     #: the DSP Module level its code needs (.MIPS.abiflags ases: AFL_ASE_DSP
     #: 1, AFL_ASE_DSPR2 / DSPR3 2; binutils include/elf/mips.h)
     dsp: int = 0
-    #: "mips32" (ELFCLASS32, o32) or "mips64" (ELFCLASS64, n64)
+    #: "mips32" (ELFCLASS32, o32), "mips64" (ELFCLASS64, n64) or "nanomips"
+    #: (EM_NANOMIPS, p32)
     arch: str = "mips32"
+    #: nanoMIPS: what the code needs of the core (.nanoMIPS.abiflags: "crc",
+    #: "ginvt", "xnms" = the full ISA, not the nanoMIPS subset) — the names
+    #: of emips.assembler.Program.needs
+    needs: frozenset = frozenset()
 
     @property
     def release(self) -> str:
+        if self.arch == "nanomips":             # (nanoMIPS is Release 6 based)
+            return "R6"
         table = ARCH_RELEASE64 if self.arch == "mips64" else ARCH_RELEASE
         return table.get(self.flags & EF_MIPS_ARCH, "R5")
 
     @property
     def arch_name(self) -> str:
+        if self.arch == "nanomips":
+            return "nanoMIPS32 Release 6"
         return ARCH_NAMES.get(self.flags & EF_MIPS_ARCH,
                               f"EF_MIPS_ARCH 0x{(self.flags >> 28) & 0xF:x}")
 
     @property
     def mips16(self) -> bool:
-        return bool(self.flags & EF_MIPS_M16)
+        return self.arch != "nanomips" and bool(self.flags & EF_MIPS_M16)
 
     @property
     def micromips(self) -> bool:
-        return bool(self.flags & EF_MIPS_MICROMIPS)
+        return self.arch != "nanomips" and bool(self.flags & EF_MIPS_MICROMIPS)
 
     def isa_ranges(self) -> list[tuple[int, int, str]]:
         """``(start, end, isa)`` of the code: each executable range split
         at its symbols, a region taking the ISA of the symbol it starts at
-        (what objdump does: STO_MIPS16 / STO_MICROMIPS mark 16-bit code)."""
+        (what objdump does: STO_MIPS16 / STO_MICROMIPS mark 16-bit code);
+        nanoMIPS code is all "nanomips"."""
+        if self.arch == "nanomips":
+            return [(a, b, "nanomips") for a, b in self.code_ranges()]
         out = []
         # (at one address a MIPS16e / microMIPS symbol beats a MIPS32 one:
         # the linker's _ftext / __start next to the code's own)
@@ -199,10 +224,10 @@ class ElfImage:
     def source_lines(self) -> dict[int, tuple[str, int]]:
         """Instruction address -> ``(file, line)``: the line-table row in
         force at every 4-byte address of the code it covers (every 2-byte
-        one with MIPS16e / microMIPS code)."""
+        one with MIPS16e / microMIPS / nanoMIPS code)."""
         out: dict[int, tuple[str, int]] = {}
         rows = self.lines
-        step = 2 if self.mips16 or self.micromips else 4
+        step = 2 if self.mips16 or self.micromips or self.arch == "nanomips" else 4
         for k, r in enumerate(rows):
             if r.end or k + 1 >= len(rows):
                 continue
@@ -245,13 +270,17 @@ def _parse(data: bytes, path: str) -> ElfImage:
     (e_type, e_machine, _ver, e_entry, e_phoff, e_shoff, e_flags, _ehsize,
      e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx) = struct.unpack_from(
         end + ("HHIQQQIHHHHHH" if wide else "HHIIIIIHHHHHH"), data, 16)
-    if e_machine != EM_MIPS:
+    nano = e_machine == EM_NANOMIPS
+    if e_machine not in (EM_MIPS, EM_NANOMIPS):
         raise ElfError(f"not a MIPS executable (e_machine {e_machine})")
     if e_type != ET_EXEC:
         kind = {1: "a relocatable object (.o): link it first",
                 3: "a shared object / position-independent executable"}.get(
             e_type, f"ELF type {e_type}")
         raise ElfError(f"{kind} — eMIPS loads executables (ET_EXEC)")
+    if nano:
+        return _parse_nano(data, path, end, endian, wide, e_entry, e_phoff, e_shoff, e_flags,
+                           e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx)
     arch = e_flags & EF_MIPS_ARCH
     if not wide and (arch in ARCH_RELEASE64 or e_flags & EF_MIPS_ABI2):
         raise ElfError(f"{ARCH_NAMES.get(arch, '64-bit')} code in a 32-bit ELF (the n32 "
@@ -297,12 +326,7 @@ def _parse(data: bytes, path: str) -> ElfImage:
     if not img.segments:
         raise ElfError("no loadable segment (PT_LOAD)")
     sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx, wide)
-    for name, sh_type, flags, addr, off, size, link, _info, entsize in sections:
-        if flags & 2 and size:                         # SHF_ALLOC (SHF_EXECINSTR 4)
-            img.sections.append((name, va32(addr) if wide else addr, size, bool(flags & 4)))
-        if sh_type == SHT_SYMTAB:
-            img.symbols = _symbols(data, end, off, size, entsize, sections[link], wide)
-    by_name = {s[0]: s for s in sections}
+    _read_sections(img, data, end, sections, wide)
     flags = next((s for s in sections if s[1] == SHT_MIPS_ABIFLAGS and s[5] >= 24), None)
     if flags is not None:                          # Elf_MIPS_ABIFlags_v0.ases
         ases = struct.unpack_from(end + "I", data, flags[4] + 12)[0]
@@ -311,6 +335,72 @@ def _parse(data: bytes, path: str) -> ElfImage:
             img.notes.append("DSP Module code (.MIPS.abiflags: "
                              + ("Revision 2" if img.dsp > 1 else "Revision 1")
                              + "): the core gets the DSP Module")
+    _read_lines(img, data, end, sections, wide)
+    return img
+
+
+def _parse_nano(data: bytes, path: str, end: str, endian: str, wide: bool, e_entry: int,
+                e_phoff: int, e_shoff: int, e_flags: int, e_phentsize: int, e_phnum: int,
+                e_shentsize: int, e_shnum: int, e_shstrndx: int) -> ElfImage:
+    """A nanoMIPS executable (DN00179 ch. 5): ELFCLASS32, the p32 ABI,
+    nanoMIPS32 Release 6; what .nanoMIPS.abiflags says the code needs."""
+    if wide or e_flags & EF_NANOMIPS_ARCH:
+        raise ElfError("a nanoMIPS64 executable (E_NANOMIPS_ARCH_64R6, the p64 ABI): eMIPS "
+                       "runs nanoMIPS32 (p32)")
+    img = ElfImage(path, endian, e_entry, e_flags, arch="nanomips")
+    if e_flags & EF_NANOMIPS_ABI not in (0, E_NANOMIPS_ABI_P32):
+        raise ElfError(f"nanoMIPS ABI {(e_flags & EF_NANOMIPS_ABI) >> 12} (EF_NANOMIPS_ABI): "
+                       "eMIPS runs the p32 ABI's executables")
+    if e_flags & (EF_NANOMIPS_PIC | EF_NANOMIPS_PID):
+        img.notes.append("position-independent code / data (EF_NANOMIPS_PIC / PID): it "
+                         "expects a loader to set $gp and move it — build without -fpic / "
+                         "-mpid")
+    for i in range(e_phnum):
+        (p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags,
+         _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
+        if p_type != PT_LOAD or not p_memsz:
+            continue
+        chunk = data[p_offset:p_offset + p_filesz]
+        for k in range(p_memsz):
+            img.image[(p_vaddr + k) & M32] = chunk[k] if k < len(chunk) else 0
+        rwx = "".join(c for c, bit in (("R", 4), ("W", 2), ("X", 1)) if p_flags & bit)
+        img.segments.append((p_vaddr, p_memsz, rwx))
+    if not img.segments:
+        raise ElfError("no loadable segment (PT_LOAD)")
+    sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx)
+    _read_sections(img, data, end, sections)
+    flags = next((s for s in sections if s[1] == SHT_NANOMIPS_ABIFLAGS and s[5] >= 24), None)
+    if flags is not None:                         # the ABIFlags structure's ases (5.2)
+        ases = struct.unpack_from(end + "I", data, flags[4] + 12)[0]
+        needs = {name for bit, name in ((NANOMIPS_ASE_CRC, "crc"), (NANOMIPS_ASE_GINV, "ginvt"),
+                                        (NANOMIPS_ASE_XNMS, "xnms"),
+                                        (NANOMIPS_ASE_DSPR3, "dsp"),
+                                        (NANOMIPS_ASE_MT, "mt")) if ases & bit}
+        img.needs = frozenset(needs)
+        missing = [what for bit, what in NANOMIPS_ASES_MISSING.items() if ases & bit]
+        if missing:
+            raise ElfError(f"the code uses {' and '.join(missing)} (.nanoMIPS.abiflags): "
+                           "eMIPS's nanoMIPS core has no model of "
+                           + ("it" if len(missing) == 1 else "them"))
+    _read_lines(img, data, end, sections)
+    return img
+
+
+def _read_sections(img: ElfImage, data: bytes, end: str, sections: list,
+                   wide: bool = False) -> None:
+    """The allocated sections and the symbols."""
+    for name, sh_type, flags, addr, off, size, link, _info, entsize in sections:
+        if flags & 2 and size:                         # SHF_ALLOC (SHF_EXECINSTR 4)
+            img.sections.append((name, va32(addr) if wide else addr, size, bool(flags & 4)))
+        if sh_type == SHT_SYMTAB:
+            img.symbols = _symbols(data, end, off, size, entsize, sections[link], wide,
+                                   img.arch == "nanomips")
+
+
+def _read_lines(img: ElfImage, data: bytes, end: str, sections: list,
+                wide: bool = False) -> None:
+    """The DWARF line table (or a note that there is none)."""
+    by_name = {s[0]: s for s in sections}
     if ".debug_line" in by_name:
         s = by_name[".debug_line"]
         line_str = by_name.get(".debug_line_str")
@@ -327,7 +417,6 @@ def _parse(data: bytes, path: str) -> ElfImage:
             img.notes.append(f"the DWARF line table could not be read ({exc})")
     else:
         img.notes.append("no DWARF line table (build with -g to see the source lines)")
-    return img
 
 
 def _sections(data: bytes, end: str, off: int, entsize: int, n: int, strndx: int,
@@ -350,7 +439,7 @@ def _cstr(data: bytes, at: int) -> str:
 
 
 def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab,
-             wide: bool = False) -> list[Symbol]:
+             wide: bool = False, nano: bool = False) -> list[Symbol]:
     out = []
     step = entsize or (24 if wide else 16)
     for k in range(size // step):
@@ -364,9 +453,10 @@ def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab,
         kind = {STT_FUNC: "func", STT_OBJECT: "object"}.get(info & 0xF, "other")
         if not name or shndx == 0 or (info & 0xF) in (3, 4):   # SECTION, FILE
             continue
-        isa = {STO_MIPS16: "mips16e", STO_MICROMIPS: "micromips"}.get(other & 0xF0, "mips32")
-        out.append(Symbol(_cstr(data, strtab[4] + name), value & ~1 if isa != "mips32"
-                          else value, sz, kind, isa))
+        isa = "nanomips" if nano else {STO_MIPS16: "mips16e", STO_MICROMIPS: "micromips"}.get(
+            other & 0xF0, "mips32")
+        out.append(Symbol(_cstr(data, strtab[4] + name), value & ~1 if isa in (
+            "mips16e", "micromips") else value, sz, kind, isa))
     return out
 
 

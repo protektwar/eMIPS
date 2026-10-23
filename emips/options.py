@@ -37,8 +37,28 @@ COMPRESSED = ("auto", "none", "mips16e", "micromips", "micromips-only")
 DSP_LEVELS = ("auto", "none", "dsp", "dspr2")
 #: the architecture (PLAN M22): MIPS32, or MIPS64 (emips.sim64: 64-bit
 #: registers; the 32-bit compatibility segments with the fixed mapping —
-#: Config.AT = 1 —, the 64-bit address space with a TLB — AT = 2)
-ARCHES = ("mips32", "mips64")
+#: Config.AT = 1 —, the 64-bit address space with a TLB — AT = 2), or
+#: nanoMIPS (PLAN M23, emips.simnano: nanoMIPS32 Release 6, its own ISA)
+ARCHES = ("mips32", "mips64", "nanomips")
+#: each architecture's name as the manuals write it
+ARCH_TITLES = {"mips32": "MIPS32", "mips64": "MIPS64", "nanomips": "nanoMIPS"}
+
+
+def arch_title(arch: str) -> str:
+    """``"nanomips"`` -> "nanoMIPS" (MD01247's spelling), ``"mips64"`` ->
+    "MIPS64" ..."""
+    return ARCH_TITLES.get(arch, arch.upper())
+
+
+def gdb_program(arch: str) -> str:
+    """The GDB that debugs this architecture: gdb-multiarch knows MIPS32 /
+    MIPS64, not nanoMIPS (its GDB is MediaTek's nanomips-elf-gdb)."""
+    return "nanomips-elf-gdb" if arch == "nanomips" else "gdb-multiarch"
+
+#: a nanoMIPS core's CRC32 instructions (Config5.CRCP) and global
+#: invalidates (Config5.GI): "auto" = when the program has them
+NANO_CRC = ("auto", "none", "crc")
+NANO_GINV = ("auto", "none", "ginvi", "ginvt")
 #: the instruction set C programs are compiled to (emips.cc)
 C_ISAS = ("mips32", "mips16e", "micromips")
 
@@ -90,7 +110,7 @@ class Options:
     dsp: str = "auto"
     #: the MT Module (emips.mt, MD00378): "auto" = 2 VPEs and 5 TCs (a 34K)
     #: when the program has MT instructions, else none; "none"; "VPES:TCS"
-    #: (1-2 VPEs, VPES-9 TCs, the 34K's limits; Release 2-5)
+    #: (1-3 VPEs, VPES-9 TCs: the 34K's 1-2, the I7200's 1-3; Release 2-5, nanoMIPS)
     mt: str = "auto"
     #: the policy manager of the MT processor's dispatch scheduler (MD00534
     #: 13.2): "rr" basic round-robin, "wrr" weighted round-robin (TCSchedule
@@ -112,8 +132,24 @@ class Options:
     #: settings its manuals allow, its PRId; "" = the generic eMIPS core
     core: str = ""
     #: the architecture, see ARCHES: "mips64" = a MIPS64 core (64-bit GPRs,
-    #: the doubleword instructions; the program is assembled for MIPS64)
+    #: the doubleword instructions; the program is assembled for MIPS64);
+    #: "nanomips" = a nanoMIPS32 core (Release 6; programs assembled with
+    #: emips.nanoasm)
     arch: str = "mips32"
+    #: a nanoMIPS core: the nanoMIPS subset (Config5.NMS = 1: the formats
+    #: MD01247 marks "not in NMS" are Reserved Instructions; programs are
+    #: assembled as GNU as -march=32r6s does)
+    nms: bool = False
+    #: nanoMIPS programs: the linker's relaxations (ld --relax: gold shrinks
+    #: the instructions .linkrelax left relaxable once the addresses are known)
+    relax: bool = False
+    #: ... its CRC32 instructions (Config5.CRCP): "auto" = when the program
+    #: has CRC32 instructions, "none", "crc"
+    crc: str = "auto"
+    #: ... its global invalidates (Config5.GI): "auto" = GI 3 when the
+    #: program has GINVT, 2 when it has GINVI only; "none" (GI 0), "ginvi"
+    #: (GI 2: GINVI), "ginvt" (GI 3: GINVI and GINVT)
+    ginv: str = "auto"
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -229,6 +265,10 @@ class Options:
             self.dsp = d.dsp
         if self.arch not in ARCHES:
             self.arch = d.arch
+        if self.crc not in NANO_CRC:
+            self.crc = d.crc
+        if self.ginv not in NANO_GINV:
+            self.ginv = d.ginv
         self.mt = (self.mt or "").strip().lower()
         if self.mt != "auto":
             from .mt import parse_spec
@@ -327,6 +367,6 @@ class Options:
     def assembler_differs(self, other: "Options") -> bool:
         """Do these options assemble a source differently from ``other``?"""
         return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
-                self.c_isa, self.fpu, self.arch) != \
+                self.c_isa, self.fpu, self.arch, self.nms, self.relax) != \
             (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa,
-             other.fpu, other.arch)
+             other.fpu, other.arch, other.nms, other.relax)

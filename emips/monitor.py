@@ -12,6 +12,12 @@ puts it in the flash, :func:`describe_application` writes what YAMON's
 ``load`` and ``go`` know about the application (the descriptor, argv,
 the environment) and :func:`start_state` gives the registers ``go``
 leaves — what the kernel boot (eMIPS's firmware in Python) sets too.
+
+A nanoMIPS CPU on the Malta (PLAN M23 phase 4d; QEMU's Malta runs the
+I7200 with a nanoMIPS boot loader of its own) gets the same monitor
+assembled as nanoMIPS code (:func:`_nano_text`, monitor.asm's header):
+the same board initialisation, function table, exception handling and
+application start, its functions with the p32 convention.
 """
 
 from __future__ import annotations
@@ -45,6 +51,11 @@ DEFAULT_ID = 0xFFFFFFF0
 OWN_HANDLER, OWN_REFILL = 1, 2
 #: where the monitor's code starts (after the function table)
 RESET = 0xBFC00000
+#: the labels at the monitor's fixed addresses (checked in the nanoMIPS
+#: build, which reaches them with .balign)
+NANO_FIXED = {"reset": 0xBFC00000, "bev_refill": 0xBFC00200, "bev_cache_error": 0xBFC00300,
+              "bev_general": 0xBFC00380, "bev_interrupt": 0xBFC00400,
+              "bev_debug": 0xBFC00480, "functions": 0xBFC00500, "start": 0xBFC00600}
 #: the bus and PCI clocks syscon_read reports (the Malta's 33.333 MHz PCI)
 BUS_HZ, PCI_KHZ = 33_333_333, 33_333
 
@@ -92,15 +103,57 @@ def _o32_numbers(text: str) -> str:
                           text)
 
 
+#: the nanoMIPS build: the o32 temporaries and $v0 / $v1 as p32 numbers
+#: ($rN: DN00179 3.1 makes the names mandatory), any other $N GPR too
+_GPR_NUMBER = re.compile(r"\$(t[0-9]|v[01]|[0-9]{1,2})(?![0-9\w])")
+_O32 = {**{f"t{i}": 8 + i for i in range(8)}, "t8": 24, "t9": 25, "v0": 2, "v1": 3}
+#: nanoMIPS's LUI takes the immediate as bits 31:12 (MD01247 LUI): MIPS's
+#: "lui rt, 0xNNNN" is "li rt, 0xNNNN0000" there
+_LUI = re.compile(r"^(\s*(?:\w+:\s*)?)lui(\s+)(\$\w+),\s*(0x[0-9a-fA-F]{1,4})\b")
+#: the monitor's fixed addresses: ".text ADDRESS" (a subsection number in
+#: GNU as's nanoMIPS port) -> an alignment that reaches it
+_TEXT_AT = re.compile(r"^(\s*)\.text\s+0xbfc0([0-9a-f]{4})\b")
+
+
+def _nano_text(text: str) -> str:
+    """monitor.asm (preprocessed) for the nanoMIPS assembler."""
+    out = []
+    for line in text.splitlines():
+        m = _TEXT_AT.match(line)
+        if m:
+            off = int(m.group(2), 16)
+            line = (f"{m.group(1)}.text" if off == 0 else
+                    f"{m.group(1)}.balign 0x{off & -off:x}, 0   # 0xbfc0{m.group(2)}")
+            out.append(line)
+            continue
+        line = _LUI.sub(lambda m: f"{m.group(1)}li{m.group(2)}{m.group(3)}, "
+                                  f"0x{int(m.group(4), 16) << 16:08x}", line)
+        code, hash_, comment = line.partition("#")
+        mn = code.split(":")[-1].split()
+        if mn and mn[0] in ("mfc0", "mtc0"):    # (only rt: the CP0 register stays)
+            head, comma, rest = code.partition(",")
+            code = _GPR_NUMBER.sub(_rn, head) + comma + rest
+        else:
+            code = _GPR_NUMBER.sub(_rn, code)
+        out.append(code + hash_ + comment)
+    return "\n".join(out) + "\n"
+
+
+def _rn(m: re.Match) -> str:
+    name = m.group(1)
+    return f"$r{_O32.get(name, name)}"
+
+
 def source(*, big_endian: bool, release: str, ram: int, cpu_hz: int, cps: bool,
            arch: str = "mips32") -> str:
     """The monitor's source for a board (``arch`` "mips64": the 64-bit
-    CPU's, see monitor.asm)."""
+    CPU's, "nanomips": a nanoMIPS CPU's; see monitor.asm)."""
     from .malta import BMIBA, MaltaBoard
     PIIX4_DEVICE = MaltaBoard.PIIX4_DEVICE
     from .malta import user_window
     from .tlb import firmware_refill, firmware_xtlb_refill
     wide = arch == "mips64"
+    nano = arch == "nanomips"
     le = _swap if big_endian else (lambda v: v)
     cca = 5 if cps else 3
     top = ram - 1
@@ -120,7 +173,7 @@ def source(*, big_endian: bool, release: str, ram: int, cpu_hz: int, cps: bool,
           (GT.PCI0_BAR_EN, 0x0F | 0xE0)]
     gt_init = "\n".join(f"        li    $t1, 0x{le(v):08x}\n        sw    $t1, 0x{off:03x}($s7)"
                         for off, v in gt)
-    refill = firmware_refill(cca, user_window(ram)).split("__tlb_refill:\n", 1)[1]
+    refill = firmware_refill(cca, user_window(ram), arch=arch).split("__tlb_refill:\n", 1)[1]
     xrefill = firmware_xtlb_refill(cca, user_window(ram)).split("__xtlb_refill:\n", 1)[1]
 
     def addr(v: int) -> str:                    # (MIPS64: sign-extended kseg0 / kseg1)
@@ -147,7 +200,8 @@ def source(*, big_endian: bool, release: str, ram: int, cpu_hz: int, cps: bool,
         "CPU_HZ": str(cpu_hz), "BUS_HZ": str(BUS_HZ), "PCI_KHZ": str(PCI_KHZ),
         "BANNER": (f"\\neMIPS monitor (YAMON application interface): Malta, "
                    f"{ram >> 20} MB SDRAM, {cpu_hz // 1_000_000} MHz\\n"),
-        "REFILL": "        .set noreorder\n" + refill + "        .set reorder",
+        "REFILL": refill if nano else "        .set noreorder\n" + refill + "        .set reorder",
+        "RET": "        move  $a0, $v0" if nano else "",
         "XREFILL": "        .set noreorder\n" + xrefill + "        .set reorder",
     }
     flags = set()
@@ -155,18 +209,32 @@ def source(*, big_endian: bool, release: str, ram: int, cpu_hz: int, cps: bool,
         flags.add("HILO")
     if wide:
         flags.add("WIDE")
+    if nano:
+        flags.add("NANO")
     text = _preprocess(SOURCE.read_text(encoding="utf-8"), values, flags)
-    return _o32_numbers(text) if wide else text
+    return _nano_text(text) if nano else _o32_numbers(text) if wide else text
 
 
 @lru_cache(maxsize=32)
 def image(*, big_endian: bool, release: str, ram: int, cpu_hz: int, cps: bool,
           arch: str = "mips32"):
-    """The assembled monitor (a :class:`~emips.assembler.Program`)."""
+    """The assembled monitor (a :class:`~emips.assembler.Program`; a
+    nanoMIPS one for the nanoMIPS subset: it runs on every nanoMIPS core)."""
     from .assembler import assemble
-    return assemble(source(big_endian=big_endian, release=release, ram=ram, cpu_hz=cpu_hz,
-                           cps=cps, arch=arch),
-                    endian="big" if big_endian else "little", release=release, arch=arch)
+    text = source(big_endian=big_endian, release=release, ram=ram, cpu_hz=cpu_hz, cps=cps,
+                  arch=arch)
+    if arch != "nanomips":
+        return assemble(text, endian="big" if big_endian else "little", release=release,
+                        arch=arch)
+    prog = assemble(text, endian="big" if big_endian else "little", release="R6",
+                    arch=arch, bases={"text": RESET},
+                    nano={"nms": True, "tlb": True, "crc": False, "ginv": False,
+                          "eva": False})
+    for name, at in NANO_FIXED.items():       # (.balign reached them: say if not)
+        if prog.symbols.get(name) != at:
+            raise AssertionError(f"monitor.asm for nanoMIPS: {name} at "
+                                 f"0x{prog.symbols.get(name, 0):08x}, not 0x{at:08x}")
+    return prog
 
 
 def load(board, m) -> object:
@@ -212,8 +280,7 @@ def describe_application(board, m, program, *, sp: int | None = None) -> None:
     if any(0x80000000 <= a < 0x80000100 for a in code):
         flags |= OWN_REFILL
     entry = program.entry if program is not None else 0
-    gp = program.segments.get("data", (0x80200000,))[0] + 0x8000 if program is not None \
-        else 0
+    gp = program.board_gp() if program is not None else 0
     desc = [0x654D4F4E, entry, flags, len(argv), argv_at, env_at, board.ram_size,
             board.stack_top() if sp is None else sp, gp]
     desc = [w & 0xFFFFFFFF for w in desc]       # (YAMON's are 32-bit: a 64-bit CPU's

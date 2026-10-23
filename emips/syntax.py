@@ -68,10 +68,40 @@ GPR_NAMES_N64 = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
                  *GPR_NAMES[16:]]
 
 
+#: the nanoMIPS p32 ABI names (DN00179 ch. 3, PLAN M23): $t4 / $t5 = 2 / 3,
+#: $a0-$a7 = 4-11, $t0-$t3 = 12-15
+GPR_NAMES_P32 = ["zero", "at", "t4", "t5", "a0", "a1", "a2", "a3",
+                 "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
+                 *GPR_NAMES[16:]]
+
+
+def gpr_number(tok: str, abi: bool | str = True) -> int | None:
+    """:func:`parse_gpr` in an ABI's names: o32's (``True``), ``"n64"``
+    (MIPS64) or ``"p32"`` (nanoMIPS: also GNU as's ``$r0`` ... ``$r31``);
+    ``$8`` in any; None if not a GPR of that ABI."""
+    if abi not in ("n64", "p32"):
+        return parse_gpr(tok)
+    t = tok.strip().lower()
+    if not t.startswith("$"):
+        return None
+    t = t[1:]
+    if abi == "p32" and t[:1] == "r" and t[1:].isdigit():
+        t = t[1:]
+    if t.isdigit():
+        return int(t) if int(t) < 32 else None
+    names = GPR_NAMES_N64 if abi == "n64" else GPR_NAMES_P32
+    if t in names:
+        return names.index(t)
+    return 30 if t == "s8" and abi == "n64" else None
+
+
 def gpr_name(i: int, abi: bool | str = True) -> str:
-    """``$t0``; ``abi=False``: ``$8``; ``abi="n64"``: the n64 name."""
+    """``$t0``; ``abi=False``: ``$8``; ``abi="n64"`` / ``"p32"``: the n64
+    (MIPS64) / p32 (nanoMIPS) name."""
     if abi == "n64":
         return f"${GPR_NAMES_N64[i]}"
+    if abi == "p32":
+        return f"${GPR_NAMES_P32[i]}"
     return f"${GPR_NAMES[i]}" if abi else f"${i}"
 
 

@@ -456,6 +456,9 @@ class Pipeline24K:
             raise ValueError("the 24K has no microMIPS (MD00343 1.2.1.11: MIPS16e); the "
                              "microMIPS cores (M14K, microAptiv) have a 5-stage pipeline: "
                              "use the 5-stage model")
+        if machine.nano:
+            raise ValueError("the 24K is a MIPS32 core (MD00343): a nanoMIPS program runs "
+                             "on the 5-stage model")
         self.m = machine
         machine.tracing = trace
         self.timing = machine.caches.timing if machine.caches is not None else None

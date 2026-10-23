@@ -191,6 +191,7 @@ class Machine64(S.Machine):
     arch = "mips64"
     amask = M64
     wide = True
+    names = "n64"
     sgn = staticmethod(s64)
 
     def __init__(self, isa: ISA | None = None, memory: Any = None, pc: int = 0, *,

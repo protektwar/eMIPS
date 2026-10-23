@@ -93,7 +93,10 @@ class RefRow:
 def reference(release: str = "R5", arch: str = "mips32") -> list[RefRow]:
     """Every instruction of a MIPS32 (``arch="mips64"``: MIPS64) release,
     sorted by mnemonic.  MIPS64: the DSP Module's rows are MD00375's (with
-    LDX), the MT Module's MD00378's."""
+    LDX), the MT Module's MD00378's.  ``arch="nanomips"``: every nanoMIPS
+    format (MD01247 ch. 2, emips.nanomips)."""
+    if arch == "nanomips":
+        return _nano_reference()
     isa = ISA.for_release(release, arch=arch)
     rel = _releases()
     wide = arch == "mips64"
@@ -120,7 +123,11 @@ def template_fields(row_name: str, release: str = "R5", arch: str = "mips32"
                     ) -> list[tuple[int, int, str, str]]:
     """``(msb, lsb, name, bits)`` of a row's encoding: the fixed bits and
     the operand fields named by their role (rs / base / offset ...), the
-    same split as the Instruction panel; operand bits shown as letters."""
+    same split as the Instruction panel; operand bits shown as letters
+    (nanoMIPS: one per token of the format's diagram, ``row_name`` its
+    form)."""
+    if arch == "nanomips":
+        return _nano_template(row_name)
     isa = ISA.for_release(release, arch=arch)
     entry = next(e for e in isa.instructions if e["name"] == row_name)
     template = entry["encode"]
@@ -141,6 +148,14 @@ class Decoded:
     format: str
     fields: list[Field]
     execution: str
+    #: its size in bytes (a nanoMIPS instruction: 2, 4 or 6)
+    size: int = 4
+
+    def encoding(self, arch: str = "mips32") -> str:
+        """The encoding as a listing prints it (nanoMIPS: its halfwords)."""
+        from .cli import encoding
+        return encoding(self.word, self.size, arch).rstrip() if arch == "nanomips" \
+            else f"0x{self.word:08x}"
 
 
 def parse_word(text: str) -> int:
@@ -166,7 +181,12 @@ def _dsp(release: str, dsp: int | None, arch: str = "mips32") -> int:
 
 
 def decode_word(word: int, *, release: str = "R5", pc: int = 0x00400000,
-                abi: bool = True, dsp: int | None = None, arch: str = "mips32") -> Decoded:
+                abi: bool = True, dsp: int | None = None, arch: str = "mips32",
+                size: int | None = None) -> Decoded:
+    """Decode a machine word (nanoMIPS: an encoding of ``size`` bytes, by
+    default what its first halfword says — :func:`parse_nano`)."""
+    if arch == "nanomips":
+        return _nano_decode(word, size, pc, abi)
     isa = ISA.for_release(release, _dsp(release, dsp, arch), arch=arch)
     dec = isa.decode(word)                      # ISADecodeError if reserved
     e = dec.entry
@@ -185,6 +205,17 @@ def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
     line = text.strip()
     if not line:
         raise AsmError(1, "type an instruction")
+    if arch == "nanomips":                  # GNU as + ld (emips.nanoasm): .text at pc
+        prog = assemble(f".text\n{line}\n", pseudo=pseudo, arch=arch,
+                        bases={"text": pc & M32},
+                        nano={"crc": True, "ginv": True, "eva": True, "tlb": True})
+        out = []
+        for a in sorted(prog.nm):
+            i = prog.nm_insn(a)
+            out.append(_nano_decode(i.raw, i.size, a, abi))
+        if not out:
+            raise AsmError(1, "no instruction on this line")
+        return out
     prog = assemble(f".text 0x{pc & M32:08x}\n{line}\n", release=release,
                     pseudo=pseudo, reorder=False, arch=arch)
     words = [prog.word(a) for a in sorted(prog.source_map)]
@@ -197,12 +228,97 @@ def encode_text(text: str, *, release: str = "R5", pc: int = 0x00400000,
 def encode_or_decode(text: str, **kw) -> tuple[str, list[Decoded]]:
     """A number decodes, anything else is assembled: (``"decode"`` /
     ``"encode"``, words).  Raises ValueError / AsmError / ISADecodeError."""
+    nano = kw.get("arch") == "nanomips"
     try:
-        word = parse_word(text)
+        word, size = parse_nano(text) if nano else (parse_word(text), None)
     except ValueError:
         return "encode", encode_text(text, **kw)
     kw.pop("pseudo", None)
-    return "decode", [decode_word(word, **kw)]
+    return "decode", [decode_word(word, size=size, **kw)]
+
+
+# ---------------------------------------------------------------- nanoMIPS
+
+def parse_nano(text: str) -> tuple[int, int]:
+    """A nanoMIPS encoding (PLAN M23): hex halfwords — ``d205``, ``00a4
+    0007``, ``0x00a40007``, ``6080 5678 1234`` — or a number; (its value,
+    its size in bytes: what the first halfword says, MD01247 3.1)."""
+    from . import nanomips
+    t = text.strip().replace("_", "")
+    if not t:
+        raise ValueError("type an instruction encoding (0x...) or an instruction")
+    digits = t[2:] if t.lower().startswith("0x") else t
+    if re.fullmatch(r"(?:[0-9a-fA-F]{4}\s*){1,3}", digits):
+        digits = re.sub(r"\s+", "", digits)
+        n = len(digits) // 2
+        value = int(digits, 16)
+    else:
+        value = int(t, 0)
+        n = 2 if value < 1 << 16 else 4 if value < 1 << 32 else 6
+    if n not in (2, 4, 6) or not 0 <= value < 1 << (8 * n):
+        raise ValueError(f"{text.strip()} is not a 16, 32 or 48-bit encoding")
+    size = nanomips.size_of(value >> (8 * n - 16))
+    if size != n:
+        raise ValueError(f"the first halfword 0x{value >> (8 * n - 16):04x} starts a "
+                         f"{8 * size}-bit instruction, not a {8 * n}-bit one")
+    return value, size
+
+
+def _nano_decode(raw: int, size: int | None, pc: int, abi: bool) -> Decoded:
+    from . import nanomips
+    from .simnano import PRIVILEGED, entry_name
+    from .tracenano import fields
+    if size is None:
+        size = 2 if raw < 1 << 16 else 4 if raw < 1 << 32 else 6
+    i = nanomips.decode_raw(raw, size)          # NMDecodeError if reserved
+    row = i.row
+    return Decoded(raw, nanomips.text(i, pc, abi=abi), row.form,
+                   f"{row.name}, nanoMIPS {8 * size}-bit",
+                   row.form, fields(i, "p32" if abi else False),
+                   "privileged" if entry_name(row) in PRIVILEGED else "EXEC", size)
+
+
+_NANO_KIND = {"r": "", "d": "", "x": "", "n": "", "c": "", "b": "label", "h": "", "p": "",
+              "L": ""}
+
+
+@lru_cache(maxsize=1)
+def _nano_reference() -> list[RefRow]:
+    from . import nanomips
+    from .simnano import _FAMILY, PRIVILEGED, entry_name
+    rows = []
+    for r in nanomips.ROWS:
+        text = r.texts[-1][1]
+        syntax = re.sub(r"\{(\w):(\w+)\}",
+                        lambda m: _NANO_KIND.get(m.group(1)) or m.group(2), text)
+        notes = [] if r.nms else ["not in NMS"]
+        rows.append(RefRow(
+            name=r.form, mnemonic=r.name.lower(), syntax=syntax,
+            description=f"{r.form}: {8 * r.size}-bit" + (f", {', '.join(notes)}" if notes
+                                                          else ""),
+            format=f"{8 * r.size}-bit", family=_FAMILY[r.name], encoding=r.template,
+            releases=("R6",), since="R6", removed_in=None, execution="EXEC",
+            privileged=entry_name(r) in PRIVILEGED, delay_slot=False, ase=r.need or ""))
+    return sorted(rows, key=lambda x: (x.mnemonic, x.name))
+
+
+def _nano_template(form: str) -> list[tuple[int, int, str, str]]:
+    from . import nanomips
+    row = nanomips.TABLE.by_form[form]
+    out, pos = [], row.size * 8
+    for t in row.template.split():
+        m = nanomips._TOKEN.match(t)
+        if m.group(1):
+            w, name, bits = len(m.group(1)), "op", m.group(1)
+        else:
+            name = m.group(2) or m.group(4)
+            w = int(m.group(3)) if m.group(2) else \
+                int(m.group(5)) - int(m.group(6) or m.group(5)) + 1
+            bits = name[0] * w
+        pos -= w
+        out.append((pos + w - 1, pos, name if m.group(1) or m.group(4) is None
+                    else t, bits))
+    return out
 
 
 # -------------------------------------------------------- number converter

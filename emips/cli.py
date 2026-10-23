@@ -27,10 +27,10 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, Options
+from .options import (BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, NANO_CRC,
+                      NANO_GINV, Options)
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
-from .syntax import parse_gpr
 from .trace import format_view
 
 M32 = 0xFFFFFFFF
@@ -196,7 +196,7 @@ class Debugger(cmd.Cmd):
             pass
         elif r.stopped == "end":
             self.say("the program ran past its last instruction (end it with "
-                     "li $v0, 10 / syscall)")
+                     f"li ${'t4' if s.nano else 'v0'}, 10 / syscall)")
         elif r.stopped == "exit":
             code = s.services.exit_code if s.services is not None else None
             self.say("the program exited" + (f" with code {code}" if code else ""))
@@ -484,7 +484,8 @@ class Debugger(cmd.Cmd):
             self.say("  ".join(f"{n:>5}{'*' if ch else ' '}0x{v:0{w}x}"
                                for n, v, ch in rows[i:i + 4]))
         m = s.machine
-        self.say(f"   pc  0x{m.pc:0{w}x}    hi  0x{m.hi:0{w}x}    lo  0x{m.lo:0{w}x}"
+        hilo = "" if m.nano else f"    hi  0x{m.hi:0{w}x}    lo  0x{m.lo:0{w}x}"   # (none)
+        self.say(f"   pc  0x{m.pc:0{w}x}{hilo}"
                  + (f"    shadow set {m.srs_field(C.SRS_CSS)} of 0-{m.hss}"
                     if m.srs_field(C.SRS_CSS) else ""))
 
@@ -765,10 +766,13 @@ class Debugger(cmd.Cmd):
                     opts.add(lw)
                 else:
                     raise CliError(f"trace on: unknown option {w} (help trace)")
-            s.trace_start(modes=modes or "UKSED", mode=mode, ca="ca" in opts,
-                          trace_from="from" in opts, asid=asid, tb="tb" in opts,
-                          io="io" in opts, sync=sync, tlsif="tlsif" in opts,
-                          keep="keep" in opts, wait="wait" in opts)
+            try:
+                s.trace_start(modes=modes or "UKSED", mode=mode, ca="ca" in opts,
+                              trace_from="from" in opts, asid=asid, tb="tb" in opts,
+                              io="io" in opts, sync=sync, tlsif="tlsif" in opts,
+                              keep="keep" in opts, wait="wait" in opts)
+            except ValueError as exc:               # (nanoMIPS: no MIPS Trace)
+                raise CliError(str(exc)) from None
             for line in s.trace_state()[:2]:
                 self.say(line)
         elif cmd == "off" and not rest:
@@ -1204,6 +1208,9 @@ class Debugger(cmd.Cmd):
           tlb last            the translations of the last step
           tlb LOC             how LOC translates now: VPN2 | even/odd |
                               offset -> entry -> PFN -> PA
+        With the I7200's MPU (--mmu mpu:N | fixed+mpu:N; also `mpu`): `tlb`
+        lists CDMMBase, MPU_Config, the segments and the enabled regions,
+        `tlb LOC` the region or segment of LOC and what it inhibits.
         Nothing here touches the TLB (no micro-TLB refill, no counting)."""
         from . import tlbview as tv
         self._need_program()
@@ -1231,6 +1238,8 @@ class Debugger(cmd.Cmd):
             return
         if tv.kind(m) == "fixed":
             raise CliError(tv.no_tlb(m))
+        if tv.kind(m) == "mpu" and what in ("entry", "set"):
+            raise CliError("the MPU has no TLB entries: `tlb` lists its segments and regions")
         if what == "micro":
             self.say(tv.format_micro(m))
         elif what == "entry":
@@ -1251,6 +1260,17 @@ class Debugger(cmd.Cmd):
             self.say(tv.format_ftlb_set(m, n))
         else:
             self.say(tv.format_tlb(m, everything=what == "all"))
+
+    def do_mpu(self, arg: str) -> None:
+        """mpu [LOC]   the I7200's MPU (--mmu mpu:N | fixed+mpu:N): CDMMBase,
+        MPU_Config, the segments and the enabled regions; with LOC, the
+        region or segment of LOC and what it inhibits (as `tlb`)."""
+        from . import tlbview as tv
+        self._need_program()
+        if tv.kind(self.s.machine) != "mpu":
+            raise CliError(f"no MPU: this core has the {self.s.machine.mmu.name} "
+                           "(--mmu mpu:N on a nanoMIPS core)")
+        self.do_tlb(arg)
 
     @staticmethod
     def _entry_number(parts: list[str], mmu) -> int:
@@ -1375,9 +1395,11 @@ class Debugger(cmd.Cmd):
         center = self.resolve(parts[0]) if parts else cur
         i = addrs.index(center) if center in addrs else 0
         lo = max(0, i - (count // 3 if not parts else 0))
+        nm = s.program.nm
         for a, w, text, line in rows[lo:lo + count]:
             mark = "=>" if a == cur else " *" if a in s.breakpoints else "  "
-            self.say(f"{mark} 0x{a:08x}  {w:08x}  {text:<30} {line:>4}")
+            enc = encoding(w, nm[a], "nanomips") if a in nm else f"{w:08x}"
+            self.say(f"{mark} 0x{a:08x}  {enc}  {text:<30} {line:>4}")
 
     def do_list(self, arg: str) -> None:
         """list [LINE|LOCATION]   (l) source lines around the current line (a
@@ -1512,17 +1534,26 @@ class Debugger(cmd.Cmd):
 
     def _tool(self, arg: str, decode: bool) -> None:
         s = self.s
+        arch = s.options.arch
         try:
-            if decode:
+            if decode and arch == "nanomips":
+                raw, size = tools.parse_nano(arg)
+                words = [tools.decode_word(raw, size=size, abi=s.abi, arch=arch)]
+            elif decode:
                 words = [tools.decode_word(tools.parse_word(arg), release=s.release,
-                                           abi=s.abi)]
+                                           abi=s.abi, arch=arch)]
             else:
                 words = tools.encode_text(arg, release=s.release, abi=s.abi,
-                                          pseudo=s.options.pseudo)
+                                          pseudo=s.options.pseudo, arch=arch)
         except Exception as exc:                            # noqa: BLE001
             raise CliError(f"{type(exc).__name__}: {exc}") from None
         for d in words:
-            self.say(f"0x{d.word:08x}  {d.text}    ({d.description}, {d.format}-format)")
+            if arch == "nanomips":
+                size = 2 if d.word < 1 << 16 else 4 if d.word < 1 << 32 else 6
+                self.say(f"{encoding(d.word, size, arch).rstrip()}  {d.text}    "
+                         f"({d.description}: {d.format})")
+            else:
+                self.say(f"0x{d.word:08x}  {d.text}    ({d.description}, {d.format}-format)")
             self.say("  " + "  ".join(f"{f.name}[{f.msb}:{f.lsb}]={f.bits} ({f.meaning})"
                                       for f in d.fields))
 
@@ -1533,15 +1564,17 @@ class Debugger(cmd.Cmd):
         if word in PSEUDO_HINTS:
             self.say(f"{word} is a pseudo-instruction; the assembler writes: "
                      f"{PSEUDO_HINTS[word]}")
-        rows = [r for r in tools.reference(self.s.release) if r.matches(arg)]
+        rows = [r for r in tools.reference(self.s.release, arch=self.s.options.arch)
+                if r.matches(arg)]
         if not rows and word not in PSEUDO_HINTS:
             self.say("nothing found")
         for r in rows[:40]:
-            notes = [f"since {r.since}"] + ([f"removed in {r.removed_in}"]
-                                            if r.removed_in else [])
+            notes = ([f"since {r.since}"] if not self.s.nano else []) + (
+            [f"removed in {r.removed_in}"] if r.removed_in else [])
             notes += (["delay slot"] if r.delay_slot else []) + \
                 (["privileged"] if r.privileged else [])
-            self.say(f"{r.syntax:<32} {r.description}  [{', '.join(notes)}]")
+            self.say(f"{r.syntax:<32} {r.description}"
+                     + (f"  [{', '.join(notes)}]" if notes else ""))
         if len(rows) > 40:
             self.say(f"... {len(rows) - 40} more")
 
@@ -1579,12 +1612,16 @@ class Debugger(cmd.Cmd):
         disks [SLOT=]IMAGE[,...]|none (the Malta's IDE disks) | iocu on|off |
         compressed auto|none|mips16e|micromips|micromips-only | fpu on|off |
         dsp auto|none|dsp|dspr2 (the DSP Module) |
-        mt auto|none|VPES:TCS (the MT Module: 1-2 VPEs, up to 9 TCs) |
+        mt auto|none|VPES:TCS (the MT Module: 1-3 VPEs, up to 9 TCs) |
         mt-pm rr|wrr|wrr2 (its policy manager) | itc auto|none|FIFOS:SEMAPHORES |
         vps 1..4 (Release 6 VPs a core: a CM3 system) |
         itu auto|none|FIFOS:SINGLES[:DEPTH] (a CM3 core's ITU) |
         core NAME|generic (a real core's settings: python3 -m emips cores) |
-        arch mips32|mips64 (MIPS64: 64-bit registers, the doubleword instructions)
+        arch mips32|mips64|nanomips (MIPS64: 64-bit registers, the doubleword
+        instructions; nanoMIPS: nanoMIPS32 Release 6) |
+        nms on|off | crc auto|none|crc | ginv auto|none|ginvi|ginvt (a nanoMIPS
+        core: the nanoMIPS subset, CRC32, global invalidate) | relax on|off
+        (nanoMIPS: the linker's relaxations, ld --relax)
         (changes reassemble or restart the program; a setting the chosen core
         is not built with makes it the generic core)"""
         parts = arg.split()
@@ -1594,6 +1631,9 @@ class Debugger(cmd.Cmd):
         s, o = self.s, self.s.options
         on = value in ("on", "1", "yes", "true")
         if key == "release" and value.upper() in ("R1", "R2", "R3", "R5", "R6"):
+            if s.nano and value.upper() != "R6":
+                raise CliError("nanoMIPS is Release 6 based (MD01247 ch. 1): set arch "
+                               "mips32 first")
             s.release = value.upper()
         elif key == "endian" and value in ("big", "little"):
             s.endian = value
@@ -1717,8 +1757,18 @@ class Debugger(cmd.Cmd):
             except ValueError as exc:
                 raise CliError(str(exc)) from None
             o.board = value.lower()
-        elif key == "arch" and value.lower() in ("mips32", "mips64"):
+        elif key == "arch" and value.lower() in ("mips32", "mips64", "nanomips"):
             o.arch = value.lower()
+            if o.arch == "nanomips":
+                s.release = "R6"
+        elif key == "nms":
+            o.nms = on
+        elif key == "relax":
+            o.relax = on
+        elif key == "crc" and value.lower() in NANO_CRC:
+            o.crc = value.lower()
+        elif key == "ginv" and value.lower() in NANO_GINV:
+            o.ginv = value.lower()
         elif key == "disks":
             from .malta import parse_disks
             value = "" if value.lower() == "none" else value
@@ -1796,14 +1846,10 @@ class Debugger(cmd.Cmd):
         return n
 
     def _gpr(self, tok: str) -> int | None:
-        """A GPR name (MIPS64: the n64 names, $t0 = $12)."""
-        if self.s.wide:
-            from .assembler import n64_operand
-            try:
-                tok = n64_operand(tok)
-            except ValueError:
-                return None
-        return parse_gpr(tok)
+        """A GPR name in the core's ABI (MIPS64: the n64 names, $t0 = $12;
+        nanoMIPS: the p32 ones, $t4 = $2, $a4 = $8, and GNU as's $r0 ...)."""
+        from .syntax import gpr_number
+        return gpr_number(tok, "p32" if self.s.nano else "n64" if self.s.wide else True)
 
     @staticmethod
     def _signed(v: int, bits: int = 32) -> int:
@@ -1828,6 +1874,16 @@ setup        mode instruction|pipeline   set OPTION VALUE (help set)   load FILE
              quit (q)
 LOC: 0x... address, a line number, a label, $reg (its value) or pc.
 help COMMAND for details."""
+
+
+def encoding(word: int, size: int, arch: str = "mips32") -> str:
+    """An instruction's encoding as a listing shows it: 8 digits; a 16-bit
+    MIPS16e / microMIPS one 4 (and 4 spaces); a nanoMIPS one its halfwords
+    as objdump prints them (``d205``, ``00a4 0007``, ``6080 5678 1234``)."""
+    if arch == "nanomips":
+        halves = [(word >> (16 * k)) & 0xFFFF for k in range(size // 2 - 1, -1, -1)]
+        return " ".join(f"{h:04x}" for h in halves).ljust(14)
+    return f"{word:04x}    " if size == 2 else f"{word:08x}"
 
 
 def _dedent(doc: str) -> str:
@@ -1896,7 +1952,11 @@ def options_from_args(args) -> Options:
                    itc=getattr(args, "itc", None) or "auto",
                    vps=getattr(args, "vps", None) or 1,
                    itu=getattr(args, "itu", None) or "auto",
-                   arch=getattr(args, "arch", None) or "mips32")
+                   arch=getattr(args, "arch", None) or "mips32",
+                   nms=getattr(args, "nms", False),
+                   relax=getattr(args, "relax", False),
+                   crc=getattr(args, "crc", None) or "auto",
+                   ginv=getattr(args, "ginv", None) or "auto")
 
 
 def explicit_fields(args) -> set[str]:
@@ -1904,10 +1964,11 @@ def explicit_fields(args) -> set[str]:
     on purpose: a core preset (``--core``) sets only the others."""
     out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
     for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
-                 "compressed", "dsp", "mt", "mt_pm", "itc", "vps", "itu", "arch"):
+                 "compressed", "dsp", "mt", "mt_pm", "itc", "vps", "itu", "arch", "crc",
+                 "ginv"):
         if getattr(args, name, None) is not None:
             out.add(name)
-    for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer")):
+    for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer"), ("nms", "nms")):
         if getattr(args, flag, False):
             out.add(name)
     return out
@@ -1954,7 +2015,7 @@ def session_from_args(args) -> Session:
     if core:                                    # its build, under what was given
         options, core_release = cores.apply(options, core, keep=explicit_fields(args))
         release = release or core_release
-    release = release or "R5"
+    release = release or ("R6" if options.arch == "nanomips" else "R5")
     given = {f for f, a in (("shadow_sets", "shadow_sets"), ("cores", "cores"), ("mmu", "mmu"),
                             ("l3", "l3"), ("boot", "boot"), ("disks", "disk"), ("iocu", "iocu"),
                             ("model", "model"), ("compressed", "compressed"), ("dsp", "dsp"),

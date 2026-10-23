@@ -43,7 +43,7 @@ from .datapath24k import Datapath24KView
 from .examples import EXAMPLES, Example
 from .i18n import tr
 from .. import check
-from ..options import MAX_CORES, Options
+from ..options import MAX_CORES, Options, arch_title, gdb_program
 from .qt import QtCore, QtGui, QtWidgets
 from ..session import Session
 from .settings import SettingsDialog
@@ -58,6 +58,14 @@ Qt = QtCore.Qt
 #: run speed: (instructions or cycles per timer tick, tick in ms)
 SPEEDS = [(1, 600), (1, 250), (1, 80), (10, 30), (200, 10), (5000, 1)]
 RELEASES = ["R1", "R2", "R3", "R5", "R6"]
+#: the Machine toolbar's / Configure menu's (architecture, release) choices
+_ARCH_RELEASES = [(a, r) for a in ("mips32", "mips64") for r in RELEASES] + [("nanomips", "R6")]
+
+
+def _release_action(arch: str, release: str) -> str:
+    """The Configure menu action of an (architecture, release)."""
+    return {"mips32": "release", "mips64": "release64",
+            "nanomips": "release_nano"}[arch] + f"_{release}"
 HEX_SUFFIXES = (".hex", ".ihex")
 TOOL_DOCKS = ("reference", "encoder", "converter")
 #: File > New C Program
@@ -466,7 +474,8 @@ class MainWindow(QtWidgets.QMainWindow):
              "vector before its next instruction"))
         A("gdb_server", tr("&GDB Server"), self.toggle_gdb_server, None,
           tr("Let GDB debug the program here: in a terminal, gdb-multiarch -ex 'target "
-             "remote :1234'. The views follow what GDB does"), checkable=True)
+             "remote :1234' (nanoMIPS: nanomips-elf-gdb). The views follow what GDB does"),
+          checkable=True)
         self.mode_group = QtGui.QActionGroup(self)
         for i, (key, text) in enumerate((("mode_instruction", tr("&Instruction")),
                                          ("mode_pipeline", tr("5-stage &pipeline")),
@@ -501,13 +510,12 @@ class MainWindow(QtWidgets.QMainWindow):
         A("settings", tr("&Settings…"), self.open_settings, "Ctrl+,",
           tr("Processor, assembler (strict mode), boot state, exceptions, console, run"))
         self.release_group = QtGui.QActionGroup(self)
-        for arch, prefix in (("mips32", "release"), ("mips64", "release64")):
-            for r in RELEASES:          # (MIPS64: the 64-bit core, PLAN M22)
-                a = A(f"{prefix}_{r}", f"{arch.upper()} {r}"
-                      + (" (Release 6)" if r == "R6" else ""), checkable=True)
-                a.triggered.connect(lambda _=False, v=f"{arch}:{r}":
-                                    self._machine_choice("release", v))
-                self.release_group.addAction(a)
+        for arch, r in _ARCH_RELEASES:   # (MIPS64: PLAN M22; nanoMIPS: M23, R6 only)
+            a = A(_release_action(arch, r), f"{arch_title(arch)} {r}"
+                  + (" (Release 6)" if r == "R6" else ""), checkable=True)
+            a.triggered.connect(lambda _=False, v=f"{arch}:{r}":
+                                self._machine_choice("release", v))
+            self.release_group.addAction(a)
         self.endian_group = QtGui.QActionGroup(self)
         for e, text in (("big", tr("Big-endian")), ("little", tr("Little-endian"))):
             a = A(f"endian_{e}", text, checkable=True)
@@ -692,8 +700,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.m_mmu.setCurrentIndex(max(0, self.m_mmu.findData(base)))
             for i in range(self.m_mmu.count()):
                 kind = self.m_mmu.itemData(i)
-                why = None if core is None or any(
-                    m.split(":")[0].split("+")[0] == kind for m in core.mmu) else \
+                why = forbidden("mmu", kind, s.options, s.release) if core is None else \
+                    None if any(m.split(":")[0].split("+")[0] == kind for m in core.mmu) else \
                     cores.conflict(replace(s.options, mmu=kind), s.release, "mmu")
                 self.m_mmu.model().item(i).setEnabled(why is None)
                 self.m_mmu.setItemData(i, why or "", Qt.ItemDataRole.ToolTipRole)
@@ -740,11 +748,11 @@ class MainWindow(QtWidgets.QMainWindow):
                                   "caches and pipeline it is built with (the others are "
                                   "greyed out); Generic core: any setting"))
         self.m_release = QtWidgets.QComboBox()
-        for arch in ("mips32", "mips64"):
-            for r in RELEASES:
-                self.m_release.addItem(f"{arch.upper()} {r}", f"{arch}:{r}")
-        self.m_release.setToolTip(tr("The architecture and release: MIPS32, or MIPS64 (64-bit "
-                                     "registers, the doubleword instructions); its "
+        for arch, r in _ARCH_RELEASES:
+            self.m_release.addItem(f"{arch_title(arch)} {r}", f"{arch}:{r}")
+        self.m_release.setToolTip(tr("The architecture and release: MIPS32, MIPS64 (64-bit "
+                                     "registers, the doubleword instructions) or nanoMIPS "
+                                     "(the I7200's 16 / 32 / 48-bit instructions); its "
                                      "instructions and CP0"))
         self.m_board = QtWidgets.QComboBox()
         self.m_board.addItem(tr("Flat memory"), "flat")
@@ -753,7 +761,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                    "real board — its memory map, bus errors, devices"))
         self.m_mmu = QtWidgets.QComboBox()
         for spec, text in (("fixed", tr("Fixed mapping")), ("bat", tr("BAT")),
-                           ("tlb", tr("TLB (24K)")), ("ftlb", tr("VTLB + FTLB"))):
+                           ("tlb", tr("TLB (24K)")), ("ftlb", tr("VTLB + FTLB")),
+                           ("mpu", tr("MPU (I7200)"))):
             self.m_mmu.addItem(text, spec)
         self.m_mmu.setToolTip(tr("The MMU (more choices in Settings > Processor)"))
         self.m_cores = QtWidgets.QSpinBox()
@@ -793,6 +802,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if not value:
                 return
             o.arch, _, release = value.rpartition(":") if ":" in value else (o.arch, "", value)
+            if s.options.arch == "nanomips" and o.arch != "nanomips" and \
+                    getattr(cores.get(o.core), "arch", "nanomips") == "nanomips":
+                o.fpu = True                    # (leaving nanoMIPS: the FPU it took;
+                #                                  a nanoMIPS core preset goes too)
         core = cores.get(o.core)
         if field == "core":
             o, core_release = cores.apply(o, value)
@@ -902,7 +915,7 @@ class MainWindow(QtWidgets.QMainWindow):
         a["forwarding"].blockSignals(True)
         a["forwarding"].setChecked(s.forwarding)
         a["forwarding"].blockSignals(False)
-        a[f"{'release64' if s.wide else 'release'}_{s.release}"].setChecked(True)
+        a[_release_action(s.options.arch, s.release)].setChecked(True)
         c = getattr(self, "lang", "asm") == "c"
         a["assemble"].setText(tr("&Build") if c else tr("&Assemble"))
         a["assemble"].setToolTip(tr("Compile and link the C program") if c else
@@ -917,7 +930,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..cores import get as get_core
         core = get_core(s.options.core)
         self.config_label.setText(f" {core.title + ' · ' if core else ''}"
-                                  f"{s.options.arch.upper()} {s.release} · "
+                                  f"{arch_title(s.options.arch)} {s.release} · "
                                   + (tr("big-endian") if s.endian == "big"
                                      else tr("little-endian")) + " ")
 
@@ -1076,7 +1089,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.docks["source"].raise_()
         self._log(tr("loaded {name}: an ELF executable, {arch} {release}, {endian}-endian, "
                      "{n} instruction words, entry 0x{entry:08x}").format(
-            name=p.name, arch="MIPS64" if s.wide else "MIPS32", release=s.release,
+            name=p.name, arch=arch_title(s.options.arch), release=s.release,
             endian=s.endian, n=len(s.program.source_map), entry=s.program.entry))
         self.refresh()
         return True
@@ -1254,13 +1267,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def listing_text(self) -> str:
         s = self.session
-        lines = [f"# {self.doc_name or 'program'} — {s.options.arch.upper()} {s.release}, "
+        lines = [f"# {self.doc_name or 'program'} — {arch_title(s.options.arch)} {s.release}, "
                  f"{s.endian}-endian"]
         src = s.program.source_map
         for a, w, text, line in s.disassembly():
             source = src[a].text.strip() if s.kind == "asm" else ""
-            lines.append(f"{a:08x}  {w:08x}  {text:<32}" + (f"  # {line}: {source}"
-                                                           if source else ""))
+            lines.append(f"{a:08x}  {s.program.encoding(a, w)}  {text:<32}"
+                         + (f"  # {line}: {source}" if source else ""))
         return "\n".join(lines) + "\n"
 
     def export_listing(self) -> None:
@@ -1594,7 +1607,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.hex_text is None and self.lang == "c":
                 self._log(tr("built for {arch} {release}, {endian}-endian: {n} instruction "
                              "words (the Disassembly pane shows the code)").format(
-                    arch=s.options.arch.upper(), release=s.release, endian=s.endian,
+                    arch=arch_title(s.options.arch), release=s.release, endian=s.endian,
                     n=len(code)))
                 self._log(s.c_build)
                 for key in ("disassembly", "source"):
@@ -1603,7 +1616,7 @@ class MainWindow(QtWidgets.QMainWindow):
             elif self.hex_text is None:
                 self._log(tr("assembled for {arch} {release}, {endian}-endian: "
                              "{n} instruction words").format(
-                    arch=s.options.arch.upper(), release=s.release, endian=s.endian,
+                    arch=arch_title(s.options.arch), release=s.release, endian=s.endian,
                     n=len(code)))
             for note in s.disk_notes:           # a disk image that is not there
                 self._log(tr("disk: {note}").format(note=note))
@@ -1834,8 +1847,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 port=port, error=exc.strerror or exc))
             return
         self.gdb_timer.start()
-        self._log(tr("GDB server on port {port}: in a terminal, gdb-multiarch -ex "
-                     "'target remote :{port}'").format(port=self.gdb.port))
+        self._log(tr("GDB server on port {port}: in a terminal, {gdb} -ex "
+                     "'target remote :{port}'").format(
+            port=self.gdb.port, gdb=gdb_program(self.session.options.arch)))
         self._show_gdb_state()
 
     def _stop_gdb(self) -> None:

@@ -1013,6 +1013,37 @@ $ python3 -m emips run docs/guide/labs/page_walker.asm --mmu tlb
 <p>With the walker the load reads the second page's word (2) without any
 exception; without it the boot firmware's refill handler maps the page
 the usual way (1).</p>
+<p>A nanoMIPS core can have one more: the MIPS I7200's <strong>memory protection
+unit</strong> (<code>--arch nanomips --mmu mpu:N</code>, N = 1–32 regions; the I7200 preset
+takes 8–32 in steps of 4).  It does not translate at all — the
+physical address <em>is</em> the virtual one, in every mode, so kernel and user
+programs see the same 4 GB — it only says what each address may be used
+for.  The 4 GB are sixteen 256 MB <em>segments</em>, each with a cacheability
+attribute and three inhibit bits: RI (a load takes an <strong>MPUL</strong>
+exception), WI (a store takes an <strong>MPUS</strong>), XI (a fetch takes an MPUL);
+both have ExcCode 29 and leave the address in BadVAddr.  Up to 32
+<em>regions</em> overlay the segments with their own attributes: a region is
+16 subregions of 32 bytes to 256 MB each, of which the region control
+register enables a run of consecutive ones; where regions overlap the
+higher-numbered one wins.  The registers are memory mapped in the
+<em>Common Device Memory Map</em> that CP0's CDMMBase places (the boot firmware
+puts it at <code>0xbfc10000</code>; the MPU's registers start 192 bytes in, after
+the Fast Debug Channel's): MPU_Config at +8, the segment control
+registers at +0x10 (a byte a segment: RI, WI, XI, CCA), region <em>r</em>'s
+base address at +0x20 + 8<em>r</em> and its control register at +0x24 + 8<em>r</em>
+(enable, subregion size as a power of two, count, RI, WI, XI, CCA).
+<code>--mmu fixed+mpu:N</code> is the I7200's other build: the fixed mapping, with
+the regions laid over it.  With MT each VPE has its own MPU.  The
+debugger's <code>mpu</code> (or <code>tlb</code>) lists the segments and the enabled
+regions, <code>mpu ADDRESS</code> says which of them holds an address and what it
+inhibits; the TLB pane shows the same table.</p>
+<pre><code class="language-mips">        li      $t1, 0xbfc100c0            # the MPU's registers
+        li      $t0, 0x10010000
+        sw      $t0, 0x20($t1)             # region 0 starts here ...
+        li      $t2, 0x8000 | (5 &lt;&lt; 10) | (15 &lt;&lt; 6) | 0x10 | 3
+        sw      $t2, 0x24($t1)             # ... 16 x 32 bytes, WI, cacheable
+        sw      $t2, 0($t0)                # MPUS: ExcCode 29, BadVAddr 0x10010000
+</code></pre>
 <h3 id="the-64-bit-address-space">The 64-bit address space</h3>
 <p>A MIPS64 core (<code>--arch mips64</code>, <a href="02-writing-programs.html#223-mips64-64-bit-programs">2.23</a>) has
 64-bit addresses, but a program does not have to use them.  Every MIPS32
@@ -1451,6 +1482,15 @@ breakpoint
 #1  0x9fc00f3c in monitor: mon_exception
 </code></pre>
 <p>See <a href="#lab-34--a-yamon-application">Lab 34</a>.</p>
+<p>A <strong>nanoMIPS</strong> CPU on the Malta (<code>--arch nanomips --board malta</code>)
+gets the same monitor assembled as nanoMIPS code — the same board set-up,
+function table, exception handling and start, in instructions of the
+nanoMIPS subset, so it runs on every nanoMIPS core.  Its functions follow
+the nanoMIPS calling convention (p32): the arguments in <code>$a0</code>–<code>$a3</code> as
+above, the result in <code>$a0</code>, and a program that returns to the monitor
+gives it its <code>$a0</code>.  (QEMU's Malta runs the I7200, nanoMIPS's core, with
+a small boot loader of its own; there is no YAMON for nanoMIPS — the
+table at <code>0x9fc00500</code> is eMIPS's choice.)</p>
 <h3 id="drivers-on-the-malta">Drivers on the Malta</h3>
 <p>With the monitor dispatching interrupts, a <strong>driver</strong> is two halves:
 the part the program calls (start a transfer, take a character) and the
@@ -4482,6 +4522,124 @@ it overflows on both (in C that is undefined behaviour; here it wraps).
 64-bit shift of the sign-extended <code>int</code> — no conversion instruction is
 needed, n64 passes an <code>int</code> as a sign-extended word — and gets
 4096000000; on MIPS32 a <code>long</code> has 32 bits and it is the same <code>sll</code>.</p>
+</details>
+<h3 id="lab-63--how-big-is-an-instruction">Lab 63 — How big is an instruction?</h3>
+<p><a href="labs/nano_sizes.asm"><code>labs/nano_sizes.asm</code></a> adds up ten numbers
+in nanoMIPS (<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">2.24</a>; its settings: <code>--arch
+nanomips</code>) and prints 39.  How many bytes does each instruction take, the
+program and the loop (<code>python3 -m emips asm docs/guide/labs/nano_sizes.asm</code>)?
+The same program for MIPS32 takes 60 bytes.  Then make it smaller without
+changing what it does: first only by choosing other registers, then by
+moving <code>nums</code> to <code>.sdata</code>.  How small do the loop and the program get, and
+why?</p>
+<details>
+<summary>Answer</summary>
+<p>42 bytes, the loop 16: <code>la</code> is a 48-bit <code>li</code> (a whole address), <code>li $t2,
+10</code>, <code>lw</code>, <code>addu</code>, <code>bnezc</code> and the two <code>li $t4</code> take 32 bits, <code>li $t3,
+0</code> (a <code>move</code> from <code>$zero</code>), both <code>addiu</code>, <code>move</code> and <code>syscall</code> 16.  Most
+16-bit forms name their registers in 3 bits: only <code>$s0</code>–<code>$s3</code> and
+<code>$a0</code>–<code>$a3</code>.  With <code>$a1</code>, <code>$a2</code>, <code>$s0</code> and <code>$a3</code> instead of <code>$t1</code>,
+<code>$t2</code>, <code>$t3</code> and <code>$t0</code> every instruction of the loop has a 16-bit form:
+the loop takes 10 bytes and the program 34.  In <code>.sdata</code> <code>nums</code> is next to
+<code>$gp</code>, so <code>la</code> becomes <code>addiu $a1, $gp, 0</code> (32 bits): 32 bytes, about
+half of MIPS32's 60 (whose <code>la</code> is two instructions and whose <code>bnez</code> has
+a <code>nop</code> in its delay slot).  The compiler does the same: it allocates the
+eight short registers to the busiest values.</p>
+</details>
+<h3 id="lab-64--frames-in-one-instruction">Lab 64 — Frames in one instruction</h3>
+<p><a href="labs/nano_frames.asm"><code>labs/nano_frames.asm</code></a> computes 5! recursively
+with <code>save</code> and <code>restore.jrc</code>.  It should print 120: what does it print, and
+why?  Fix it by changing two lines.  Then stop at the deepest call (<code>python3
+-m emips debug docs/guide/labs/nano_frames.asm</code>, <code>break one</code>, <code>run</code>):
+what are <code>$sp</code> and <code>mem 0x7fffefb0 16</code>?  How many bytes would the same
+prologue and epilogue take in MIPS32?</p>
+<details>
+<summary>Answer</summary>
+<p>It prints 1.  <code>fact</code> keeps <code>n</code> in <code>$s0</code> across its recursive call, but
+its <code>save</code> stores only <code>$ra</code>: every call overwrites the caller's <code>$s0</code>,
+the innermost one leaves 1 there, and every multiplication is 1 × 1.  The p32
+ABI says a function that uses <code>$s0</code> saves it: <code>save 16, $ra, $s0</code> and
+<code>restore.jrc 16, $ra, $s0</code> (both <code>restore.jrc</code>) — 120.  At <code>one</code>, five
+frames deep, <code>$sp</code> is 0x7fffefac: 0x7fffeffc − 5 × 16.  Each <code>save</code>
+stores the registers downward from the old <code>$sp</code>: <code>$ra</code> at −4, <code>$s0</code> at −8 —
+0x7fffefb8 and 0x7fffefb4 hold the frame of <code>fact(1)</code>: 0x0040001c (the return
+into <code>fact(2)</code>, after its <code>balc</code>) and 2 (<code>fact(2)</code>'s <code>$s0</code>).  In MIPS32 the prologue is <code>addiu $sp, $sp, -16</code>, <code>sw
+$ra, 12($sp)</code>, <code>sw $s0, 8($sp)</code> (12 bytes) and each return <code>lw</code>, <code>lw</code>,
+<code>jr $ra</code> with <code>addiu</code> in its delay slot (16 bytes); here each is one
+16-bit instruction.</p>
+</details>
+<h3 id="lab-65--what-the-linker-does">Lab 65 — What the linker does</h3>
+<p><a href="labs/nano_relax.asm"><code>labs/nano_relax.asm</code></a> (<code>.linkrelax</code>) sums a
+table with a helper in another section and reports through a routine in
+<code>.ktext</code>, 2 GB away (<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">2.24</a>).  List it (<code>python3 -m
+emips asm docs/guide/labs/nano_relax.asm</code>), then again with <code>--relax</code>:
+what did the linker change each time, and how many bytes did it save?  Why
+could the assembler not do it?  Then delete <code>.linkrelax</code> and assemble it
+again: what goes wrong?</p>
+<details>
+<summary>Answer</summary>
+<p>Without <code>--relax</code> the linker only <em>expands</em>: <code>balc report</code> cannot reach
+0x80000180 (a <code>balc</code> reaches ±32 MB), so it becomes <code>li $at, 0x80000180</code>
++ <code>jalrc $at</code> (8 bytes; <code># ld: ... balc is transformed into li[48],
+jalrc[16]</code>).  With <code>--relax</code> it also <em>relaxes</em>: <code>balc add</code> becomes
+16-bit (the helper is a few bytes away), and the two accesses to <code>total</code>
+become the 16-bit <code>$gp</code>-relative forms (it is 40 bytes from <code>$gp</code>) — 6
+bytes fewer, and the program still prints 55.  The assembler sees one
+section at a time: it does not know where <code>.text.lib</code>, <code>.ktext</code> and
+<code>.sdata</code> will be, so it writes the long forms and leaves relocations for
+the linker; <code>.linkrelax</code> tells it the linker may change their size later.
+Without <code>.linkrelax</code> the sizes are final: the linker may only fill in the
+offsets, and <code>balc report</code> fails — <code>relocation overflow: R_NANOMIPS_PC25_S1
+against local symbol 'report'</code>, as with nanoMIPS's <code>ld</code>.</p>
+</details>
+<h3 id="lab-66--a-guard-with-the-mpu">Lab 66 — A guard with the MPU</h3>
+<p><a href="labs/nano_mpu.asm"><code>labs/nano_mpu.asm</code></a> (<code>--arch nanomips --mmu
+mpu:8</code>) fills a 16-word buffer, but its loop runs once too often and
+overwrites the word after it, <code>secret</code>: it prints 16
+(<a href="#the-other-mmus">the other MMUs</a>).  Make the MPU catch the overflow:
+at the start of <code>main</code>, set up region 0 so that a store to <code>secret</code> takes
+an exception (its handler prints Cause.ExcCode and BadVAddr).  <code>python3 -m
+emips check docs/guide/labs/nano_mpu.asm</code> says when it works.  Then try a
+subregion size of 128 bytes (Size 7); and run your program with <code>--mmu
+fixed+mpu:8</code> and with <code>--mmu tlb</code>.  Explain the three outputs.</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-mips">main:   li      $t1, 0xbfc100c0     # the MPU's registers (CDMM + 192)
+        la      $t0, secret
+        sw      $t0, 0x20($t1)      # region 0 starts at secret
+        li      $t0, 0x8000 | (5 &lt;&lt; 10) | 0x10 | 3
+        sw      $t0, 0x24($t1)      # on, one 32-byte subregion, WI, cacheable
+</code></pre>
+<p>It prints <code>29 0x10010040</code>: the seventeenth store takes an MPUS (ExcCode
+29) at <code>secret</code>, which keeps 1234.  The region is one subregion (Count 0)
+of 32 bytes (Size 5) at <code>secret</code>, 0x10010040 — aligned to 32, as a
+subregion's base must be; the rest of the segment keeps its attributes.  With
+Size 7 the subregions are 128 bytes and the base is aligned down to
+0x10010000: the region covers <code>buf</code> too, and the very first store faults
+(<code>29 0x10010000</code>).  With <code>fixed+mpu:8</code> (the I7200's other build) it
+prints the same: the regions lie over the fixed mapping, which translates
+kuseg to VA + 1 GB but whose addresses the regions see as the program does.
+With <code>--mmu tlb</code> there is no MPU and no CDMM: the stores to 0xbfc100c0 go
+to memory and the program prints 16 again.</p>
+</details>
+<h3 id="lab-67--c-in-fewer-bytes">Lab 67 — C in fewer bytes</h3>
+<p><a href="labs/c_nano.c"><code>labs/c_nano.c</code></a> built twice with <code>-O 2</code>: for MIPS32
+(<code>c_nano_32.elf</code>) and for nanoMIPS (<code>cc --arch nanomips</code>, <code>c_nano.elf</code>).  It
+sorts a table of records and prints the keys and a checksum.  Run both (they
+print the same), then compare <code>sort</code> and <code>checksum</code> in the two listings
+(<code>python3 -m emips dis docs/guide/labs/c_nano.elf</code>): how many bytes does
+each take, and where do the bytes go?</p>
+<details>
+<summary>Answer</summary>
+<p><code>sort</code> takes 160 bytes for MIPS32 and 88 for nanoMIPS, <code>checksum</code> 68 and
+40, <code>main</code> 128 and 80 — about 40 % less.  20 of the 42 instructions of
+nanoMIPS's <code>sort</code> and <code>checksum</code> are 16-bit (<code>move</code>, <code>addiu</code>,
+<code>sw</code>, <code>lh</code>, <code>jrc $ra</code> ...).  No delay slots:
+MIPS32's <code>checksum</code> has a <code>nop</code> after <code>bne</code> and after <code>jr</code>, and its
+<code>beq</code> needs the <code>subu</code> in its slot.  One instruction does what takes two:
+<code>lsa</code> (shift and add: the end of the table), <code>bnec</code> / <code>bgec</code> (compare and
+branch — MIPS32 needs <code>slt</code> + <code>bne</code>), <code>bltic $a1, 2</code>, <code>blezc</code>.  Code size matters on a microcontroller-class core like the
+I7200: smaller code fits its caches and its flash.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

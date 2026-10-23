@@ -162,8 +162,9 @@ def default_mmu() -> FixedMappingMMU:
 
 
 #: the MMU organizations :func:`make_mmu` builds (``Config.MT``)
-MMU_KINDS = ("fixed", "bat", "tlb", "ftlb")
-MMU_SPECS = "fixed | bat | tlb[:N] | ftlb[:N[:SETSxWAYS]], + sc / + pw"
+MMU_KINDS = ("fixed", "bat", "tlb", "ftlb", "mpu")
+MMU_SPECS = ("fixed | bat | tlb[:N] | ftlb[:N[:SETSxWAYS]], + sc / + pw; nanoMIPS: "
+             "mpu[:N] | fixed+mpu[:N]")
 
 
 def make_mmu(spec: str):
@@ -176,6 +177,10 @@ def make_mmu(spec: str):
         ftlb[:N[:SETSxWAYS]]    a VTLB of N entries (default 64) and a fixed
                                 page size TLB (default 128x4; the P5600's,
                                 MT = 4)
+        mpu[:N]                 nanoMIPS: the I7200's MPU with N regions (1-32,
+                                default 16; emips.mpu)
+        fixed+mpu[:N]           nanoMIPS: the fixed mapping with N MPU regions
+                                (the I7200's FMT build)
 
     A TLB takes the options ``+sc`` (Segmentation Control and EVA,
     Release 3+) and ``+pw`` (the hardware page table walker, Release 5+),
@@ -183,6 +188,12 @@ def make_mmu(spec: str):
     text = (spec or "fixed").strip().lower().replace(" ", "")
     base, *flags = text.split("+")
     kind, _, rest = base.partition(":")
+    if kind == "mpu" or (kind == "fixed" and len(flags) == 1 and flags[0].split(":")[0] == "mpu"
+                         and not rest):
+        from . import mpu
+        if kind == "mpu" and flags:
+            raise ValueError(f"the MPU takes no options: {spec!r}")
+        return mpu.make(kind, rest if kind == "mpu" else flags[0].partition(":")[2], flags)
     if kind in ("fixed", "bat"):
         if rest or flags:
             raise ValueError(f"{kind} takes no size or options: {spec!r}")

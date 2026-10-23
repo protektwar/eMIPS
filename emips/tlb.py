@@ -449,11 +449,17 @@ def _arch(code: int, va: int, *, refill: bool = False, why: str = "", xtlb: bool
 #: missing page pair as the fixed mapping MMU would — kuseg at VA + 1 GB,
 #: cacheable; kseg2 / kseg3 at PA = VA, uncached (the MMIO devices) — in
 #: global 4 KB pages, with a random entry (TLBWR).
-def firmware_refill(cca: int = 3, window: tuple[int, int] | None = None) -> str:
+def firmware_refill(cca: int = 3, window: tuple[int, int] | None = None,
+                    arch: str = "mips32") -> str:
     """The boot firmware's refill handler mapping kuseg with attribute
     ``cca`` (3; a core of a CPS: 5, cacheable coherent).  ``window`` =
     (base, size) of a board's memory for kuseg (the Malta: the top
-    power-of-two part of its SDRAM): PA = base + (VA mod size)."""
+    power-of-two part of its SDRAM): PA = base + (VA mod size).
+    ``arch`` "nanomips": the same handler in nanoMIPS code
+    (:data:`FIRMWARE_REFILL_NANO`; assemble it with ``.ktext`` at
+    0x80000000 — GNU as's ``.ktext N`` is a subsection)."""
+    if arch == "nanomips":
+        return _nano_refill(cca, window)
     if window is not None:
         base, size = window
         mask = (size - 1) & ~0x1FFF
@@ -510,6 +516,67 @@ __tlb_set:
         mtc0  $k0, $3            # EntryLo1
         mtc0  $zero, $5          # PageMask: 4 KB pages
         sll   $zero, $zero, 3    # ehb (Release 1: a nop)
+        tlbwr                    # a random entry (Wired .. N-1)
+        eret
+"""
+
+
+#: The nanoMIPS boot firmware's refill handler (PLAN M23): FIRMWARE_REFILL
+#: in nanoMIPS code — no delay slots (the uncached attribute is set before
+#: the branch), BLTC for BLTZ, a real EHB; every instruction is in the
+#: nanoMIPS subset (an NMS core runs it too)
+FIRMWARE_REFILL_NANO = """\
+        .ktext
+__tlb_refill:
+        mfc0  $k1, $10           # EntryHi: VPN2 of the miss | ASID
+        srl   $k0, $k1, 13
+        sll   $k0, $k0, 7        # EntryLo PFN of the even page: (VA >> 12) << 6
+        ori   $k0, $k0, 0x17     # C = 2 uncached, D, V, G
+        bltc  $k1, $zero, __tlb_set   # VA >= 0x80000000: kseg2 / kseg3, PA = VA
+        li    $k1, 0x01000000    # kuseg: PA = VA + 0x40000000 (PFN + 0x40000)
+        addu  $k0, $k0, $k1
+        xori  $k0, $k0, 0x08     # C = 3: cacheable, write-back
+__tlb_set:
+        mtc0  $k0, $2            # EntryLo0: the even page
+        addiu $k0, $k0, 0x40     # the odd page: PFN + 1
+        mtc0  $k0, $3            # EntryLo1
+        mtc0  $zero, $5          # PageMask: 4 KB pages
+        ehb
+        tlbwr                    # a random entry (Wired .. N-1)
+        eret
+"""
+
+
+def _nano_refill(cca: int, window: tuple[int, int] | None) -> str:
+    if window is None:
+        return FIRMWARE_REFILL_NANO.replace(
+            "xori  $k0, $k0, 0x08     # C = 3: cacheable, write-back",
+            f"xori  $k0, $k0, 0x{(2 ^ cca) << 3:02x}     # C = {cca}: cacheable, write-back"
+            + (", coherent" if cca in (4, 5) else ""))
+    base, size = window
+    mask = (size - 1) & ~0x1FFF
+    lo = 0x07 | cca << 3                        # C, D, V, G
+    return f"""\
+        .ktext
+__tlb_refill:
+        mfc0  $k1, $10           # EntryHi: VPN2 of the miss | ASID
+        srl   $k0, $k1, 13
+        sll   $k0, $k0, 7
+        ori   $k0, $k0, 0x17     # kseg2 / kseg3: PA = VA, C = 2 uncached, D, V, G
+        bltc  $k1, $zero, __tlb_set
+        li    $k0, 0x{mask:08x}  # the window: VA mod 0x{size:x}
+        and   $k0, $k0, $k1      # the page pair's offset in the window
+        li    $k1, 0x{base:08x}  # + its base
+        addu  $k0, $k0, $k1
+        srl   $k0, $k0, 12
+        sll   $k0, $k0, 6        # EntryLo PFN of the even page
+        ori   $k0, $k0, 0x{lo:02x}     # C = {cca}, D, V, G
+__tlb_set:
+        mtc0  $k0, $2            # EntryLo0: the even page
+        addiu $k0, $k0, 0x40     # the odd page: PFN + 1
+        mtc0  $k0, $3            # EntryLo1
+        mtc0  $zero, $5          # PageMask: 4 KB pages
+        ehb
         tlbwr                    # a random entry (Wired .. N-1)
         eret
 """

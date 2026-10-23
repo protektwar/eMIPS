@@ -12,6 +12,7 @@ import html
 from .. import alulogic as al
 from .. import controllogic as cl
 from .. import datapathinfo as dpi
+from .. import nanocontrol as nc
 from ..session import Session
 from . import theme
 from .i18n import tr
@@ -109,7 +110,11 @@ class PartDialog(QtWidgets.QDialog):
         while tabs.count():
             tabs.removeTab(0)
         html_ = ""
-        word = dpi.control_word(s, self.key)
+        nano = bool(getattr(s.machine, "nano", False))
+        word = None if nano else dpi.control_word(s, self.key)
+        insn = dpi.control_nano(s, self.key) if nano else None
+        if insn is not None:
+            html_ = self._nano_main(insn, c.stage["ID"][1])
         if word is not None:
             mc = cl.main_control(s.release, s.options.arch)
             ev = cl.evaluate_main(mc, word)
@@ -132,12 +137,19 @@ class PartDialog(QtWidgets.QDialog):
                      f"({E(al.aluop_why(ev.aluop, s.wide))})</p>")
         if logic is not None and logic.control is not None:
             ctl = logic.control
-            pla = cl.alu_control(s.release, s.options.arch)
             lit = c.stage["EX"][1]
             view = dpi.alu_view(s, self.key)
-            self.pla_alu.show_pla(pla, cl.alu_input(ctl.aluop, view.word),
-                                  f"ALU control: ALUOp = {ctl.aluop:04b}, funct = "
-                                  f"{view.word & 0x3F:06b}", lit)
+            if nano:                            # ALUOp names the function; ALUSrc: ShVar
+                src = nc.evaluate_main(nc.main_control(), view.word,
+                                       view.size).signals["ALUSrc"]
+                self.pla_alu.show_pla(nc.alu_control(), nc.alu_input(ctl.aluop, src),
+                                      f"ALU control: ALUOp = {ctl.aluop:04b}, ALUSrc = "
+                                      f"{int(src)}", lit)
+            else:
+                pla = cl.alu_control(s.release, s.options.arch)
+                self.pla_alu.show_pla(pla, cl.alu_input(ctl.aluop, view.word),
+                                      f"ALU control: ALUOp = {ctl.aluop:04b}, funct = "
+                                      f"{view.word & 0x3F:06b}", lit)
             tabs.addTab(self.pla_alu, tr("ALU control"))
             if logic.slices:
                 i = self.bit.value()
@@ -148,6 +160,30 @@ class PartDialog(QtWidgets.QDialog):
         if 0 <= current < tabs.count():
             tabs.setCurrentIndex(current)
         return html_
+
+    def _nano_main(self, insn, lit: str) -> str:
+        """The main control of a nanoMIPS core (emips.nanocontrol): the major
+        opcode decoder and the pool's decoder."""
+        tabs = self.drawings
+        mc = nc.main_control()
+        ev = nc.evaluate_main(mc, insn.raw, insn.size)
+        maj = nc.major(insn.raw, insn.size)
+        self.pla_main.show_pla(mc.opcode, maj, f"Main control: the major opcode decoder "
+                               f"(bits 15..10 of the first halfword = {maj:06b})", lit)
+        tabs.addTab(self.pla_main, tr("Opcode decoder"))
+        if ev.escape is not None:
+            esc = ev.escape
+            self.pla_second.show_pla(
+                esc.pla, ev.x, f"{esc.escape} decoder ({', '.join(esc.fields)}): enabled "
+                f"by the opcode decoder's {esc.escape} line", lit)
+            tabs.addTab(self.pla_second, tr("{name} decoder").format(name=esc.escape))
+        sig = ", ".join(f"{k}={int(v)}" for k, v in ev.signals.items())
+        dst = (f"RegDst = {ev.regdst:03b} ({nc.REGDST[ev.regdst]})"
+               if ev.signals["RegWrite"] else "RegDst: no register written")
+        return (f"<p><b>{E(tr('The control signals'))}</b> (the opcode decoder's "
+                + (f"OR the {E(ev.escape.escape)} decoder's " if ev.escape else "")
+                + f"outputs): <code>{E(sig)}</code>; {E(dst)}; ALUOp = {ev.aluop:04b} "
+                f"({E(nc.ALUOP_WHY.get(ev.aluop, ''))})</p>")
 
     # -- inside the ALU ---------------------------------------------------------------
 

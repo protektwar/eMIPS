@@ -12,17 +12,25 @@ has no number.
 (:meth:`Session.stage_details` / :attr:`Session.last_view`, the cycle's
 events) and the decoded instruction word (its bit fields, the control
 signals) — nothing is executed or recomputed here.
+
+A nanoMIPS core (PLAN M23 phase 4e) runs on the same five stages with
+2-, 4- and 6-byte instructions: :data:`NANO_PARTS` says what differs
+inside (the +2 / 4 / 6 adder, the halfword fetch, compact branches from
+the address of the next instruction, the immediates the format's decode
+pseudocode assembles), and the descriptions read the instruction's
+fields from its encoding diagram (:func:`emips.tracenano.fields`) and its
+registers from :func:`emips.simnano.uses`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .syntax import GPR_NAMES, GPR_NAMES_N64, gpr_name
+from .syntax import GPR_NAMES, GPR_NAMES_N64, GPR_NAMES_P32, gpr_name
 
 STAGES = ("IF", "ID", "EX", "MEM", "WB")
-_GPRS = {f"${n}" for n in GPR_NAMES} | {f"${n}" for n in GPR_NAMES_N64}
+_GPRS = {f"${n}" for names in (GPR_NAMES, GPR_NAMES_N64, GPR_NAMES_P32) for n in names}
 #: hex digits of a register value in the descriptions (MIPS64: 16; set by
 #: part_info from the session)
 _DIGITS = [8]
@@ -146,6 +154,71 @@ PARTS: dict[str, Part] = {p.key: p for p in (
 )}
 
 
+#: what is different inside on a nanoMIPS core (MD01247: 16 / 32 / 48-bit
+#: instructions, compact branches only, no delay slots): (title, inside)
+NANO_PARTS: dict[str, tuple[str, str]] = {
+    "pcmux": ("PC mux (PCSrc)",
+              "A 2-input multiplexer in front of the PC.  Its inputs are the address of "
+              "the next instruction (PC + 2, 4 or 6, from the adder) and the branch / "
+              "jump target computed in ID; PCSrc is 1 when the branch in ID is taken or "
+              "the instruction there is a jump.  nanoMIPS has no delay slots: a taken "
+              "branch replaces the instruction fetched behind it."),
+    "add4": ("+2 / 4 / 6 adder",
+             "An adder of the instruction's size: a nanoMIPS instruction is 16, 32 or "
+             "48 bits, and its first halfword says which (MD01247 3.1: bit 12 set = 16 "
+             "bits; major opcode P48I = 48).  PC + size is the next instruction: to the "
+             "PC mux and through IF/ID to ID (the base of PC-relative branches and the "
+             "link address)."),
+    "imem": ("Instruction memory",
+             "Read-only for the pipeline: the address is the PC (2-byte aligned), the "
+             "output one instruction of 1, 2 or 3 halfwords, latched into IF/ID.  A "
+             "32-bit instruction is two halfwords, the first one more significant, in "
+             "either byte order (MD01247 A.2).  With caches it is the I-cache, with a "
+             "TLB the address is translated first (the ITLB)."),
+    "control": ("Main control unit",
+                "Combinational logic: from the major opcode (bits 15..10 of the first "
+                "halfword: the format, or the pool of formats, MD01247 Tables B.2 / "
+                "B.3) and the pool's own fixed bits it makes the control signals.  They "
+                "travel with the instruction through ID/EX, EX/MEM and MEM/WB.  Drawn "
+                "as PLAs: the major opcode decoder makes the signals of a format, or "
+                "enables its pool's decoder.  RegDst (3 bits) names the field of the "
+                "register written (each format has its own), ALUOp (4 bits) the ALU's "
+                "function itself: nanoMIPS has no funct field common to its formats."),
+    "sext": ("Immediate decode (sign-extend)",
+             "A nanoMIPS immediate can be 2 to 32 bits, its bits scattered over the "
+             "encoding: the format's decode pseudocode reassembles, sign- or zero-"
+             "extends and scales it (``sx(s, 15)``, ``shift(u, 2)``; MD01247 ch. 3).  "
+             "The result goes to ID/EX (operand b) and to the branch-target adder."),
+    "btarget": ("Branch-target adder",
+                "An adder: the address of the next instruction (PC + 2, 4 or 6) + the "
+                "offset, which counts bytes (always even).  BC / BALC reach ±32 MB, "
+                "conditional branches less.  Every nanoMIPS branch is compact: decided "
+                "in ID, no delay slot.  Register jumps (JRC, JALRC) take the target "
+                "from the register file."),
+    "cmp": ("Branch comparator",
+            "Compares what the branch in ID asks for: two registers (BEQC, BNEC, BLTC, "
+            "BGEUC ...), a register with an immediate (BEQIC, BLTIC ...), a register "
+            "with zero (BEQZC, BNEZC) or one bit of a register (BBEQZC, BBNEZC).  Its "
+            "output, with Branch, drives PCSrc; operands can be forwarded to it."),
+    "alu": ("ALU",
+            "The arithmetic-logic unit: adder / subtractor, and, or, xor, nor, "
+            "set-on-less-than, the shifter.  The ALU control turns ALUOp (the function "
+            "the main control names) and ALUSrc (a shift by a register's amount) into "
+            "the ALU's lines.  Outputs: the result (to EX/MEM: a register value, or a "
+            "memory address) and Zero; add / sub also detect signed overflow (a trap "
+            "for ADD, SUB)."),
+    "alusrc": ("ALUSrc mux",
+               "Chooses ALU operand b: a register (ADDU, the index of LWX ...) or the "
+               "decoded immediate (ADDIU, a load / store offset).  Control signal "
+               "ALUSrc."),
+    "regdst": ("RegDst mux",
+               "Chooses the register the instruction will write.  Each nanoMIPS format "
+               "puts it in its own field (rt, rd, a 3-bit rt3 through MD01247 4.7's "
+               "register map, $ra for the links, a list for RESTORE / LWM): the "
+               "control's RegDst names it."),
+}
+
+
 @dataclass
 class PartInfo:
     part: Part
@@ -193,12 +266,31 @@ def word_of(s, d: dict) -> int | None:
         return None
 
 
+def nano_of(s, d: dict):
+    """The nanoMIPS instruction (emips.nanomips.NM) of a stage, or None (not
+    a nanoMIPS core, a bubble, no code there)."""
+    m = s.machine
+    if m is None or not getattr(m, "nano", False) or d.get("pc") is None:
+        return None
+    return s._nano_insn(m, d["pc"])
+
+
+def _nano_decode(i):
+    from .sim import Decode
+    from .simnano import ENTRIES, entry_name
+    return Decode(i.raw, ENTRIES[entry_name(i.row)])
+
+
 def control_of(s, d: dict) -> dict[str, Any] | None:
     """The main-control signals of a stage's instruction (recorded for ID;
     they travel with it, so the same in every stage)."""
     from .pipeline import analyze, control_signals
     if d.get("control"):
         return d["control"]
+    i = nano_of(s, d)
+    if i is not None:
+        dec = _nano_decode(i)
+        return control_signals(dec, analyze(dec, insn=i))
     word = word_of(s, d)
     if word is None:
         return None
@@ -213,6 +305,10 @@ def fields_of(s, d: dict) -> list:
     v = d.get("view")
     if v is not None:
         return v.fields
+    i = nano_of(s, d)
+    if i is not None:
+        from .tracenano import fields
+        return fields(i, "p32")
     from .trace import decode_fields
     word = word_of(s, d)
     if word is None:
@@ -223,22 +319,28 @@ def fields_of(s, d: dict) -> list:
         return []
 
 
-def dest_of(d: dict) -> tuple[str, int | None] | None:
+def dest_of(d: dict, names: Any = None) -> tuple[str, int | None] | None:
     """``(register, value written)`` if the stage's instruction writes a
     GPR (RegWrite), else None (the trace lists only changed registers: an
-    unchanged write takes the ALU result)."""
+    unchanged write takes the ALU result).  ``names``: the core's register
+    names (Machine.names; default: by the view's width)."""
     v, ctl = d.get("view"), d.get("control") or {}
     gprs = [w for w in (v.reg_writes if v is not None else []) if w[0] in _GPRS]
     if gprs:
         return gprs[0][0], gprs[0][2]
     if not ctl.get("RegWrite") or v is None or v.exception:
         return None
-    w = v.word
-    reg = {"rd": (w >> 11) & 31, "$ra": 31}.get(ctl.get("RegDst"), (w >> 16) & 31)
+    w, dst = v.word, ctl.get("RegDst")
+    if isinstance(dst, str) and dst[1:2].isdigit():     # a number: compressed / nanoMIPS
+        reg = int(dst[1:].split(",")[0])
+    else:
+        reg = {"rd": (w >> 11) & 31, "$ra": 31}.get(dst, (w >> 16) & 31)
     if reg == 0:
         return None
     value = None if ctl.get("MemtoReg") else (v.alu.result if v.alu is not None else None)
-    return gpr_name(reg, "n64" if getattr(v, "digits", 8) == 16 else True), value
+    if names is None:
+        names = "n64" if getattr(v, "digits", 8) == 16 else True
+    return gpr_name(reg, names), value
 
 
 def taken(d: dict, ev: dict) -> bool:
@@ -286,6 +388,15 @@ def control_word(s, key: str) -> int | None:
     return word_of(s, d)
 
 
+def control_nano(s, key: str):
+    """The nanoMIPS instruction (emips.nanomips.NM) the main control decodes
+    for part ``key`` (Control, in ID), or None."""
+    if key != "control" or s.machine is None or not getattr(s.machine, "nano", False):
+        return None
+    det, _ = details(s)
+    return nano_of(s, det.get("ID") or {})
+
+
 def _stage_of(key: str) -> str:
     st = PARTS[key].stage
     return "ID" if st == "ID / WB" else st
@@ -309,6 +420,9 @@ def part_info(s, key: str) -> PartInfo:
     if key.startswith("24k:"):
         return _24k(s, key)
     part = PARTS[key]
+    if key in NANO_PARTS and getattr(s.machine, "nano", False):
+        title, inside = NANO_PARTS[key]
+        part = replace(part, title=title, inside=inside)
     det, ev = details(s)
     st = _stage_of(key)
     d = det.get(st) or {}
@@ -324,7 +438,8 @@ def part_info(s, key: str) -> PartInfo:
         info.now = [f"{st} holds a bubble this cycle: nothing to do."]
         return info
     pipeline = s.pipeline is not None
-    lines = _BUILDERS[key](s, d, det, ev, pipeline)
+    nano = _NANO_BUILDERS.get(key) if getattr(s.machine, "nano", False) else None
+    lines = (nano or _BUILDERS[key])(s, d, det, ev, pipeline)
     info.now = [ln for ln in lines if ln is not None] or [
         f"{st} holds {text}: no instruction word to decode"]
     return info
@@ -516,7 +631,7 @@ def _operand(s, det, which: str, pipeline: bool) -> list[str]:
     if pipeline:
         mem, wb = det.get("MEM") or {}, det.get("WB") or {}
         for label, sd in (("EX/MEM", mem), ("MEM/WB", wb)):
-            dest = (dest_of(dict(sd, control=control_of(s, sd)))
+            dest = (dest_of(dict(sd, control=control_of(s, sd)), s.machine.names)
                     if sd.get("pc") is not None else None)
             out.append(f"input {label}: " + (f"{dest[0]} = {_h(dest[1])} ({sd.get('text')})"
                                              if dest else "no register result"))
@@ -527,6 +642,10 @@ def _operand(s, det, which: str, pipeline: bool) -> list[str]:
     op = v.alu.a if which == "a" else v.alu.b
     if op is None:
         return out + [f"operand {which}: not used"]
+    if which == "b" and not op.source.startswith("$") and getattr(s.machine, "nano", False):
+        out.insert(0, f"ALUSrc takes the {op.source} for operand b"
+                      + ("; mux B carries the store data" if v.mem_writes else ""))
+        return out
     if which == "b" and not op.source.startswith("$"):
         rt = _field(v.fields, "rt")
         out.insert(0, f"ALUSrc takes the {op.source.split(' ')[0]} for operand b; mux B "
@@ -660,6 +779,260 @@ _BUILDERS = {"pcmux": _pcmux, "pc": _pc, "add4": _add4, "imem": _imem,
              "cmp": _cmp, "hazard": _hazard, "fwda": _fwda, "fwdb": _fwdb,
              "alusrc": _alusrc, "alu": _alu, "regdst": _regdst, "fwdu": _fwdu,
              "dmem": _dmem, "wbmux": _wbmux, "below_if": _below, "below_mem": _below}
+
+
+# ------------------------------------------------------------- nanoMIPS
+
+def _names(s) -> Any:
+    """The core's register names (the datapath always shows names)."""
+    return s.machine.names
+
+
+def _halfwords(i) -> str:
+    return " ".join(f"{(i.raw >> (16 * k)) & 0xFFFF:04x}"
+                    for k in range(i.size // 2 - 1, -1, -1))
+
+
+def _nano_target(s, d: dict) -> int | None:
+    """The branch / jump target of a stage's instruction: what it did (its
+    view), else what its encoding says (PC-relative only)."""
+    v = d.get("view")
+    if v is not None and v.branch is not None and v.branch.target is not None:
+        return v.branch.target
+    i = nano_of(s, d)
+    if i is None:
+        return None
+    from .nanomips import target
+    from .tracenano import _BRANCHES
+    return target(i, d["pc"]) if i.row.name in _BRANCHES else None
+
+
+def _nano_pcmux(s, d, det, ev, pipeline):
+    pc, i = d.get("pc"), nano_of(s, d)
+    nxt = (pc + i.size) & _mask() if i is not None and pc is not None else None
+    idd = det.get("ID") or {} if pipeline else d
+    target = _nano_target(s, idd)
+    out = [f"input 0, PC + {i.size if i else '?'}: {_h(nxt)}",
+           f"input 1, branch / jump target from ID: {_h(target)}"
+           if target is not None else "input 1, branch / jump target: (no branch in ID)"]
+    stall = ev.get("stall")
+    if pipeline and stall and not stall.startswith(("memory", "I-miss")):
+        out.append("stall: the PC is not written (PCWrite = 0) — the same fetch again")
+    elif taken(idd, ev):
+        out.append(f"PCSrc = 1 (taken): the next PC is the target {_h(target)}"
+                   + (" — the instruction fetched behind the branch is dropped (no "
+                      "delay slot)" if pipeline else ""))
+    else:
+        out.append(f"PCSrc = 0: the next PC is {_h(nxt)}")
+    if any(e.startswith("exception") for e in ev.get("events") or []):
+        out.append("an exception this cycle: the PC is loaded with the handler's vector")
+    return out
+
+
+def _nano_add4(s, d, det, ev, pipeline):
+    pc, i = d.get("pc"), nano_of(s, d)
+    if i is None:
+        return [f"{_h(pc)}: no nanoMIPS instruction to size"]
+    h0 = i.raw >> (16 * (i.size // 2 - 1))
+    why = ("bit 12 = 1: 16 bits" if i.size == 2 else
+           "major opcode 011000 (P48I): 48 bits" if i.size == 6 else
+           "bit 12 = 0: 32 bits")
+    return [f"first halfword 0x{h0:04x}: {why} (MD01247 3.1)",
+            f"{_h(pc)} + {i.size} = {_h((pc + i.size) & _mask())}",
+            "to the PC mux (input 0) and to IF/ID (the next instruction's address for ID)"]
+
+
+def _nano_imem(s, d, det, ev, pipeline):
+    i = nano_of(s, d)
+    out = [f"address (PC): {_h(d.get('pc'))}"]
+    if i is not None:
+        out.append(f"reads {i.size // 2} halfword(s) {_halfwords(i)}: a {8 * i.size}-bit "
+                   f"{i.row.form}, {d.get('text')}")
+    else:
+        out.append(f"reads: {d.get('text')}")
+    for t in tlb_lines(d.get("tlb") or []):
+        out.append(f"translation: {t.strip()}")
+    for a in d.get("cache") or []:
+        out.append(a.describe())
+    if d.get("wait"):
+        out.append(f"waiting for the line: {d['wait']} more cycle(s)")
+    return out
+
+
+def _nano_control(s, d, det, ev, pipeline):
+    fields = fields_of(s, d)
+    out = []
+    major = _field(fields, "major")
+    if major is not None:
+        out.append(f"major opcode (15..10 of the first halfword) = {major.bits} "
+                   f"({major.meaning})")
+    ops = [f for f in fields if f.name == "op"]
+    if ops:
+        out.append("the pool's fixed bits: " + ", ".join(
+            f"{f.msb}..{f.lsb} = {f.bits}" if f.msb != f.lsb else f"{f.msb} = {f.bits}"
+            for f in ops) + (f" -> {ops[-1].meaning}" if ops[-1].meaning else ""))
+    for k, v in (control_of(s, d) or {}).items():
+        val = ("1" if v else "0") if isinstance(v, bool) else str(v)
+        if k == "RegDst" and val[1:2].isdigit():       # "$4, $5" -> "$4 = $a0, ..."
+            val = ", ".join(f"{r} = {gpr_name(int(r.strip()[1:]), _names(s))}"
+                            for r in val.split(","))
+        out.append(f"{k} = {val}: {_NANO_SIGNALS.get(k) or _SIGNALS.get(k, '')}")
+    return out
+
+
+_NANO_SIGNALS = {
+    "RegDst": "the register written (named by the format's field)",
+    "ALUSrc": "ALU operand b: a register (reg), the decoded immediate (imm), none (-)",
+    "ALUOp": "what the ALU does (the instruction page)",
+}
+
+
+def _nano_regs(s, d, det, ev, pipeline):
+    from .simnano import uses
+    out = []
+    i = nano_of(s, d)
+    if d.get("pc") is not None and i is not None:
+        reads = [gpr_name(n, _names(s)) for n in uses(i)[0]]
+        out.append(f"read ports (ID, {d.get('text')}): "
+                   + (", ".join(reads) if reads else "no register operands")
+                   + (" — two a cycle: a list (SAVE, SWM ...) is read a word a cycle"
+                      if len(reads) > 2 else ""))
+        v = d.get("view")
+        if v is not None and v.alu is not None:
+            for op in (v.alu.a, v.alu.b):
+                if op is not None and op.source.startswith("$"):
+                    out.append(f"  read {op.source}: {_h(op.value)}")
+        elif pipeline:
+            out.append("  the values go into ID/EX: see muxes A / B next cycle "
+                       "(a forwarded value may replace them)")
+    else:
+        out.append("ID holds a bubble: nothing is read")
+    wb = det.get("WB") or {}
+    dest = (dest_of(dict(wb, control=control_of(s, wb)), _names(s))
+            if wb.get("pc") is not None else None)
+    if dest is not None:
+        out.append(f"write port (WB, {wb.get('text')}): {dest[0]} <- {_h(dest[1])} "
+                   "(first half of the cycle)")
+    else:
+        out.append("write port: nothing written this cycle")
+    return out
+
+
+def _nano_immediates(s, d) -> list:
+    """The fields of a stage's instruction that make immediates (not
+    registers, not opcode bits)."""
+    from .tracenano import _REGISTERS, _derived
+    i = nano_of(s, d)
+    if i is None:
+        return []
+    made, _ = _derived(i.row)
+    out = []
+    for f in fields_of(s, d):
+        if f.name in ("major", "op", "x") or f.name in _REGISTERS:
+            continue
+        derived = made.get(f.name)
+        if derived and all(x in _REGISTERS for x in derived):
+            continue                                # a register field (rt3 -> rt)
+        out.append(f)
+    return out
+
+
+def _nano_sext(s, d, det, ev, pipeline):
+    imm = _nano_immediates(s, d)
+    if not imm:
+        return [f"not used: {d.get('text')} has no immediate"]
+    return [f"{f.name} (bits {f.msb}..{f.lsb}) = {f.bits}" + (f": {f.meaning}" if f.meaning
+                                                               else "") for f in imm]
+
+
+def _nano_btarget(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    if not (ctl.get("Branch") or ctl.get("Jump")):
+        return [f"not used: {d.get('text')} is not a branch or jump"]
+    pc, i = d.get("pc"), nano_of(s, d)
+    if i is None:
+        return []
+    out = [f"the next instruction: PC + {i.size} = {_h((pc + i.size) & _mask())}"]
+    if "offset" in i.f:
+        out.append(f"offset = {i.f['offset']} bytes")
+    target = _nano_target(s, d)
+    if target is not None:
+        out.append(f"target = {_h(target)}")
+    else:
+        out.append("the target comes from a register (JRC / JALRC / BRSC): see the "
+                   "operands")
+    return out
+
+
+def _nano_cmp(s, d, det, ev, pipeline):
+    from .tracenano import _cond
+    ctl = control_of(s, d) or {}
+    i = nano_of(s, d)
+    if not ctl.get("Branch") or i is None:
+        return [f"not used: {d.get('text')} is not a conditional branch"]
+    out = [f"condition: {_cond(i.row.name, i.f, lambda n: gpr_name(n, _names(s)))}"]
+    v = d.get("view")
+    if v is not None and v.branch is not None:
+        out.append("taken" if v.branch.taken else "not taken")
+    fwd = [e for e in ev.get("events") or [] if "-> ID" in e]
+    out += [f"forwarded: {e}" for e in fwd]
+    if v is None and pipeline:
+        out.append("decided when the operands are ready (the hazard unit may stall it)")
+    return out
+
+
+def _nano_regdst(s, d, det, ev, pipeline):
+    from .simnano import uses
+    ctl = control_of(s, d) or {}
+    i = nano_of(s, d)
+    written = [gpr_name(n, _names(s)) for n in uses(i)[1]] if i is not None else []
+    out = [f"RegDst = {ctl.get('RegDst', '?')}"
+           + (f": {', '.join(written)}" if written else "")]
+    dest = dest_of(dict(d, control=ctl), _names(s))
+    out.append(f"destination: {dest[0]}" if dest else "RegWrite = 0: no register written")
+    if i is not None and dest:
+        from . import nanocontrol as nc
+        code = nc.regdst(i.row)
+        if code is not None:
+            out.append(f"the main control's RegDst2..0 = {code:03b}: {nc.REGDST[code]}")
+    return out
+
+
+def _nano_fwdu(s, d, det, ev, pipeline):
+    from .simnano import uses
+    if not pipeline:
+        return ["instruction mode: no pipeline — nothing to forward"]
+    exd = det.get("EX") or {}
+    i = nano_of(s, exd)
+    reads = ", ".join(gpr_name(n, _names(s)) for n in uses(i)[0]) if i is not None else ""
+    out = [f"EX ({exd.get('text') or '(bubble)'}) reads: {reads or '-'}"]
+    for label, st in (("EX/MEM", "MEM"), ("MEM/WB", "WB")):
+        sd = det.get(st) or {}
+        dest = (dest_of(dict(sd, control=control_of(s, sd)), _names(s))
+                if sd.get("pc") is not None else None)
+        out.append(f"{label} writes: {dest[0] if dest else 'nothing'}")
+    fwd = [e for e in ev.get("events") or [] if e.startswith("forward")]
+    out += fwd or ["no match: the operands come from the register file"]
+    return out
+
+
+def _nano_wbmux(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    dest = dest_of(dict(d, control=ctl), _names(s))
+    if dest is None:
+        return [f"RegWrite = 0: {d.get('text')} writes no register"]
+    v = d.get("view")
+    load = bool(ctl.get("MemtoReg")) or (v is not None and bool(v.mem_reads)
+                                          and not v.mem_writes)
+    return [f"MemtoReg = {int(load)}: " + ("the loaded data" if load else "the ALU result"),
+            f"{dest[0]} <- {_h(dest[1])}"]
+
+
+#: the nanoMIPS versions of the builders (the others serve both)
+_NANO_BUILDERS = {"pcmux": _nano_pcmux, "add4": _nano_add4, "imem": _nano_imem,
+                  "control": _nano_control, "regs": _nano_regs, "sext": _nano_sext,
+                  "btarget": _nano_btarget, "cmp": _nano_cmp, "regdst": _nano_regdst,
+                  "fwdu": _nano_fwdu, "wbmux": _nano_wbmux}
 
 
 # ------------------------------------------------------------- the MIPS 24K

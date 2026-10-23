@@ -334,6 +334,40 @@ def _static(dec) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
+#: nanoMIPS's multiply / divide pages (no HI / LO: MD01247)
+_NANO_MULDIV = frozenset(("MUL", "MUH", "MULU", "MUHU", "DIV", "DIVU", "MOD", "MODU"))
+
+
+def _static_nano(i) -> tuple[str, ...]:
+    """:func:`_static` of a nanoMIPS instruction (emips.simnano, PLAN M23):
+    every PC-relative branch (BC, BALC, BRSC ... too) is a branch — there
+    are no J-type jumps —, JRC / JALRC jumps to a register, a return
+    (``jrc $ra``, RESTORE.JRC) jr31; "nop" = NOP / EHB / PAUSE or a $0
+    destination."""
+    from .simnano import _FAMILY, _USES, returns
+    page = i.row.name
+    fam = _FAMILY[page]
+    out = ["instructions", "integer"]
+    if fam == "branch_compact" or page in ("BC", "BALC", "MOVE.BALC", "BRSC", "BALRSC"):
+        out.append("branch")
+    if returns(i):
+        out.append("jr31")
+    elif page in ("JRC", "JALRC", "JALRC.HB"):
+        out.append("jr")
+    if fam == "load":
+        out.append("load")
+    if fam == "store":
+        out.append("store")
+    if page in _NANO_MULDIV:
+        out.append("muldiv")
+    if page == "SC":
+        out.append("sc")
+    writes = _USES[page][1](i.f)
+    if page in ("NOP", "EHB", "PAUSE") or (writes and 0 in writes and fam != "store"):
+        out.append("nop")
+    return tuple(out)
+
+
 # ------------------------------------------------------------- the counters
 
 class Counters:
@@ -444,15 +478,23 @@ class Counters:
     def classify(self, dec, word: int) -> tuple[str, ...]:
         """The completion events of the instruction just executed (with its
         dynamic ones: SC failed, PREF, uncached accesses)."""
-        key = word if "isa" not in dec.entry else (word, dec.name)
-        st = self._static.get(key)
-        if st is None:
-            st = self._static[key] = _static(dec)
-        extra = self.pending
         m = self.m
+        if m.nano:                              # nanoMIPS: 2, 4 or 6 bytes
+            key = (word, dec.name, m._insn_size)
+            st = self._static.get(key)
+            if st is None:
+                st = self._static[key] = _static_nano(m._nm)
+            rt = m._nm.f.get("rt", 0)
+        else:
+            key = word if "isa" not in dec.entry else (word, dec.name)
+            st = self._static.get(key)
+            if st is None:
+                st = self._static[key] = _static(dec)
+            rt = (word >> 16) & 31
+        extra = self.pending
         if m.isa_mode and m.compressed == "mips16e":    # (the twins: by mode, not word)
             extra = extra + ["mips16"]
-        if "sc" in st and self.m.read_reg((word >> 16) & 31) == 0:
+        if "sc" in st and m.read_reg(rt) == 0:
             extra = extra + ["sc_fail"]
         self.pending = []
         return st + tuple(extra) if extra else st

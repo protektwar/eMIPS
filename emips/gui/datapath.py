@@ -24,7 +24,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..datapathinfo import PARTS as _PARTS
-from ..datapathinfo import control_of as _control_of, dest_of as _dest
+from ..datapathinfo import control_of as _control_of, dest_of as _dest_of
+from ..datapathinfo import nano_of as _nano_of
 from ..datapathinfo import details as _details_of, taken as _taken_of
 from ..datapathinfo import tlb_lines as _tlb_lines_of, word_of as _word
 from ..syntax import gpr_name
@@ -427,6 +428,13 @@ class DatapathView(QtWidgets.QGraphicsView):
             self.titles[st].setText("")
             self.bands[st].setBrush(QtGui.QBrush(QtGui.QColor(T().bubble)))
         self._cache_parts(s)
+        nano = bool(getattr(s.machine, "nano", False))
+        if self.parts["add4"].label.text() != ("+2/4/6" if nano else "+4"):
+            self.parts["add4"].rename(           # nanoMIPS: 16 / 32 / 48-bit instructions
+                *(("+2/4/6", "Adds the instruction's size (2, 4 or 6 bytes): the address "
+                   "of the next instruction\n(click: what happens inside)") if nano else
+                  ("+4", "Adds 4: address of the next instruction (PC + 4)\n(click: what "
+                   "happens inside)")))
         if s.machine is None:
             self.values["status"].set("no program loaded — open a file or pick File > Examples")
             return
@@ -552,7 +560,11 @@ class DatapathView(QtWidgets.QGraphicsView):
             self._light(["add_pcmux"], c)
         self.values["pc"].set(f"PC {d['pc']:0{s.hex_digits('pc')}x}")
         word = _word(s, d)
-        if d.get("compressed"):                 # MIPS16e / microMIPS: the encoding, recoded
+        i = _nano_of(s, d)
+        if i is not None:                       # nanoMIPS: its halfwords
+            self.values["word"].set(" ".join(f"{(i.raw >> (16 * k)) & 0xFFFF:04x}"
+                                             for k in range(i.size // 2 - 1, -1, -1)))
+        elif d.get("compressed"):               # MIPS16e / microMIPS: the encoding, recoded
             raw = d["compressed"].split()[-1][2:]
             self.values["word"].set(f"{raw} -> {word:08x}" if word is not None else raw)
         elif word is not None:
@@ -568,7 +580,19 @@ class DatapathView(QtWidgets.QGraphicsView):
             self.values["ctrl"].set("\n".join("  ".join(items[i:i + 3])
                                                for i in range(0, len(items), 3)))
         word = _word(s, d)
-        if word is not None:
+        i = _nano_of(s, d)
+        if i is not None:                       # nanoMIPS: what the format reads
+            from ..simnano import uses
+            reads = [gpr_name(n, s.machine.names) for n in uses(i)[0]]
+            self.values["regs"].set("read " + ("  ".join(reads[:3]) + (" …" if len(reads) > 3
+                                                                      else "")
+                                               if reads else "-"))
+            if ctl.get("ALUSrc") == "imm" or ctl.get("Branch"):
+                imm = _nano_imm(i)
+                if imm is not None:
+                    self._light(["sext", "ifid_sext", "sext_idex"], c)
+                    self.values["imm"].set(f"imm {imm}")
+        elif word is not None:
             rs, rt, imm = (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
             abi = "n64" if s.wide else True     # (MIPS64: the n64 names)
             self.values["regs"].set(f"rs={gpr_name(rs, abi)}  rt={gpr_name(rt, abi)}")
@@ -612,7 +636,7 @@ class DatapathView(QtWidgets.QGraphicsView):
                                        + ("\nOVERFLOW" if v.alu.overflow else ""))
         if v.mem_writes:
             self._light(["store_data"], c)
-        dest = _dest(d)
+        dest = _dest(s, d)
         if dest is not None:
             self._light(["regdst", "dst_exmem"], c)
             self.values["dst"].set(f"dest {dest[0]}")
@@ -628,10 +652,10 @@ class DatapathView(QtWidgets.QGraphicsView):
     def _mem(self, s, d, ev) -> None:
         c = T().stage["MEM"][1]
         v = d.get("view")
-        if _dest(d) is not None:
+        if _dest(s, d) is not None:
             self._light(["dst_memwb"], c)
         if v is None or not (v.mem_reads or v.mem_writes):
-            if _dest(d) is not None:
+            if _dest(s, d) is not None:
                 self._light(["bypass"], c)
             return
         self._light(["dmem", "addr"], c)
@@ -648,7 +672,7 @@ class DatapathView(QtWidgets.QGraphicsView):
 
     def _wb(self, s, d, ev) -> None:
         c = T().stage["WB"][1]
-        dest = _dest(d)
+        dest = _dest(s, d)
         if dest is None:
             return
         v = d.get("view")
@@ -659,6 +683,24 @@ class DatapathView(QtWidgets.QGraphicsView):
         name, value = dest
         self.values["wb"].set(f"{name} <- {value:0{s.hex_digits()}x}" if value is not None
                               else f"{name} written")
+
+
+def _dest(s, d):
+    return _dest_of(d, s.machine.names)
+
+
+#: the decoded arguments that are a nanoMIPS instruction's immediate, by
+#: preference (emips.nanomips's decode steps)
+_NANO_IMMEDIATES = ("imm", "offset", "u", "s", "shift")
+
+
+def _nano_imm(i) -> int | None:
+    from ..tracenano import _sx
+    for k in _NANO_IMMEDIATES:
+        if k in i.f:
+            v = i.f[k]
+            return _sx(v & 0xFFFFFFFF, 32) if k in ("offset", "s", "imm") else v
+    return None
 
 
 def _src(source: str) -> str:

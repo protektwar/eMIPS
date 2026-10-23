@@ -34,6 +34,16 @@ choice open, it says which one it made.
   C for the n64 ABI and ELF64 executables (`cc --arch mips64`), GDB with
   64-bit registers; microMIPS64, MIPS16e64, the DSP and MT Modules on
   MIPS64; a 64-bit CPU on the MIPS Malta board (`--board malta --core 5kc`).
+- **nanoMIPS, first steps** — the I7200's instruction set: 16-, 32- and
+  48-bit instructions, Release 6 based, no delay slots, the nanoMIPS DSP
+  and MT ASEs; an assembler and
+  linker that give the bytes of the nanoMIPS toolchain's `as` and `ld`
+  (link-time relaxation included), the views of every format, every MMU
+  and the I7200's memory protection unit (`--mmu mpu:N`), caches and cores, instruction by instruction or on the 5-stage
+  pipeline, from the command line and the debugger (`--arch nanomips
+  [--nms]`); nanoMIPS ELF executables, C with the nanoMIPS toolchain's
+  GCC (`cc --arch nanomips`) and GDB; the Malta board with a nanoMIPS boot
+  monitor; in the window, with its datapath, panes and tools.
 - **The DSP Module** — SIMD on bytes and halfwords, saturating and
   fixed-point arithmetic, four accumulators (Revisions 1 to 3), in
   MIPS32 and microMIPS, on both pipelines, from C and in GDB.
@@ -46,10 +56,11 @@ choice open, it says which one it made.
   supervisor / user mode, the timer.
 - **The memory system** — L1 / L2 / L3 caches, the write buffer, memory
   timing; the TLB and the other MMUs (BAT, VTLB + FTLB, segmentation
-  control, the page table walker).
+  control, the page table walker; on nanoMIPS the I7200's memory
+  protection unit).
 - **Real MIPS cores** — presets for the 4Kc, 24Kc / 24Kf, 34Kc / 34Kf,
-  1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc, microAptiv UC / UP and
-  the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600:
+  1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc, microAptiv UC / UP,
+  the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600 and the nanoMIPS I7200:
   each core's release, compressed ISA, FPU, DSP Module, MT Module, MMU,
   caches and PRId as its manuals allow.
 - **A real core's pipeline** — a model of the MIPS 24K's 8-stage pipeline
@@ -172,7 +183,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 62 labs
+computer architecture behind every number on the screen (with 67 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

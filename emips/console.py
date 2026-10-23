@@ -186,7 +186,11 @@ class SyscallServices:
     ``write(text)`` receives output (default: appended to :attr:`output`).
     On a MIPS64 core (PLAN M22) the integer services use the whole 64-bit
     register: print_int (1) prints it signed, read_int (5) reads 64 bits,
-    34 / 35 / 36 print 16 hex / 64 binary digits / the unsigned value.
+    34 / 35 / 36 print 16 hex / 64 binary digits / the unsigned value.  On
+    a nanoMIPS core (PLAN M23) the registers are the same numbers — the
+    service and the result in $2 (p32's $t4), the arguments in $4-$6
+    ($a0-$a2), as UHI keeps them on nanoMIPS (MD01069 ch. 2) — and the
+    FPU services (2, 3, 6, 7) are not offered: it has no FPRs.
     """
 
     HEAP_BASE = 0x10040000                    # MARS heap
@@ -206,6 +210,8 @@ class SyscallServices:
 
     def __call__(self, m, code: int) -> bool:
         v0 = m.read_reg(2)
+        if m.nano and v0 in (2, 3, 6, 7):     # nanoMIPS has no FPRs: as an unknown service
+            return False
         a0, a1 = m.read_reg(4), m.read_reg(5)
         s32 = lambda x: x - (1 << 32) if x & 0x80000000 else x   # noqa: E731
         wide = m.wide                         # MIPS64: 64-bit registers

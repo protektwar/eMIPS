@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from .bat import BATMMU
 from .mmu import M32, cca_name, segment
+from .mpu import MPU, flags as mpu_flags
 from .tlb import (ENTRYHI, HI_ASID, INDEX, LO_D, LO_RI, LO_V, LO_XI, M64, PAGEMASK, RANDOM,
                   SEGBITS, TLBMMU, WIRED, TLBAccess, TLBEntry, size_name)
 
@@ -28,11 +29,14 @@ HALF = ("even", "odd")
 
 
 def kind(m) -> str:
-    """``tlb``, ``bat`` or ``fixed`` (no entries to show)."""
+    """``tlb``, ``bat``, ``mpu`` (the I7200's MPU, either build) or
+    ``fixed`` (no entries to show)."""
     if isinstance(m.mmu, TLBMMU):
         return "tlb"
     if isinstance(m.mmu, BATMMU):
         return "bat"
+    if isinstance(m.mmu, MPU):
+        return "mpu"
     return "fixed"
 
 
@@ -139,10 +143,18 @@ def header(mmu: TLBMMU, m) -> str:
             f" (next TLBWR), ASID {cp[ENTRYHI]['value'] & HI_ASID}")
 
 
+def format_mpu(m) -> str:
+    """The MPU's registers: CDMMBase, MPU_Config, the segments, the
+    enabled regions (emips.mpu)."""
+    return "\n".join(m.mmu.lines())
+
+
 def format_tlb(m, *, everything: bool = False, limit: int = 80) -> str:
     mmu = m.mmu
     if kind(m) == "bat":
         return format_bat(m)
+    if kind(m) == "mpu":
+        return format_mpu(m)
     if kind(m) == "fixed":
         return no_tlb(m)
     out = [header(mmu, m),
@@ -291,6 +303,8 @@ def explain(m, va: int, access: str = "load") -> str:
     mmu = m.mmu
     wide = getattr(mmu, "wide", False)
     asid = m.cp0[ENTRYHI]["value"] & HI_ASID
+    if kind(m) == "mpu":
+        return _explain_mpu(m, va, t)
     out = [f"0x{va:08x} ({t.segment if wide else segment(va)}): "
            + ("mapped" if t.mapped else "unmapped")]
     if not t.mapped:
@@ -361,6 +375,34 @@ def explain(m, va: int, access: str = "load") -> str:
     return "\n".join(out)
 
 
+def _explain_mpu(m, va: int, t) -> str:
+    """The MPU's view of ``va``: the region that holds it (the highest
+    numbered enabled one), else its segment; what each access may do."""
+    mpu: MPU = m.mmu
+    va &= M32
+    bits, r = mpu.attributes(va)
+    out = [f"0x{va:08x}: segment {va >> 28} (VA[31:28])" if mpu.segments else
+           f"0x{va:08x} ({segment(va)}): {t.how.split(';')[0]}"]
+    if r is not None:
+        lo, hi = mpu.span(r)
+        out.append(f"  MPU region {r} holds it (0x{lo:08x}-0x{hi - 1:08x}; a higher "
+                   "region wins where they overlap)")
+    elif bits >= 0:
+        out.append(f"  no enabled region holds it: segment {va >> 28}'s attributes")
+    else:
+        out.append("  no enabled MPU region holds it: the fixed mapping's attributes")
+    if t.pa is not None:
+        out.append(f"  PA 0x{t.pa:08x}" + (" (= VA)" if mpu.segments else "")
+                   + f", C{t.cca} ({cca_name(t.cca)})")
+    if bits >= 0:
+        out.append(f"  {mpu_flags(bits)}: "
+                   + "; ".join(f"a {what} {'takes ' + exc if bits & bit else 'is allowed'}"
+                               for what, bit, exc in (("load", 1 << 5, "MPUL"),
+                                                      ("store", 1 << 4, "MPUS"),
+                                                      ("fetch", 1 << 3, "MPUL"))))
+    return "\n".join(out)
+
+
 # ------------------------------------------------------------------ statistics
 
 def stats_lines(m) -> list[str]:
@@ -378,9 +420,12 @@ def stats_lines(m) -> list[str]:
                        f"({pct(u.hits, u.hits + u.misses)}), misses {u.misses}")
         if mmu.pw:
             out.append(f"  page table walks {st.walks}, refilled the TLB {st.walked}")
+    elif kind(m) == "mpu":
+        out.append(f"  accesses checked {st.hits + sum(st.faults.values())}")
     else:
         out.append(f"  translations {st.hits + sum(st.faults.values())}")
-    out.append(f"  entries written {st.writes}")
+    if kind(m) != "mpu":
+        out.append(f"  entries written {st.writes}")
     if st.faults:
         out.append("  exceptions: " + ", ".join(f"{k} {v}" for k, v in sorted(st.faults.items())))
     else:

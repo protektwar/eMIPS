@@ -156,6 +156,8 @@ THREAD = 25
 TLBRI, TLBXI = 19, 20
 WATCH = 23
 MCHECK = 24
+#: the I7200's MPU exceptions MPUL / MPUS (MD01232 Table 40; emips.mpu)
+MPU = 29
 #: The Cache Error exception has no ExcCode (it does not touch Cause);
 #: eMIPS uses this number, outside the 5-bit field, to name it.
 CACHE_ERROR = 32
@@ -172,7 +174,7 @@ EXC_NAMES: dict[int, str] = {
     INT: "Int", MOD: "Mod", TLBL: "TLBL", TLBS: "TLBS", ADEL: "AdEL",
     ADES: "AdES", IBE: "IBE", DBE: "DBE", SYS: "Sys", BP: "Bp", RI: "RI",
     CPU: "CpU", OV: "Ov", TR: "Tr", FPE: "FPE", TLBRI: "TLBRI", TLBXI: "TLBXI",
-    WATCH: "WATCH", MCHECK: "MCheck", DSPDIS: "DSPDis", THREAD: "Thread", CACHE_ERROR: "CacheErr", NMI: "NMI",
+    WATCH: "WATCH", MCHECK: "MCheck", DSPDIS: "DSPDis", THREAD: "Thread", MPU: "MPU", CACHE_ERROR: "CacheErr", NMI: "NMI",
     DSS: "DSS", DINT: "DINT", DDBLIMPR: "DDBLImpr", DDBSIMPR: "DDBSImpr",
     DIB: "DIB", DBP: "DBp", DDBL: "DDBL", DDBS: "DDBS",
 }

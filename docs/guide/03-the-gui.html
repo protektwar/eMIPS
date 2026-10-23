@@ -103,16 +103,18 @@ to know exactly what something does.</p>
 — its release, ISA, FPU, MMU, caches and pipeline as its manuals allow,
 the choices it is not built with greyed out with the reason;
 <a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>), the <strong>architecture
-and release</strong> (MIPS32 R1–R6, or MIPS64 R1–R6: 64-bit registers and the
-doubleword instructions), the <strong>board</strong> (flat memory or the MIPS Malta), the
+and release</strong> (MIPS32 R1–R6; MIPS64 R1–R6: 64-bit registers and the
+doubleword instructions; nanoMIPS R6: the I7200's 16-, 32- and 48-bit
+instructions), the <strong>board</strong> (flat memory or the MIPS Malta), the
 <strong>MMU</strong> (fixed mapping, BAT, the 24K's TLB, VTLB + FTLB), the number of
 <strong>cores</strong> and the 24K's L1 <strong>caches</strong>; the mode box beside the run
 buttons chooses Instruction, the 5-stage pipeline or the <strong>24K
 pipeline</strong>.  More shapes (L2 / L3, other cache sizes, segmentation
 control, the walker) are in Configure → Settings.  Only what goes
 together is offered: choosing Release 1 makes a single core with no
-shadow register sets (the message says so), MIPS64 makes a single core
-on flat memory with the generic core, the Malta is greyed out for a
+shadow register sets (the message says so), nanoMIPS switches the FPU
+off and greys out the 24K pipeline (a nanoMIPS core has no FPU, the 24K
+is a MIPS32 core), the Malta is greyed out for a
 C program (its tooltip says why) — see <a href="features.html#settings-that-go-together">What's in eMIPS</a>.  A
 feature you switch on brings up its pane: the caches the Caches tab, a
 TLB the TLB tab, cores the System tab, the Malta the Board tab, the MT
@@ -519,6 +521,26 @@ more lines: <strong>Word</strong> — a 32-bit operation such as <code>addu</cod
 then bit 31's) — and <strong>Sh32</strong>, which adds 32 to the shift amount
 (<code>dsll32</code> …).  ALUOp 1001 asks for a word add (<code>addiu</code>), 0000 for a
 64-bit one (<code>daddiu</code>, the address of a load or store).</p>
+<p>On a <strong>nanoMIPS</strong> core the same five stages run instructions of 2, 4 or
+6 bytes: the adder is <strong>+2/4/6</strong> (the first halfword says the size: bit 12
+set is 16 bits, major opcode P48I 48), IF shows the instruction's
+halfwords (<code>6080 5678 1234</code>), ID the registers the format reads and the
+immediate its decode pseudocode makes (<code>imm = neg(u) = -20</code>), and every
+branch is compact — decided in ID, no delay slot, the target counted in
+bytes from the next instruction.  Click a part: <em>Control</em> names the major
+opcode and its pool (<code>110110 (the P16.BR pool)</code>), <em>Sign-extend</em> the
+immediate's fields and decode steps.  The gates follow the opcode map: the
+<strong>major opcode decoder</strong> (bits 15–10 of the first halfword) makes the
+signals of a format, or enables its pool's decoder (<em>P32A decoder</em>, <em>P16.BR
+decoder</em> …), which reads the pool's own fixed bits (<code>b9</code> … <code>b3</code>: the
+instruction's bit numbers) and, where those do not tell two formats apart, a
+condition such as <code>hint != 31</code>.  Each format puts the register it writes in
+its own field, so <strong>RegDst</strong> has 3 bits naming it (000 rt, 001 rd, 010 rt3,
+011 rd3, 100 rt4, 101 $ra, 110 two registers, 111 a register list), and as
+nanoMIPS has no funct field common to its formats, <strong>ALUOp</strong> names the
+ALU's function itself (0000 add … 1011 rotate right, 1111 not the ALU); the ALU
+control turns it, with ALUSrc (a shift by a register), into the same ALU's
+lines.</p>
 <p><img alt="The main control: the opcode decoder for addiu" src="img/03-datapath-control.png"></p>
 <p><img alt="The ALU control for addu" src="img/03-datapath-alu-control.png"></p>
 <p><img alt="Inside the ALU: addu, bit 0" src="img/03-datapath-alu.png"></p>
@@ -599,7 +621,9 @@ instruction killed (fetched on a wrong path, or behind an exception).</p>
 <h2 id="36-disassembly-and-instruction">3.6 Disassembly and Instruction</h2>
 <p><strong>Disassembly</strong> lists the machine code of the program: address, word,
 instruction, source line.  It shows what pseudo-instructions became, and
-the <code>nop</code>s the assembler put in delay slots.  The current instruction
+the <code>nop</code>s the assembler put in delay slots; a nanoMIPS instruction's
+encoding is its halfwords, as <code>objdump</code> prints them (<code>9089</code>,
+<code>0040 0001</code>, <code>6080 5678 1234</code>).  The current instruction
 (or, in pipeline mode, each stage's) is coloured; breakpoints are red.</p>
 <p><img alt="Disassembly" src="img/03-disassembly.png"></p>
 <p><strong>Instruction</strong> takes the last executed instruction apart: its address
@@ -641,13 +665,16 @@ pseudo-instruction's several instructions at once).</p>
 <li><strong>GPRs</strong> — the 32 registers in hex and decimal; those changed by the
   last step are <strong>highlighted</strong>.  On a MIPS64 core they are 64 bits
   (16 hex digits) and named as the n64 ABI names them (<code>$a4</code>–<code>$a7</code>,
-  <code>$t0</code>–<code>$t3</code> are registers 8–15).</li>
+  <code>$t0</code>–<code>$t3</code> are registers 8–15); on a nanoMIPS core as the p32 ABI
+  does (<code>$t4</code> / <code>$t5</code> are registers 2 and 3, <code>$a4</code>–<code>$a7</code> 8–11).</li>
 <li><strong>PC / CP0</strong> — <code>pc</code>, <code>hi</code>, <code>lo</code>, and the coprocessor-0 registers
   <strong>Status</strong>, <strong>Cause</strong>, <strong>EPC</strong>, <strong>BadVAddr</strong>, <strong>Count</strong>, <strong>Compare</strong>,
   <strong>IntCtl</strong>, <strong>SRSCtl</strong>, <strong>SRSMap</strong>, the MMU's registers, the performance counters <strong>PerfCtl0/1</strong> and
   <strong>PerfCnt0/1</strong> (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>),
   and the FPU's <strong>FCSR</strong>.  MIPS64: <code>pc</code>, <code>hi</code>, <code>lo</code>, EPC, BadVAddr and
-  the TLB's address registers in 16 digits, the 32-bit ones in 8.</li>
+  the TLB's address registers in 16 digits, the 32-bit ones in 8.
+  nanoMIPS: no <code>hi</code> / <code>lo</code> (Release 6 has none), no FCSR, and
+  <strong>BadInstrX</strong> (the third halfword of a 48-bit instruction) after BadInstr.</li>
 <li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
   double.</li>
 <li><strong>DSP</strong> (a core with the DSP Module) — DSPControl and its fields (pos,
@@ -902,7 +929,9 @@ Double-click, or <em>Insert into editor</em>, puts its syntax at the cursor.</p>
 binary or decimal) to see its fields and instruction, or an instruction
 (<code>sw $ra, 4($sp)</code>) to see its machine word(s).  A pseudo-instruction
 shows every word it becomes; <em>At address</em> sets the PC for branch and
-jump targets.</p>
+jump targets.  On a nanoMIPS core type the halfwords (<code>d205</code>,
+<code>00a4 0007</code>, <code>6080 5678 1234</code> — the first one says how many) or an
+instruction: each one is shown at its address, 2, 4 or 6 bytes apart.</p>
 <p><img alt="The encoder" src="img/03-tool-encoder.png"></p>
 <p><strong>Number Converter</strong> (Ctrl+Shift+N) — type a number in any form (<code>42</code>,
 <code>-7</code>, <code>0x2a</code>, <code>0b101</code>, <code>'A'</code>, <code>1.5</code>, <code>inf</code>, <code>nan</code>) to see it in hex,
@@ -938,7 +967,15 @@ other change restarts it.</p>
 <tbody>
 <tr>
 <td>Architecture</td>
-<td>MIPS32 (default) or MIPS64: 64-bit registers, the doubleword instructions, the n64 register names (<code>--arch mips64</code>)</td>
+<td>MIPS32 (default), MIPS64: 64-bit registers, the doubleword instructions, the n64 register names (<code>--arch mips64</code>), or nanoMIPS: the I7200's 16-, 32- and 48-bit instructions, the p32 register names, Release 6 (<code>--arch nanomips</code>)</td>
+</tr>
+<tr>
+<td>nanoMIPS subset only (NMS)</td>
+<td>a nanoMIPS core with the nanoMIPS subset (Config5.NMS): the instructions outside it are Reserved Instructions (<code>--nms</code>)</td>
+</tr>
+<tr>
+<td>nanoMIPS CRC / global invalidate</td>
+<td>the CRC32 instructions (Config5.CRCP) and GINVI / GINVT (Config5.GI); Automatic: when the program has them (<code>--crc</code>, <code>--ginv</code>)</td>
 </tr>
 <tr>
 <td>Release</td>
@@ -1269,7 +1306,7 @@ Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
 Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers
 <code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
 <p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
-<p><strong>Configure</strong> — Settings…; Architecture and Release (MIPS32 / MIPS64 R1–R6); Byte Order; Theme; Language.</p>
+<p><strong>Configure</strong> — Settings…; Architecture and Release (MIPS32 / MIPS64 R1–R6, nanoMIPS R6); Byte Order; Theme; Language.</p>
 <p><strong>Help</strong> — User Guide (F1: this guide in a window of its own — see
 <a href="#the-user-guide">The user guide</a>), What's in eMIPS (every feature and where it
 is), Quick Start, Keyboard Shortcuts (the complete list, as

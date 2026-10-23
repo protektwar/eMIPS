@@ -62,7 +62,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from .syntax import parse_fpr, parse_gpr
+from .syntax import gpr_number, parse_fpr
 
 M32 = 0xFFFFFFFF
 
@@ -89,7 +89,7 @@ class CheckError(ValueError):
 class Check:
     line: int
     text: str                   # as written (without the note)
-    subject: tuple              # ("output",) / ("reg", n) / ("mem", kind, loc) / ...
+    subject: tuple              # ("output",) / ("reg", "$t0") / ("mem", kind, loc) / ...
     op: str                     # == != < <= > >= is contains matches
     value: Any                  # int / float / str / ("label", name, offset)
     cpu: int | None = None
@@ -312,16 +312,31 @@ def _subject(t: str, line: int) -> tuple:
             raise CheckError(line, f"not an FPU register: {fm.group(1)}")
         return ("fpr", n, (fm.group(2) or "").lower())
     if t.startswith("$"):
-        n = parse_gpr(t)
-        if n is None:
-            raise CheckError(line, f"not a register: {t}")
-        return ("reg", n)
+        return ("reg", _gpr(t, line))
     mm = re.fullmatch(r"(word|half|byte|float|double)\s*\[\s*(.+?)\s*\]", t, re.I)
     if mm:
         return ("mem", mm.group(1).lower(), _location(mm.group(2), line))
     raise CheckError(line, f"unknown subject {t!r} (output, $reg, hi, lo, pc, $fN[.s|.d], "
                            "word / half / byte / float / double[LOC], cycles, instructions, "
                            "steps, stalls [KIND], exceptions, exit code)")
+
+
+def _gpr(t: str, line: int) -> str:
+    """A GPR, kept by its name: resolved with the core's ABI when the check
+    is evaluated (o32's names; MIPS64: n64's; nanoMIPS: p32's — $t0 is $8,
+    $12, $12); a name of no ABI is an error now."""
+    if all(gpr_number(t, abi) is None for abi in (True, "n64", "p32")):
+        raise CheckError(line, f"not a register: {t}")
+    return t
+
+
+def _reg(m, name: str) -> int:
+    """The number of the GPR ``name`` on core ``m`` (its ABI's names)."""
+    n = gpr_number(name, m.names)
+    if n is None:
+        raise _Unavailable(f"{name} is not a register name of this core's ABI "
+                           f"({'p32' if m.names == 'p32' else 'n64' if m.names == 'n64' else 'o32'})")
+    return n
 
 
 def _location(t: str, line: int) -> tuple:
@@ -332,10 +347,7 @@ def _location(t: str, line: int) -> tuple:
     if m and not re.fullmatch(r"-?(0x[0-9a-fA-F]+|\d+)", t):
         t, off = m.group(1), int(m.group(3), 0) * (1 if m.group(2) == "+" else -1)
     if t.startswith("$"):
-        n = parse_gpr(t)
-        if n is None:
-            raise CheckError(line, f"not a register: {t}")
-        return (("reg", n), off)
+        return (("reg", _gpr(t, line)), off)
     try:
         return (int(t, 0) & M32, off)
     except ValueError:
@@ -565,7 +577,7 @@ def _read(s, subject: tuple) -> tuple[Any, int | None, str]:
         n = sum(p.stalls.values()) if subject[1] is None else p.stalls.get(subject[1], 0)
         return n, None, str(n)
     if kind == "reg":
-        v = m.read_reg(subject[1])
+        v = m.read_reg(_reg(m, subject[1]))
         return v, 32, _hex(v, 32)
     if kind == "special":
         v = {"hi": lambda: m.hi, "lo": lambda: m.lo,
@@ -607,7 +619,7 @@ def _address(s, loc: tuple) -> int:
     base, off = loc
     if isinstance(base, tuple):
         if base[0] == "reg":
-            base = s.machine.read_reg(base[1])
+            base = s.machine.read_reg(_reg(s.machine, base[1]))
         else:
             sym = s.program.symbols.get(base[1]) if s.program is not None else None
             if sym is None:

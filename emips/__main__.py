@@ -22,7 +22,8 @@ Shared options: ``--release R1|R2|R3|R5|R6``, ``--little``, ``--strict``
 SIZE[:WAYS[:LINE]]``, ``--cache-parity``, ``--cache-init random|hardware``,
 ``--l2`` / ``--l3 SIZE[:WAYS[:LINE]]``, ``--cache-ecc``, ``--write-buffer``,
 ``--mem-timing KEY=N,...`` and ``--nonblocking`` (memory timing of the
-pipeline with caches), ``--mmu fixed|bat|tlb[:N]|ftlb[...][+sc][+pw]``,
+pipeline with caches), ``--mmu fixed|bat|tlb[:N]|ftlb[...][+sc][+pw]``
+(nanoMIPS also ``mpu[:N]`` / ``fixed+mpu[:N]``: the I7200's MPU),
 ``--model 5-stage|24k`` (the pipeline model: textbook or the MIPS 24K),
 ``--cores N`` (a multi-core system of N cores, emips.cps), ``--board
 flat|malta[:RAM_MB[:SWITCHES]]`` (the MIPS Malta board, emips.malta),
@@ -55,14 +56,15 @@ import sys
 from pathlib import Path
 
 from .assembler import AsmError, assemble
-from .cli import CliError, Debugger, load_file, session_from_args
+from .cli import CliError, Debugger, encoding, load_file, session_from_args
 from .disasm import disassemble
 from .hexload import DecodeFile
 from .memory import PMemory
 from .cache import Geometry
 from .cores import CORES, describe as describe_core, get as get_core
 from .timing import MEMORY_TIMING
-from .options import BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, Options
+from .options import (BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, NANO_CRC, NANO_GINV, Options,
+                      arch_title, gdb_program)
 from .session import Session, StepResult
 from .sim import Machine
 from .trace import format_view
@@ -74,11 +76,18 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
     pseudo = not getattr(args, "strict", False)
     reorder = not getattr(args, "noreorder", False)
     board = getattr(args, "board", None) or "flat"
+    arch = getattr(args, "arch", None) or "mips32"
+    nano = None
+    if arch == "nanomips":              # (as the session assembles: every ASE on)
+        if release not in (None, "R6"):
+            sys.exit(f"{path}: nanoMIPS is Release 6 based (MD01247 ch. 1): no --release "
+                     f"{release}")
+        nano = {"nms": getattr(args, "nms", False), "crc": True, "ginv": True, "eva": True,
+                "tlb": True, "link": {"relax": getattr(args, "relax", False)}}
     try:
         return assemble(Path(path).read_text(), endian=endian, release=release,
                         pseudo=pseudo, reorder=reorder,
-                        bases=Options(board=board).segment_bases(),
-                        arch=getattr(args, "arch", None) or "mips32")
+                        bases=Options(board=board).segment_bases(), arch=arch, nano=nano)
     except AsmError as exc:
         sys.exit(f"{path}: {exc}")
 
@@ -88,8 +97,10 @@ def _cmd_asm(args) -> None:
     apply_header(args)                  # (the program's # eMIPS: release, endian ...)
     prog = _assemble(args.file, args.endian, args.release, args)
     for addr, word, text, src in prog.listing(abi=not args.numeric):
-        enc = f"{word:04x}    " if (prog.m16.get(addr) or prog.mm.get(addr)) == 2 else f"{word:08x}"
-        print(f"{addr:08x}  {enc}  {text:32} # {src}")
+        size = prog.nm.get(addr) or prog.m16.get(addr) or prog.mm.get(addr) or 4
+        print(f"{addr:08x}  {encoding(word, size, prog.arch)}  {text:32} # {src}")
+    for line in getattr(prog, "link_log", None) or ():    # nanoMIPS: what the linker did
+        print(f"# ld: {line}")
     if args.hex:
         Path(args.hex).write_text(prog.to_ihex())
 
@@ -100,9 +111,15 @@ def _cmd_cc(args) -> None:
     try:
         core = get_core(args.core)
         if core is not None and args.arch and args.arch != core.arch:
-            sys.exit(f"the {core.title} is a {core.arch.upper()} core (not --arch {args.arch})")
+            sys.exit(f"the {core.title} is a {arch_title(core.arch)} core (not --arch {args.arch})")
         arch = args.arch or (core.arch if core is not None else "mips32")
+        if arch == "nanomips" and args.release not in (None, "R6"):
+            sys.exit("nanoMIPS is Release 6 based (MD01247 ch. 1): there is no nanoMIPS "
+                     f"{args.release}")
+        if args.nms and arch != "nanomips":
+            sys.exit("--nms is a nanoMIPS option (--arch nanomips)")
         release = args.release or (core.release if core is not None else
+                                   "R6" if arch == "nanomips" else
                                    "R5" if args.micromips else "R2")
         if core is not None and release != core.release:
             sys.exit(f"the {core.title} is a Release {core.release[1:]} core")
@@ -112,7 +129,7 @@ def _cmd_cc(args) -> None:
             sys.exit(f"the {core.title} is built with {core.choices('dsp')}")
         log = build(args.sources, out, release=release, endian=args.endian,
                     optimize=f"-O{args.opt}", mips16=args.mips16, micromips=args.micromips,
-                    fpu=fpu, dsp=dsp, arch=arch)
+                    fpu=fpu, dsp=dsp, arch=arch, nms=args.nms)
     except BuildError as exc:
         sys.exit(str(exc))
     if args.verbose:
@@ -124,6 +141,13 @@ def _cmd_dis(args) -> None:
     if Path(args.file).read_bytes()[:4] == b"\x7fELF":     # an ELF: its listing
         s = Session(abi=not args.numeric)
         if not s.load_elf(Path(args.file).read_bytes(), args.file):
+            sys.exit(f"{args.file}: {s.errors[0]}")
+        print(s.listing, end="")
+        return
+    if args.arch == "nanomips":                 # 16 / 32 / 48-bit: the session's listing
+        s = Session(abi=not args.numeric, endian=args.endian, release="R6",
+                    options=Options(arch="nanomips", fpu=False))
+        if not s.load_hex(Path(args.file).read_text()):
             sys.exit(f"{args.file}: {s.errors[0]}")
         print(s.listing, end="")
         return
@@ -258,11 +282,14 @@ def _cmd_gdb(args) -> None:
     """Wait for GDB, let it drive the program (emips.gdbstub)."""
     from .gdbstub import exec_file_for, serve
     s = _session(args)
-    elf = exec_file_for(s, args.file)
+    try:
+        elf = exec_file_for(s, args.file)
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
 
     def ready(port: int) -> None:
         print(f"eMIPS: waiting for GDB on {args.host}:{port} — in another terminal:\n"
-              f"  gdb-multiarch -ex 'target remote :{port}'\n"
+              f"  {gdb_program(s.options.arch)} -ex 'target remote :{port}'\n"
               f"(the symbols: {elf})", flush=True)
     code = serve(s, args.port, host=args.host, on_ready=ready, exec_file=elf)
     print("eMIPS: GDB left" if code is None else f"eMIPS: the program exited ({code})")
@@ -407,7 +434,7 @@ def _cmd_debug(args) -> None:
             sys.exit(1)
         s.type_keys(_keys(args))
     if not scripted:
-        d.intro = (f"eMIPS debugger — {'MIPS64' if s.wide else 'MIPS32'} {s.release}, "
+        d.intro = (f"eMIPS debugger — {arch_title(s.options.arch)} {s.release}, "
                    f"{s.endian}-endian, "
                    f"{s.mode} mode. Type help.")
         if s.machine is not None:
@@ -509,11 +536,19 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--little", dest="endian", action="store_const",
                        const="little", default="big", help="little-endian")
         p.add_argument("--release", choices=RELEASES, default=None,
-                       help="MIPS32 / MIPS64 release (default R5)")
-        p.add_argument("--arch", choices=("mips32", "mips64"), default=None,
-                       help="the architecture: mips32 (default) or mips64 (64-bit "
+                       help="MIPS32 / MIPS64 release (default R5; nanoMIPS: R6)")
+        p.add_argument("--arch", choices=("mips32", "mips64", "nanomips"), default=None,
+                       help="the architecture: mips32 (default), mips64 (64-bit "
                             "registers and the doubleword instructions; the 32-bit "
-                            "compatibility address space)")
+                            "compatibility address space) or nanomips (nanoMIPS32: "
+                            "16 / 32 / 48-bit instructions, Release 6, its own "
+                            "assembler — GNU as + ld's)")
+        p.add_argument("--nms", action="store_true",
+                       help="nanoMIPS: the nanoMIPS subset core (Config5.NMS; programs "
+                            "assembled as GNU as -march=32r6s)")
+        p.add_argument("--relax", action="store_true",
+                       help="nanoMIPS: the linker's relaxations (ld --relax) of a "
+                            ".linkrelax program; asm prints what the linker did")
         p.set_defaults(fn=fn)
         if name in ("asm", "dis", "debug"):
             p.add_argument("--numeric", action="store_true",
@@ -578,7 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 "default 32 entries), ftlb[:N[:SETSxWAYS]] (VTLB + "
                                 "FTLB, default 64 + 128x4); a TLB takes +sc "
                                 "(segmentation control, EVA) and +pw (page table "
-                                "walker), e.g. ftlb+sc+pw")
+                                "walker), e.g. ftlb+sc+pw; nanoMIPS: mpu[:N] (the "
+                                "I7200's MPU, N regions, default 16), fixed+mpu[:N]")
             p.add_argument("--board", metavar="SPEC", type=_board, default=None,
                            help="the board: flat (default: every physical address is "
                                 "RAM, the MARS layout) or malta[:RAM_MB[:SWITCHES]] "
@@ -645,7 +681,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--mt", default=None, type=str.lower, metavar="VPES:TCS",
                            help="the MT Module (MD00378): auto (default) = 2 VPEs and 5 "
                                 "TCs (a 34K) when the program has MT instructions; none; "
-                                "VPES:TCS = 1-2 VPEs, up to 9 TCs (Release 2-5)")
+                                "VPES:TCS = 1-3 VPEs, up to 9 TCs (Release 2-5, "
+                                "nanoMIPS)")
             p.add_argument("--mt-pm", default=None, type=str.lower,
                            choices=["rr", "wrr", "wrr2"],
                            help="the MT processor's policy manager (MD00534 13.2): rr "
@@ -655,6 +692,13 @@ def build_parser() -> argparse.ArgumentParser:
                            help="the MT processor's ITC gating storage (MD00534 ch. 12): "
                                 "auto (default) = 4 FIFO + 8 semaphore cells; none; "
                                 "FIFOS:SEMAPHORES = 0, 1, 2, 4, 8 or 16 each")
+            p.add_argument("--crc", default=None, type=str.lower, choices=NANO_CRC,
+                           help="nanoMIPS: the CRC32 instructions (Config5.CRCP): auto "
+                                "(default) = when the program has them; none; crc")
+            p.add_argument("--ginv", default=None, type=str.lower, choices=NANO_GINV,
+                           help="nanoMIPS: global invalidate (Config5.GI): auto (default) "
+                                "= when the program has GINVI / GINVT; none; ginvi (GI = "
+                                "2); ginvt (GI = 3: GINVI and GINVT)")
         if name in ("run", "debug", "gdb", "check"):
             p.add_argument("--pipeline", action="store_true",
                            help="pipeline mode (--model): a step is a clock cycle"
@@ -707,16 +751,21 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("-x", "--script", help="a file of commands (one per line)")
             p.add_argument("--stop-at-end", action="store_true",
                            help="stop when the program runs past its last instruction")
-    c = sub.add_parser("cc", help="build a C program for eMIPS (clang or a MIPS GCC)")
+    c = sub.add_parser("cc", help="build a C program for eMIPS (clang or a MIPS GCC; "
+                                  "nanoMIPS: nanomips-elf-gcc)")
     c.add_argument("sources", nargs="+", help="C (.c) or assembly (.S) files")
     c.add_argument("-o", "--output", help="the ELF to write (default: the first "
                                           "source's name .elf)")
     c.add_argument("--release", choices=RELEASES, default=None,
                    help="MIPS32 / MIPS64 release to build for (default R2; R5 with "
                         "--micromips)")
-    c.add_argument("--arch", choices=("mips32", "mips64"), default=None,
-                   help="mips32 (default: o32, an ELF32) or mips64 (the n64 ABI: 64-bit "
-                        "long and pointers, an ELF64); --core: the core's")
+    c.add_argument("--arch", choices=("mips32", "mips64", "nanomips"), default=None,
+                   help="mips32 (default: o32, an ELF32), mips64 (the n64 ABI: 64-bit "
+                        "long and pointers, an ELF64) or nanomips (the p32 ABI, soft "
+                        "float: MediaTek's nanomips-elf-gcc); --core: the core's")
+    c.add_argument("--nms", action="store_true",
+                   help="nanoMIPS: for a core with the nanoMIPS subset only "
+                        "(-march=32r6s)")
     c.add_argument("--little", dest="endian", action="store_const", const="little",
                    default="big", help="little-endian")
     c.add_argument("-O", dest="opt", choices=["0", "1", "2", "3", "s"], default="1",

@@ -1,0 +1,5 @@
+# Lab 66 — A guard with the MPU: the checks of a solution
+# (python3 -m emips check docs/guide/labs/nano_mpu.asm finds them by itself)
+check: output is "29 0x10010040"   (MPUS on the store to secret)
+check: word[secret] == 1234        (secret is not overwritten)
+check: word[secret - 4] == 15      (buf is filled up to its last word)

@@ -25,6 +25,9 @@ the carry out of a - b), xor gates, and a barrel shifter (5 stages of 2:1
 muxes: 16, 8, 4, 2, 1 places); multiply / divide and the bit-field
 instructions are other units.
 
+A nanoMIPS core (``arch="nanomips"``, PLAN M23) has the same 32-bit ALU;
+its main control names the ALU function itself (:mod:`emips.nanocontrol`).
+
 A MIPS64 core (``arch="mips64"``, PLAN M22) has a 64-bit ALU: 64 slices
 (Overflow and Set at bit 63) and a 6-stage barrel shifter (32, 16, 8,
 4, 2, 1; Sh32 adds 32 to the amount: DSLL32 ...).  Its **Word** line
@@ -69,9 +72,13 @@ class AluControl:
     aluop: int                   # the main control's 4-bit ALUOp
     funct: str | None            # R-type: bits 5..0
     lines: dict                  # the ALU control's outputs (controllogic.ALU_OUTPUTS)
+    #: what ALUOp asks for, when not MIPS32's / MIPS64's code (nanoMIPS)
+    why: str | None = None
 
     @property
     def aluop_why(self) -> str:
+        if self.why is not None:
+            return self.why
         return aluop_why(self.aluop, "Word" in self.lines)
 
     @property
@@ -189,7 +196,11 @@ def alu_logic(view, release: str = "R5", arch: str = "mips32") -> AluLogic | Non
     mask = (1 << width) - 1
     a = alu.a.value & mask if alu.a is not None else 0
     b = alu.b.value & mask if alu.b is not None else 0
-    ctl = control_for(view.word, release, arch)
+    if arch == "nanomips":                       # (emips.nanocontrol; a 32-bit ALU)
+        from .nanocontrol import control_for as nano_control
+        ctl = nano_control(view.word, view.size)
+    else:
+        ctl = control_for(view.word, release, arch)
     top = 31 if width == 32 or ctl.word else 63
     out = AluLogic(view.text, ctl, a, b, None, alu.result, width=width, top=top)
     if ctl.other:
