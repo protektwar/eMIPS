@@ -200,7 +200,19 @@ BASE_EXTENSIONS = frozenset({"i", "priv"})
 #: what an extension brings with it (binutils' implicit subsets: the
 #: classes of its table are tested on the closure)
 IMPLIED = {"g": ("i", "m", "a", "f", "d", "zicsr", "zifencei"), "m": ("zmmul",),
-           "d": ("f",), "f": ("zicsr",), "zicntr": ("zicsr",)}
+           "d": ("f",), "f": ("zicsr",), "zicntr": ("zicsr",), "zihpm": ("zicsr",)}
+
+
+def closure(extensions: Iterable[str]) -> frozenset:
+    """The extensions with everything they imply (to a fixpoint)."""
+    out = set(extensions)
+    todo = list(out)
+    while todo:
+        for e in IMPLIED.get(todo.pop(), ()):
+            if e not in out:
+                out.add(e)
+                todo.append(e)
+    return frozenset(out)
 
 
 def size_of(h: int) -> int:
@@ -295,9 +307,7 @@ class RVISA:
     def __init__(self, xlen: int, extensions: Iterable[str]) -> None:
         if xlen not in (32, 64):
             raise ValueError(f"xlen must be 32 or 64, not {xlen!r}")
-        exts = set(extensions) | BASE_EXTENSIONS
-        for e in list(exts):
-            exts |= set(IMPLIED.get(e, ()))
+        exts = set(closure(set(extensions) | BASE_EXTENSIONS))
         self.xlen = xlen
         self.extensions = frozenset(exts)
         self.rows = tuple(r for r in ROWS if xlen in r.xlen and set(r.ext) <= exts)
@@ -475,9 +485,7 @@ class Disassembler:
                  *, aliases: bool = True, numeric: bool = False,
                  symbols: Mapping[int, str] | None = None) -> None:
         exts = parse_extensions(extensions) if isinstance(extensions, str) else set(extensions)
-        exts = set(exts) | {"i"}
-        for e in list(exts):
-            exts |= set(IMPLIED.get(e, ()))
+        exts = closure(set(exts) | {"i"})
         self.xlen = xlen
         self.extensions = frozenset(exts)
         self.aliases = aliases

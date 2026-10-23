@@ -479,6 +479,3552 @@
   ]
  },
  "binutils": {
+  "asm_csrs": {
+   "cycle": [
+    [
+     3072,
+     true,
+     1,
+     5
+    ]
+   ],
+   "cycleh": [
+    [
+     3200,
+     true,
+     1,
+     5
+    ]
+   ],
+   "dcsr": [
+    [
+     1968,
+     false,
+     0,
+     0
+    ]
+   ],
+   "dpc": [
+    [
+     1969,
+     false,
+     0,
+     0
+    ]
+   ],
+   "dscratch": [
+    [
+     1970,
+     false,
+     0,
+     0
+    ]
+   ],
+   "dscratch0": [
+    [
+     1970,
+     false,
+     0,
+     0
+    ]
+   ],
+   "dscratch1": [
+    [
+     1971,
+     false,
+     0,
+     0
+    ]
+   ],
+   "etrigger": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "fcsr": [
+    [
+     3,
+     false,
+     0,
+     0
+    ]
+   ],
+   "fflags": [
+    [
+     1,
+     false,
+     0,
+     0
+    ]
+   ],
+   "frm": [
+    [
+     2,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hcontext": [
+    [
+     1704,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hcounteren": [
+    [
+     1542,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hedeleg": [
+    [
+     1538,
+     false,
+     0,
+     0
+    ]
+   ],
+   "henvcfg": [
+    [
+     1546,
+     false,
+     0,
+     0
+    ]
+   ],
+   "henvcfgh": [
+    [
+     1562,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hgatp": [
+    [
+     1664,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hgeie": [
+    [
+     1543,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hgeip": [
+    [
+     3602,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hideleg": [
+    [
+     1539,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hidelegh": [
+    [
+     1555,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hie": [
+    [
+     1540,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hip": [
+    [
+     1604,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hpmcounter10": [
+    [
+     3082,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter10h": [
+    [
+     3210,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter11": [
+    [
+     3083,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter11h": [
+    [
+     3211,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter12": [
+    [
+     3084,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter12h": [
+    [
+     3212,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter13": [
+    [
+     3085,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter13h": [
+    [
+     3213,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter14": [
+    [
+     3086,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter14h": [
+    [
+     3214,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter15": [
+    [
+     3087,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter15h": [
+    [
+     3215,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter16": [
+    [
+     3088,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter16h": [
+    [
+     3216,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter17": [
+    [
+     3089,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter17h": [
+    [
+     3217,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter18": [
+    [
+     3090,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter18h": [
+    [
+     3218,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter19": [
+    [
+     3091,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter19h": [
+    [
+     3219,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter20": [
+    [
+     3092,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter20h": [
+    [
+     3220,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter21": [
+    [
+     3093,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter21h": [
+    [
+     3221,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter22": [
+    [
+     3094,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter22h": [
+    [
+     3222,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter23": [
+    [
+     3095,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter23h": [
+    [
+     3223,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter24": [
+    [
+     3096,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter24h": [
+    [
+     3224,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter25": [
+    [
+     3097,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter25h": [
+    [
+     3225,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter26": [
+    [
+     3098,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter26h": [
+    [
+     3226,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter27": [
+    [
+     3099,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter27h": [
+    [
+     3227,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter28": [
+    [
+     3100,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter28h": [
+    [
+     3228,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter29": [
+    [
+     3101,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter29h": [
+    [
+     3229,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter3": [
+    [
+     3075,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter30": [
+    [
+     3102,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter30h": [
+    [
+     3230,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter31": [
+    [
+     3103,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter31h": [
+    [
+     3231,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter3h": [
+    [
+     3203,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter4": [
+    [
+     3076,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter4h": [
+    [
+     3204,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter5": [
+    [
+     3077,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter5h": [
+    [
+     3205,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter6": [
+    [
+     3078,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter6h": [
+    [
+     3206,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter7": [
+    [
+     3079,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter7h": [
+    [
+     3207,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter8": [
+    [
+     3080,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter8h": [
+    [
+     3208,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter9": [
+    [
+     3081,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hpmcounter9h": [
+    [
+     3209,
+     true,
+     1,
+     5
+    ]
+   ],
+   "hstateen0": [
+    [
+     1548,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen0h": [
+    [
+     1564,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen1": [
+    [
+     1549,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen1h": [
+    [
+     1565,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen2": [
+    [
+     1550,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen2h": [
+    [
+     1566,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen3": [
+    [
+     1551,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstateen3h": [
+    [
+     1567,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hstatus": [
+    [
+     1536,
+     false,
+     0,
+     0
+    ]
+   ],
+   "htimedelta": [
+    [
+     1541,
+     false,
+     0,
+     0
+    ]
+   ],
+   "htimedeltah": [
+    [
+     1557,
+     false,
+     0,
+     0
+    ]
+   ],
+   "htinst": [
+    [
+     1610,
+     false,
+     0,
+     0
+    ]
+   ],
+   "htval": [
+    [
+     1603,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hvictl": [
+    [
+     1545,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hvien": [
+    [
+     1544,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hvienh": [
+    [
+     1560,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hvip": [
+    [
+     1605,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hviph": [
+    [
+     1621,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hviprio1": [
+    [
+     1606,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hviprio1h": [
+    [
+     1622,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hviprio2": [
+    [
+     1607,
+     false,
+     0,
+     0
+    ]
+   ],
+   "hviprio2h": [
+    [
+     1623,
+     false,
+     0,
+     0
+    ]
+   ],
+   "icount": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "instret": [
+    [
+     3074,
+     true,
+     1,
+     5
+    ]
+   ],
+   "instreth": [
+    [
+     3202,
+     true,
+     1,
+     5
+    ]
+   ],
+   "itrigger": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "marchid": [
+    [
+     3858,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mbadaddr": [
+    [
+     835,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mbase": [
+    [
+     896,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mbound": [
+    [
+     897,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mcause": [
+    [
+     834,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mconfigptr": [
+    [
+     3861,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mcontext": [
+    [
+     1960,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mcontrol": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mcontrol6": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mcounteren": [
+    [
+     774,
+     true,
+     2,
+     5
+    ]
+   ],
+   "mcountinhibit": [
+    [
+     800,
+     true,
+     3,
+     5
+    ]
+   ],
+   "mcycle": [
+    [
+     2816,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mcyclecfg": [
+    [
+     801,
+     true,
+     2,
+     5
+    ]
+   ],
+   "mcyclecfgh": [
+    [
+     1825,
+     true,
+     2,
+     5
+    ]
+   ],
+   "mcycleh": [
+    [
+     2944,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mdbase": [
+    [
+     900,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mdbound": [
+    [
+     901,
+     true,
+     1,
+     2
+    ]
+   ],
+   "medeleg": [
+    [
+     770,
+     true,
+     1,
+     5
+    ]
+   ],
+   "menvcfg": [
+    [
+     778,
+     true,
+     4,
+     5
+    ]
+   ],
+   "menvcfgh": [
+    [
+     794,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mepc": [
+    [
+     833,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhartid": [
+    [
+     3860,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhcounteren": [
+    [
+     802,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mhpmcounter10": [
+    [
+     2826,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter10h": [
+    [
+     2954,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter11": [
+    [
+     2827,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter11h": [
+    [
+     2955,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter12": [
+    [
+     2828,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter12h": [
+    [
+     2956,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter13": [
+    [
+     2829,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter13h": [
+    [
+     2957,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter14": [
+    [
+     2830,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter14h": [
+    [
+     2958,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter15": [
+    [
+     2831,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter15h": [
+    [
+     2959,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter16": [
+    [
+     2832,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter16h": [
+    [
+     2960,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter17": [
+    [
+     2833,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter17h": [
+    [
+     2961,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter18": [
+    [
+     2834,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter18h": [
+    [
+     2962,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter19": [
+    [
+     2835,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter19h": [
+    [
+     2963,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter20": [
+    [
+     2836,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter20h": [
+    [
+     2964,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter21": [
+    [
+     2837,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter21h": [
+    [
+     2965,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter22": [
+    [
+     2838,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter22h": [
+    [
+     2966,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter23": [
+    [
+     2839,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter23h": [
+    [
+     2967,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter24": [
+    [
+     2840,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter24h": [
+    [
+     2968,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter25": [
+    [
+     2841,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter25h": [
+    [
+     2969,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter26": [
+    [
+     2842,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter26h": [
+    [
+     2970,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter27": [
+    [
+     2843,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter27h": [
+    [
+     2971,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter28": [
+    [
+     2844,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter28h": [
+    [
+     2972,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter29": [
+    [
+     2845,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter29h": [
+    [
+     2973,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter3": [
+    [
+     2819,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter30": [
+    [
+     2846,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter30h": [
+    [
+     2974,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter31": [
+    [
+     2847,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter31h": [
+    [
+     2975,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter3h": [
+    [
+     2947,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter4": [
+    [
+     2820,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter4h": [
+    [
+     2948,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter5": [
+    [
+     2821,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter5h": [
+    [
+     2949,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter6": [
+    [
+     2822,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter6h": [
+    [
+     2950,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter7": [
+    [
+     2823,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter7h": [
+    [
+     2951,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter8": [
+    [
+     2824,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter8h": [
+    [
+     2952,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter9": [
+    [
+     2825,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmcounter9h": [
+    [
+     2953,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent10": [
+    [
+     810,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent10h": [
+    [
+     1834,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent11": [
+    [
+     811,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent11h": [
+    [
+     1835,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent12": [
+    [
+     812,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent12h": [
+    [
+     1836,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent13": [
+    [
+     813,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent13h": [
+    [
+     1837,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent14": [
+    [
+     814,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent14h": [
+    [
+     1838,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent15": [
+    [
+     815,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent15h": [
+    [
+     1839,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent16": [
+    [
+     816,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent16h": [
+    [
+     1840,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent17": [
+    [
+     817,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent17h": [
+    [
+     1841,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent18": [
+    [
+     818,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent18h": [
+    [
+     1842,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent19": [
+    [
+     819,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent19h": [
+    [
+     1843,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent20": [
+    [
+     820,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent20h": [
+    [
+     1844,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent21": [
+    [
+     821,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent21h": [
+    [
+     1845,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent22": [
+    [
+     822,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent22h": [
+    [
+     1846,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent23": [
+    [
+     823,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent23h": [
+    [
+     1847,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent24": [
+    [
+     824,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent24h": [
+    [
+     1848,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent25": [
+    [
+     825,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent25h": [
+    [
+     1849,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent26": [
+    [
+     826,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent26h": [
+    [
+     1850,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent27": [
+    [
+     827,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent27h": [
+    [
+     1851,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent28": [
+    [
+     828,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent28h": [
+    [
+     1852,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent29": [
+    [
+     829,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent29h": [
+    [
+     1853,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent3": [
+    [
+     803,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent30": [
+    [
+     830,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent30h": [
+    [
+     1854,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent31": [
+    [
+     831,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent31h": [
+    [
+     1855,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent3h": [
+    [
+     1827,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent4": [
+    [
+     804,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent4h": [
+    [
+     1828,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent5": [
+    [
+     805,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent5h": [
+    [
+     1829,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent6": [
+    [
+     806,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent6h": [
+    [
+     1830,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent7": [
+    [
+     807,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent7h": [
+    [
+     1831,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent8": [
+    [
+     808,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent8h": [
+    [
+     1832,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mhpmevent9": [
+    [
+     809,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mhpmevent9h": [
+    [
+     1833,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mibase": [
+    [
+     898,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mibound": [
+    [
+     899,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mideleg": [
+    [
+     771,
+     true,
+     1,
+     5
+    ]
+   ],
+   "midelegh": [
+    [
+     787,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mie": [
+    [
+     772,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mieh": [
+    [
+     788,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mimpid": [
+    [
+     3859,
+     true,
+     1,
+     5
+    ]
+   ],
+   "minstret": [
+    [
+     2818,
+     true,
+     1,
+     5
+    ]
+   ],
+   "minstretcfg": [
+    [
+     802,
+     true,
+     2,
+     5
+    ]
+   ],
+   "minstretcfgh": [
+    [
+     1826,
+     true,
+     2,
+     5
+    ]
+   ],
+   "minstreth": [
+    [
+     2946,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mip": [
+    [
+     836,
+     true,
+     1,
+     5
+    ]
+   ],
+   "miph": [
+    [
+     852,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mireg": [
+    [
+     849,
+     false,
+     0,
+     0
+    ]
+   ],
+   "misa": [
+    [
+     769,
+     true,
+     1,
+     5
+    ]
+   ],
+   "miselect": [
+    [
+     848,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mscontext": [
+    [
+     1962,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mscounteren": [
+    [
+     801,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mscratch": [
+    [
+     832,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mseccfg": [
+    [
+     1863,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mseccfgh": [
+    [
+     1879,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mstateen0": [
+    [
+     780,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen0h": [
+    [
+     796,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen1": [
+    [
+     781,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen1h": [
+    [
+     797,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen2": [
+    [
+     782,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen2h": [
+    [
+     798,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen3": [
+    [
+     783,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstateen3h": [
+    [
+     799,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mstatus": [
+    [
+     768,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mstatush": [
+    [
+     784,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mtinst": [
+    [
+     842,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mtopei": [
+    [
+     860,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mtopi": [
+    [
+     4016,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mtval": [
+    [
+     835,
+     true,
+     2,
+     5
+    ]
+   ],
+   "mtval2": [
+    [
+     843,
+     true,
+     4,
+     5
+    ]
+   ],
+   "mtvec": [
+    [
+     773,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mucounteren": [
+    [
+     800,
+     true,
+     1,
+     2
+    ]
+   ],
+   "mvendorid": [
+    [
+     3857,
+     true,
+     1,
+     5
+    ]
+   ],
+   "mvien": [
+    [
+     776,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mvienh": [
+    [
+     792,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mvip": [
+    [
+     777,
+     false,
+     0,
+     0
+    ]
+   ],
+   "mviph": [
+    [
+     793,
+     false,
+     0,
+     0
+    ]
+   ],
+   "pmpaddr0": [
+    [
+     944,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr1": [
+    [
+     945,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr10": [
+    [
+     954,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr11": [
+    [
+     955,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr12": [
+    [
+     956,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr13": [
+    [
+     957,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr14": [
+    [
+     958,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr15": [
+    [
+     959,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr16": [
+    [
+     960,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr17": [
+    [
+     961,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr18": [
+    [
+     962,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr19": [
+    [
+     963,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr2": [
+    [
+     946,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr20": [
+    [
+     964,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr21": [
+    [
+     965,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr22": [
+    [
+     966,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr23": [
+    [
+     967,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr24": [
+    [
+     968,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr25": [
+    [
+     969,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr26": [
+    [
+     970,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr27": [
+    [
+     971,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr28": [
+    [
+     972,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr29": [
+    [
+     973,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr3": [
+    [
+     947,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr30": [
+    [
+     974,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr31": [
+    [
+     975,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr32": [
+    [
+     976,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr33": [
+    [
+     977,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr34": [
+    [
+     978,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr35": [
+    [
+     979,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr36": [
+    [
+     980,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr37": [
+    [
+     981,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr38": [
+    [
+     982,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr39": [
+    [
+     983,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr4": [
+    [
+     948,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr40": [
+    [
+     984,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr41": [
+    [
+     985,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr42": [
+    [
+     986,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr43": [
+    [
+     987,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr44": [
+    [
+     988,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr45": [
+    [
+     989,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr46": [
+    [
+     990,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr47": [
+    [
+     991,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr48": [
+    [
+     992,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr49": [
+    [
+     993,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr5": [
+    [
+     949,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr50": [
+    [
+     994,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr51": [
+    [
+     995,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr52": [
+    [
+     996,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr53": [
+    [
+     997,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr54": [
+    [
+     998,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr55": [
+    [
+     999,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr56": [
+    [
+     1000,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr57": [
+    [
+     1001,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr58": [
+    [
+     1002,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr59": [
+    [
+     1003,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr6": [
+    [
+     950,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr60": [
+    [
+     1004,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr61": [
+    [
+     1005,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr62": [
+    [
+     1006,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr63": [
+    [
+     1007,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpaddr7": [
+    [
+     951,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr8": [
+    [
+     952,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpaddr9": [
+    [
+     953,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpcfg0": [
+    [
+     928,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpcfg1": [
+    [
+     929,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpcfg10": [
+    [
+     938,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg11": [
+    [
+     939,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg12": [
+    [
+     940,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg13": [
+    [
+     941,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg14": [
+    [
+     942,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg15": [
+    [
+     943,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg2": [
+    [
+     930,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpcfg3": [
+    [
+     931,
+     true,
+     2,
+     5
+    ]
+   ],
+   "pmpcfg4": [
+    [
+     932,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg5": [
+    [
+     933,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg6": [
+    [
+     934,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg7": [
+    [
+     935,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg8": [
+    [
+     936,
+     true,
+     4,
+     5
+    ]
+   ],
+   "pmpcfg9": [
+    [
+     937,
+     true,
+     4,
+     5
+    ]
+   ],
+   "satp": [
+    [
+     384,
+     true,
+     2,
+     5
+    ]
+   ],
+   "sbadaddr": [
+    [
+     323,
+     true,
+     1,
+     2
+    ]
+   ],
+   "scause": [
+    [
+     322,
+     true,
+     1,
+     5
+    ]
+   ],
+   "scontext": [
+    [
+     1448,
+     false,
+     0,
+     0
+    ]
+   ],
+   "scounteren": [
+    [
+     262,
+     true,
+     2,
+     5
+    ]
+   ],
+   "scountovf": [
+    [
+     3488,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sedeleg": [
+    [
+     258,
+     true,
+     1,
+     4
+    ]
+   ],
+   "seed": [
+    [
+     21,
+     false,
+     0,
+     0
+    ]
+   ],
+   "senvcfg": [
+    [
+     266,
+     true,
+     4,
+     5
+    ]
+   ],
+   "sepc": [
+    [
+     321,
+     true,
+     1,
+     5
+    ]
+   ],
+   "sideleg": [
+    [
+     259,
+     true,
+     1,
+     4
+    ]
+   ],
+   "sie": [
+    [
+     260,
+     true,
+     1,
+     5
+    ]
+   ],
+   "sieh": [
+    [
+     276,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sip": [
+    [
+     324,
+     true,
+     1,
+     5
+    ]
+   ],
+   "siph": [
+    [
+     340,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sireg": [
+    [
+     337,
+     false,
+     0,
+     0
+    ]
+   ],
+   "siselect": [
+    [
+     336,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sptbr": [
+    [
+     384,
+     true,
+     1,
+     2
+    ]
+   ],
+   "sscratch": [
+    [
+     320,
+     true,
+     1,
+     5
+    ]
+   ],
+   "sstateen0": [
+    [
+     268,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sstateen1": [
+    [
+     269,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sstateen2": [
+    [
+     270,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sstateen3": [
+    [
+     271,
+     false,
+     0,
+     0
+    ]
+   ],
+   "sstatus": [
+    [
+     256,
+     true,
+     1,
+     5
+    ]
+   ],
+   "stimecmp": [
+    [
+     333,
+     false,
+     0,
+     0
+    ]
+   ],
+   "stimecmph": [
+    [
+     349,
+     false,
+     0,
+     0
+    ]
+   ],
+   "stopei": [
+    [
+     348,
+     false,
+     0,
+     0
+    ]
+   ],
+   "stopi": [
+    [
+     3504,
+     false,
+     0,
+     0
+    ]
+   ],
+   "stval": [
+    [
+     323,
+     true,
+     2,
+     5
+    ]
+   ],
+   "stvec": [
+    [
+     261,
+     true,
+     1,
+     5
+    ]
+   ],
+   "tcontrol": [
+    [
+     1957,
+     false,
+     0,
+     0
+    ]
+   ],
+   "tdata1": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "tdata2": [
+    [
+     1954,
+     false,
+     0,
+     0
+    ]
+   ],
+   "tdata3": [
+    [
+     1955,
+     false,
+     0,
+     0
+    ]
+   ],
+   "textra32": [
+    [
+     1955,
+     false,
+     0,
+     0
+    ]
+   ],
+   "textra64": [
+    [
+     1955,
+     false,
+     0,
+     0
+    ]
+   ],
+   "time": [
+    [
+     3073,
+     true,
+     1,
+     5
+    ]
+   ],
+   "timeh": [
+    [
+     3201,
+     true,
+     1,
+     5
+    ]
+   ],
+   "tinfo": [
+    [
+     1956,
+     false,
+     0,
+     0
+    ]
+   ],
+   "tmexttrigger": [
+    [
+     1953,
+     false,
+     0,
+     0
+    ]
+   ],
+   "tselect": [
+    [
+     1952,
+     false,
+     0,
+     0
+    ]
+   ],
+   "ubadaddr": [
+    [
+     67,
+     true,
+     1,
+     2
+    ]
+   ],
+   "ucause": [
+    [
+     66,
+     true,
+     1,
+     4
+    ]
+   ],
+   "uepc": [
+    [
+     65,
+     true,
+     1,
+     4
+    ]
+   ],
+   "uie": [
+    [
+     4,
+     true,
+     1,
+     4
+    ]
+   ],
+   "uip": [
+    [
+     68,
+     true,
+     1,
+     4
+    ]
+   ],
+   "uscratch": [
+    [
+     64,
+     true,
+     1,
+     4
+    ]
+   ],
+   "ustatus": [
+    [
+     0,
+     true,
+     1,
+     4
+    ]
+   ],
+   "utval": [
+    [
+     67,
+     true,
+     2,
+     4
+    ]
+   ],
+   "utvec": [
+    [
+     5,
+     true,
+     1,
+     4
+    ]
+   ],
+   "vcsr": [
+    [
+     15,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vl": [
+    [
+     3104,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vlenb": [
+    [
+     3106,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsatp": [
+    [
+     640,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vscause": [
+    [
+     578,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsepc": [
+    [
+     577,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsie": [
+    [
+     516,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsieh": [
+    [
+     532,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsip": [
+    [
+     580,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsiph": [
+    [
+     596,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsireg": [
+    [
+     593,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsiselect": [
+    [
+     592,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsscratch": [
+    [
+     576,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vsstatus": [
+    [
+     512,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstart": [
+    [
+     8,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstimecmp": [
+    [
+     589,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstimecmph": [
+    [
+     605,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstopei": [
+    [
+     604,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstopi": [
+    [
+     3760,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstval": [
+    [
+     579,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vstvec": [
+    [
+     517,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vtype": [
+    [
+     3105,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vxrm": [
+    [
+     10,
+     false,
+     0,
+     0
+    ]
+   ],
+   "vxsat": [
+    [
+     9,
+     false,
+     0,
+     0
+    ]
+   ]
+  },
   "csrs": {
    "1": "fflags",
    "10": "vxrm",
@@ -901,6 +4447,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 16,
     "mask": 65535,
@@ -917,6 +4464,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 17,
     "mask": 4294967295,
@@ -933,6 +4481,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 18,
     "mask": 65535,
@@ -949,6 +4498,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 19,
     "mask": 4294967295,
@@ -965,6 +4515,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 20,
     "mask": 65535,
@@ -981,6 +4532,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 21,
     "mask": 4294967295,
@@ -997,6 +4549,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 22,
     "mask": 65535,
@@ -1013,6 +4566,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 23,
     "mask": 4294967295,
@@ -1029,6 +4583,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 24,
     "mask": 61567,
@@ -1045,6 +4600,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 25,
     "mask": 4293951487,
@@ -1061,6 +4617,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 26,
     "mask": 32767,
@@ -1077,6 +4634,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 27,
     "mask": 32767,
@@ -1093,6 +4651,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 28,
     "mask": 61567,
@@ -1109,6 +4668,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 29,
     "mask": 4293951487,
@@ -1125,6 +4685,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 30,
     "mask": 32767,
@@ -1141,6 +4702,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 31,
     "mask": 32767,
@@ -1157,6 +4719,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 32,
     "mask": 4293947519,
@@ -1173,6 +4736,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 33,
     "mask": 28799,
@@ -1189,6 +4753,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 34,
     "mask": 28799,
@@ -1205,6 +4770,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 35,
     "mask": 57347,
@@ -1221,6 +4787,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 36,
     "mask": 4095,
@@ -1237,6 +4804,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 37,
     "mask": 57347,
@@ -1253,6 +4821,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 38,
     "mask": 4095,
@@ -1269,6 +4838,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 39,
     "mask": 127,
@@ -1285,6 +4855,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 44,
     "mask": 65535,
@@ -1301,6 +4872,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 45,
     "mask": 4294967295,
@@ -1317,6 +4889,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_lui",
     "i": 46,
     "mask": 57347,
@@ -1333,6 +4906,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 47,
     "mask": 127,
@@ -1349,6 +4923,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_lui",
     "i": 48,
     "mask": 57347,
@@ -1365,6 +4940,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 49,
     "mask": 57347,
@@ -1381,6 +4957,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 50,
     "mask": 1044607,
@@ -1397,6 +4974,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 52,
     "mask": 61443,
@@ -1413,6 +4991,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 53,
     "mask": 4293947519,
@@ -1429,6 +5008,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 54,
     "mask": 61443,
@@ -1445,6 +5025,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 55,
     "mask": 4293947519,
@@ -1461,6 +5042,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 57,
     "mask": 4293947519,
@@ -1477,6 +5059,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 59,
     "mask": 60419,
@@ -1493,6 +5076,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 60,
     "mask": 28799,
@@ -1509,6 +5093,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 61,
     "mask": 64611,
@@ -1525,6 +5110,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 62,
     "mask": 64611,
@@ -1541,6 +5127,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 63,
     "mask": 60419,
@@ -1557,6 +5144,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 64,
     "mask": 4261441663,
@@ -1573,6 +5161,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 65,
     "mask": 28799,
@@ -1589,6 +5178,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 66,
     "mask": 57347,
@@ -1605,6 +5195,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 67,
     "mask": 32534655,
@@ -1621,6 +5212,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 68,
     "mask": 57347,
@@ -1637,6 +5229,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 69,
     "mask": 28799,
@@ -1653,6 +5246,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 70,
     "mask": 1044607,
@@ -1669,6 +5263,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 71,
     "mask": 32534655,
@@ -1685,6 +5280,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 72,
     "mask": 28799,
@@ -1701,6 +5297,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 73,
     "mask": 28799,
@@ -1717,6 +5314,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 74,
     "mask": 28799,
@@ -1733,6 +5331,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 75,
     "mask": 28799,
@@ -1749,6 +5348,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 76,
     "mask": 32534655,
@@ -1765,6 +5365,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 77,
     "mask": 1044607,
@@ -1781,6 +5382,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 78,
     "mask": 28799,
@@ -1797,6 +5399,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 79,
     "mask": 28799,
@@ -1813,6 +5416,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 80,
     "mask": 28799,
@@ -1829,6 +5433,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 81,
     "mask": 28799,
@@ -1845,6 +5450,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 82,
     "mask": 57347,
@@ -1861,6 +5467,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 83,
     "mask": 32534655,
@@ -1877,6 +5484,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 84,
     "mask": 57347,
@@ -1893,6 +5501,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 85,
     "mask": 28799,
@@ -1909,6 +5518,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi4spn",
     "i": 86,
     "mask": 57347,
@@ -1925,6 +5535,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 87,
     "mask": 57347,
@@ -1941,6 +5552,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_nop",
     "i": 88,
     "mask": 61567,
@@ -1957,6 +5569,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi16sp",
     "i": 89,
     "mask": 61315,
@@ -1973,6 +5586,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 90,
     "mask": 57347,
@@ -1989,6 +5603,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 91,
     "mask": 61443,
@@ -2005,6 +5620,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 92,
     "mask": 28799,
@@ -2021,6 +5637,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 93,
     "mask": 61443,
@@ -2037,6 +5654,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 94,
     "mask": 61443,
@@ -2053,6 +5671,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 95,
     "mask": 57347,
@@ -2069,6 +5688,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi4spn",
     "i": 96,
     "mask": 57347,
@@ -2085,6 +5705,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi16sp",
     "i": 97,
     "mask": 61315,
@@ -2101,6 +5722,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add",
     "i": 98,
     "mask": 61443,
@@ -2117,6 +5739,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 99,
     "mask": 4261441663,
@@ -2133,6 +5756,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 100,
     "mask": 4261441663,
@@ -2149,6 +5773,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 101,
     "mask": 28799,
@@ -2165,6 +5790,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 107,
     "mask": 4262457471,
@@ -2181,6 +5807,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_slli_as_c_slli",
     "i": 108,
     "mask": 57347,
@@ -2197,6 +5824,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 109,
     "mask": 4227887231,
@@ -2213,6 +5841,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_slli_as_c_slli",
     "i": 110,
     "mask": 57347,
@@ -2229,6 +5858,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 111,
     "mask": 4261441663,
@@ -2245,6 +5875,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 112,
     "mask": 4227887231,
@@ -2261,6 +5892,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_srxi_as_c_srxi",
     "i": 113,
     "mask": 60419,
@@ -2277,6 +5909,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 114,
     "mask": 4227887231,
@@ -2293,6 +5926,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_srxi_as_c_srxi",
     "i": 115,
     "mask": 60419,
@@ -2309,6 +5943,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 116,
     "mask": 4261441663,
@@ -2325,6 +5960,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 117,
     "mask": 4227887231,
@@ -2341,6 +5977,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_srxi_as_c_srxi",
     "i": 118,
     "mask": 60419,
@@ -2357,6 +5994,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 119,
     "mask": 4227887231,
@@ -2373,6 +6011,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_srxi_as_c_srxi",
     "i": 120,
     "mask": 60419,
@@ -2389,6 +6028,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 121,
     "mask": 4261441663,
@@ -2405,6 +6045,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 122,
     "mask": 4227887231,
@@ -2421,6 +6062,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 123,
     "mask": 64611,
@@ -2437,6 +6079,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 124,
     "mask": 4261441663,
@@ -2453,6 +6096,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 125,
     "mask": 28799,
@@ -2469,6 +6113,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 128,
     "mask": 28799,
@@ -2485,6 +6130,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 131,
     "mask": 28799,
@@ -2501,6 +6147,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 134,
     "mask": 28799,
@@ -2517,6 +6164,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 136,
     "mask": 57347,
@@ -2533,6 +6181,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 137,
     "mask": 57347,
@@ -2549,6 +6198,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 138,
     "mask": 28799,
@@ -2565,6 +6215,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 141,
     "mask": 4293947519,
@@ -2581,6 +6232,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 142,
     "mask": 28799,
@@ -2597,6 +6249,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 143,
     "mask": 28799,
@@ -2613,6 +6266,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 144,
     "mask": 64611,
@@ -2629,6 +6283,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 145,
     "mask": 64611,
@@ -2645,6 +6300,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 146,
     "mask": 4261441663,
@@ -2661,6 +6317,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 147,
     "mask": 127,
@@ -2677,6 +6334,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 148,
     "mask": 4293947519,
@@ -2693,6 +6351,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 149,
     "mask": 4262457471,
@@ -2709,6 +6368,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 150,
     "mask": 4293947519,
@@ -2725,6 +6385,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 151,
     "mask": 4262457471,
@@ -2741,6 +6402,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 152,
     "mask": 28799,
@@ -2757,6 +6419,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 153,
     "mask": 4261441663,
@@ -2773,6 +6436,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 154,
     "mask": 28799,
@@ -2789,6 +6453,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 155,
     "mask": 28799,
@@ -2805,6 +6470,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 156,
     "mask": 4261441663,
@@ -2821,6 +6487,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 157,
     "mask": 28799,
@@ -2837,6 +6504,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 158,
     "mask": 4261441663,
@@ -2853,6 +6521,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 159,
     "mask": 4261441663,
@@ -2869,6 +6538,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 161,
     "mask": 28799,
@@ -2885,6 +6555,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 164,
     "mask": 28799,
@@ -2901,6 +6572,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 166,
     "mask": 57347,
@@ -2917,6 +6589,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 167,
     "mask": 57347,
@@ -2933,6 +6606,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 168,
     "mask": 28799,
@@ -2949,6 +6623,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 170,
     "mask": 4294967295,
@@ -2965,6 +6640,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 171,
     "mask": 4027580415,
@@ -2981,6 +6657,7 @@
       "zifencei"
      ]
     ],
+    "cname": "ZIFENCEI",
     "func": "match_opcode",
     "i": 172,
     "mask": 4294967295,
@@ -2997,6 +6674,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 173,
     "mask": 4294967295,
@@ -3013,6 +6691,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 174,
     "mask": 4294963327,
@@ -3029,6 +6708,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 175,
     "mask": 4294963327,
@@ -3045,6 +6725,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 176,
     "mask": 4294963327,
@@ -3061,6 +6742,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 177,
     "mask": 4294963327,
@@ -3077,6 +6759,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 178,
     "mask": 4294963327,
@@ -3093,6 +6776,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 179,
     "mask": 4294963327,
@@ -3109,6 +6793,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 180,
     "mask": 4294967295,
@@ -3125,6 +6810,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 181,
     "mask": 4294967295,
@@ -3141,6 +6827,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 182,
     "mask": 28799,
@@ -3157,6 +6844,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 183,
     "mask": 28799,
@@ -3173,6 +6861,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 184,
     "mask": 64611,
@@ -3189,6 +6878,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 185,
     "mask": 64611,
@@ -3205,6 +6895,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 186,
     "mask": 4261441663,
@@ -3221,6 +6912,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 187,
     "mask": 28799,
@@ -3237,6 +6929,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 189,
     "mask": 57347,
@@ -3253,6 +6946,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 190,
     "mask": 57347,
@@ -3269,6 +6963,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 191,
     "mask": 28799,
@@ -3285,6 +6980,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 193,
     "mask": 57347,
@@ -3301,6 +6997,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 194,
     "mask": 57347,
@@ -3317,6 +7014,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 195,
     "mask": 28799,
@@ -3333,6 +7031,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 197,
     "mask": 61567,
@@ -3349,6 +7048,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 198,
     "mask": 4293947519,
@@ -3365,6 +7065,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 199,
     "mask": 57347,
@@ -3381,6 +7082,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 200,
     "mask": 28799,
@@ -3397,6 +7099,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 201,
     "mask": 64611,
@@ -3413,6 +7116,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 202,
     "mask": 64611,
@@ -3429,6 +7133,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 203,
     "mask": 57347,
@@ -3445,6 +7150,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 204,
     "mask": 4261441663,
@@ -3461,6 +7167,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 205,
     "mask": 28799,
@@ -3477,6 +7184,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 206,
     "mask": 4262457471,
@@ -3493,6 +7201,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 207,
     "mask": 4261441663,
@@ -3509,6 +7218,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 208,
     "mask": 4261441663,
@@ -3525,6 +7235,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 209,
     "mask": 4261441663,
@@ -3541,6 +7252,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 210,
     "mask": 4261441663,
@@ -3557,6 +7269,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 211,
     "mask": 4261441663,
@@ -3573,6 +7286,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 212,
     "mask": 4261441663,
@@ -3589,6 +7303,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 213,
     "mask": 4261441663,
@@ -3605,6 +7320,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 214,
     "mask": 4261441663,
@@ -3621,6 +7337,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 215,
     "mask": 4261441663,
@@ -3637,6 +7354,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 216,
     "mask": 64611,
@@ -3653,6 +7371,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 217,
     "mask": 4261441663,
@@ -3669,6 +7388,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 218,
     "mask": 4293947519,
@@ -3685,6 +7405,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 219,
     "mask": 4261441663,
@@ -3701,6 +7422,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 220,
     "mask": 4261441663,
@@ -3717,6 +7439,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 221,
     "mask": 4261441663,
@@ -3733,6 +7456,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 222,
     "mask": 4261441663,
@@ -3749,6 +7473,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 223,
     "mask": 4261441663,
@@ -3765,6 +7490,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 224,
     "mask": 4261441663,
@@ -3781,6 +7507,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 225,
     "mask": 4261441663,
@@ -3797,6 +7524,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 226,
     "mask": 4261441663,
@@ -3813,6 +7541,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 227,
     "mask": 4261441663,
@@ -3829,6 +7558,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 228,
     "mask": 4261441663,
@@ -3845,6 +7575,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 229,
     "mask": 4293947519,
@@ -3861,6 +7592,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 230,
     "mask": 4261441663,
@@ -3877,6 +7609,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 231,
     "mask": 4261441663,
@@ -3893,6 +7626,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 232,
     "mask": 4261441663,
@@ -3909,6 +7643,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 233,
     "mask": 4261441663,
@@ -3925,6 +7660,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 234,
     "mask": 4261441663,
@@ -3941,6 +7677,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 235,
     "mask": 4261441663,
@@ -3957,6 +7694,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 236,
     "mask": 4261441663,
@@ -3973,6 +7711,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 237,
     "mask": 4261441663,
@@ -3989,6 +7728,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 238,
     "mask": 4261441663,
@@ -4005,6 +7745,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 239,
     "mask": 4261441663,
@@ -4021,6 +7762,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 240,
     "mask": 4293947519,
@@ -4037,6 +7779,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 241,
     "mask": 4261441663,
@@ -4053,6 +7796,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 242,
     "mask": 4261441663,
@@ -4069,6 +7813,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 243,
     "mask": 4261441663,
@@ -4085,6 +7830,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 244,
     "mask": 4261441663,
@@ -4101,6 +7847,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 245,
     "mask": 4261441663,
@@ -4117,6 +7864,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 246,
     "mask": 4261441663,
@@ -4133,6 +7881,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 247,
     "mask": 4261441663,
@@ -4149,6 +7898,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 248,
     "mask": 4261441663,
@@ -4165,6 +7915,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 249,
     "mask": 4261441663,
@@ -4181,6 +7932,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 250,
     "mask": 4261441663,
@@ -4197,6 +7949,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 251,
     "mask": 4293947519,
@@ -4213,6 +7966,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 252,
     "mask": 4261441663,
@@ -4229,6 +7983,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 253,
     "mask": 4261441663,
@@ -4245,6 +8000,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 254,
     "mask": 4261441663,
@@ -4261,6 +8017,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 255,
     "mask": 4261441663,
@@ -4277,6 +8034,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 256,
     "mask": 4261441663,
@@ -4293,6 +8051,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 257,
     "mask": 4261441663,
@@ -4309,6 +8068,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 258,
     "mask": 4261441663,
@@ -4325,6 +8085,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 259,
     "mask": 4261441663,
@@ -4341,6 +8102,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 260,
     "mask": 4261441663,
@@ -4357,6 +8119,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 261,
     "mask": 4261441663,
@@ -4373,6 +8136,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 262,
     "mask": 4293947519,
@@ -4389,6 +8153,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 263,
     "mask": 4261441663,
@@ -4405,6 +8170,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 264,
     "mask": 4261441663,
@@ -4421,6 +8187,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 265,
     "mask": 4261441663,
@@ -4437,6 +8204,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 266,
     "mask": 4261441663,
@@ -4453,6 +8221,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 267,
     "mask": 4261441663,
@@ -4469,6 +8238,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 268,
     "mask": 4261441663,
@@ -4485,6 +8255,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 269,
     "mask": 4261441663,
@@ -4501,6 +8272,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 270,
     "mask": 4261441663,
@@ -4517,6 +8289,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 271,
     "mask": 4261441663,
@@ -4533,6 +8306,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 272,
     "mask": 4261441663,
@@ -4549,6 +8323,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 273,
     "mask": 4293947519,
@@ -4565,6 +8340,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 274,
     "mask": 4261441663,
@@ -4581,6 +8357,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 275,
     "mask": 4261441663,
@@ -4597,6 +8374,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 276,
     "mask": 4261441663,
@@ -4613,6 +8391,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 277,
     "mask": 4261441663,
@@ -4629,6 +8408,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 278,
     "mask": 4261441663,
@@ -4645,6 +8425,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 279,
     "mask": 4261441663,
@@ -4661,6 +8442,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 280,
     "mask": 4261441663,
@@ -4677,6 +8459,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 281,
     "mask": 4261441663,
@@ -4693,6 +8476,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 282,
     "mask": 4261441663,
@@ -4709,6 +8493,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 283,
     "mask": 4261441663,
@@ -4725,6 +8510,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 284,
     "mask": 4293947519,
@@ -4741,6 +8527,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 285,
     "mask": 4261441663,
@@ -4757,6 +8544,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 286,
     "mask": 4261441663,
@@ -4773,6 +8561,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 287,
     "mask": 4261441663,
@@ -4789,6 +8578,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 288,
     "mask": 4261441663,
@@ -4805,6 +8595,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 289,
     "mask": 4261441663,
@@ -4821,6 +8612,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 290,
     "mask": 4261441663,
@@ -4837,6 +8629,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 291,
     "mask": 4261441663,
@@ -4853,6 +8646,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 292,
     "mask": 4261441663,
@@ -4869,6 +8663,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 293,
     "mask": 4261441663,
@@ -4885,6 +8680,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 294,
     "mask": 4261441663,
@@ -4901,6 +8697,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 295,
     "mask": 4293947519,
@@ -4917,6 +8714,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 296,
     "mask": 4261441663,
@@ -4933,6 +8731,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 297,
     "mask": 4261441663,
@@ -4949,6 +8748,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 298,
     "mask": 4261441663,
@@ -4965,6 +8765,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 299,
     "mask": 4261441663,
@@ -4981,6 +8782,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 300,
     "mask": 4261441663,
@@ -4997,6 +8799,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 301,
     "mask": 4261441663,
@@ -5013,6 +8816,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 302,
     "mask": 4261441663,
@@ -5029,6 +8833,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 303,
     "mask": 4261441663,
@@ -5045,6 +8850,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 304,
     "mask": 4261441663,
@@ -5061,6 +8867,7 @@
       "a"
      ]
     ],
+    "cname": "A",
     "func": "match_opcode",
     "i": 305,
     "mask": 4261441663,
@@ -5077,6 +8884,7 @@
       "zmmul"
      ]
     ],
+    "cname": "ZMMUL",
     "func": "match_opcode",
     "i": 307,
     "mask": 4261441663,
@@ -5093,6 +8901,7 @@
       "zmmul"
      ]
     ],
+    "cname": "ZMMUL",
     "func": "match_opcode",
     "i": 308,
     "mask": 4261441663,
@@ -5109,6 +8918,7 @@
       "zmmul"
      ]
     ],
+    "cname": "ZMMUL",
     "func": "match_opcode",
     "i": 309,
     "mask": 4261441663,
@@ -5125,6 +8935,7 @@
       "zmmul"
      ]
     ],
+    "cname": "ZMMUL",
     "func": "match_opcode",
     "i": 310,
     "mask": 4261441663,
@@ -5141,6 +8952,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 311,
     "mask": 4261441663,
@@ -5157,6 +8969,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 312,
     "mask": 4261441663,
@@ -5173,6 +8986,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 313,
     "mask": 4261441663,
@@ -5189,6 +9003,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 314,
     "mask": 4261441663,
@@ -5205,6 +9020,7 @@
       "zmmul"
      ]
     ],
+    "cname": "ZMMUL",
     "func": "match_opcode",
     "i": 315,
     "mask": 4261441663,
@@ -5221,6 +9037,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 316,
     "mask": 4261441663,
@@ -5237,6 +9054,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 317,
     "mask": 4261441663,
@@ -5253,6 +9071,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 318,
     "mask": 4261441663,
@@ -5269,6 +9088,7 @@
       "m"
      ]
     ],
+    "cname": "M",
     "func": "match_opcode",
     "i": 319,
     "mask": 4261441663,
@@ -5285,6 +9105,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 383,
     "mask": 4294963327,
@@ -5301,6 +9122,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 384,
     "mask": 4294963327,
@@ -5317,6 +9139,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 385,
     "mask": 4293951487,
@@ -5333,6 +9156,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 386,
     "mask": 4293947519,
@@ -5349,6 +9173,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 387,
     "mask": 4293951487,
@@ -5365,6 +9190,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 388,
     "mask": 4293947519,
@@ -5381,6 +9207,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 389,
     "mask": 4294963327,
@@ -5397,6 +9224,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 390,
     "mask": 4293951487,
@@ -5413,6 +9241,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 391,
     "mask": 4293947519,
@@ -5429,6 +9258,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 392,
     "mask": 4293947519,
@@ -5445,6 +9275,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 393,
     "mask": 4293951487,
@@ -5461,6 +9292,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 394,
     "mask": 4294963327,
@@ -5477,6 +9309,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 395,
     "mask": 4293951487,
@@ -5493,6 +9326,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 396,
     "mask": 4293947519,
@@ -5509,6 +9343,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 397,
     "mask": 4293947519,
@@ -5525,6 +9360,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 398,
     "mask": 4293951487,
@@ -5542,6 +9378,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 399,
     "mask": 57347,
@@ -5559,6 +9396,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 400,
     "mask": 57347,
@@ -5575,6 +9413,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 401,
     "mask": 28799,
@@ -5592,6 +9431,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 403,
     "mask": 57347,
@@ -5609,6 +9449,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 404,
     "mask": 57347,
@@ -5625,6 +9466,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 405,
     "mask": 28799,
@@ -5641,6 +9483,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 407,
     "mask": 4293947519,
@@ -5657,6 +9500,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 408,
     "mask": 4293947519,
@@ -5673,6 +9517,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 409,
     "mask": 4293947519,
@@ -5689,6 +9534,7 @@
       "f"
      ]
     ],
+    "cname": "F",
     "func": "match_opcode",
     "i": 410,
     "mask": 4293947519,
@@ -5705,6 +9551,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_rs1_eq_rs2",
     "i": 411,
     "mask": 4261441663,
@@ -5721,6 +9568,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_rs1_eq_rs2",
     "i": 412,
     "mask": 4261441663,
@@ -5737,6 +9585,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_rs1_eq_rs2",
     "i": 413,
     "mask": 4261441663,
@@ -5753,6 +9602,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 414,
     "mask": 4261441663,
@@ -5769,6 +9619,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 415,
     "mask": 4261441663,
@@ -5785,6 +9636,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 416,
     "mask": 4261441663,
@@ -5801,6 +9653,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 417,
     "mask": 4261441663,
@@ -5817,6 +9670,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 418,
     "mask": 4261412991,
@@ -5833,6 +9687,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 419,
     "mask": 4261441663,
@@ -5849,6 +9704,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 420,
     "mask": 4261412991,
@@ -5865,6 +9721,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 421,
     "mask": 4261441663,
@@ -5881,6 +9738,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 422,
     "mask": 4261412991,
@@ -5897,6 +9755,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 423,
     "mask": 4261441663,
@@ -5913,6 +9772,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 424,
     "mask": 4261412991,
@@ -5929,6 +9789,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 425,
     "mask": 4293947519,
@@ -5945,6 +9806,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 426,
     "mask": 4293918847,
@@ -5961,6 +9823,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 427,
     "mask": 4261441663,
@@ -5977,6 +9840,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 428,
     "mask": 4261441663,
@@ -5993,6 +9857,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 429,
     "mask": 100692095,
@@ -6009,6 +9874,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 430,
     "mask": 100663423,
@@ -6025,6 +9891,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 431,
     "mask": 100692095,
@@ -6041,6 +9908,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 432,
     "mask": 100663423,
@@ -6057,6 +9925,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 433,
     "mask": 100692095,
@@ -6073,6 +9942,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 434,
     "mask": 100663423,
@@ -6089,6 +9959,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 435,
     "mask": 100692095,
@@ -6105,6 +9976,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 436,
     "mask": 100663423,
@@ -6121,6 +9993,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 437,
     "mask": 4293947519,
@@ -6137,6 +10010,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 438,
     "mask": 4293918847,
@@ -6153,6 +10027,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 439,
     "mask": 4293947519,
@@ -6169,6 +10044,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 440,
     "mask": 4293918847,
@@ -6185,6 +10061,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 441,
     "mask": 4293947519,
@@ -6201,6 +10078,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 442,
     "mask": 4293918847,
@@ -6217,6 +10095,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 443,
     "mask": 4293947519,
@@ -6233,6 +10112,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 444,
     "mask": 4293918847,
@@ -6249,6 +10129,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 445,
     "mask": 4293947519,
@@ -6265,6 +10146,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 446,
     "mask": 4261441663,
@@ -6281,6 +10163,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 447,
     "mask": 4261441663,
@@ -6297,6 +10180,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 448,
     "mask": 4261441663,
@@ -6313,6 +10197,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 449,
     "mask": 4261441663,
@@ -6329,6 +10214,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 450,
     "mask": 4261441663,
@@ -6345,6 +10231,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 451,
     "mask": 4293947519,
@@ -6361,6 +10248,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 452,
     "mask": 4293918847,
@@ -6377,6 +10265,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 453,
     "mask": 4293947519,
@@ -6393,6 +10282,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 454,
     "mask": 4293918847,
@@ -6409,6 +10299,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 455,
     "mask": 4293947519,
@@ -6425,6 +10316,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 456,
     "mask": 4293918847,
@@ -6441,6 +10333,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 457,
     "mask": 4293947519,
@@ -6457,6 +10350,7 @@
       "f"
      ]
     ],
+    "cname": "F_INX",
     "func": "match_opcode",
     "i": 458,
     "mask": 4293918847,
@@ -6474,6 +10368,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 459,
     "mask": 57347,
@@ -6491,6 +10386,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 460,
     "mask": 57347,
@@ -6507,6 +10403,7 @@
       "d"
      ]
     ],
+    "cname": "D",
     "func": "match_opcode",
     "i": 461,
     "mask": 28799,
@@ -6524,6 +10421,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 463,
     "mask": 57347,
@@ -6541,6 +10439,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 464,
     "mask": 57347,
@@ -6557,6 +10456,7 @@
       "d"
      ]
     ],
+    "cname": "D",
     "func": "match_opcode",
     "i": 465,
     "mask": 28799,
@@ -6573,6 +10473,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_rs1_eq_rs2",
     "i": 467,
     "mask": 4261441663,
@@ -6589,6 +10490,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_rs1_eq_rs2",
     "i": 468,
     "mask": 4261441663,
@@ -6605,6 +10507,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_rs1_eq_rs2",
     "i": 469,
     "mask": 4261441663,
@@ -6621,6 +10524,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 470,
     "mask": 4261441663,
@@ -6637,6 +10541,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 471,
     "mask": 4261441663,
@@ -6653,6 +10558,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 472,
     "mask": 4261441663,
@@ -6669,6 +10575,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 473,
     "mask": 4261441663,
@@ -6685,6 +10592,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 474,
     "mask": 4261412991,
@@ -6701,6 +10609,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 475,
     "mask": 4261441663,
@@ -6717,6 +10626,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 476,
     "mask": 4261412991,
@@ -6733,6 +10643,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 477,
     "mask": 4261441663,
@@ -6749,6 +10660,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 478,
     "mask": 4261412991,
@@ -6765,6 +10677,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 479,
     "mask": 4261441663,
@@ -6781,6 +10694,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 480,
     "mask": 4261412991,
@@ -6797,6 +10711,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 481,
     "mask": 4293947519,
@@ -6813,6 +10728,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 482,
     "mask": 4293918847,
@@ -6829,6 +10745,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 483,
     "mask": 4261441663,
@@ -6845,6 +10762,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 484,
     "mask": 4261441663,
@@ -6861,6 +10779,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 485,
     "mask": 100692095,
@@ -6877,6 +10796,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 486,
     "mask": 100663423,
@@ -6893,6 +10813,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 487,
     "mask": 100692095,
@@ -6909,6 +10830,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 488,
     "mask": 100663423,
@@ -6925,6 +10847,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 489,
     "mask": 100692095,
@@ -6941,6 +10864,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 490,
     "mask": 100663423,
@@ -6957,6 +10881,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 491,
     "mask": 100692095,
@@ -6973,6 +10898,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 492,
     "mask": 100663423,
@@ -6989,6 +10915,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 493,
     "mask": 4293947519,
@@ -7005,6 +10932,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 494,
     "mask": 4293918847,
@@ -7021,6 +10949,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 495,
     "mask": 4293947519,
@@ -7037,6 +10966,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 496,
     "mask": 4293918847,
@@ -7053,6 +10983,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 497,
     "mask": 4293947519,
@@ -7069,6 +11000,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 498,
     "mask": 4293947519,
@@ -7085,6 +11017,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 499,
     "mask": 4293947519,
@@ -7101,6 +11034,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 500,
     "mask": 4293947519,
@@ -7117,6 +11051,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 501,
     "mask": 4293918847,
@@ -7133,6 +11068,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 502,
     "mask": 4293947519,
@@ -7149,6 +11085,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 503,
     "mask": 4261441663,
@@ -7165,6 +11102,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 504,
     "mask": 4261441663,
@@ -7181,6 +11119,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 505,
     "mask": 4261441663,
@@ -7197,6 +11136,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 506,
     "mask": 4261441663,
@@ -7213,6 +11153,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 507,
     "mask": 4261441663,
@@ -7229,6 +11170,7 @@
       "d"
      ]
     ],
+    "cname": "D",
     "func": "match_opcode",
     "i": 508,
     "mask": 4293947519,
@@ -7245,6 +11187,7 @@
       "d"
      ]
     ],
+    "cname": "D",
     "func": "match_opcode",
     "i": 509,
     "mask": 4293947519,
@@ -7261,6 +11204,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 510,
     "mask": 4293947519,
@@ -7277,6 +11221,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 511,
     "mask": 4293918847,
@@ -7293,6 +11238,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 512,
     "mask": 4293947519,
@@ -7309,6 +11255,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 513,
     "mask": 4293918847,
@@ -7325,6 +11272,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 514,
     "mask": 4293947519,
@@ -7341,6 +11289,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 515,
     "mask": 4293918847,
@@ -7357,6 +11306,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 516,
     "mask": 4293947519,
@@ -7373,6 +11323,7 @@
       "d"
      ]
     ],
+    "cname": "D_INX",
     "func": "match_opcode",
     "i": 517,
     "mask": 4293918847,
@@ -7389,6 +11340,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 574,
     "mask": 65535,
@@ -7405,6 +11357,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 575,
     "mask": 65535,
@@ -7421,6 +11374,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 576,
     "mask": 61567,
@@ -7437,6 +11391,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 577,
     "mask": 61567,
@@ -7453,6 +11408,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 578,
     "mask": 57347,
@@ -7469,6 +11425,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 579,
     "mask": 57347,
@@ -7485,6 +11442,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 580,
     "mask": 57347,
@@ -7501,6 +11459,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 581,
     "mask": 57347,
@@ -7517,6 +11476,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 582,
     "mask": 57347,
@@ -7533,6 +11493,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 583,
     "mask": 57347,
@@ -7549,6 +11510,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 584,
     "mask": 57347,
@@ -7565,6 +11527,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 585,
     "mask": 57347,
@@ -7581,6 +11544,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 586,
     "mask": 65535,
@@ -7597,6 +11561,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 587,
     "mask": 61315,
@@ -7613,6 +11578,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add_with_hint",
     "i": 588,
     "mask": 61443,
@@ -7629,6 +11595,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_lui_with_hint",
     "i": 589,
     "mask": 57347,
@@ -7645,6 +11612,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 590,
     "mask": 57347,
@@ -7661,6 +11629,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi4spn",
     "i": 591,
     "mask": 57347,
@@ -7677,6 +11646,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_addi16sp",
     "i": 592,
     "mask": 61315,
@@ -7693,6 +11663,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 593,
     "mask": 57347,
@@ -7709,6 +11680,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_add_with_hint",
     "i": 594,
     "mask": 61443,
@@ -7725,6 +11697,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 595,
     "mask": 64611,
@@ -7741,6 +11714,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 596,
     "mask": 64611,
@@ -7757,6 +11731,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 597,
     "mask": 64611,
@@ -7773,6 +11748,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 598,
     "mask": 64611,
@@ -7789,6 +11765,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli",
     "i": 599,
     "mask": 57347,
@@ -7805,6 +11782,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli",
     "i": 600,
     "mask": 60419,
@@ -7821,6 +11799,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli",
     "i": 601,
     "mask": 60419,
@@ -7837,6 +11816,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli64",
     "i": 602,
     "mask": 61567,
@@ -7853,6 +11833,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli64",
     "i": 603,
     "mask": 64639,
@@ -7869,6 +11850,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_c_slli64",
     "i": 604,
     "mask": 64639,
@@ -7885,6 +11867,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 605,
     "mask": 60419,
@@ -7901,6 +11884,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 606,
     "mask": 57347,
@@ -7917,6 +11901,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 607,
     "mask": 64611,
@@ -7933,6 +11918,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 608,
     "mask": 64611,
@@ -7949,6 +11935,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_rd_nonzero",
     "i": 609,
     "mask": 57347,
@@ -7965,6 +11952,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 610,
     "mask": 57347,
@@ -7981,6 +11969,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 611,
     "mask": 57347,
@@ -7997,6 +11986,7 @@
       "c"
      ]
     ],
+    "cname": "C",
     "func": "match_opcode",
     "i": 612,
     "mask": 57347,
@@ -8014,6 +12004,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 613,
     "mask": 57347,
@@ -8031,6 +12022,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 614,
     "mask": 57347,
@@ -8048,6 +12040,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 615,
     "mask": 57347,
@@ -8065,6 +12058,7 @@
       "c"
      ]
     ],
+    "cname": "D_AND_C",
     "func": "match_opcode",
     "i": 616,
     "mask": 57347,
@@ -8082,6 +12076,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 617,
     "mask": 57347,
@@ -8099,6 +12094,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 618,
     "mask": 57347,
@@ -8116,6 +12112,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 619,
     "mask": 57347,
@@ -8133,6 +12130,7 @@
       "c"
      ]
     ],
+    "cname": "F_AND_C",
     "func": "match_opcode",
     "i": 620,
     "mask": 57347,
@@ -8149,6 +12147,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 670,
     "mask": 4293947519,
@@ -8165,6 +12164,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 671,
     "mask": 4293947519,
@@ -8181,6 +12181,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 672,
     "mask": 4293947519,
@@ -8197,6 +12198,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 673,
     "mask": 4261441663,
@@ -8213,6 +12215,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 674,
     "mask": 4261441663,
@@ -8229,6 +12232,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 675,
     "mask": 4261441663,
@@ -8245,6 +12249,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 676,
     "mask": 4261441663,
@@ -8261,6 +12266,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 678,
     "mask": 4293947519,
@@ -8277,6 +12283,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 681,
     "mask": 4293947519,
@@ -8293,6 +12300,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 684,
     "mask": 4293947519,
@@ -8309,6 +12317,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 685,
     "mask": 4293947519,
@@ -8325,6 +12334,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 687,
     "mask": 4293947519,
@@ -8341,6 +12351,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 688,
     "mask": 4293947519,
@@ -8357,6 +12368,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 689,
     "mask": 4293947519,
@@ -8373,6 +12385,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB",
     "func": "match_opcode",
     "i": 690,
     "mask": 4293947519,
@@ -8389,6 +12402,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 698,
     "mask": 4261441663,
@@ -8405,6 +12419,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 699,
     "mask": 4261441663,
@@ -8421,6 +12436,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 700,
     "mask": 4261441663,
@@ -8437,6 +12453,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 701,
     "mask": 4261441663,
@@ -8453,6 +12470,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 702,
     "mask": 4227887231,
@@ -8469,6 +12487,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 703,
     "mask": 4261441663,
@@ -8485,6 +12504,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 704,
     "mask": 4227887231,
@@ -8501,6 +12521,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 705,
     "mask": 4293947519,
@@ -8517,6 +12538,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 706,
     "mask": 4293947519,
@@ -8533,6 +12555,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 707,
     "mask": 4261441663,
@@ -8549,6 +12572,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 708,
     "mask": 4261441663,
@@ -8565,6 +12589,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 709,
     "mask": 4261441663,
@@ -8581,6 +12606,7 @@
       "zbb"
      ]
     ],
+    "cname": "ZBB_OR_ZBKB",
     "func": "match_opcode",
     "i": 710,
     "mask": 4261441663,
@@ -8597,6 +12623,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 711,
     "mask": 4261441663,
@@ -8613,6 +12640,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 712,
     "mask": 4261441663,
@@ -8629,6 +12657,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 713,
     "mask": 4261441663,
@@ -8645,6 +12674,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 714,
     "mask": 4261441663,
@@ -8661,6 +12691,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 715,
     "mask": 4261441663,
@@ -8677,6 +12708,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 716,
     "mask": 4261441663,
@@ -8693,6 +12725,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 718,
     "mask": 4293947519,
@@ -8709,6 +12742,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 720,
     "mask": 4261441663,
@@ -8725,6 +12759,7 @@
       "zba"
      ]
     ],
+    "cname": "ZBA",
     "func": "match_opcode",
     "i": 721,
     "mask": 4227887231,
@@ -8741,6 +12776,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1490,
     "mask": 1044607,
@@ -8757,6 +12793,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1491,
     "mask": 32767,
@@ -8773,6 +12810,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1492,
     "mask": 32767,
@@ -8789,6 +12827,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1493,
     "mask": 32767,
@@ -8805,6 +12844,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1494,
     "mask": 32767,
@@ -8821,6 +12861,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1495,
     "mask": 32767,
@@ -8837,6 +12878,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1496,
     "mask": 32767,
@@ -8853,6 +12895,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1497,
     "mask": 32767,
@@ -8869,6 +12912,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1498,
     "mask": 32767,
@@ -8885,6 +12929,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1499,
     "mask": 32767,
@@ -8901,6 +12946,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1500,
     "mask": 28799,
@@ -8917,6 +12963,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1501,
     "mask": 28799,
@@ -8933,6 +12980,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1502,
     "mask": 28799,
@@ -8949,6 +12997,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1503,
     "mask": 28799,
@@ -8965,6 +13014,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1504,
     "mask": 28799,
@@ -8981,6 +13031,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1505,
     "mask": 28799,
@@ -8997,6 +13048,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1506,
     "mask": 28799,
@@ -9013,6 +13065,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1507,
     "mask": 28799,
@@ -9029,6 +13082,7 @@
       "zicsr"
      ]
     ],
+    "cname": "ZICSR",
     "func": "match_opcode",
     "i": 1508,
     "mask": 28799,
@@ -9045,6 +13099,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1509,
     "mask": 4294967295,
@@ -9061,6 +13116,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1510,
     "mask": 4294967295,
@@ -9077,6 +13133,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1511,
     "mask": 4294967295,
@@ -9093,6 +13150,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1512,
     "mask": 4294967295,
@@ -9109,6 +13167,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1513,
     "mask": 4294967295,
@@ -9125,6 +13184,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1514,
     "mask": 4294967295,
@@ -9141,6 +13201,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1515,
     "mask": 4293951487,
@@ -9157,6 +13218,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1516,
     "mask": 4294967295,
@@ -9173,6 +13235,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1517,
     "mask": 4293951487,
@@ -9189,6 +13252,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1518,
     "mask": 4261445631,
@@ -9205,6 +13269,7 @@
       "i"
      ]
     ],
+    "cname": "I",
     "func": "match_opcode",
     "i": 1519,
     "mask": 4294967295,
@@ -9212,6 +13277,1509 @@
     "name": "wfi",
     "type": "",
     "xlen": 0
+   }
+  ],
+  "insn_types": [
+   {
+    "args": "O4,F3,F7,d,s,t",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,D,s,t",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,d,S,t",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,D,S,t",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,d,s,T",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,D,s,T",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,d,S,T",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F7,D,S,T",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,t,r",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,t,r",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,t,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,T,r",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,t,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,s,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,s,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,d,S,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,F2,D,S,T,R",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "r4",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,d,s,j",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,D,s,j",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,d,S,j",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,D,S,j",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,d,o(s)",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,D,o(s)",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "i",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,t,q(s)",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "s",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,T,q(s)",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "s",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,s,t,p",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "sb",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,S,t,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "sb",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,s,T,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "sb",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,S,T,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "sb",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,s,t,p",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "b",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,S,t,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "b",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,s,T,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "b",
+    "xlen": 0
+   },
+   {
+    "args": "O4,F3,S,T,p",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "b",
+    "xlen": 0
+   },
+   {
+    "args": "O4,d,u",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "u",
+    "xlen": 0
+   },
+   {
+    "args": "O4,D,u",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "u",
+    "xlen": 0
+   },
+   {
+    "args": "O4,d,a",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "uj",
+    "xlen": 0
+   },
+   {
+    "args": "O4,D,a",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "uj",
+    "xlen": 0
+   },
+   {
+    "args": "O4,d,a",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "name": "j",
+    "xlen": 0
+   },
+   {
+    "args": "O4,D,a",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "name": "j",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF4,d,CV",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "cr",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF4,D,CV",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cr",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF4,d,CT",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cr",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF4,D,CT",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cr",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,d,Co",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "ci",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,D,Co",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "ci",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ct,C8",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "ciw",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CD,C8",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "ciw",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CV,C6",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "css",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CT,C6",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "css",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ct,C5(Cs)",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "cl",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CD,C5(Cs)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cl",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ct,C5(CS)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cl",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CD,C5(CS)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cl",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ct,C5(Cs)",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "cs",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CD,C5(Cs)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cs",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ct,C5(CS)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cs",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CD,C5(CS)",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cs",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF6,CF2,Cs,Ct",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "ca",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF6,CF2,CS,Ct",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "ca",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF6,CF2,Cs,CD",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "ca",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF6,CF2,CS,CD",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "ca",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Cs,Cp",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "cb",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,CS,Cp",
+    "class": [
+     [
+      "f",
+      "c"
+     ],
+     [
+      "f",
+      "zcf"
+     ]
+    ],
+    "cname": "F_AND_C",
+    "name": "cb",
+    "xlen": 0
+   },
+   {
+    "args": "O2,CF3,Ca",
+    "class": [
+     [
+      "c"
+     ],
+     [
+      "zca"
+     ]
+    ],
+    "cname": "C",
+    "name": "cj",
+    "xlen": 0
+   }
+  ],
+  "macros": [
+   {
+    "args": "d,c",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 40,
+    "macro": "M_CALL",
+    "match": 196608,
+    "name": "call",
+    "xlen": 0
+   },
+   {
+    "args": "c",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 41,
+    "macro": "M_CALL",
+    "match": 32896,
+    "name": "call",
+    "xlen": 0
+   },
+   {
+    "args": "c",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 42,
+    "macro": "M_CALL",
+    "match": 196608,
+    "name": "tail",
+    "xlen": 0
+   },
+   {
+    "args": "c,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rs1_nonzero",
+    "i": 43,
+    "macro": "M_CALL",
+    "match": 0,
+    "name": "jump",
+    "xlen": 0
+   },
+   {
+    "args": "d,I",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 51,
+    "macro": "M_LI",
+    "match": 0,
+    "name": "li",
+    "xlen": 0
+   },
+   {
+    "args": "d,B",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 102,
+    "macro": "M_LA",
+    "match": 0,
+    "name": "la",
+    "xlen": 0
+   },
+   {
+    "args": "d,B",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 103,
+    "macro": "M_LLA",
+    "match": 0,
+    "name": "lla",
+    "xlen": 0
+   },
+   {
+    "args": "d,B",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 104,
+    "macro": "M_LGA",
+    "match": 0,
+    "name": "lga",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 105,
+    "macro": "M_LA_TLS_GD",
+    "match": 0,
+    "name": "la.tls.gd",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 106,
+    "macro": "M_LA_TLS_IE",
+    "match": 0,
+    "name": "la.tls.ie",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 126,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lb",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 129,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lbu",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 132,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lh",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 135,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lhu",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 139,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lw",
+    "xlen": 0
+   },
+   {
+    "args": "t,A,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rs1_nonzero",
+    "i": 162,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "sb",
+    "xlen": 0
+   },
+   {
+    "args": "t,A,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rs1_nonzero",
+    "i": 165,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "sh",
+    "xlen": 0
+   },
+   {
+    "args": "t,A,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rs1_nonzero",
+    "i": 169,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "sw",
+    "xlen": 0
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 188,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "lwu",
+    "xlen": 64
+   },
+   {
+    "args": "d,A",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rd_nonzero",
+    "i": 192,
+    "macro": "M_Lx",
+    "match": 0,
+    "name": "ld",
+    "xlen": 64
+   },
+   {
+    "args": "t,A,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "match_rs1_nonzero",
+    "i": 196,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "sd",
+    "xlen": 64
+   },
+   {
+    "args": "D,A,s",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "func": "match_rs1_nonzero",
+    "i": 402,
+    "macro": "M_FLx",
+    "match": 0,
+    "name": "flw",
+    "xlen": 0
+   },
+   {
+    "args": "T,A,s",
+    "class": [
+     [
+      "f"
+     ]
+    ],
+    "cname": "F",
+    "func": "match_rs1_nonzero",
+    "i": 406,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "fsw",
+    "xlen": 0
+   },
+   {
+    "args": "D,A,s",
+    "class": [
+     [
+      "d"
+     ]
+    ],
+    "cname": "D",
+    "func": "match_rs1_nonzero",
+    "i": 462,
+    "macro": "M_FLx",
+    "match": 0,
+    "name": "fld",
+    "xlen": 0
+   },
+   {
+    "args": "T,A,s",
+    "class": [
+     [
+      "d"
+     ]
+    ],
+    "cname": "D",
+    "func": "match_rs1_nonzero",
+    "i": 466,
+    "macro": "M_Sx_FSx",
+    "match": 0,
+    "name": "fsd",
+    "xlen": 0
+   },
+   {
+    "args": "d,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 679,
+    "macro": "M_SEXTB",
+    "match": 0,
+    "name": "sext.b",
+    "xlen": 0
+   },
+   {
+    "args": "d,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 682,
+    "macro": "M_EXTH",
+    "match": 0,
+    "name": "sext.h",
+    "xlen": 0
+   },
+   {
+    "args": "d,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 686,
+    "macro": "M_EXTH",
+    "match": 0,
+    "name": "zext.h",
+    "xlen": 0
+   },
+   {
+    "args": "d,s",
+    "class": [
+     [
+      "i"
+     ]
+    ],
+    "cname": "I",
+    "func": "NULL",
+    "i": 719,
+    "macro": "M_ZEXTW",
+    "match": 0,
+    "name": "zext.w",
+    "xlen": 64
    }
   ],
   "start": {

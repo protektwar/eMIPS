@@ -154,6 +154,8 @@ class Program:
     arch: str = "mips32"
     #: nanoMIPS code (emips.nanoasm): instruction address -> its size (2 / 4 / 6)
     nm: dict[int, int] = field(default_factory=dict)
+    #: RISC-V code (emips.rvasm): instruction address -> its size (2 / 4)
+    rv: dict[int, int] = field(default_factory=dict)
     #: the assembler's warnings: (line, message)
     warnings: list = field(default_factory=list)
     #: what the nanoMIPS linker changed (gold's --debug=target lines)
@@ -174,6 +176,19 @@ class Program:
             if not name.startswith(".L"):          # numeric local labels: no names
                 out.setdefault(addr, name)
         return out
+
+    def _load_rv(self, machine) -> None:
+        """A RISC-V program (emips.rvasm): the image at its addresses
+        (physical: an M-mode hart, satp Bare), the PC at the entry, sp
+        and gp as RARS sets them (gp = __global_pointer$, where the
+        linker's gp-relative accesses assume it)."""
+        if not getattr(machine, "rv", False) or machine.arch != self.arch:
+            raise ValueError(f"a {self.arch} program needs a {self.arch} core")
+        for a, b in self.image.items():
+            machine.phys_write_byte(a, b)
+        machine.pc = self.entry & machine.amask
+        machine.write_reg(2, 0x7FFFEFFC if self.arch == "rv32" else 0x7FFFEFF0)
+        machine.write_reg(3, self.symbols.get("__global_pointer$", BOOT_GP))
 
     def load(self, machine, *, boot: bool = True) -> None:
         """Copy the image into ``machine`` and point its PC at the entry.
@@ -212,6 +227,9 @@ class Program:
         in (with the fixed mapping, kuseg is at VA + 1 GB after boot, at
         VA itself in the reset state, where Status.ERL = 1)."""
         from .exceptions import UnmappedAddress
+        if self.arch in ("rv32", "rv64"):
+            self._load_rv(machine)
+            return
         if machine.big_endian != (self.endian == "big"):
             raise ValueError(f"program is {self.endian}-endian, machine is not")
         if (self.arch == "nanomips") != bool(getattr(machine, "nano", False)):
