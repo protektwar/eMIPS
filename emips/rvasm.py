@@ -262,12 +262,12 @@ NOP32, NOP16 = 0x13, 0x0001
 #: the largest value (alignment 1) or the alignment of an offset below 128)
 _MIPS_OPERANDS = {"@": ("hint", 31, 1), "#": ("immediate", 511, 1), "$": ("LDP offset", 0, 8),
                   "%": ("LWP offset", 0, 4), "^": ("SDP offset", 0, 8),
-                  "&": ("SWP offset", 0, 4)}
+                  "&": ("SWP offset", 0, 4), "*": ("MTLBWR level", 7, 1)}
 #: ... and the fields they go to: (mask, shift in the word, value shift) —
 #: include/opcode/riscv.h OP_MASK_MIPS_* / OP_SH_MIPS_*
 _MIPS_FIELDS = {"@": ((0x1F, 7, 0),), "#": ((0x1FF, 20, 0),), "$": ((0xF, 23, 3),),
                 "%": ((0x1F, 22, 2),), "^": ((0x3, 10, 3), (0x3, 25, 5)),
-                "&": ((0x7, 9, 2), (0x3, 25, 5))}
+                "&": ((0x7, 9, 2), (0x3, 25, 5)), "*": ((0x7, 20, 0),)}
 
 
 def _match_func(op: Opcode, insn: int) -> bool:

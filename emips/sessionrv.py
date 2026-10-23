@@ -462,7 +462,7 @@ def find_event(name: str) -> int | None:
 def event_lines() -> list[str]:
     from .p8700 import EVENTS
     src = {"retire": "each instruction", "cycle": "each clock", "trap": "each trap",
-           "pipeline": "the 5-stage pipeline", "cache": "the caches' counters",
+           "pipeline": "the 5-stage pipeline", "cache": "the caches' and TLBs' counters",
            "": "not modelled: never counts"}
     return [f"{n:4} {name:36} {src[how]}" for n, (name, how) in sorted(EVENTS.items())]
 
@@ -508,4 +508,6 @@ def p8700_lines(m) -> list[str]:
     if p.erl:
         out.append("  ERL = 1: every access uncached, no interrupts")
     out += p.counters.lines()
+    if hasattr(m.mmu, "lines"):                 # (its TLBs: emips.p8700mmu)
+        out += m.mmu.lines(m)
     return out

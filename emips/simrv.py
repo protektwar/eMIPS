@@ -218,7 +218,11 @@ class RVMachine(S.Machine):
             raise ValueError(f"modes must be 'm', 'mu' or 'msu', not {modes!r}")
         if mmu is None:                         # S-mode: page-based translation (2b)
             from .rvmmu import RVMMU
-            mmu = RVMMU() if "s" in modes else BareMMU()
+            if core == "p8700" and "s" in modes:    # (its TLBs and walkers: 5c)
+                from .p8700mmu import P8700MMU
+                mmu = P8700MMU()
+            else:
+                mmu = RVMMU() if "s" in modes else BareMMU()
         super().__init__(memory=memory, pc=0, endian="little", exceptions=exceptions,
                          release="R6", mmu=mmu, caches=caches, cpu=cpu, fpu=False)
         self.arch = arch
@@ -387,7 +391,12 @@ class RVMachine(S.Machine):
                     raise RVTrap(INSN_ACCESS, addr)
             return self.fetch_half(addr)
         except RVTrap as t:
-            raise RVTrap(t.cause, addr) from None
+            if t.tval == addr:
+                raise
+            u = RVTrap(t.cause, addr, t.custom)         # (a P8700 TLB miss keeps its facts)
+            if hasattr(t, "tlb_miss"):
+                u.tlb_miss = t.tlb_miss
+            raise u from None
 
     def _access(self, addr: int, size: int, kind: str) -> tuple[list[int], int]:
         """Translate an access (sim.Machine) and check PMP on its physical
@@ -432,13 +441,22 @@ class RVMachine(S.Machine):
         if self.tm.loads if op == "load" else self.tm.stores:
             self.tm.memory(op, addr, size)
 
-    def load_pte(self, pa: int, size: int) -> int:
+    def load_pte(self, pa: int, size: int, view: bool = False) -> int:
         """A page-table entry at physical address ``pa`` (emips.rvmmu; through
-        the caches, as an implicit load); None when PMP refuses it (an
-        S-mode read, priv. 3.7.2)."""
+        the caches, as an implicit load — not one of the instruction's own
+        accesses in its view); None when PMP refuses it (an S-mode read,
+        priv. 3.7.2).  ``view``: as the views read, with no side effect."""
         if not self.pmp.allows(pa, size, "load", 1):
             return None
-        return self.load_pa(pa, [pa + k for k in range(size)], pma_cca(self, pa), size)
+        cca = pma_cca(self, pa)
+        if view:
+            cached = self._uses_dcache(cca)
+            return sum(self._view_byte(pa, pa + k, cached) << (8 * k) for k in range(size))
+        log, self._mem_log = self._mem_log, None
+        try:
+            return self.load_pa(pa, [pa + k for k in range(size)], cca, size)
+        finally:
+            self._mem_log = log
 
     def fetch(self, pc: int, triggers: bool = True) -> RV:
         """Fetch and decode the instruction at ``pc`` (its first halfword
@@ -597,6 +615,9 @@ class RVMachine(S.Machine):
         p = self.p8700
         if p is not None and p.counters.armed:
             p.counters.trap()
+        miss = getattr(t, "tlb_miss", None)
+        if miss is not None:                    # (a software-walk TLB miss: 7.3.2)
+            p.tlb_miss(miss)
         self._enter(t.cause, t.tval, pc, to, interrupt=False,
                     vector=p.vector(t.cause) if custom else None)
         if triggers:
@@ -653,6 +674,8 @@ class RVMachine(S.Machine):
             c.mepc = pc & ~1
             c.mcause = code
             c.mtval = tval & self.amask
+            if self.p8700 is not None:          # (MPPPS / MTW: MD01502 7.3.9)
+                self.p8700.m_trap(vector is not None, c.status_field(CSR.MPP_SHIFT, 3))
             c.set_status(mpie=c.status_bit(CSR.MIE), mie=0, mpp=self.priv)
             tvec = c.mtvec
             tm = self.tm
@@ -705,6 +728,8 @@ class RVMachine(S.Machine):
         if self.p8700 is not None:
             self.p8700.reset()
             self.irq_lines = 0
+            if hasattr(self.mmu, "config7_written"):
+                self.mmu.config7_written(self)  # (FTLB64 back to 0)
         flush = getattr(self.mmu, "sfence", None)
         if flush is not None:
             flush(self, None, None)
@@ -966,8 +991,8 @@ def _mret(m, i, pc):
     if mpp != 3:
         c.set_status(mprv=0)
     m.priv = mpp
-    if m.p8700 is not None:                     # (MD01502 7.3.9: xRET clears ERL)
-        m.p8700.config5 &= ~1
+    if m.p8700 is not None and m.p8700.mret():  # (MD01502 7.3.9: ERL, MTW, MPPPS)
+        c.set_status(mpp=1)
     tm = m.tm
     if tm.count and not c.has_s:                # Debug spec 5.7.6: MTE = MPTE
         tm.tcontrol = MPTE | MTE if tm.tcontrol & MPTE else 0
@@ -1299,6 +1324,21 @@ def _mips_pref(m, i, pc):
         return                                  # (an address exception: a nop)
     if cca in m.cached_cca:
         m.caches.prefetch(_PREF_TYPES[hint & 7], va, pa, cca)
+
+
+@_x("mips.mtlbwr")
+def _mips_mtlbwr(m, i, pc):
+    """MTLBWR rs1, level (MD01502 rev. 1.84 Appendix B, Xmipsstw): M-mode
+    only; the level immediate must be 0 (the P8700 has non-leaf TLB
+    entries: mipsconfig5.LEVEL gives the level); the PTE in rs1 for the VA
+    in mtval, translation satp (XATP 0), G ORed with mipsconfig5.G — into
+    the VTLB / FTLB as the walker writes (emips.p8700mmu)."""
+    if m.priv < 3 or i.f["level"] != 0 or not hasattr(m.mmu, "write") or m.p8700 is None:
+        raise RVTrap(ILLEGAL, i.raw)
+    p = m.p8700
+    _, asid, _ = m.mmu._satp(m)
+    m.mmu.write(m, m.csrs.mtval, _reg(m, i.f["rs1"]), (p.config5 >> 7) & 7, asid,
+                bool(p.config5 & (1 << 14)))
 
 
 for _n in ("mips.ehb", "mips.ihb", "mips.pause"):

@@ -20,8 +20,8 @@ which replace or join the generic hart's (:mod:`emips.rvcsr`):
   (mtvec, delegable).  LR / SC work.
 - **mipstvec** (7.3.1): the vector of the custom exceptions — always
   M-mode, never delegated; MODE 0 direct, 1 vectored (BASE + 4 x cause).
-  mipstval / mipsscratch (7.3.2 / 7.3.3) are read / write here (the
-  software table walker that writes mipstval: phase 5c).
+  mipstval / mipsscratch (7.3.2 / 7.3.3) are read / write (the software
+  table walk writes mipstval: emips.p8700mmu).
 - **mipsintctl** (7.3.6): MIPS hardware interrupts 5..0 (MEI, MSI, MTI,
   SEI, STI, VSEI) go to their standard mip bits, or with the bit clear to
   mip[20] / [19] / VSTIP (6) / [18] / [17] / [16].  The interrupt
@@ -29,10 +29,13 @@ which replace or join the generic hart's (:mod:`emips.rvcsr`):
   MEI, MSI, MTI, SEI, SSI, STI, VSEI, VSTI, LCOFI, 19, 18, 17, 16).
 - **mipsconfig5.ERL** (7.3.9): no interrupts, every access uncached;
   MRET / SRET clear it (NMI / Cache Error set it: phases 5d / 5e).
-  MDIAGL is write-1-only.  The software table walker's fields: phase 5c.
+  MDIAGL is write-1-only.  The software table walker's fields (LEVEL,
+  ATYPE, XATP, G, MTW / MPTW / MPPPS): :meth:`P8700.tlb_miss`,
+  :meth:`P8700.m_trap`, :meth:`P8700.mret` (emips.p8700mmu).
 - **mipsconfig6** AMO_II / RDTM_II / PRI, **mipsconfig7** (DMALN / DULS:
   misaligned loads and stores trap; the rest are performance features
-  eMIPS does not model, or the MMU / caches' bits of phases 5c / 5e),
+  eMIPS does not model, DHTW / FTLB64 / FTLBP for emips.p8700mmu, or the
+  caches' bits of phase 5e),
   **mipsconfig8-11** (the prefetch trackers' registers, through 8 / 9 /
   10; PFEN), **mipsconfig1** (the L1 shapes and L2C, from the caches),
   **mipscacheerr / mipserrctl / mipsdsprambase** (stored).
@@ -63,7 +66,7 @@ if TYPE_CHECKING:
 
 #: the P8700's extensions (1.2: RV64GC Zba Zbb, and binutils' vendor ones)
 EXTENSIONS = ("imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb_xmipscmov_xmipslsp_xmipscbop"
-              "_xmipsexectl")
+              "_xmipsexectl_xmipsstw")
 #: 7.1.5 / 7.1.1 (QEMU's MIPS_VENDOR_ID and marchid)
 MVENDORID = 0x2 << 7 | 0x27
 CLASS_P, UARCH = 0x02, 0x01
@@ -85,8 +88,10 @@ INTERRUPT_NAMES = {IMPRECISE_BUS_ERROR: "imprecise bus error interrupt",
                    20: "custom interrupt 20 (MEI routed)", 6: "VSTIP (MTI routed)",
                    10: "VSEIP"}
 
-#: mipsconfig5 (7.3.9)
-ERL, MDIAGL = 1 << 0, 1 << 5
+#: mipsconfig5 (7.3.9): the software table walker's fields (phase 5c)
+ERL, MPTW, MTW, MPPPS, MDIAGL = 1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 5
+LEVEL_SHIFT, XATP_SHIFT, ATYPE_SHIFT, G5 = 7, 10, 12, 1 << 14
+CONFIG5_RW = ERL | MPTW | MTW | MPPPS | G5 | 3 << ATYPE_SHIFT
 #: mipsconfig6 (7.3.10)
 PRI, RDTM_II, AMO_II = 1 << 0, 1 << 1, 1 << 2
 #: mipsconfig7 (7.3.11): read-only HCI 31, TL 8, reserved 24 / 10
@@ -226,7 +231,46 @@ class P8700:
         return v
 
     def write_config5(self, v: int) -> None:
-        self.config5 = (self.config5 & ~ERL) | (v & ERL) | (self.config5 | v) & MDIAGL
+        """7.3.9: ERL, MPTW / MTW / MPPPS, G, ATYPE R/W; LEVEL WARL (the
+        levels Sv39 / Sv48 use: 0-3); XATP reads 0 (no H extension: only
+        satp); MDIAGL write-1-only; PGVA / MPPV (H only) 0."""
+        level = (v >> LEVEL_SHIFT) & 7
+        if level > 3:
+            level = (self.config5 >> LEVEL_SHIFT) & 7
+        self.config5 = (v & CONFIG5_RW) | level << LEVEL_SHIFT | (self.config5 | v) & MDIAGL
+
+    def write_config7(self, v: int) -> None:
+        self.config7 = v & CONFIG7_MASK
+        mmu = getattr(self.m, "mmu", None)
+        if hasattr(mmu, "config7_written"):
+            mmu.config7_written(self.m)
+
+    def tlb_miss(self, s) -> None:
+        """A software-walk TLB miss is taken (7.3.2 / 7.3.9): mipstval = the
+        missing PTE's address, LEVEL / ATYPE / XATP (satp) / G."""
+        from .p8700mmu import ATYPE
+        self.mipstval = s.pte_addr
+        c = self.config5 & ~(G5 | 3 << ATYPE_SHIFT | 3 << XATP_SHIFT | 7 << LEVEL_SHIFT)
+        self.config5 = (c | (G5 if s.g else 0) | ATYPE[s.kind] << ATYPE_SHIFT
+                        | s.level << LEVEL_SHIFT)
+
+    def m_trap(self, custom: bool, mpp: int) -> None:
+        """An M-mode trap (7.3.9): MPPPS = MPP was S on a mipstvec exception
+        or with MTW = 1; MPTW = MTW; MTW = 0."""
+        c = self.config5
+        if custom or c & MTW:
+            c = (c & ~MPPPS) | (MPPPS if mpp == 1 else 0)
+        c = (c & ~MPTW) | (MPTW if c & MTW else 0)
+        self.config5 = c & ~MTW
+
+    def mret(self) -> bool:
+        """MRET (7.3.9): MTW = MPTW, ERL = 0; True when MPPPS asks MPP = S
+        (MPPPS is then cleared)."""
+        c = self.config5
+        s_mode = bool(c & MPPPS)
+        c = (c & ~(MTW | MPPPS | ERL)) | (MTW if c & MPTW else 0)
+        self.config5 = c
+        return s_mode
 
     def write_config8(self, v: int) -> None:
         self.config8 = v & 0x7FF
@@ -276,7 +320,7 @@ class P8700:
 
 #: Table 11.4: event -> (name, what eMIPS counts it from): "retire" (each
 #: instruction), "cycle" (each clock), "trap", "pipeline" (the 5-stage
-#: pipeline's cycle), "cache" (the caches' counters), "" (never happens on
+#: pipeline's cycle), "cache" (the caches' and the TLBs' counters), "" (never happens on
 #: this model: listed so the field accepts it)
 EVENTS: dict[int, tuple[str, str]] = {
     1: ("num_grad", "retire"), 2: ("one_grad", "cycle"), 3: ("two_grad", "cycle"),
@@ -293,15 +337,16 @@ EVENTS: dict[int, tuple[str, str]] = {
     31: ("br_nt_grad", "retire"), 32: ("redirect", "pipeline"),
     33: ("num_exceptions", "trap"), 34: ("exe_redir", ""), 35: ("load_blocked", "pipeline"),
     36: ("sync_blocked", ""), 37: ("rftch_inbnd_oel", ""), 38: ("rftch_inbnd_misalgn", ""),
-    64: ("dtlb_lookup", ""), 65: ("dtlb_miss_new", ""), 66: ("dtlb_miss_merge", ""),
+    64: ("dtlb_lookup", "cache"), 65: ("dtlb_miss_new", "cache"), 66: ("dtlb_miss_merge", ""),
     67: ("bond_load", ""), 68: ("bond_store", ""), 69: ("total_dcache_lookups", "cache"),
     70: ("loads_dcache_lookup", "cache"), 71: ("stores_dcache_lookup", "cache"),
     72: ("total_dcache_misses", "cache"), 73: ("load_dcache_misses", "cache"),
     74: ("store_dcache_misses", "cache"), 75: ("smb_full", ""),
     76: ("DCACHE load Retries", ""),
     **{77 + k: (f"L1 Prefetch from Prefetch tracker {k}", "") for k in range(8)},
-    85: ("rftch_inbnd_prd", ""), 128: ("all harts stalled", ""), 129: ("utb_access", ""),
-    130: ("utlb MMU wait stalls", ""), 131: ("utb_miss", ""), 132: ("ica_access", "cache"),
+    85: ("rftch_inbnd_prd", ""), 128: ("all harts stalled", ""),
+    129: ("utb_access", "cache"), 130: ("utlb MMU wait stalls", ""),
+    131: ("utb_miss", "cache"), 132: ("ica_access", "cache"),
     133: ("ica_miss", "cache"), 134: ("ibuff_cred_stall", ""),
     135: ("PCBuffer credit stalls", ""), 136: ("hart stalls", ""),
     137: ("redirect_stall", "pipeline"), 138: ("ica_miss_stall", "pipeline"),
@@ -358,6 +403,10 @@ def _classes(i: "RV", pc: int, nxt: int) -> tuple[int, ...]:
     return tuple(out)
 
 
+#: the TLB events (Table 11.4; emips.p8700mmu's counters): (buffer, hits /
+#: misses)
+_TLB_KEYS = {64: ("dtlb", (0, 1)), 65: ("dtlb", (1,)), 129: ("itlb", (0, 1)),
+             131: ("itlb", (1,)), 145: ("tlb", (1,))}
 _CACHE_KEYS = {69: ("d", ("load", "store"), True, True), 70: ("d", ("load",), True, True),
                71: ("d", ("store",), True, True), 72: ("d", ("load", "store"), False, True),
                73: ("d", ("load",), False, True), 74: ("d", ("store",), False, True),
@@ -449,8 +498,12 @@ class Counters:
 
     def _sample(self, ev: int) -> int:
         m = self.m
-        if ev == 145:
-            return getattr(m.mmu, "walks", 0)
+        st = getattr(m.mmu, "stats", None)
+        if ev in _TLB_KEYS:                     # (the MMU's buffers: emips.p8700mmu)
+            if not isinstance(st, dict):
+                return getattr(m.mmu, "misses", 0) if ev == 145 else 0
+            name, which = _TLB_KEYS[ev]
+            return sum(st[name][k] for k in which)
         c = m.caches
         if c is None:
             return 0
@@ -529,7 +582,7 @@ CSRS: list[CSR] = [
     CSR(0x7D5, "mipsconfig5", _p, _attr("config5"), lambda c, v: c.m.p8700.write_config5(v)),
     CSR(0x7D6, "mipsconfig6", _p, _attr("config6"),
         _store("config6", PRI | RDTM_II | AMO_II)),
-    CSR(0x7D7, "mipsconfig7", _p, _attr("config7"), _store("config7", CONFIG7_MASK)),
+    CSR(0x7D7, "mipsconfig7", _p, _attr("config7"), lambda c, v: c.m.p8700.write_config7(v)),
     CSR(0x7D8, "mipsconfig8", _p, _attr("config8"), lambda c, v: c.m.p8700.write_config8(v)),
     CSR(0x7D9, "mipsconfig9", _p, _attr("config9"), lambda c, v: c.m.p8700.write_config9(v)),
     CSR(0x7DA, "mipsconfig10", _p, lambda c: c.m.p8700.config10(), lambda c, v: None),

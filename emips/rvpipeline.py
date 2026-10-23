@@ -71,7 +71,8 @@ _BRANCHES = {"beq", "bne", "blt", "bge", "bltu", "bgeu"}
 #: what serializes (see the module docstring), besides the CSR writes
 _SERIALIZE = {"ecall": "ecall", "ebreak": "ebreak", "mret": "mret", "sret": "sret",
               "dret": "dret", "wfi": "wfi", "fence.i": "fence.i",
-              "sfence.vma": "sfence.vma", "mips.ihb": "mips.ihb"}
+              "sfence.vma": "sfence.vma", "mips.ihb": "mips.ihb",
+              "mips.mtlbwr": "mips.mtlbwr"}
 #: the RARS services' registers (ecall: a7 the service, a0-a3 / fa0 in,
 #: a0 / fa0 out; emips.rvservices)
 _ECALL_READS = frozenset({("r", 17), ("r", 10), ("r", 11), ("r", 12), ("r", 13)})
@@ -232,6 +233,13 @@ class RVPipeline:
         if self.timing is not None:
             self.timing.configure(memory, nonblocking=nonblocking)
         self.nonblocking = nonblocking
+        #: the P8700's micro-TLB misses cost cycles (emips.p8700mmu: take())
+        self.utlb = machine.mmu if hasattr(machine.mmu, "take") else None
+        if self.utlb is not None:
+            from .timing import MEMORY_TIMING
+            self.utlb.timing = True
+            self.utlb.utlb_cost = (memory or {}).get("UTLB", MEMORY_TIMING["UTLB"])
+            self.utlb.take()
         self.reg_ready: dict = {}
         self._fetch_notes: list[str] = []
         self.stage: dict[str, Slot | None] = {s: None for s in STAGES}
@@ -259,6 +267,12 @@ class RVPipeline:
             slot.fetch_wait = wait
             slot.fetch_runs = list(self.timing.taken_runs)
             self._fetch_notes += [f"fetch 0x{slot.pc:08x}: {n}" for n in notes]
+        if self.utlb is not None:                       # (an ITLB miss: the VTLB / FTLB)
+            more, notes = self.utlb.take()
+            if more:
+                slot.fetch_wait += more
+                slot.fetch_runs.insert(0, ("utlb", more))
+                self._fetch_notes += [f"fetch 0x{slot.pc:08x}: {n}" for n in notes]
         return slot
 
     def _fetch_slot(self) -> Slot:
@@ -653,12 +667,16 @@ class RVPipeline:
         self._fetch_notes = []
 
     def _memory_time(self, s: Slot, ev: list[str]) -> None:
+        more, unotes = self.utlb.take() if self.utlb is not None else (0, [])
+        ev.extend(f"{s.text}: {n}" for n in unotes)     # (a DTLB miss: the LSU waits)
         if self.timing is None:
+            if more:
+                s.mem_wait, s.mem_runs, s.mem_why = more, [("utlb", more)], unotes[0]
             return
         wait, extra, notes = self.timing.take()
-        s.mem_wait = wait
-        s.mem_runs = list(self.timing.taken_runs)
-        s.mem_why = notes[0] if notes else ""
+        s.mem_wait = wait + more
+        s.mem_runs = ([("utlb", more)] if more else []) + list(self.timing.taken_runs)
+        s.mem_why = (unotes + notes)[0] if unotes or notes else ""
         ev.extend(f"{s.text}: {n}" for n in notes)
         regs = list(s.info.writes) if s.info else []
         for r in regs:

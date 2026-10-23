@@ -150,6 +150,7 @@ _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, i
     "mips_swp_imm_lo": (("imm",), ((11, 9, 2),), 0, 0),
     "mips_hint": (("hint",), ((11, 7, 0),), 0, 0),
     "mips_imm9": (("imm",), ((28, 20, 0),), 0, 0),
+    "mips_level": (("level",), ((22, 20, 0),), 0, 0),
 }
 
 #: what a zero in a "nonzero" argument means (28.3-28.8 and Table 28.x
@@ -706,6 +707,8 @@ class Disassembler:
                     out.append(str(_x(w, 25, 2) << 5 | _x(w, 10, 2) << 3))
                 elif c == "&":
                     out.append(str(_x(w, 25, 2) << 5 | _x(w, 9, 3) << 2))
+                elif c == "*":                                  # (MTLBWR's level: MD01502)
+                    out.append(str(_x(w, 20, 3)))
                 else:
                     raise AssertionError(f"Xm{c}")
             else:

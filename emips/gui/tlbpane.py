@@ -231,6 +231,9 @@ class TLBView(QtWidgets.QWidget):
                "and Bare translate PA = VA").format(
                 mode=scheme.name if scheme is not None else "Bare", asid=asid,
                 root=root << 12)))
+        if hasattr(mmu, "rows"):                # the P8700's VTLB / FTLB (MD01502 ch. 2)
+            self._p8700(m, mmu)
+            return
         heads = [tr("ASID"), tr("VPN"), tr("page"), tr("PPN"), tr("PTE flags")]
         t.setColumnCount(len(heads))
         t.setHorizontalHeaderLabels(heads)
@@ -249,6 +252,23 @@ class TLBView(QtWidgets.QWidget):
         self.stats.setPlainText(
             f"TLB: {len(entries)} of {mmu.entries} entries\n"
             f"hits {mmu.hits}   misses {mmu.misses}   page-table walks {mmu.walks}")
+
+    def _p8700(self, m, mmu) -> None:
+        t = self.table
+        heads = [tr("entry"), tr("ASID"), tr("VPN"), tr("page"), tr("PPN"), tr("PTE flags")]
+        t.setColumnCount(len(heads))
+        t.setHorizontalHeaderLabels(heads)
+        rows = mmu.rows(m)
+        t.setRowCount(len(rows))
+        names = "VRWXUGAD"
+        for i, (where, asid, vpn, size, ppn, pte, leaf) in enumerate(rows):
+            flags = "".join(c if pte >> k & 1 else "-" for k, c in enumerate(names))
+            cells = [where, asid, f"0x{vpn:x}", size if leaf else tr("{s} (non-leaf)").format(
+                s=size), f"0x{ppn:x}", flags]
+            for c, text in enumerate(cells):
+                _set(t, i, c, text, None, False)
+        t.resizeColumnsToContents()
+        self.stats.setPlainText("\n".join([mmu.lines(m)[0], mmu.lines(m)[-1].strip()]))
 
     def _bat(self, m, acc) -> None:
         mmu = m.mmu

@@ -1,5 +1,5 @@
 {
- "_comment": "generated from riscv-opcodes (commit f24ac23), binutils 2.42's RISC-V opcode table and binutils 2.45's MIPS vendor entries; never edit",
+ "_comment": "generated from riscv-opcodes (commit f24ac23), binutils 2.42's RISC-V opcode table, binutils 2.45's MIPS vendor entries and MD01502's MTLBWR; never edit",
  "args": {
   "amoop": [
    31,
@@ -264,6 +264,10 @@
   "mips_ldp_imm": [
    26,
    23
+  ],
+  "mips_level": [
+   22,
+   20
   ],
   "mips_lwp_imm": [
    26,
@@ -13466,6 +13470,23 @@
     "name": "mips.swp",
     "type": "",
     "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "s,Xm*",
+    "class": [
+     [
+      "xmipsstw"
+     ]
+    ],
+    "cname": "XMIPSSTW",
+    "func": "match_opcode",
+    "i": 1529,
+    "mask": 4286611455,
+    "match": 3959423091,
+    "name": "mips.mtlbwr",
+    "type": "",
+    "xlen": 0
    }
   ],
   "insn_types": [
@@ -19741,6 +19762,24 @@
    "mask": 29183,
    "match": 20619,
    "name": "mips.swp",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rs1",
+    "mips_level"
+   ],
+   "ext": [
+    "xmipsstw"
+   ],
+   "file": "MD01502",
+   "mask": 4286611455,
+   "match": 3959423091,
+   "name": "mips.mtlbwr",
    "size": 4,
    "xlen": [
     32,

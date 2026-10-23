@@ -25,7 +25,7 @@ Level ISA": 12.1.11 satp, 12.3-12.6 Sv32 / Sv39 / Sv48 / Sv57).
   rs2 = an ASID or all; global entries ignore the ASID).  A satp write
   flushes nothing (a new ASID simply does not match).
 - **Views** (``peek`` / ``describe``) walk without touching the TLB, the
-  counters or the A / D bits.
+  counters, the caches (``load_pte(view=True)``) or the A / D bits.
 
 Choices: ``sim.DEVIATIONS["RISC-V"]``.
 """
@@ -203,7 +203,7 @@ class RVMMU:
                 return self._pa(e, va, sch)
             self.misses += 1
             self.walks += 1
-        pte, level, ppn = self._walk(m, va, kind, sch, root)
+        pte, level, ppn = self._walk(m, va, kind, sch, root, view=not record)
         self._check(m, pte, kind, priv, record=record)
         if record:
             self._insert(TLBEntry(asid, vpn >> (level * sch.idx_bits), level, pte, ppn))
@@ -214,7 +214,8 @@ class RVMMU:
         low = (1 << (PAGE + e.level * sch.idx_bits)) - 1
         return ((e.ppn << PAGE) & ~low) | (va & low)
 
-    def _walk(self, m, va: int, kind: str, sch: Scheme, root: int) -> tuple[int, int, int]:
+    def _walk(self, m, va: int, kind: str, sch: Scheme, root: int,
+              view: bool = False) -> tuple[int, int, int]:
         """12.3.2 steps 1-6: the leaf PTE, its level and its PPN."""
         base = root << PAGE
         for level in range(sch.levels - 1, -1, -1):
@@ -222,7 +223,7 @@ class RVMMU:
             addr = base + idx * sch.pte_size
             if addr >> PA_BITS:
                 raise PageFault(ACCESS_FAULT[kind], "a PTE beyond physical memory")
-            pte = m.load_pte(addr, sch.pte_size)
+            pte = m.load_pte(addr, sch.pte_size, view)
             if pte is None:
                 raise PageFault(ACCESS_FAULT[kind], "PMP refuses the PTE's address")
             if sch.pte_size == 8 and pte >> 54:

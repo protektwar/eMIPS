@@ -600,8 +600,7 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "0x8000000000000201, Sv48), OpenSBI's P8700 platform code, Linux's "
                 "\"Zalrsc only\" patch (no AMOs)",
          missing=("the P8700's out-of-order multithreaded pipeline (eMIPS: the textbook "
-                  "5-stage)", "its TLBs and table walkers (phase 5c: eMIPS translates "
-                  "with the generic Sv39 / Sv48 walker)", "several harts and cores, the CM3.7, "
+                  "5-stage)", "TLB ECC (phase 5e)", "several harts and cores, the CM3.7, "
                   "CPC, ACLINT / APLIC (phase 5d)", "its caches and their CSRs (phase 5e)",
                   "MIPS Hybrid Debug (eMIPS: the RISC-V Debug specification's)",
                   "the DSPRAM, L1 prefetching (the trackers' registers are stored), "
