@@ -2064,6 +2064,26 @@ class Caches:
                 t.fixed(CACHEOP_COST["hit-inv"], "synci: instruction line invalidated")
                 self._invalidate(self.i, s, w)
 
+    def fence_i(self) -> None:
+        """RISC-V FENCE.I (Zifencei 6.1; PLAN M25): this hart's later
+        fetches see its earlier stores — every dirty D-cache line written
+        back, every I-cache line invalidated, the write buffer drained (no
+        24K cost table applies: no cycles are charged)."""
+        if self.cm is not None:
+            self.cm.claim(self)
+        d = self.d
+        if d is not None:
+            for s in range(d.sets):
+                for w in range(d.ways):
+                    if d.lines[s][w].valid and d._dirty(s, w):
+                        d.write_back(s, w, self)
+        if self.i is not None:
+            for s in range(self.i.sets):
+                for w in range(self.i.ways):
+                    if self.i.lines[s][w].valid:
+                        self._invalidate(self.i, s, w)
+        self.sync(0)
+
     def prefetch(self, hint: int, va: int, pa: int, cca: int) -> None:
         """PREF (24K Table 12.1): 0/1/6/7 fill the line (6/7 never into
         way 0), 4/5 fill way 0 (dropped when it is locked), 25 writes a

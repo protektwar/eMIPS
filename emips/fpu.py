@@ -45,8 +45,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 from math import isqrt
 
-# rounding modes (FCSR.RM)
-RN, RZ, RP, RM = 0, 1, 2, 3
+# rounding modes (FCSR.RM); RMM = round to nearest, ties away from zero
+# (IEEE 754-2008 roundTiesToAway: RISC-V's rm 4, PLAN M25 — no MIPS FPU has it)
+RN, RZ, RP, RM, RMM = 0, 1, 2, 3, 4
 
 #: FCSR Cause / Enable / Flag bit index of each flag (relative: I = 0).
 FLAG_BITS = {"I": 0, "U": 1, "O": 2, "Z": 3, "V": 4}
@@ -172,6 +173,8 @@ def _round_int(m: Fraction, neg: bool, rm: int) -> int:
     if rm == RN:
         half = Fraction(1, 2)
         return q + 1 if rem > half or (rem == half and q & 1) else q
+    if rm == RMM:
+        return q + 1 if rem >= Fraction(1, 2) else q
     if rm == RZ:
         return q
     if rm == RP:
@@ -204,7 +207,7 @@ def round_pack(v: Fraction, f: Fmt, rm: int, *, neg_zero: bool = False,
         e += 1
     if e > f.emax:                                       # overflow
         flags |= {"O", "I"}
-        to_inf = rm == RN or (rm == RP and not neg) or (rm == RM and neg)
+        to_inf = rm in (RN, RMM) or (rm == RP and not neg) or (rm == RM and neg)
         return sgn | (f.inf if to_inf else f.max_finite), flags
     if q >> f.fbits:                                     # normal
         return sgn | ((e + f.bias) << f.fbits) | (q & ((1 << f.fbits) - 1)), flags

@@ -263,6 +263,31 @@ DEVIATIONS: dict[str, str] = {
                  "the whole program -msoft-float).  No QEMU model has MIPS16e "
                  "on MIPS64: the oracle is the GNU simulator (sim/mips, "
                  "mipsisa64r2-elf), where it agrees with the manual.",
+    "RISC-V": "The RISC-V Instruction Set Manual 20250508, Volumes I and II "
+              "(emips.riscv, emips.simrv, emips.rvcsr; PLAN M25 phase 1).  Where "
+              "the specifications leave a choice: misaligned ordinary loads / "
+              "stores are done in hardware (Zicclsm; the P8700 and QEMU do the "
+              "same), LR / SC / AMOs raise address misaligned; mtval gets the "
+              "faulting address, an illegal instruction's bits (all 16 / 32 of "
+              "them) and an EBREAK's PC (Spike's and QEMU's choices); mtvec's "
+              "reserved MODE values 2 / 3 lose bit 1 (WARL, as Spike); misa is "
+              "read-only; mvendorid / marchid / mimpid are 0 (not implemented); "
+              "mhpmcounter3-31 / mhpmevent3-31 read 0 (priv. 3.1.10 allows it); "
+              "an SC does not clear its reservation on this hart's own stores "
+              "(14.2 allows keeping it; another hart's store will clear it); "
+              "FENCE drains the write buffer, FENCE.I also writes the D-cache "
+              "back and invalidates the I-cache (no cycles charged).  Phase 1's "
+              "platform: one M-mode hart, physical addresses of 32 bits (an "
+              "access above 4 GB on RV64 is an access fault), 0xFFFF0000-"
+              "0xFFFFFFFF uncached (RARS's MMIO page), WFI a NOP, the timer "
+              "behind time = cycles / CCRes.  The decoder follows the "
+              "specification where binutils' objdump does not: c.addi16sp with "
+              "nzimm = 0 and the RV32 shifts by 32-63 are illegal, FENCE / "
+              "FENCE.I execute with their reserved fields set.  F / D (emips.rvfpu): "
+              "mstatus.FS is Off at reset (the boot decides: phase 2); a "
+              "reserved rounding mode is an illegal instruction on every "
+              "instruction with an rm field, the exact conversions too (Spike "
+              "and QEMU agree).",
     "nanoMIPS": "MD01247 rev. 01.01 / MD01251 rev. 06.09 (emips.nanomips, "
                 "emips.simnano; PLAN M23 phases 1-2).  The x fields are ignored as A.4.3 says: NOP[16] / "
                 "NOP[32] / EHB / PAUSE with x bits set are those instructions "
@@ -1964,19 +1989,25 @@ class Machine:
     vamask = M32
     #: a nanoMIPS core (emips.simnano: 16 / 32 / 48-bit instructions only)
     nano = False
+    #: a RISC-V hart (emips.simrv: not a MIPS core at all; PLAN M25)
+    rv = False
     #: the ABI's register names (emips.syntax.gpr_name): o32's, "n64"
-    #: (MIPS64), "p32" (nanoMIPS)
+    #: (MIPS64), "p32" (nanoMIPS), "riscv" (emips.riscv.GPR_NAMES)
     names: bool | str = True
     #: the bytes the last LL linked (nanoMIPS LLWP: 8; emips.simnano)
     lr_size = 4
 
     def __new__(cls, *args: Any, arch: str = "mips32", **kwargs: Any) -> "Machine":
-        if arch not in ("mips32", "mips64", "nanomips"):
-            raise ValueError(f"arch must be 'mips32', 'mips64' or 'nanomips', not {arch!r}")
+        if arch not in ("mips32", "mips64", "nanomips", "rv32", "rv64"):
+            raise ValueError("arch must be 'mips32', 'mips64', 'nanomips', 'rv32' or "
+                             f"'rv64', not {arch!r}")
         if arch == "mips64" and cls is Machine:
             cls = _S64.Machine64
         elif arch == "nanomips" and cls is Machine:
             cls = _SN.NanoMachine
+        elif arch in ("rv32", "rv64") and cls is Machine:
+            from . import simrv
+            cls = simrv.RVMachine
         return super().__new__(cls)
 
     def __init__(self, isa: ISA | None = None, memory: PMemory | None = None,
