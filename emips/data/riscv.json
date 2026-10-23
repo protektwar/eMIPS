@@ -1,5 +1,5 @@
 {
- "_comment": "generated from riscv-opcodes (commit f24ac23) and binutils 2.42's RISC-V opcode table; never edit",
+ "_comment": "generated from riscv-opcodes (commit f24ac23), binutils 2.42's RISC-V opcode table and binutils 2.45's MIPS vendor entries; never edit",
  "args": {
   "amoop": [
    31,
@@ -252,6 +252,42 @@
   "jimm20": [
    31,
    12
+  ],
+  "mips_hint": [
+   11,
+   7
+  ],
+  "mips_imm9": [
+   28,
+   20
+  ],
+  "mips_ldp_imm": [
+   26,
+   23
+  ],
+  "mips_lwp_imm": [
+   26,
+   22
+  ],
+  "mips_rd2": [
+   31,
+   27
+  ],
+  "mips_sdp_imm_hi": [
+   26,
+   25
+  ],
+  "mips_sdp_imm_lo": [
+   11,
+   10
+  ],
+  "mips_swp_imm_hi": [
+   26,
+   25
+  ],
+  "mips_swp_imm_lo": [
+   11,
+   9
   ],
   "nf": [
    31,
@@ -5796,6 +5832,57 @@
     "mask": 4262457471,
     "match": 1073741875,
     "name": "neg",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "",
+    "class": [
+     [
+      "xmipsexectl"
+     ]
+    ],
+    "cname": "XMIPSEXECTL",
+    "func": "match_opcode",
+    "i": 108,
+    "mask": 4294967295,
+    "match": 3149843,
+    "name": "mips.ehb",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "",
+    "class": [
+     [
+      "xmipsexectl"
+     ]
+    ],
+    "cname": "XMIPSEXECTL",
+    "func": "match_opcode",
+    "i": 108,
+    "mask": 4294967295,
+    "match": 1052691,
+    "name": "mips.ihb",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "",
+    "class": [
+     [
+      "xmipsexectl"
+     ]
+    ],
+    "cname": "XMIPSEXECTL",
+    "func": "match_opcode",
+    "i": 108,
+    "mask": 4294967295,
+    "match": 5246995,
+    "name": "mips.pause",
     "type": "",
     "xlen": 0
    },
@@ -13277,6 +13364,108 @@
     "name": "wfi",
     "type": "",
     "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "d,t,s,r",
+    "class": [
+     [
+      "xmipscmov"
+     ]
+    ],
+    "cname": "XMIPSCMOV",
+    "func": "match_opcode",
+    "i": 1523,
+    "mask": 100692095,
+    "match": 100675595,
+    "name": "mips.ccmov",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "d,r,Xm$(s)",
+    "class": [
+     [
+      "xmipslsp"
+     ]
+    ],
+    "cname": "XMIPSLSP",
+    "func": "match_opcode",
+    "i": 1524,
+    "mask": 7368831,
+    "match": 16395,
+    "name": "mips.ldp",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "d,r,Xm%(s)",
+    "class": [
+     [
+      "xmipslsp"
+     ]
+    ],
+    "cname": "XMIPSLSP",
+    "func": "match_opcode",
+    "i": 1525,
+    "mask": 3174527,
+    "match": 1064971,
+    "name": "mips.lwp",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "Xm@,Xm#(s)",
+    "class": [
+     [
+      "xmipscbop"
+     ]
+    ],
+    "cname": "XMIPSCBOP",
+    "func": "match_opcode",
+    "i": 1526,
+    "mask": 3758125183,
+    "match": 11,
+    "name": "mips.pref",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "t,r,Xm^(s)",
+    "class": [
+     [
+      "xmipslsp"
+     ]
+    ],
+    "cname": "XMIPSLSP",
+    "func": "match_opcode",
+    "i": 1527,
+    "mask": 29695,
+    "match": 20491,
+    "name": "mips.sdp",
+    "type": "",
+    "xlen": 0
+   },
+   {
+    "alias": false,
+    "args": "t,r,Xm&(s)",
+    "class": [
+     [
+      "xmipslsp"
+     ]
+    ],
+    "cname": "XMIPSLSP",
+    "func": "match_opcode",
+    "i": 1528,
+    "mask": 29183,
+    "match": 20619,
+    "name": "mips.swp",
+    "type": "",
+    "xlen": 0
    }
   ],
   "insn_types": [
@@ -14786,7 +14975,7 @@
    "0": 16,
    "1": 35,
    "103": 23,
-   "11": 1599,
+   "11": 1523,
    "111": 36,
    "115": 17,
    "119": 1456,
@@ -19389,6 +19578,172 @@
    "name": "zext.h",
    "size": 4,
    "xlen": [
+    64
+   ]
+  },
+  {
+   "args": [],
+   "ext": [
+    "xmipsexectl"
+   ],
+   "file": "binutils-2.45",
+   "mask": 4294967295,
+   "match": 3149843,
+   "name": "mips.ehb",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [],
+   "ext": [
+    "xmipsexectl"
+   ],
+   "file": "binutils-2.45",
+   "mask": 4294967295,
+   "match": 1052691,
+   "name": "mips.ihb",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [],
+   "ext": [
+    "xmipsexectl"
+   ],
+   "file": "binutils-2.45",
+   "mask": 4294967295,
+   "match": 5246995,
+   "name": "mips.pause",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rd",
+    "rs1",
+    "rs2",
+    "rs3"
+   ],
+   "ext": [
+    "xmipscmov"
+   ],
+   "file": "binutils-2.45",
+   "mask": 100692095,
+   "match": 100675595,
+   "name": "mips.ccmov",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rd",
+    "mips_rd2",
+    "mips_ldp_imm",
+    "rs1"
+   ],
+   "ext": [
+    "xmipslsp"
+   ],
+   "file": "binutils-2.45",
+   "mask": 7368831,
+   "match": 16395,
+   "name": "mips.ldp",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rd",
+    "mips_rd2",
+    "mips_lwp_imm",
+    "rs1"
+   ],
+   "ext": [
+    "xmipslsp"
+   ],
+   "file": "binutils-2.45",
+   "mask": 3174527,
+   "match": 1064971,
+   "name": "mips.lwp",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "mips_hint",
+    "mips_imm9",
+    "rs1"
+   ],
+   "ext": [
+    "xmipscbop"
+   ],
+   "file": "binutils-2.45",
+   "mask": 3758125183,
+   "match": 11,
+   "name": "mips.pref",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rs2",
+    "rs3",
+    "mips_sdp_imm_hi",
+    "mips_sdp_imm_lo",
+    "rs1"
+   ],
+   "ext": [
+    "xmipslsp"
+   ],
+   "file": "binutils-2.45",
+   "mask": 29695,
+   "match": 20491,
+   "name": "mips.sdp",
+   "size": 4,
+   "xlen": [
+    32,
+    64
+   ]
+  },
+  {
+   "args": [
+    "rs2",
+    "rs3",
+    "mips_swp_imm_hi",
+    "mips_swp_imm_lo",
+    "rs1"
+   ],
+   "ext": [
+    "xmipslsp"
+   ],
+   "file": "binutils-2.45",
+   "mask": 29183,
+   "match": 20619,
+   "name": "mips.swp",
+   "size": 4,
+   "xlen": [
+    32,
     64
    ]
   }

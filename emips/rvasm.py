@@ -258,6 +258,18 @@ MATCH_C_BEQZ, MASK_C_BEQZ, MATCH_C_BNEZ = 0xC001, 0xE003, 0xE001
 NOP32, NOP16 = 0x13, 0x0001
 
 
+#: binutils 2.45 tc-riscv.c's MIPS operands ('Xm' + c): (the message's word,
+#: the largest value (alignment 1) or the alignment of an offset below 128)
+_MIPS_OPERANDS = {"@": ("hint", 31, 1), "#": ("immediate", 511, 1), "$": ("LDP offset", 0, 8),
+                  "%": ("LWP offset", 0, 4), "^": ("SDP offset", 0, 8),
+                  "&": ("SWP offset", 0, 4)}
+#: ... and the fields they go to: (mask, shift in the word, value shift) —
+#: include/opcode/riscv.h OP_MASK_MIPS_* / OP_SH_MIPS_*
+_MIPS_FIELDS = {"@": ((0x1F, 7, 0),), "#": ((0x1FF, 20, 0),), "$": ((0xF, 23, 3),),
+                "%": ((0x1F, 22, 2),), "^": ((0x3, 10, 3), (0x3, 25, 5)),
+                "&": ((0x7, 9, 2), (0x3, 25, 5))}
+
+
 def _match_func(op: Opcode, insn: int) -> bool:
     """opcodes/riscv-opc.c's match functions."""
     fn = op.func
@@ -1062,6 +1074,19 @@ class Assembler:
                     a += 1
                     continue
                 fail()
+            if ch == "X" and args[k:k + 1] == "m":      # (2.45: the MIPS vendor operands)
+                c = args[k + 1]
+                k += 2
+                e, a = self.expr.parse(s, a)            # my_getExpression
+                self._absolute(mo, e)                   # check_absolute_expr
+                v = e.num & M64                         # ((unsigned long) ...)
+                what, top, align = _MIPS_OPERANDS[c]
+                if v > top if align == 1 else (v >= 1 << 7 or v % align):
+                    self.error(f"Improper {what} amount ({v})")
+                for mask, sh, shift in _MIPS_FIELDS[c]:  # INSERT_OPERAND
+                    ins(v >> shift, mask, sh)
+                imm = Expr("absent")
+                continue
             if ch in "<>Z":
                 e, a = self.expr.parse(s, a)
                 self._absolute(mo, e)

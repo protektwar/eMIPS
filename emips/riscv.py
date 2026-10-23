@@ -138,6 +138,18 @@ _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, i
     "c_uimm9splo": (("imm",), ((6, 5, 3), (4, 2, 6)), 0, 0),
     "c_uimm9sphi": (("imm",), ((12, 12, 5),), 0, 0),
     "c_uimm9sp_s": (("imm",), ((12, 10, 3), (9, 7, 6)), 0, 0),
+    # the P8700's custom instructions (MD01502 App. B; binutils 2.45's
+    # include/opcode/riscv.h EXTRACT_MIPS_*): rd2 of LDP / LWP, the pairs'
+    # unsigned offsets, PREF's hint and 9-bit unsigned offset
+    "mips_rd2": (("rd2",), ((31, 27, 0),), 0, 0),
+    "mips_ldp_imm": (("imm",), ((26, 23, 3),), 0, 0),
+    "mips_lwp_imm": (("imm",), ((26, 22, 2),), 0, 0),
+    "mips_sdp_imm_hi": (("imm",), ((26, 25, 5),), 0, 0),
+    "mips_sdp_imm_lo": (("imm",), ((11, 10, 3),), 0, 0),
+    "mips_swp_imm_hi": (("imm",), ((26, 25, 5),), 0, 0),
+    "mips_swp_imm_lo": (("imm",), ((11, 9, 2),), 0, 0),
+    "mips_hint": (("hint",), ((11, 7, 0),), 0, 0),
+    "mips_imm9": (("imm",), ((28, 20, 0),), 0, 0),
 }
 
 #: what a zero in a "nonzero" argument means (28.3-28.8 and Table 28.x
@@ -677,6 +689,25 @@ class Disassembler:
                 out.append(CSR_NAMES.get(csr) or f"0x{csr:x}")
             elif ch == "Z":
                 out.append(str(rs1))
+            elif ch == "r":                                     # (2.45: rs3 as an x register)
+                out.append(self._gpr(_x(w, 27, 5)))
+            elif ch == "X" and args[k + 1:k + 2] == "m":        # 2.45: the MIPS operands
+                k += 2
+                c = args[k]
+                if c == "@":
+                    out.append(f"0x{_x(w, 7, 5):x}")
+                elif c == "#":
+                    out.append(f"0x{_x(w, 20, 9):x}")
+                elif c == "$":
+                    out.append(str(_x(w, 23, 4) << 3))
+                elif c == "%":
+                    out.append(str(_x(w, 22, 5) << 2))
+                elif c == "^":
+                    out.append(str(_x(w, 25, 2) << 5 | _x(w, 10, 2) << 3))
+                elif c == "&":
+                    out.append(str(_x(w, 25, 2) << 5 | _x(w, 9, 3) << 2))
+                else:
+                    raise AssertionError(f"Xm{c}")
             else:
                 raise AssertionError(f"operand {ch!r} of {e.name}")
             k += 1

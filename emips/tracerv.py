@@ -34,7 +34,8 @@ _TRACKED = (("mstatus", "mstatus"), ("mtvec", "mtvec"), ("mepc", "mepc"),
             ("mie", "mie"), ("stvec", "stvec"), ("sepc", "sepc"), ("scause", "scause"),
             ("stval", "stval"), ("sscratch", "sscratch"), ("satp", "satp"))
 #: the base opcode map (unprivileged Table 70): bits 6:2 -> name
-OPCODES = {0x00: "LOAD", 0x01: "LOAD-FP", 0x03: "MISC-MEM", 0x04: "OP-IMM", 0x05: "AUIPC",
+OPCODES = {0x00: "LOAD", 0x01: "LOAD-FP", 0x02: "custom-0", 0x03: "MISC-MEM",
+           0x04: "OP-IMM", 0x05: "AUIPC",
            0x06: "OP-IMM-32", 0x08: "STORE", 0x09: "STORE-FP", 0x0B: "AMO", 0x0C: "OP",
            0x0D: "LUI", 0x0E: "OP-32", 0x10: "MADD", 0x11: "MSUB", 0x12: "NMSUB",
            0x13: "NMADD", 0x14: "OP-FP", 0x18: "BRANCH", 0x19: "JALR", 0x1B: "JAL",
@@ -89,8 +90,9 @@ _ALU = {
 _BRANCH = {"beq": ("==", False), "bne": ("!=", False), "blt": ("<", True),
            "bge": (">=", True), "bltu": ("<", False), "bgeu": (">=", False)}
 _LOADS = {"lb": 1, "lh": 2, "lw": 4, "ld": 8, "lbu": 1, "lhu": 2, "lwu": 4, "flw": 4,
-          "fld": 8}
-_STORES = {"sb": 1, "sh": 2, "sw": 4, "sd": 8, "fsw": 4, "fsd": 8}
+          "fld": 8, "mips.ldp": 16, "mips.lwp": 8}
+_STORES = {"sb": 1, "sh": 2, "sw": 4, "sd": 8, "fsw": 4, "fsd": 8,
+           "mips.sdp": 16, "mips.swp": 8}         # (the P8700's pairs: both halves)
 
 
 class RVView(InstrView):
@@ -261,7 +263,7 @@ def fields(i) -> list[Field]:
     for a in row.args:
         names, segs, _width, offset = _ARGS[a]
         name = names[0]
-        reg = name in ("rd", "rs1", "rs2", "rs3")
+        reg = name in ("rd", "rs1", "rs2", "rs3", "rd2")
         for k, (hi, lo, pos) in enumerate(segs):
             covered |= ((1 << (hi - lo + 1)) - 1) << lo
             last = last_of[name] == (a, k)

@@ -1161,6 +1161,81 @@ for _n, _fn in (("clzw", lambda m, v: _clz(v, 32)), ("ctzw", lambda m, v: _ctz(v
     _unary(_n, _fn)
 
 
+# -- the P8700's custom instructions (MD01502 Appendix B) -----------------------
+# binutils 2.45's vendor extensions Xmipscmov / Xmipslsp / Xmipscbop /
+# Xmipsexectl: a hart without them decodes none of these (its HART.udi).
+
+@_x("mips.ccmov")
+def _mips_ccmov(m, i, pc):
+    """CCMOV: rd = rs1 if rs2 != 0 else rs3."""
+    f = i.f
+    _set(m, f["rd"], _reg(m, f["rs1"]) if _reg(m, f["rs2"]) else _reg(m, f["rs3"]))
+
+
+def _pair_load(size: int):
+    def ex(m, i, pc):
+        """LDP / LWP: two consecutive doublewords / words from rs1 + offset
+        (an unsigned offset; misaligned pairs are done in hardware, the
+        P8700's choice — CONFIG.pair_aligned 0); rd gets the lower one, rd2
+        the upper (little-endian); words are sign-extended."""
+        va = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+        lo = m.load(va, size)
+        hi = m.load((va + size) & m.amask, size)
+        if size == 4:
+            lo, hi = _sb(lo, 32), _sb(hi, 32)
+        _set(m, i.f["rd"], lo)                  # (rd = rd2: UNKNOWN — the upper one stays)
+        _set(m, i.f["rd2"], hi)
+    return ex
+
+
+def _pair_store(size: int):
+    def ex(m, i, pc):
+        """SDP / SWP: rs2 to rs1 + offset, rs3 to the next doubleword / word."""
+        va = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+        m.store(va, _reg(m, i.f["rs2"]), size)
+        m.store((va + size) & m.amask, _reg(m, i.f["rs3"]), size)
+        _clear_reservation(m, va, 2 * size)
+    return ex
+
+
+EXECUTORS["mips.ldp"] = _pair_load(8)
+EXECUTORS["mips.lwp"] = _pair_load(4)
+EXECUTORS["mips.sdp"] = _pair_store(8)
+EXECUTORS["mips.swp"] = _pair_store(4)
+
+#: PREF's prefetch types into the D-cache -> emips.cache's PREF hints (load,
+#: store, prepare for store: a zeroed line on a miss)
+_PREF_TYPES = {0: 0, 1: 1, 7: 30}
+
+
+@_x("mips.pref")
+def _mips_pref(m, i, pc):
+    """PREF hint, imm(rs1): never an exception (a fault: nothing done);
+    hint[4:3] the cache (I / D / L2 / L3), hint[2:0] the type (0 load, 1
+    store, 7 prepare for store; the rest reserved: a nop).  eMIPS prefetches
+    into the D-cache; the other targets do nothing — "any action, including
+    doing nothing, is permitted"."""
+    hint = i.f["hint"]
+    if m.caches is None or hint >> 3 != 1 or (hint & 7) not in _PREF_TYPES:
+        return
+    va = (_reg(m, i.f["rs1"]) + i.f["imm"]) & m.amask
+    kind = "load" if hint & 7 == 0 else "store"
+    try:
+        pa, cca = m._xlate(m, va, kind)
+        if m.pmp.entries and not m.pmp.allows(pa, 1, kind, m.priv):
+            return
+    except (RVTrap, SimException):
+        return                                  # (an address exception: a nop)
+    if cca in m.cached_cca:
+        m.caches.prefetch(_PREF_TYPES[hint & 7], va, pa, cca)
+
+
+for _n in ("mips.ehb", "mips.ihb", "mips.pause"):
+    # EHB / IHB: hazard barriers (the pipeline: IHB fetches the instructions
+    # after it again); PAUSE a hint — nothing architectural
+    EXECUTORS[_n] = lambda m, i, pc: None
+
+
 # -- F / D (21, 22): emips.rvfpu -------------------------------------------------
 
 from . import rvfpu as _rvfpu  # noqa: E402  (it imports this module's helpers)

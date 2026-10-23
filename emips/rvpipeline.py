@@ -66,12 +66,12 @@ STAGES = ("IF", "ID", "EX", "MEM", "WB")
 #: loads (their value exists at the end of MEM): the integer / F loads, LR,
 #: SC (its result comes from the memory system) and the AMOs
 _LOADS = {"lb", "lh", "lw", "ld", "lbu", "lhu", "lwu", "flw", "fld"}
-_STORES = {"sb", "sh", "sw", "sd", "fsw", "fsd"}
+_STORES = {"sb", "sh", "sw", "sd", "fsw", "fsd", "mips.sdp", "mips.swp"}
 _BRANCHES = {"beq", "bne", "blt", "bge", "bltu", "bgeu"}
 #: what serializes (see the module docstring), besides the CSR writes
 _SERIALIZE = {"ecall": "ecall", "ebreak": "ebreak", "mret": "mret", "sret": "sret",
               "dret": "dret", "wfi": "wfi", "fence.i": "fence.i",
-              "sfence.vma": "sfence.vma"}
+              "sfence.vma": "sfence.vma", "mips.ihb": "mips.ihb"}
 #: the RARS services' registers (ecall: a7 the service, a0-a3 / fa0 in,
 #: a0 / fa0 out; emips.rvservices)
 _ECALL_READS = frozenset({("r", 17), ("r", 10), ("r", 11), ("r", 12), ("r", 13)})
@@ -149,7 +149,7 @@ def analyze(i, latency: dict[str, int] = LATENCY) -> RVInfo:
         return ("r", n) if n else None
 
     reads = {r for r in (res("rs1"), res("rs2"), res("rs3")) if r is not None}
-    writes = {r for r in (res("rd"),) if r is not None}
+    writes = {r for r in (res("rd"), res("rd2")) if r is not None}
     if name in _NO_REGISTERS:                   # (their rd / rs1 fields are reserved)
         reads, writes = set(), set()
     control, reads_id, serialize = "", frozenset(), ""
@@ -166,7 +166,8 @@ def analyze(i, latency: dict[str, int] = LATENCY) -> RVInfo:
         serialize = _SERIALIZE[name]
     elif name.startswith("csrr") and _csr_writes(i):
         serialize = "a CSR write"
-    load = (name in _LOADS or name.startswith(("lr.", "sc.", "amo")))
+    load = (name in _LOADS or name.startswith(("lr.", "sc.", "amo"))
+            or name in ("mips.ldp", "mips.lwp"))
     if len(_INFO) >= 1 << 14:
         _INFO.clear()
     info = _INFO[key] = RVInfo(frozenset(reads_id), frozenset(reads), frozenset(writes),

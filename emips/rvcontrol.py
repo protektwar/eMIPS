@@ -86,7 +86,10 @@ _FUNCTION = {"add": "add", "sub": "sub", "and": "and", "or": "or", "xor": "xor",
              "andn": "andn", "orn": "orn", "xnor": "xnor", "ror": "rotrv", "rori": "rotr",
              "addw": "addw", "subw": "subw", "sllw": "sllv.w", "srlw": "srlv.w",
              "sraw": "srav.w", "addiw": "addw", "slliw": "sll.w", "srliw": "srl.w",
-             "sraiw": "sra.w", "rorw": "rotrv.w", "roriw": "rotr.w"}
+             "sraiw": "sra.w", "rorw": "rotrv.w", "roriw": "rotr.w",
+             # the P8700's barriers (MD01502 App. B): hint encodings of slli x0,
+             # x0, 3 / 1 / 5 — to the datapath an slli whose result goes nowhere
+             "mips.ehb": "sll", "mips.ihb": "sll", "mips.pause": "sll"}
 #: andn / orn / xnor: the textbook gates with b inverted (Bnegate)
 _INVERTED = {"andn": "and", "orn": "or", "xnor": "xor"}
 _PATTERNS = (0x0A5294A5, 0x10842108, 0x07FFFFFF, 0x3C3C3C3C, 0x5A5A5A5A)
