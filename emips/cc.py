@@ -35,6 +35,19 @@ and the small data the compiler reaches from ``$gp``); ``emips.h`` as for
 MIPS32 (the services keep their register numbers).  The toolchain's
 libgcc (soft float, 64-bit division) when it has one for the byte order
 (nanoMIPS-2022.03-01: little-endian -march=32r6 only).
+
+RISC-V (``arch="rv32"`` / ``"rv64"``, PLAN M25): a RISC-V GCC
+(``riscv64-unknown-elf-gcc`` builds both widths; ``riscv32-*``,
+``riscv64-linux-gnu-*``) or clang ``--target=riscv32 / riscv64-unknown-elf``,
+with GNU ld (``elf32lriscv`` / ``elf64lriscv``) or ld.lld; ``-march`` = the
+hart's extensions (``rv64imafdc_zicsr_zifencei_...``), ``-mabi`` the
+psABI's for them (``ilp32`` / ``lp64``, ``f`` / ``d`` with the F / D
+registers), medlow addresses, little-endian; ``emips/c/crt0_rv.S`` and
+``emips/c/emips_rv.ld`` (RARS's map: code at 0x00400000, data at
+0x10010000, ``__global_pointer$`` by GNU ld's formula — the linker relaxes
+accesses near it to gp-relative ones); ``emips.h`` makes RARS's ``ecall``
+services (a7 = the service).  The GCC's libgcc multilib for the
+``-march`` / ``-mabi`` (soft float, division without M).
 """
 
 from __future__ import annotations
@@ -54,6 +67,11 @@ MARCH64 = {"R1": "mips64", "R2": "mips64r2", "R3": "mips64r2", "R5": "mips64r2",
 GCC_PREFIXES = ("mips-mti-elf", "mips-img-elf", "mips-elf", "mips-linux-gnu")
 #: the nanoMIPS toolchain's prefix (MediaTek's nanomips-elf tools)
 NANO_PREFIX = "nanomips-elf"
+
+
+#: RISC-V GCCs (a riscv64-unknown-elf GCC builds rv32 too: its multilibs)
+RV_PREFIXES = ("riscv64-unknown-elf", "riscv32-unknown-elf", "riscv64-elf", "riscv32-elf",
+               "riscv64-linux-gnu", "riscv64-unknown-linux-gnu")
 
 
 #: a link error naming a soft-float routine (__addsf3, __fixdfsi, __ltsf2 ...)
@@ -88,6 +106,8 @@ def find_toolchain(endian: str = "big", arch: str = "mips32") -> Toolchain:
         raise BuildError("no nanoMIPS C compiler found: put the bin folder of MediaTek's "
                          "nanoMIPS GNU tools (nanoMIPS-2022.03-01: the later releases ship "
                          "no nanomips-elf-gcc) on PATH")
+    if arch in ("rv32", "rv64"):
+        return _rv_toolchain(arch)
     for prefix in GCC_PREFIXES:
         for p in ((prefix.replace("mips-", "mipsel-", 1),) if el else ()) + (prefix,):
             gcc = shutil.which(f"{p}-gcc")
@@ -111,6 +131,44 @@ def find_toolchain(endian: str = "big", arch: str = "mips32") -> Toolchain:
                      "(e.g. gcc-mips-linux-gnu)")
 
 
+def _rv_toolchain(arch: str) -> Toolchain:
+    for prefix in RV_PREFIXES:
+        if arch == "rv64" and prefix.startswith("riscv32"):
+            continue
+        gcc, ld = shutil.which(f"{prefix}-gcc"), shutil.which(f"{prefix}-ld")
+        if gcc and (ld or shutil.which("ld.lld")):
+            return Toolchain([gcc], [ld or shutil.which("ld.lld")], "gcc")
+    clang = shutil.which("clang")
+    if clang:
+        ld = next((shutil.which(f"{p}-ld") for p in RV_PREFIXES if shutil.which(f"{p}-ld")),
+                  None) or shutil.which("ld.lld")
+        if ld:
+            return Toolchain([clang, f"--target=riscv{arch[2:]}-unknown-elf"], [ld], "clang")
+    raise BuildError("no RISC-V C compiler found: install a RISC-V GCC (e.g. "
+                     "gcc-riscv64-unknown-elf with binutils-riscv64-unknown-elf) or clang "
+                     "with ld.lld")
+
+
+#: the order -march names the single-letter extensions in (the ISA manual's
+#: canonical order) and the multi-letter ones' categories (by their 2nd letter)
+_RV_LETTERS = "iemafdqlcbkjtpvh"
+
+
+def rv_march(arch: str, extensions: str) -> tuple[str, str]:
+    """(-march, -mabi) for a hart with ``extensions``: the canonical ISA
+    string, the psABI's integer (ilp32 / lp64) or hardware floating-point
+    calling convention (``f`` / ``d`` suffix)."""
+    from .riscv import parse_extensions
+    exts = parse_extensions(extensions) | {"i"}
+    letters = "".join(c for c in _RV_LETTERS if c in exts)
+    multi = sorted((e for e in exts if len(e) > 1),
+                   key=lambda e: (e[0] != "z", _RV_LETTERS.find(e[1]) if e[0] == "z" else 0, e))
+    march = f"rv{arch[2:]}{letters}" + "".join("_" + e for e in multi)
+    abi = ("ilp32" if arch == "rv32" else "lp64") + ("d" if "d" in exts else
+                                                      "f" if "f" in exts else "")
+    return march, abi
+
+
 def cflags(release: str = "R2", optimize: str = "-O1", fpu: bool = True,
            arch: str = "mips32", kind: str = "gcc", nms: bool = False) -> list[str]:
     if arch == "nanomips":                  # p32, soft float (no nanoMIPS FPU)
@@ -131,7 +189,8 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           endian: str = "big", optimize: str = "-O1", extra: list[str] | None = None,
           toolchain: Toolchain | None = None, mips16: bool = False,
           micromips: bool = False, fpu: bool = True, dsp: int = 0,
-          arch: str = "mips32", nms: bool = False, msa: bool = False) -> str:
+          arch: str = "mips32", nms: bool = False, msa: bool = False,
+          extensions: str = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb") -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
     :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
@@ -156,7 +215,13 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
     754-2008), Release 5 / 6 (``-march=mips32r5`` / ``mips64r5``).
     ``arch="nanomips"``: a p32 nanoMIPS executable (``nms``: for a core with
     the nanoMIPS subset only; ``dsp``: the DSP ASE, ``-mdsp``); no compressed
-    ISAs."""
+    ISAs.  ``arch="rv32"`` / ``"rv64"``: a RISC-V executable for a hart
+    with ``extensions`` (-march / -mabi from them: :func:`rv_march`)."""
+    if arch in ("rv32", "rv64"):
+        if mips16 or micromips or dsp or msa or nms:
+            raise BuildError("MIPS16e / microMIPS / the DSP Module / MSA / NMS are MIPS "
+                             "options: a RISC-V program takes the hart's extensions")
+        return _build_rv(sources, output, arch, extensions, optimize, extra, toolchain)
     if arch == "nanomips":
         return _build_nano(sources, output, endian, optimize, extra, toolchain, nms,
                            mips16 or micromips, dsp)
@@ -277,8 +342,41 @@ def _build_nano(sources, output, endian, optimize, extra, toolchain, nms, compre
     return "\n".join(log)
 
 
+def _build_rv(sources, output, arch, extensions, optimize, extra, toolchain) -> str:
+    tc = toolchain or find_toolchain("little", arch)
+    march, abi = rv_march(arch, extensions)
+    flags = [f"-march={march}", f"-mabi={abi}", "-mcmodel=medlow", "-ffreestanding",
+             "-fno-common", "-nostdlib", "-g", optimize, "-Wall", f"-I{C_DIR}"] + list(extra or [])
+    log: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="emips-cc-") as tmp:
+        objs = []
+        for src in [C_DIR / "crt0_rv.S", C_DIR / "libemips.c", *map(Path, sources)]:
+            obj = Path(tmp) / (("crt0_rv" if src.name == "crt0_rv.S"     # (the linker
+                                else f"{src.stem}_{len(objs)}") + ".o")  # script names it)
+            _run(tc.cc + flags + ["-c", str(src), "-o", str(obj)], log)
+            objs.append(str(obj))
+        emulation = [] if "lld" in Path(tc.ld[0]).name else [
+            "-m", "elf32lriscv" if arch == "rv32" else "elf64lriscv"]
+        # -n: no page alignment of the segments in the file (bare metal)
+        cmd = tc.ld + emulation + ["-n", "-T", str(C_DIR / "emips_rv.ld"), "-o",
+                                   str(output)] + objs
+        lib = _nano_libgcc(tc, flags) if tc.kind == "gcc" else None
+        if lib is not None:                 # (soft float, division without M ...)
+            cmd.append(lib)
+        try:
+            _run(cmd, log)
+        except BuildError as exc:
+            if lib is None and _LIBGCC.search(str(exc)):
+                raise BuildError(f"{exc}\n(the code calls libgcc's routines — soft-float "
+                                 "arithmetic, division without the M extension ...: they come "
+                                 f"from a RISC-V GCC's libgcc for -march={march} "
+                                 f"-mabi={abi})") from None
+            raise
+    return "\n".join(log)
+
+
 def _nano_libgcc(tc: Toolchain, flags: list[str]) -> str | None:
-    """The nanoMIPS GCC's libgcc.a for these flags (its multilib), or
+    """The (nanoMIPS / RISC-V) GCC's libgcc.a for these flags (its multilib), or
     None (nanoMIPS-2022.03-01 lists big-endian and -march=32r6s
     multilibs it does not install: GCC then prints a bare ``libgcc.a``)."""
     try:

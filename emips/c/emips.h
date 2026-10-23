@@ -10,6 +10,63 @@
 #ifndef EMIPS_H
 #define EMIPS_H
 
+#ifdef __riscv
+/* RISC-V (emips cc --arch rv32 / rv64): RARS's environment calls — a7 =
+ * the service, a0 / a1 / fa0 the arguments, the result in a0 (RARS reads
+ * the registers as 32-bit ints: print_long prints the low 32 bits). */
+static inline long emips_ecall2(long service, long a0, long a1)
+{
+    register long a7_ __asm__("a7") = service;
+    register long a0_ __asm__("a0") = a0;
+    register long a1_ __asm__("a1") = a1;
+    __asm__ volatile ("ecall" : "+r"(a0_) : "r"(a7_), "r"(a1_) : "memory");
+    return a0_;
+}
+#define emips_syscall1(s, a) emips_ecall2((s), (long)(a), 0)
+#define emips_syscall2(s, a, b) emips_ecall2((s), (long)(a), (long)(b))
+
+static inline void print_int(int x)          { emips_syscall1(1, x); }
+static inline void print_long(long x)        { emips_syscall1(1, x); }
+static inline void print_string(const char *s) { emips_syscall1(4, (long)s); }
+static inline void print_char(char c)        { emips_syscall1(11, c); }
+static inline void print_hex(unsigned long x) { emips_syscall1(34, (long)x); }
+static inline void print_bin(unsigned long x) { emips_syscall1(35, (long)x); }
+static inline void print_unsigned(unsigned long x) { emips_syscall1(36, (long)x); }
+static inline int  read_int(void)            { return emips_syscall1(5, 0); }
+static inline long read_long(void)           { return (int)emips_syscall1(5, 0); }
+static inline int  read_char(void)           { return emips_syscall1(12, 0); }
+static inline void read_string(char *buf, int size) { emips_syscall2(8, (long)buf, size); }
+static inline void *sbrk(int bytes)          { return (void *)emips_syscall1(9, bytes); }
+static inline void exit(int code)            { emips_syscall1(93, code); for (;;) {} }
+#ifdef __riscv_flen
+static inline void print_float(float f)
+{
+    register float fa0_ __asm__("fa0") = f;
+    register long a7_ __asm__("a7") = 2;
+    __asm__ volatile ("ecall" : : "f"(fa0_), "r"(a7_) : "memory");
+}
+#endif
+
+/* The MMIO console (RARS = MARS: keyboard and display at 0xFFFF0000). */
+#define EMIPS_IO(a)     (*(volatile unsigned *)(unsigned long)(a))
+#define MMIO_RX_CONTROL EMIPS_IO(0xFFFF0000u)
+#define MMIO_RX_DATA    EMIPS_IO(0xFFFF0004u)
+#define MMIO_TX_CONTROL EMIPS_IO(0xFFFF0008u)
+#define MMIO_TX_DATA    EMIPS_IO(0xFFFF000Cu)
+
+/* CSRs from C (M-mode): csrr / csrw of a CSR by name (CSRR(mstatus)). */
+#define CSRR(csr) ({ unsigned long _v; __asm__ volatile ("csrr %0, " #csr : "=r"(_v)); _v; })
+#define CSRW(csr, v) __asm__ volatile ("csrw " #csr ", %0" : : "r"((unsigned long)(v)))
+
+typedef __SIZE_TYPE__ size_t;
+void *memcpy(void *dst, const void *src, size_t n);
+void *memmove(void *dst, const void *src, size_t n);
+void *memset(void *dst, int c, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
+size_t strlen(const char *s);
+
+#else   /* MIPS */
+
 /* MIPS16e code (gcc -mips16, emips cc --mips16) has no SYSCALL, MFC0 or
  * MTC0: the functions that use them are MIPS32 ones (nomips16), called
  * with JALX.  A function of yours that uses MFC0 / MTC0 needs
@@ -75,4 +132,5 @@ void *memset(void *dst, int c, size_t n);
 int memcmp(const void *a, const void *b, size_t n);
 size_t strlen(const char *s);
 
+#endif  /* MIPS */
 #endif

@@ -11,7 +11,13 @@ EF_MIPS_ARCH 64 / 64R2 / 64R6, no ABI flag: n64 — with 8-byte addresses
 in its DWARF, compatibility addresses sign-extended (as GNU ld's n64
 -msym32 output).  A nanoMIPS program (M23 phase 4c) gets an EM_NANOMIPS
 ELF32 with E_NANOMIPS_ABI_P32 (DN00179 5.1) and a line table whose
-minimum_instruction_length is 2 (16 / 32 / 48-bit instructions).
+minimum_instruction_length is 2 (16 / 32 / 48-bit instructions).  A
+RISC-V program (M25 phase 3d) gets an EM_RISCV ELF32 / ELF64,
+little-endian, with the RISC-V ELF psABI's e_flags (EF_RISCV_RVC with the
+C extension, the float ABI of its F / D registers) and a .riscv.attributes
+section naming its extensions (Tag_RISCV_arch, psABI 8.6); every segment of
+the program is a section of its name (.text, .rodata, .data, .sdata,
+.bss ...), the line table's minimum_instruction_length 2 (RVC).
 """
 
 from __future__ import annotations
@@ -19,7 +25,8 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from .elf import E_NANOMIPS_ABI_P32, EM_MIPS, EM_NANOMIPS, ET_EXEC
+from .elf import (E_NANOMIPS_ABI_P32, EF_RISCV_RVC, EM_MIPS, EM_NANOMIPS, EM_RISCV, ET_EXEC,
+                  SHT_RISCV_ATTRIBUTES, TAG_RISCV_ARCH)
 
 #: EF_MIPS_ARCH by release (32 / 32R2 / 32R6) and EF_MIPS_NOREORDER-free o32
 ARCH_FLAGS = {"R1": 0x50000000, "R6": 0x90000000}
@@ -141,16 +148,48 @@ def debug_info(source: Path, low: int, high: int, order: str,
     return struct.pack(f"{e}I", len(body)) + body, abbrev
 
 
+#: the versions Tag_RISCV_arch names (GNU as 2.42's defaults for them)
+RV_VERSIONS = {"i": "2p1", "m": "2p0", "a": "2p1", "f": "2p2", "d": "2p2", "c": "2p0",
+               "zicsr": "2p0", "zifencei": "2p0", "zicntr": "2p0", "zihpm": "2p0",
+               "zmmul": "1p0", "zba": "1p0", "zbb": "1p0"}
+#: EF_RISCV_FLOAT_ABI: single / double (psABI: 0x2 / 0x4)
+RV_FLOAT_SINGLE, RV_FLOAT_DOUBLE = 0x2, 0x4
+
+
+def riscv_attributes(arch: str, extensions: str) -> bytes:
+    """A .riscv.attributes section (psABI 8.6) with Tag_RISCV_arch: the
+    ISA string (``rv64i2p1_m2p0_..._zicsr2p0``) of ``extensions`` and what
+    they imply, as GNU as writes it."""
+    from .cc import rv_march
+    from .riscv import closure, parse_extensions
+    implied = "_".join(sorted(closure(parse_extensions(extensions) | {"i"})))
+    march = rv_march(arch, implied)[0][4:]
+    parts = []
+    for k, p in enumerate(march.split("_")):
+        if k == 0:
+            parts += [c + RV_VERSIONS.get(c, "2p0") for c in p]
+        else:
+            parts.append(p + RV_VERSIONS.get(p, "1p0"))
+    text = f"rv{arch[2:]}" + "_".join(parts)
+    attrs = _uleb(TAG_RISCV_ARCH) + text.encode() + b"\0"
+    sub = _uleb(1) + struct.pack("<I", 5 + len(attrs)) + attrs          # Tag_File
+    vendor = b"riscv\0" + sub
+    return b"A" + struct.pack("<I", 4 + len(vendor)) + vendor
+
+
 def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> bytes:
     """ELF32 ``ET_EXEC`` bytes of ``program`` (an :class:`emips.assembler.
     Program`); ``source``: the assembly file (for the line table);
-    ``arch="mips64"``: an ELF64 (n64); ``"nanomips"``: EM_NANOMIPS, p32."""
-    order = program.endian
+    ``arch="mips64"``: an ELF64 (n64); ``"nanomips"``: EM_NANOMIPS, p32;
+    ``"rv32"`` / ``"rv64"``: EM_RISCV."""
+    rv = arch in ("rv32", "rv64")
+    order = "little" if rv else program.endian
     e = "<" if order == "little" else ">"
-    wide = arch == "mips64"
+    wide = arch in ("mips64", "rv64")
     nano = arch == "nanomips"
     # the structures of either class (the gABI's Elf32_* / Elf64_*)
-    A = _sx if wide else (lambda a: a & M32)       # an address in the file
+    A = (lambda a: a & M64) if rv else _sx if wide else (lambda a: a & M32)
+    phys = (lambda a: a) if rv else (lambda a: a & 0x1FFFFFFF)       # p_paddr
     SYM = f"{e}IBBHQQ" if wide else f"{e}IIIBBH"
     SHDR = f"{e}IIQQQQIIQQ" if wide else f"{e}IIIIIIIIII"
 
@@ -159,7 +198,10 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
             return struct.pack(SYM, name, info, other, shndx, value, 0)
         return struct.pack(SYM, name, value, 0, info, other, shndx)
     secs = []                                    # (name, addr, data, exec)
-    for seg, name, ex in SECTIONS:
+    sections = SECTIONS if not rv else tuple(
+        (seg, "." + seg, seg in ("text", "ktext"))
+        for seg in sorted(program.segments, key=lambda k: program.segments[k][0]))
+    for seg, name, ex in sections:
         span = program.segments.get(seg)
         if not span or span[1] <= span[0]:
             continue
@@ -169,7 +211,8 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     shstr = _Strings()
     strtab = _Strings()
     names = [s[0] for s in secs] + [".symtab", ".strtab", ".debug_line", ".debug_info",
-                                    ".debug_abbrev", ".shstrtab"]
+                                    ".debug_abbrev", ".shstrtab"] + (
+        [".riscv.attributes"] if rv else [])
     for n in names:
         shstr.add(n)
     # symbols: labels in a section, constants absolute
@@ -189,11 +232,12 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     lines = {a: sl.line for a, sl in program.source_map.items()}
     src = source or Path("program.asm")
     size = 8 if wide else 4
-    sizes = program.nm if nano else None
+    sizes = program.nm if nano else program.rv if rv else None
     debug_line = line_program(lines, src, order, size, sizes) if lines else b""
     last = max(lines) if lines else 0
-    info, abbrev = (debug_info(src, min(lines), last + (sizes.get(last, 2) if nano else 4),
-                               order, size) if lines else (b"", b""))
+    end = last + (sizes.get(last, 2) if sizes is not None else 4)
+    info, abbrev = (debug_info(src, min(lines), end, order, size) if lines else (b"", b""))
+    attributes = riscv_attributes(arch, program.rv_extensions or "i") if rv else b""
     # layout: header, program headers, section data, section headers
     ehsize, phsize, shsize = (64, 56, 64) if wide else (52, 32, 40)
     off = ehsize + phsize * len(secs)
@@ -205,15 +249,21 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
         chunks.append((off, data))
         off += len(data)
     extra = []
-    for data in (symtab, bytes(strtab.data), debug_line, info, abbrev, bytes(shstr.data)):
+    for data in (symtab, bytes(strtab.data), debug_line, info, abbrev, bytes(shstr.data),
+                 attributes):
         off += (-off) % size
         extra.append(off)
         chunks.append((off, data))
         off += len(data)
     off += (-off) % size
     shoff = off
-    nsec = 1 + len(secs) + 6
-    if nano:                                     # E_NANOMIPS_ARCH_32R6 = 0
+    nsec = 1 + len(secs) + 6 + (1 if rv else 0)
+    if rv:                                       # the psABI's e_flags
+        from .riscv import closure, parse_extensions
+        exts = closure(parse_extensions(program.rv_extensions or "i"))
+        flags = ((EF_RISCV_RVC if "c" in exts else 0)
+                 | (RV_FLOAT_DOUBLE if "d" in exts else RV_FLOAT_SINGLE if "f" in exts else 0))
+    elif nano:                                     # E_NANOMIPS_ARCH_32R6 = 0
         flags = E_NANOMIPS_ABI_P32
     elif wide:                                   # n64: EF_MIPS_ARCH alone
         flags = ARCH_FLAGS64.get(program.release, ARCH64_R2)
@@ -226,16 +276,16 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     ident = b"\x7fELF" + bytes([2 if wide else 1, 2 if order == "big" else 1, 1, 0]) + bytes(8)
     out = bytearray(ident)
     out += struct.pack(f"{e}HHI{'QQQ' if wide else 'III'}IHHHHHH", ET_EXEC,
-                       EM_NANOMIPS if nano else EM_MIPS, 1,
+                       EM_RISCV if rv else EM_NANOMIPS if nano else EM_MIPS, 1,
                        A(program.entry), ehsize, shoff, flags, ehsize, phsize, len(secs),
-                       shsize, nsec, nsec - 1)
+                       shsize, nsec, len(secs) + 6)
     for (name, lo, data, ex), o in zip(secs, placed):
-        pflags = PF_R | (PF_X if ex else PF_W)
+        pflags = PF_R | (PF_X if ex else 0 if "rodata" in name else PF_W)
         if wide:                                 # Elf64_Phdr: p_flags second
-            out += struct.pack(f"{e}IIQQQQQQ", PT_LOAD, pflags, o, A(lo), lo & 0x1FFFFFFF,
+            out += struct.pack(f"{e}IIQQQQQQ", PT_LOAD, pflags, o, A(lo), phys(lo),
                                len(data), len(data), 8)
         else:
-            out += struct.pack(f"{e}IIIIIIII", PT_LOAD, o, lo, lo & 0x1FFFFFFF, len(data),
+            out += struct.pack(f"{e}IIIIIIII", PT_LOAD, o, lo, phys(lo), len(data),
                                len(data), pflags, 4)
     for o, data in chunks:
         out += bytes(o - len(out))
@@ -244,7 +294,8 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     out += bytes(shsize)                         # the null section
     for (name, lo, data, ex), o in zip(secs, placed):
         out += struct.pack(SHDR, shstr.add(name), SHT_PROGBITS,
-                           SHF_ALLOC | (SHF_EXECINSTR if ex else SHF_WRITE), A(lo), o,
+                           SHF_ALLOC | (SHF_EXECINSTR if ex else 0 if "rodata" in name
+                                        else SHF_WRITE), A(lo), o,
                            len(data), 0, 0, size, 0)
     strtab_index = len(secs) + 2
     out += struct.pack(SHDR, shstr.add(".symtab"), SHT_SYMTAB, 0, 0, extra[0],
@@ -259,4 +310,7 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
                        extra[4], len(abbrev), 0, 0, 1, 0)
     out += struct.pack(SHDR, shstr.add(".shstrtab"), SHT_STRTAB, 0, 0, extra[5],
                        len(shstr.data), 0, 0, 1, 0)
+    if rv:
+        out += struct.pack(SHDR, shstr.add(".riscv.attributes"), SHT_RISCV_ATTRIBUTES, 0, 0,
+                           extra[6], len(attributes), 0, 0, 1, 0)
     return bytes(out)

@@ -64,7 +64,7 @@ def arch_title(arch: str) -> str:
 
 def gdb_program(arch: str) -> str:
     """The GDB that debugs this architecture: gdb-multiarch knows MIPS32 /
-    MIPS64, not nanoMIPS (its GDB is MediaTek's nanomips-elf-gdb)."""
+    MIPS64 and RISC-V, not nanoMIPS (its GDB is MediaTek's nanomips-elf-gdb)."""
     return "nanomips-elf-gdb" if arch == "nanomips" else "gdb-multiarch"
 
 #: a nanoMIPS core's CRC32 instructions (Config5.CRCP) and global

@@ -452,7 +452,8 @@ class Session:
                                  optimize=optimize, mips16=isa == "mips16e",
                                  micromips=isa == "micromips", fpu=self.options.fpu,
                                  dsp=self._c_dsp(text), msa=self._c_msa(text),
-                                 arch=self.options.arch, nms=self.options.nms)
+                                 arch=self.options.arch, nms=self.options.nms,
+                                 extensions=self.options.rv_extensions)
         except BuildError as exc:
             text_ = str(exc).replace(str(src), src.name)
             lines = text_.splitlines()
@@ -499,15 +500,16 @@ class Session:
         if self.options.arch != img.arch:          # (reset adjusts what depends on it)
             self.options = replace(self.options, arch=img.arch)
         nano = img.arch == "nanomips"
+        rv = img.rv
         symbols = {}
         for sym in sorted(img.symbols, key=lambda x: x.kind != "func"):
-            if nano and sym.name.startswith(("$", ".L")):  # (GCC's local labels: the
-                continue                                   # nanoMIPS linker relaxes)
+            if (nano or rv) and sym.name.startswith(("$", ".L")):  # (GCC's local labels
+                continue                                   # and mapping symbols)
             symbols.setdefault(sym.name, sym.value)
         prog = Program(endian=img.endian, release=self.release, image=img.image,
                        symbols=symbols, entry=img.entry, c_lines=img.source_lines(),
                        c_stmts=img.statement_starts(),
-                       functions=sorted((sym.value, sym.value + max(sym.size, 2 if nano
+                       functions=sorted((sym.value, sym.value + max(sym.size, 2 if nano or rv
                                                                      else 4), sym.name)
                                         for sym in img.symbols if sym.kind == "func"),
                        dsp=img.dsp, arch=img.arch, needs=img.needs, msa=img.msa)
@@ -517,7 +519,15 @@ class Session:
         for sym in img.symbols:
             if sym.kind == "func":
                 labels.setdefault(sym.value, sym.name)
-        isa = None if nano else ISA.for_release(img.release, self.dsp_level() or (
+        if rv:                                  # the hart's extensions vs the code's
+            prog.rv_extensions = img.rv_extensions
+            missing = RV.missing_extensions(self.options.rv_extensions, img.rv_extensions)
+            if missing:
+                img.notes.append(f"the code was built for {img.rv_extensions}: this hart "
+                                 f"({self.options.rv_extensions}) has no "
+                                 f"{', '.join(missing)} — its instructions are illegal "
+                                 "here (--rv-ext)")
+        isa = None if nano or rv else ISA.for_release(img.release, self.dsp_level() or (
             img.dsp if self.options.dsp == "auto" and not self.options.core   # (its ABI
             and img.release not in ("R1", "R6") else 0), arch=img.arch,    # flags' DSP)
             msa=img.release in ("R5", "R6") and self.options.msa != "none")
@@ -529,7 +539,7 @@ class Session:
                  "# read-only listing: each source line (DWARF line table) above its "
                  "instructions"]
         core = cores.get(self.options.core)
-        if not nano and not img.nan2008 and img.release != "R6" and (
+        if not nano and not rv and not img.nan2008 and img.release != "R6" and (
                 img.msa or self.options.msa == "msa" or core is not None and core.fpu2008):
             img.notes.append("the code uses legacy NaNs (no EF_MIPS_NAN2008) but this "
                              "core's FPU is IEEE 754-2008 (FCSR.NAN2008 = 1): a NaN's "
@@ -574,6 +584,10 @@ class Session:
                             enc = (enc << 16) | prog.half(a + 2)
                     prog.mm[a] = size
                     text_ = f"{a:08x}  {enc:0{2 * size}x}{'    ' if size == 2 else ''}  {txt}"
+                elif code_isa == "riscv":           # RISC-V: 2 / 4 bytes
+                    size, raw, txt = RV.listing_row(self, prog, a, stop, labels)
+                    prog.rv[a] = size
+                    text_ = f"{a:08x}  {encoding(raw, size, prog.arch)}  {txt}"
                 elif code_isa == "nanomips":        # nanoMIPS: 2 / 4 / 6 bytes
                     size = min(nanomips.size_of(prog.half(a)), max(stop - a, 2))
                     raw = 0
@@ -725,6 +739,13 @@ class Session:
                 self.mode = "instruction"
                 self.program_notes.append(RV.RV_INSTRUCTION_MODE)
                 self.adjusted.append(RV.RV_INSTRUCTION_MODE)
+            code = getattr(self.program, "rv_extensions", None)
+            missing = code and RV.missing_extensions(self.options.rv_extensions, code)
+            if missing:                         # (an ELF built for more)
+                self.program_notes.append(
+                    f"the program was built for {code}: this hart ({self.options.rv_extensions})"
+                    f" has no {', '.join(missing)} — those instructions are illegal here "
+                    "(--rv-ext)")
         if (self.wide or self.nano) and self.mode == "pipeline" \
                 and self.mt_config() is not None:
             note = MT_NANO_INSTRUCTION_MODE if self.nano else MT64_INSTRUCTION_MODE

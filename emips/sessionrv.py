@@ -182,8 +182,9 @@ def no_handler_hint(session, exc: Exception) -> str:
     if not isinstance(exc, FetchError) or m is None or not getattr(m, "rv", False):
         return ""
     kind = trap_vector(m, m.pc)
-    if kind is None:
-        return ""
+    log = m.exception_log
+    if kind is None or len(log) < 2 or log[-2].get("vector") != m.pc:
+        return ""                               # (no trap brought it here)
     from .simrv import CAUSE_NAMES, INTERRUPT_NAMES
     cause = m.csrs.mcause if kind == "m" else m.csrs.scause
     epc = m.csrs.mepc if kind == "m" else m.csrs.sepc
@@ -266,3 +267,34 @@ def hex_listing(session, prog, image: dict[int, int], entry: int) -> str:
         lines += [f"{a:08x}  {half(a):04x}" for a in data]
     prog.rv_extensions = o.rv_extensions
     return "\n".join(lines) + "\n"
+
+
+def missing_extensions(hart: str, code: str) -> list[str]:
+    """The extensions ``code`` was built for that the hart lacks (both
+    closed under what they imply)."""
+    from .riscv import closure, parse_extensions
+    have = closure(parse_extensions(hart) | {"i"})
+    need = closure(parse_extensions(code) | {"i"})
+    return sorted(need - have)
+
+
+def listing_row(session, prog, a: int, stop: int, labels) -> tuple[int, int, str]:
+    """(size, encoding, text) of the instruction an ELF has at ``a`` (the
+    load_elf listing: the hart's and the code's extensions decode)."""
+    xlen = 32 if prog.arch == "rv32" else 64
+    exts = session.options.rv_extensions + "_" + (prog.rv_extensions or "i")
+    h = prog.half(a)
+    size = size_of(h) or 4
+    if a + size > stop:
+        return 2, h, "(a halfword)"
+    raw = h | (prog.half(a + 2) << 16 if size == 4 else 0)
+    key = (xlen, exts, session.abi, id(labels))
+    d = getattr(session, "_rv_listing", (None, None))
+    if d[0] != key:                             # (one per listing: objdump's walk)
+        d = (key, Disassembler(xlen, exts, numeric=not session.abi, symbols=labels))
+        session._rv_listing = d
+    try:
+        RVISA.for_core(xlen, exts).decode(raw, size)
+        return size, raw, d[1].text(raw, size, a)
+    except RVDecodeError:
+        return size, raw, "(illegal)"

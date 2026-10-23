@@ -35,6 +35,15 @@ target's order, as Linux's NT_MIPS_MSA regset), msacsr, msair.  Breakpoints (``Z
 session's: nothing is written into the program, as in QEMU's stub.  The
 stub runs the session in slices and looks for GDB's interrupt between
 them; what the program prints goes to GDB as ``O`` packets.
+
+A RISC-V hart (M25 phase 3d) has GDB's RISC-V description
+(``features/riscv/{32,64}bit-cpu.xml`` / ``-fpu.xml``, ``riscv-tdep.c``'s
+numbers): x0-x31 (0-31), pc (32), f0-f31 (33-64, FLEN bits — NaN-boxed
+singles of a D hart as the 64-bit register), every CSR the hart has at 65 +
+its number in ``org.gnu.gdb.riscv.csr`` (fcsr in the fpu feature, as GDB's
+XML), and ``priv`` (4161, ``org.gnu.gdb.riscv.virtual``: the privilege
+mode); the g packet holds x0-x31, pc and the FPRs, the CSRs come with p.
+Registers and memory are little-endian.
 """
 
 from __future__ import annotations
@@ -67,6 +76,8 @@ NANO_REGS = {32: 37, 33: 32, 34: 35, 35: 36}
 NANO_DSP_REGS = {36: 34, 37: 33, 38: 72, 39: 73, 40: 74, 41: 75, 42: 76, 43: 77, 44: 78}
 #: the pc / sp in a stop reply
 PC_REG, NANO_PC_REG, SP_REG = 37, 32, 29
+#: RISC-V (riscv-tdep.c): pc, the first FPR, CSR 0, the virtual priv
+RV_PC, RV_FPR, RV_CSR, RV_PRIV, RV_SP = 32, 33, 65, 65 + 4096, 2
 #: steps between looks at the socket while continuing
 SLICE = 2000
 #: pipeline mode: the most cycles a step (or a stop) waits for an instruction
@@ -242,9 +253,102 @@ class GdbStub:
         return bool(getattr(self.m, "nano", False))
 
     @property
+    def rv(self) -> bool:
+        return bool(getattr(self.m, "rv", False))
+
+    @property
     def pc_reg(self) -> int:
-        """The pc's number in GDB's description (nanoMIPS: 32)."""
-        return NANO_PC_REG if self.nano else PC_REG
+        """The pc's number in GDB's description (nanoMIPS, RISC-V: 32)."""
+        return NANO_PC_REG if self.nano else RV_PC if self.rv else PC_REG
+
+    @property
+    def sp_reg(self) -> int:
+        return RV_SP if self.rv else SP_REG
+
+    def _rv_regs(self) -> dict[int, tuple[str, int]]:
+        """RISC-V: GDB's number -> (name, bits) of every register the hart
+        has (in number order)."""
+        m = self.m
+        key = (id(m), m.xlen, m.flen)
+        if getattr(self, "_rv_key", None) != key:
+            from .riscv import GPR_NAMES
+            regs = {i: (GPR_NAMES[i], m.xlen) for i in range(32)}
+            regs[RV_PC] = ("pc", m.xlen)
+            if m.flen:
+                from .riscv import FPR_NAMES
+                regs.update({RV_FPR + i: (FPR_NAMES[i], m.flen) for i in range(32)})
+            for num, csr in sorted(m.csrs.table.items()):
+                regs[RV_CSR + num] = (csr.name, m.xlen)
+            regs[RV_PRIV] = ("priv", m.xlen)
+            self._rv_regs_, self._rv_key = regs, key
+        return self._rv_regs_
+
+    def _rv_g(self) -> list[int]:
+        """The g packet's registers: x0-x31, pc, the FPRs."""
+        return [n for n in self._rv_regs() if n < RV_CSR]
+
+    def _rv_get(self, n: int) -> int:
+        m = self.m
+        if n < 32:
+            return m.read_reg(n)
+        if n == RV_PC:
+            return m.pc & m.amask
+        if RV_FPR <= n < RV_FPR + 32 and m.flen:
+            return m.fpr[n - RV_FPR] & ((1 << m.flen) - 1)
+        if n == RV_PRIV:
+            return m.priv
+        if RV_CSR <= n < RV_PRIV and n - RV_CSR in m.csrs.table:
+            return m.csrs.read(n - RV_CSR)
+        raise KeyError(n)
+
+    def _rv_set(self, n: int, value: int) -> None:
+        m = self.m
+        if n < 32:
+            m.write_reg(n, value)
+        elif n == RV_PC:
+            self.s.set_pc(value & m.amask & ~1)
+        elif RV_FPR <= n < RV_FPR + 32 and m.flen:
+            m.fpr[n - RV_FPR] = value & ((1 << m.flen) - 1)
+        elif n == RV_PRIV:
+            if value not in m.modes:
+                raise KeyError(n)
+            m.priv = value
+        elif RV_CSR <= n < RV_PRIV and n - RV_CSR in m.csrs.table:
+            m.csrs.write(n - RV_CSR, value)     # (a read-only one: unchanged)
+        else:
+            raise KeyError(n)
+
+    def _rv_xml(self) -> str:
+        m = self.m
+        regs = self._rv_regs()
+        bits = m.xlen
+        cpu = "".join(f'<reg name="{regs[i][0]}" bitsize="{bits}" '
+                      f'type="{"code_ptr" if i == 1 else "data_ptr" if i in (2, 3, 4, 8) else "int"}"'
+                      + (' regnum="0"' if i == 0 else "") + '/>' for i in range(32))
+        cpu += f'<reg name="pc" bitsize="{bits}" type="code_ptr" regnum="{RV_PC}"/>'
+        fpu = ""
+        if m.flen:
+            if m.flen == 64:
+                ftype = "riscv_double"
+                fpu = ('<union id="riscv_double"><field name="float" type="ieee_single"/>'
+                       '<field name="double" type="ieee_double"/></union>')
+            else:
+                ftype = "ieee_single"
+            fpu += "".join(f'<reg name="{regs[RV_FPR + i][0]}" bitsize="{m.flen}" '
+                           f'type="{ftype}" regnum="{RV_FPR + i}"/>' for i in range(32))
+            fpu += f'<reg name="fcsr" bitsize="32" type="int" regnum="{RV_CSR + 3}"/>'
+            fpu = f'<feature name="org.gnu.gdb.riscv.fpu">{fpu}</feature>'
+        csr = "".join(f'<reg name="{name}" bitsize="{b}" regnum="{n}" save-restore="no" '
+                      'type="int" group="csr"/>'
+                      for n, (name, b) in regs.items() if RV_CSR <= n < RV_PRIV
+                      and n != RV_CSR + 3)
+        return ('<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd">'
+                f'<target version="1.0"><architecture>riscv:rv{bits}</architecture>'
+                f'<feature name="org.gnu.gdb.riscv.cpu">{cpu}</feature>{fpu}'
+                f'<feature name="org.gnu.gdb.riscv.csr">{csr}</feature>'
+                '<feature name="org.gnu.gdb.riscv.virtual">'
+                f'<reg name="priv" bitsize="{bits}" regnum="{RV_PRIV}" save-restore="no" '
+                'type="int" group="general"/></feature></target>')
 
     def _mips_number(self, n: int) -> int:
         """GDB's register number as the MIPS one the stub reads (nanoMIPS:
@@ -262,6 +366,8 @@ class GdbStub:
         return k if 0 <= k < MSA_REGS else None
 
     def _size(self, n: int) -> int:
+        if self.rv:
+            return self._rv_regs()[n][1] // 8
         if self.nano:
             return 4
         k = self._msa_reg(n)
@@ -281,6 +387,8 @@ class GdbStub:
     def nregs(self) -> int:
         """The g packet's registers: the DSP Module's 72-78 with it
         (nanoMIPS: r0-r31, pc, status, badvaddr, cause; the DSP ASE's 36-44)."""
+        if self.rv:
+            return len(self._rv_g())
         if self.nano:
             return 32 + len(NANO_REGS) + (len(NANO_DSP_REGS) if self.m.dsp else 0)
         return (NREGS_DSP if self.m.dsp else NREGS) + (
@@ -290,11 +398,16 @@ class GdbStub:
         """f0-f31 / fcsr / fir exist only with an FPU (Config1.FP): GDB
         needs the mips.fpu feature (G.5.8), so a core without one reports
         them unavailable (``xx`` in g / p: GDB shows ``<unavailable>``)."""
+        if self.rv:
+            return n in self._rv_regs()
         if self.nano:
             return n < self.nregs
         if n >= NREGS:
             return n < self.nregs
         return n < 38 or self.m.has_fpu
+
+    def _g_regs(self) -> list[int]:
+        return self._rv_g() if self.rv else list(range(self.nregs))
 
     def _reg_hex(self, n: int) -> str:
         if not self.available(n):
@@ -303,6 +416,8 @@ class GdbStub:
 
     def get_reg(self, n: int) -> int:
         m = self.m
+        if self.rv:
+            return self._rv_get(n)
         k = self._msa_reg(n)
         if k is not None:                       # MSA: w0-w31, msacsr, msair
             return (m.wh[k] << 64 | m.fpr[k] if k < 32 else
@@ -340,6 +455,8 @@ class GdbStub:
         m = self.m
         if not self.available(n):
             raise KeyError(n)
+        if self.rv:
+            return self._rv_set(n, value)
         k = self._msa_reg(n)
         if k is not None:
             from .msa import MSACSR_MASK
@@ -384,6 +501,8 @@ class GdbStub:
         / microMIPS code bit 0 is set (the ISA mode, as QEMU's stub and
         GDB's mips-tdep.c: is_compact_addr)."""
         s, m = self.s, self.m
+        if self.rv:
+            return m.pc & m.amask
         if s.pipeline is None:
             return (m.pc | m.isa_mode) & m.amask
         pc = s._stop_pc()
@@ -397,14 +516,14 @@ class GdbStub:
         return (pc | isa) & m.amask
 
     def _hex(self, value: int, size: int) -> str:
-        order = "big" if self.m.big_endian else "little"
+        order = "big" if self.m.big_endian and not self.rv else "little"
         if size == 16:                          # an MSA register: as ST.D stores it
             return ((value & M64).to_bytes(8, order)
                     + (value >> 64 & M64).to_bytes(8, order)).hex()
         return (value & ((1 << 8 * size) - 1)).to_bytes(size, order).hex()
 
     def _unhex(self, text: str) -> int:
-        order = "big" if self.m.big_endian else "little"
+        order = "big" if self.m.big_endian and not self.rv else "little"
         raw = bytes.fromhex(text)
         if len(raw) == 16:
             return (int.from_bytes(raw[:8], order)
@@ -415,7 +534,10 @@ class GdbStub:
         """The target description: GDB's three MIPS features (G.5.8; the
         fpu one is required — without an FPU its registers are unavailable);
         a MIPS64 core: their 64-bit forms (``features/mips64-*.xml``); a
-        nanoMIPS core: nanoMIPS GDB's cpu and cp0 features."""
+        nanoMIPS core: nanoMIPS GDB's cpu and cp0 features; a RISC-V hart:
+        GDB's RISC-V features (:meth:`_rv_xml`)."""
+        if self.rv:
+            return self._rv_xml()
         if self.nano:
             first = {0: ' regnum="0"'}
             cpu = "".join(f'<reg name="r{i}" bitsize="32"{first.get(i, "")}/>'
@@ -514,13 +636,13 @@ class GdbStub:
         """A breakpoint's address as the session keeps it: MIPS64's
         sign-extended compatibility addresses in their 32-bit form (the
         program's, the debugger's and the editor's)."""
-        if self.m.wide and addr >= 0xFFFFFFFF80000000:
+        if self.m.wide and not self.rv and addr >= 0xFFFFFFFF80000000:
             return addr & M32
         return addr
 
     def gdb_address(self, addr: int) -> int:
         """An address as GDB knows it (MIPS64: a 32-bit form sign-extended)."""
-        if self.m.wide and 0x80000000 <= addr <= M32:
+        if self.m.wide and not self.rv and 0x80000000 <= addr <= M32:
             return addr | (M64 ^ M32)
         return addr
 
@@ -528,6 +650,8 @@ class GdbStub:
         """A watchpoint's address as the core compares it (MIPS64: what
         Machine64._view makes of it — 32-bit with 32-bit addressing)."""
         m = self.m
+        if self.rv:
+            return addr & m.amask
         if not m.wide:
             return addr & M32
         try:
@@ -559,9 +683,10 @@ class GdbStub:
 
     def _stop_regs(self) -> str:
         """``PC:value;SP:value;`` of a stop reply (GDB's numbers)."""
+        sp_reg = self.sp_reg
         pc = self._hex(self.get_reg(self.pc_reg), self._size(self.pc_reg))
-        sp = self._hex(self.get_reg(SP_REG), self._size(SP_REG))
-        return f"{self.pc_reg:02x}:{pc};{SP_REG:02x}:{sp};"
+        sp = self._hex(self.get_reg(sp_reg), self._size(sp_reg))
+        return f"{self.pc_reg:02x}:{pc};{sp_reg:02x}:{sp};"
 
     def resume(self, conn: Connection, *, step: bool) -> str:
         """Run (one instruction, or until something stops it) and say why
@@ -677,21 +802,21 @@ class GdbStub:
         if c == "?":
             return self.stop_reply(*self.last_stop)
         if c == "g":
-            return "".join(self._reg_hex(n) for n in range(self.nregs))
+            return "".join(self._reg_hex(n) for n in self._g_regs())
         if c == "G":
             at = 0
-            for n in range(self.nregs):
+            for n in self._g_regs():
                 w = 2 * self._size(n)
                 if at + w > len(rest):
                     break
-                if (self.nano or n != 71) and self.available(n):
+                if (self.nano or self.rv or n != 71) and self.available(n):
                     self.set_reg(n, self._unhex(rest[at:at + w]))
                 at += w
             return "OK"
         if c == "p":
             n = int(rest, 16)
             try:
-                if n >= self.nregs:
+                if n >= self.nregs and not (self.rv and n in self._rv_regs()):
                     raise KeyError(n)
                 return self._reg_hex(n)
             except KeyError:

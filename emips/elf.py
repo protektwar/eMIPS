@@ -38,6 +38,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 EM_MIPS = 8
+#: RISC-V (the RISC-V ELF psABI 1.0, ch. 8): e_flags RVC, the float ABI
+#: (soft / single / double / quad), RVE, TSO; .riscv.attributes (8.6:
+#: Tag_RISCV_arch = the ISA string the code was built for)
+EM_RISCV = 243
+EF_RISCV_RVC, EF_RISCV_FLOAT_ABI, EF_RISCV_RVE, EF_RISCV_TSO = 0x1, 0x6, 0x8, 0x10
+RISCV_FLOAT_ABIS = {0: "soft", 2: "single", 4: "double", 6: "quad"}
+SHT_RISCV_ATTRIBUTES = 0x70000003
+TAG_RISCV_ARCH = 5
 #: nanoMIPS (the nanoMIPS ELF ABI supplement DN00179 5.1-5.3): e_flags
 #: EF_NANOMIPS_PIC / PID / ABI (15:12, P32 = 1) / ARCH (31:28, 32R6 = 0),
 #: the .nanoMIPS.abiflags section and its ASE bits
@@ -155,11 +163,20 @@ class ElfImage:
     #: "ginvt", "xnms" = the full ISA, not the nanoMIPS subset) — the names
     #: of emips.assembler.Program.needs
     needs: frozenset = frozenset()
+    #: RISC-V ("rv32" / "rv64", EM_RISCV): the extensions the code was built
+    #: for (Tag_RISCV_arch as eMIPS's extension string: "imafdc_zicsr ...")
+    rv_extensions: str = ""
+
+    @property
+    def rv(self) -> bool:
+        return self.arch in ("rv32", "rv64")
 
     @property
     def release(self) -> str:
         if self.arch == "nanomips":             # (nanoMIPS is Release 6 based)
             return "R6"
+        if self.rv:
+            return "R5"                         # (no MIPS release: the session's default)
         table = ARCH_RELEASE64 if self.arch == "mips64" else ARCH_RELEASE
         return table.get(self.flags & EF_MIPS_ARCH, "R5")
 
@@ -167,24 +184,27 @@ class ElfImage:
     def arch_name(self) -> str:
         if self.arch == "nanomips":
             return "nanoMIPS32 Release 6"
+        if self.rv:
+            return f"{self.arch.upper()} {self.rv_extensions}, " \
+                f"{RISCV_FLOAT_ABIS[self.flags & EF_RISCV_FLOAT_ABI]}-float ABI"
         return ARCH_NAMES.get(self.flags & EF_MIPS_ARCH,
                               f"EF_MIPS_ARCH 0x{(self.flags >> 28) & 0xF:x}")
 
     @property
     def mips16(self) -> bool:
-        return self.arch != "nanomips" and bool(self.flags & EF_MIPS_M16)
+        return self.arch in ("mips32", "mips64") and bool(self.flags & EF_MIPS_M16)
 
     @property
     def micromips(self) -> bool:
-        return self.arch != "nanomips" and bool(self.flags & EF_MIPS_MICROMIPS)
+        return self.arch in ("mips32", "mips64") and bool(self.flags & EF_MIPS_MICROMIPS)
 
     def isa_ranges(self) -> list[tuple[int, int, str]]:
         """``(start, end, isa)`` of the code: each executable range split
         at its symbols, a region taking the ISA of the symbol it starts at
         (what objdump does: STO_MIPS16 / STO_MICROMIPS mark 16-bit code);
         nanoMIPS code is all "nanomips"."""
-        if self.arch == "nanomips":
-            return [(a, b, "nanomips") for a, b in self.code_ranges()]
+        if self.arch == "nanomips" or self.rv:
+            return [(a, b, "riscv" if self.rv else "nanomips") for a, b in self.code_ranges()]
         out = []
         # (at one address a MIPS16e / microMIPS symbol beats a MIPS32 one:
         # the linker's _ftext / __start next to the code's own)
@@ -239,7 +259,8 @@ class ElfImage:
         one with MIPS16e / microMIPS / nanoMIPS code)."""
         out: dict[int, tuple[str, int]] = {}
         rows = self.lines
-        step = 2 if self.mips16 or self.micromips or self.arch == "nanomips" else 4
+        step = 2 if self.mips16 or self.micromips or self.arch == "nanomips" or (
+            self.rv and self.flags & EF_RISCV_RVC) else 4
         for k, r in enumerate(rows):
             if r.end or k + 1 >= len(rows):
                 continue
@@ -283,8 +304,8 @@ def _parse(data: bytes, path: str) -> ElfImage:
      e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx) = struct.unpack_from(
         end + ("HHIQQQIHHHHHH" if wide else "HHIIIIIHHHHHH"), data, 16)
     nano = e_machine == EM_NANOMIPS
-    if e_machine not in (EM_MIPS, EM_NANOMIPS):
-        raise ElfError(f"not a MIPS executable (e_machine {e_machine})")
+    if e_machine not in (EM_MIPS, EM_NANOMIPS, EM_RISCV):
+        raise ElfError(f"not a MIPS or RISC-V executable (e_machine {e_machine})")
     if e_type != ET_EXEC:
         kind = {1: "a relocatable object (.o): link it first",
                 3: "a shared object / position-independent executable"}.get(
@@ -293,6 +314,9 @@ def _parse(data: bytes, path: str) -> ElfImage:
     if nano:
         return _parse_nano(data, path, end, endian, wide, e_entry, e_phoff, e_shoff, e_flags,
                            e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx)
+    if e_machine == EM_RISCV:
+        return _parse_rv(data, path, end, endian, wide, e_entry, e_phoff, e_shoff, e_flags,
+                         e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx)
     arch = e_flags & EF_MIPS_ARCH
     if not wide and (arch in ARCH_RELEASE64 or e_flags & EF_MIPS_ABI2):
         raise ElfError(f"{ARCH_NAMES.get(arch, '64-bit')} code in a 32-bit ELF (the n32 "
@@ -407,15 +431,100 @@ def _parse_nano(data: bytes, path: str, end: str, endian: str, wide: bool, e_ent
     return img
 
 
+def _parse_rv(data: bytes, path: str, end: str, endian: str, wide: bool, e_entry: int,
+              e_phoff: int, e_shoff: int, e_flags: int, e_phentsize: int, e_phnum: int,
+              e_shentsize: int, e_shnum: int, e_shstrndx: int) -> ElfImage:
+    """A RISC-V executable (the psABI ch. 8): RV32 (ELFCLASS32) or RV64
+    (ELFCLASS64), little-endian; the extensions from .riscv.attributes."""
+    if endian != "little":
+        raise ElfError("a big-endian RISC-V executable: eMIPS's RISC-V harts are "
+                       "little-endian (mstatus.MBE = 0)")
+    if e_flags & EF_RISCV_RVE:
+        raise ElfError("an RV32E / RV64E executable (EF_RISCV_RVE: 16 registers): eMIPS's "
+                       "harts are RV32I / RV64I")
+    img = ElfImage(path, endian, e_entry, e_flags, arch="rv64" if wide else "rv32")
+    for i in range(e_phnum):
+        if wide:
+            (p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, p_memsz,
+             _align) = struct.unpack_from(end + "IIQQQQQQ", data, e_phoff + i * e_phentsize)
+        else:
+            (p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags,
+             _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
+        if p_type != PT_LOAD or not p_memsz:
+            continue
+        chunk = data[p_offset:p_offset + p_filesz]
+        for k in range(p_memsz):
+            img.image[p_vaddr + k] = chunk[k] if k < len(chunk) else 0
+        rwx = "".join(c for c, bit in (("R", 4), ("W", 2), ("X", 1)) if p_flags & bit)
+        img.segments.append((p_vaddr, p_memsz, rwx))
+    if not img.segments:
+        raise ElfError("no loadable segment (PT_LOAD)")
+    sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx, wide)
+    _read_sections(img, data, end, sections, wide)
+    attrs = next((s for s in sections if s[1] == SHT_RISCV_ATTRIBUTES), None)
+    arch = _riscv_arch(data[attrs[4]:attrs[4] + attrs[5]]) if attrs is not None else None
+    if arch is None:
+        img.rv_extensions = "imac" if e_flags & EF_RISCV_RVC else "ima"
+        img.notes.append("no .riscv.attributes (Tag_RISCV_arch): the extensions are guessed "
+                         "from e_flags")
+    else:
+        img.rv_extensions = arch
+    _read_lines(img, data, end, sections, wide)
+    return img
+
+
+def _riscv_arch(attrs: bytes) -> str | None:
+    """Tag_RISCV_arch of a .riscv.attributes section (the psABI 8.6: 'A',
+    then <length, "riscv", Tag_File, length, attributes>), as eMIPS's
+    extension string (versions dropped: "rv64i2p1_m2p0_zicsr2p0" ->
+    "im_zicsr"); None when it has none."""
+    import re
+    if not attrs or attrs[0] != ord("A"):
+        return None
+    i = 1
+    while i + 4 <= len(attrs):
+        length = struct.unpack_from("<I", attrs, i)[0]
+        end_ = i + length
+        name_end = attrs.index(b"\0", i + 4)
+        vendor = attrs[i + 4:name_end].decode("ascii", "replace")
+        j = name_end + 1
+        while vendor == "riscv" and j < end_:
+            tag, j = _uleb(attrs, j)
+            size = struct.unpack_from("<I", attrs, j)[0]
+            sub_end, j = j - 1 + size, j + 4
+            if tag != 1:                        # (Tag_File only)
+                j = sub_end
+                continue
+            while j < sub_end:
+                tag, j = _uleb(attrs, j)
+                if tag == TAG_RISCV_ARCH or (tag > 32 and tag & 1):     # NTBS
+                    k = attrs.index(b"\0", j)
+                    text = attrs[j:k].decode("ascii", "replace")
+                    j = k + 1
+                    if tag == TAG_RISCV_ARCH:
+                        body = re.sub(r"^rv(32|64)", "", text.lower())
+                        parts = [re.sub(r"\d+p\d+$", "", p) for p in body.split("_")]
+                        letters = "".join(re.sub(r"\d+p\d+", "", p) for p in parts
+                                          if len(re.sub(r"\d+p\d+", "", p)) == 1
+                                          or p == parts[0])
+                        multi = [p for p in parts[1:] if len(p) > 1]
+                        return "_".join([letters] + multi)
+                else:
+                    _v, j = _uleb(attrs, j)
+        i = end_
+    return None
+
+
 def _read_sections(img: ElfImage, data: bytes, end: str, sections: list,
                    wide: bool = False) -> None:
     """The allocated sections and the symbols."""
+    fold = wide and not img.rv                         # (MIPS64: -msym32's addresses)
     for name, sh_type, flags, addr, off, size, link, _info, entsize in sections:
         if flags & 2 and size:                         # SHF_ALLOC (SHF_EXECINSTR 4)
-            img.sections.append((name, va32(addr) if wide else addr, size, bool(flags & 4)))
+            img.sections.append((name, va32(addr) if fold else addr, size, bool(flags & 4)))
         if sh_type == SHT_SYMTAB:
             img.symbols = _symbols(data, end, off, size, entsize, sections[link], wide,
-                                   img.arch == "nanomips")
+                                   img.arch == "nanomips", rv=img.rv)
 
 
 def _read_lines(img: ElfImage, data: bytes, end: str, sections: list,
@@ -431,7 +540,7 @@ def _read_lines(img: ElfImage, data: bytes, end: str, sections: list,
                 data[s[4]:s[4] + s[5]], end,
                 data[line_str[4]:line_str[4] + line_str[5]] if line_str else b"",
                 data[dstr[4]:dstr[4] + dstr[5]] if dstr else b"")
-            if wide:
+            if wide and not img.rv:
                 for row in img.lines:
                     row.address = va32(row.address)
         except (struct.error, IndexError, ValueError) as exc:
@@ -460,22 +569,23 @@ def _cstr(data: bytes, at: int) -> str:
 
 
 def _symbols(data: bytes, end: str, off: int, size: int, entsize: int, strtab,
-             wide: bool = False, nano: bool = False) -> list[Symbol]:
+             wide: bool = False, nano: bool = False, rv: bool = False) -> list[Symbol]:
     out = []
     step = entsize or (24 if wide else 16)
     for k in range(size // step):
         if wide:                                     # Elf64_Sym
             name, info, other, shndx, value, sz = struct.unpack_from(
                 end + "IBBHQQ", data, off + k * step)
-            value = va32(value)
+            if not rv:
+                value = va32(value)
         else:
             name, value, sz, info, other, shndx = struct.unpack_from(
                 end + "IIIBBH", data, off + k * step)
         kind = {STT_FUNC: "func", STT_OBJECT: "object"}.get(info & 0xF, "other")
         if not name or shndx == 0 or (info & 0xF) in (3, 4):   # SECTION, FILE
             continue
-        isa = "nanomips" if nano else {STO_MIPS16: "mips16e", STO_MICROMIPS: "micromips"}.get(
-            other & 0xF0, "mips32")
+        isa = "nanomips" if nano else "riscv" if rv else {
+            STO_MIPS16: "mips16e", STO_MICROMIPS: "micromips"}.get(other & 0xF0, "mips32")
         out.append(Symbol(_cstr(data, strtab[4] + name), value & ~1 if isa in (
             "mips16e", "micromips") else value, sz, kind, isa))
     return out
@@ -550,7 +660,6 @@ def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes,
         files, i = _entries(u, i, end, line_str, debug_str, off)
         dirnames = [d.get(1, "") for d in dirs]
         filenames = [_join(dirnames, f.get(1, "?"), f.get(2, 0)) for f in files]
-        base = 0                                     # DWARF 5: file 0 is the unit's
     else:
         dirnames = [""]
         while u[i]:
@@ -567,12 +676,12 @@ def _line_program(u: bytes, end: str, line_str: bytes, debug_str: bytes,
             _, i = _uleb(u, i)
             _, i = _uleb(u, i)
             filenames.append(_join(dirnames, name, d))
-        base = 1
     i = prog
     rows: list[LineRow] = []
 
-    def reset():
-        return {"address": 0, "file": base, "line": 1, "is_stmt": bool(default_stmt)}
+    def reset():                                     # (file = 1 in every version: DWARF
+        #                                              5 6.2.2 Table 6.4 — entry 1 of a v5 table)
+        return {"address": 0, "file": 1, "line": 1, "is_stmt": bool(default_stmt)}
 
     st = reset()
 

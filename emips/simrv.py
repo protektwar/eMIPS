@@ -586,6 +586,12 @@ class RVMachine(S.Machine):
         self.priv = to                          # (the LR reservation survives a trap:
         base = tvec & ~3                        # priv. 3.3.2 lets only xRET drop it)
         self.pc = (base + 4 * cause if interrupt and tvec & 3 == 1 else base) & self.amask
+        if self.exception_log:                  # (the entry _trap / the interrupt made:
+            e = self.exception_log[-1]          # the debugger's exception line)
+            e.setdefault("error", e.get("name") or f"cause {cause}")
+            e.update(addr=pc, vector=self.pc,
+                     why=f"{'s' if to == 1 else 'm'}cause 0x{code & self.amask:x}, "
+                         f"{'s' if to == 1 else 'm'}tval 0x{tval & self.amask:x}")
 
     # -- Debug Mode (Debug spec ch. 4) ---------------------------------------------------
 

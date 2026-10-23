@@ -122,6 +122,23 @@ def _cmd_cc(args) -> None:
                      f"{args.release}")
         if args.nms and arch != "nanomips":
             sys.exit("--nms is a nanoMIPS option (--arch nanomips)")
+        rv = arch in ("rv32", "rv64")
+        if args.rv_extensions and not rv:
+            sys.exit("--rv-ext is a RISC-V option (--arch rv32 / rv64)")
+        if rv:
+            mips = [f for f, on in (("--release", args.release), ("--mips16", args.mips16),
+                                    ("--micromips", args.micromips), ("--dsp", args.dsp),
+                                    ("--msa", args.msa), ("--no-fpu", args.no_fpu),
+                                    ("--little", args.endian == "little")) if on]
+            if mips:
+                sys.exit(f"{', '.join(mips)}: MIPS options (a RISC-V program takes the "
+                         "hart's extensions: --rv-ext; RISC-V is little-endian)")
+            log = build(args.sources, out, arch=arch, optimize=f"-O{args.opt}",
+                        extensions=args.rv_extensions or RV_EXTENSIONS)
+            if args.verbose:
+                print(log)
+            print(f"wrote {out}: run it with  python3 -m emips run {out}")
+            return
         release = args.release or (core.release if core is not None else
                                    "R6" if arch == "nanomips" else
                                    "R5" if args.micromips or args.msa else "R2")
@@ -787,10 +804,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--release", choices=RELEASES, default=None,
                    help="MIPS32 / MIPS64 release to build for (default R2; R5 with "
                         "--micromips)")
-    c.add_argument("--arch", choices=("mips32", "mips64", "nanomips"), default=None,
+    c.add_argument("--arch", choices=("mips32", "mips64", "nanomips", "rv32", "rv64"),
+                   default=None,
                    help="mips32 (default: o32, an ELF32), mips64 (the n64 ABI: 64-bit "
-                        "long and pointers, an ELF64) or nanomips (the p32 ABI, soft "
-                        "float: MediaTek's nanomips-elf-gcc); --core: the core's")
+                        "long and pointers, an ELF64), nanomips (the p32 ABI, soft "
+                        "float: MediaTek's nanomips-elf-gcc) or rv32 / rv64 (RISC-V: "
+                        "-march / -mabi from --rv-ext); --core: the core's")
+    c.add_argument("--rv-ext", dest="rv_extensions", default=None, metavar="EXTS",
+                   help=f"RISC-V: the hart's extensions (default {RV_EXTENSIONS})")
     c.add_argument("--nms", action="store_true",
                    help="nanoMIPS: for a core with the nanoMIPS subset only "
                         "(-march=32r6s)")
