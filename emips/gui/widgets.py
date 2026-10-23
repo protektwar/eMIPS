@@ -561,9 +561,14 @@ class RegisterView(QtWidgets.QTabWidget):
         self._refresh_sets(s)
         self._refresh_dsp(s)
         self._refresh_msa(s)
+        rv = s.rv
+        self.setTabText(self.indexOf(self.special), tr("PC / CSRs") if rv else tr("PC / CP0"))
         self.setTabVisible(self.debug_tab, True)
         self.debug_text.setText("\n".join(ln.strip() for ln in s.debug_lines()))
-        self.dint.setEnabled(not s.machine.debug_mode and not s.halted)
+        self.dint.setEnabled(not rv and not s.machine.debug_mode and not s.halted)
+        self.probe_box.setVisible(not rv)       # (EJTAG: a MIPS core's probe)
+        self.trap_box.setVisible(not rv)
+        self.dint.setVisible(not rv)
         for box, on in ((self.probe_box, s.probe is not None),
                         (self.trap_box, s.probe is not None and s.probe.trap)):
             box.blockSignals(True)
@@ -587,6 +592,9 @@ class RegisterView(QtWidgets.QTabWidget):
                 t.resizeColumnToContents(0)
                 t.resizeColumnToContents(1)
         import struct
+        if rv:
+            self._refresh_rv_fpu(s)
+            return
         fpu = s.machine.has_fpu
         self.setTabToolTip(self.indexOf(self.fpr), "" if fpu else tr(
             "This core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every FPU "
@@ -605,6 +613,34 @@ class RegisterView(QtWidgets.QTabWidget):
             _set(self.fpr, i, 1, f"0x{raw:016x}")
             _set(self.fpr, i, 2, f"{single:.7g} / {dbl:.15g}")
 
+
+    def _refresh_rv_fpu(self, s: Session) -> None:
+        """A hart's F / D registers (FLEN bits; a NaN-boxed single shown
+        as the single, unpriv. 22.2)."""
+        import struct
+        from ..riscv import FPR_NAMES
+        m = s.machine
+        on = m.flen > 0
+        self.fpr.setEnabled(on)
+        self.setTabToolTip(self.indexOf(self.fpr), "" if on else tr(
+            "This hart has no F / D extension: no f registers"))
+        digits = 16 if m.flen == 64 else 8
+        for i, raw in enumerate(m.fpr):
+            _set(self.fpr, i, 0, f"f{i} ({FPR_NAMES[i]})")
+            if not on:
+                _set(self.fpr, i, 1, tr("no F"))
+                _set(self.fpr, i, 2, "")
+                continue
+            lo = raw & 0xFFFFFFFF
+            single = struct.unpack("<f", lo.to_bytes(4, "little"))[0]
+            _set(self.fpr, i, 1, f"0x{raw:0{digits}x}")
+            if m.flen == 64 and raw >> 32 == 0xFFFFFFFF:
+                _set(self.fpr, i, 2, f"{single:.7g} (single, NaN-boxed)")
+            elif m.flen == 64:
+                dbl = struct.unpack("<d", raw.to_bytes(8, "little"))[0]
+                _set(self.fpr, i, 2, f"{dbl:.15g}")
+            else:
+                _set(self.fpr, i, 2, f"{single:.7g}")
 
     def _refresh_dsp(self, s: Session) -> None:
         """The DSP tab, when the core has the DSP Module; a value that
@@ -669,6 +705,11 @@ class RegisterView(QtWidgets.QTabWidget):
         self.probe_changed.emit(on, on and self.trap_box.isChecked())
 
     def _refresh_sets(self, s: Session) -> None:
+        if s.rv:                                # (RISC-V: mip / mie, no shadow sets)
+            self.setTabVisible(self.sets_tab, True)
+            self.int_text.setText("\n".join(s.interrupt_lines()))
+            self.set_box.setVisible(False)
+            return
         st = s.interrupt_state()
         n = st["sets"]
         self.setTabVisible(self.sets_tab, True)

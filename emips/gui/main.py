@@ -59,13 +59,27 @@ Qt = QtCore.Qt
 SPEEDS = [(1, 600), (1, 250), (1, 80), (10, 30), (200, 10), (5000, 1)]
 RELEASES = ["R1", "R2", "R3", "R5", "R6"]
 #: the Machine toolbar's / Configure menu's (architecture, release) choices
-_ARCH_RELEASES = [(a, r) for a in ("mips32", "mips64") for r in RELEASES] + [("nanomips", "R6")]
+_ARCH_RELEASES = [(a, r) for a in ("mips32", "mips64") for r in RELEASES] + [
+    ("nanomips", "R6"), ("rv32", "RV"), ("rv64", "RV")]      # (RISC-V: no release, PLAN M25)
 
 
 def _release_action(arch: str, release: str) -> str:
     """The Configure menu action of an (architecture, release)."""
+    if arch in ("rv32", "rv64"):
+        return f"release_{arch}"
     return {"mips32": "release", "mips64": "release64",
             "nanomips": "release_nano"}[arch] + f"_{release}"
+
+
+def _arch_key(arch: str, release: str) -> str:
+    """The Machine toolbar's item of an architecture and release ("rv32:RV":
+    RISC-V has no releases)."""
+    return f"{arch}:RV" if arch in ("rv32", "rv64") else f"{arch}:{release}"
+
+
+def _arch_text(arch: str, release: str) -> str:
+    return (f"RISC-V {arch_title(arch)}" if arch in ("rv32", "rv64")
+            else f"{arch_title(arch)} {release}")
 HEX_SUFFIXES = (".hex", ".ihex")
 TOOL_DOCKS = ("reference", "encoder", "converter")
 #: File > New C Program
@@ -510,8 +524,9 @@ class MainWindow(QtWidgets.QMainWindow):
         A("settings", tr("&Settings…"), self.open_settings, "Ctrl+,",
           tr("Processor, assembler (strict mode), boot state, exceptions, console, run"))
         self.release_group = QtGui.QActionGroup(self)
-        for arch, r in _ARCH_RELEASES:   # (MIPS64: PLAN M22; nanoMIPS: M23, R6 only)
-            a = A(_release_action(arch, r), f"{arch_title(arch)} {r}"
+        for arch, r in _ARCH_RELEASES:   # (MIPS64: PLAN M22; nanoMIPS: M23, R6 only;
+            #                                RISC-V: M25)
+            a = A(_release_action(arch, r), _arch_text(arch, r)
                   + (" (Release 6)" if r == "R6" else ""), checkable=True)
             a.triggered.connect(lambda _=False, v=f"{arch}:{r}":
                                 self._machine_choice("release", v))
@@ -688,9 +703,11 @@ class MainWindow(QtWidgets.QMainWindow):
             core = cores.get(s.options.core)
             self.m_core.setCurrentIndex(max(0, self.m_core.findData(s.options.core)))
             self.m_release.setCurrentIndex(max(0, self.m_release.findData(
-                f"{s.options.arch}:{s.release}")))
+                _arch_key(s.options.arch, s.release))))
             for i in range(self.m_release.count()):
                 arch, rel = self.m_release.itemData(i).split(":")
+                if rel == "RV":                 # (RISC-V: the session's release stays)
+                    rel = s.release
                 why = forbidden("release", rel, replace(s.options, arch=arch), s.release)
                 self.m_release.model().item(i).setEnabled(why is None)
                 self.m_release.setItemData(i, why or "", Qt.ItemDataRole.ToolTipRole)
@@ -749,11 +766,13 @@ class MainWindow(QtWidgets.QMainWindow):
                                   "greyed out); Generic core: any setting"))
         self.m_release = QtWidgets.QComboBox()
         for arch, r in _ARCH_RELEASES:
-            self.m_release.addItem(f"{arch_title(arch)} {r}", f"{arch}:{r}")
+            self.m_release.addItem(_arch_text(arch, r), f"{arch}:{r}")
         self.m_release.setToolTip(tr("The architecture and release: MIPS32, MIPS64 (64-bit "
-                                     "registers, the doubleword instructions) or nanoMIPS "
-                                     "(the I7200's 16 / 32 / 48-bit instructions); its "
-                                     "instructions and CP0"))
+                                     "registers, the doubleword instructions), nanoMIPS "
+                                     "(the I7200's 16 / 32 / 48-bit instructions) or "
+                                     "RISC-V (RV32 / RV64: the extensions and privilege "
+                                     "modes in Settings > Processor); its instructions "
+                                     "and its control registers"))
         self.m_board = QtWidgets.QComboBox()
         self.m_board.addItem(tr("Flat memory"), "flat")
         self.m_board.addItem(tr("Malta board"), "malta")
@@ -802,6 +821,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if not value:
                 return
             o.arch, _, release = value.rpartition(":") if ":" in value else (o.arch, "", value)
+            if release == "RV":                 # (RISC-V: no release; the session's stays)
+                release = s.release
             if s.options.arch == "nanomips" and o.arch != "nanomips" and \
                     getattr(cores.get(o.core), "arch", "nanomips") == "nanomips":
                 o.fpu = True                    # (leaving nanoMIPS: the FPU it took;
@@ -837,7 +858,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(tr("adjusted: {note}").format(note=note))
         if notes:
             self.status.showMessage(tr("adjusted: {note}").format(note=notes[0]), 8000)
-        self.apply_settings(release, s.endian, s.forwarding, o.validated())
+        self.apply_settings(release, "little" if o.arch in ("rv32", "rv64") else s.endian,
+                            s.forwarding, o.validated())
 
     def _build_status(self) -> None:
         self.status = self.statusBar()
@@ -871,8 +893,6 @@ class MainWindow(QtWidgets.QMainWindow):
         s.options = Options.from_strings(
             {k: v for k in Options().to_strings()
              if (v := self.settings.value(f"options/{k}")) is not None})
-        if s.options.arch in ("rv32", "rv64"):  # (the window's RISC-V: PLAN M25 4b)
-            s.options.arch = "mips32"
         self.mode.blockSignals(True)
         self.mode.setCurrentIndex(0 if s.mode != "pipeline" else
                                   (2 if s.options.model == "24k" else 1))
@@ -923,6 +943,8 @@ class MainWindow(QtWidgets.QMainWindow):
         a["assemble"].setToolTip(tr("Compile and link the C program") if c else
                                  tr("Assemble the program"))
         a[f"endian_{s.endian}"].setChecked(True)
+        for e in ("big", "little"):             # (RISC-V: little-endian only)
+            a[f"endian_{e}"].setEnabled(not s.rv)
         a["names_abi" if s.abi else "names_numeric"].setChecked(True)
         lang = self._get("language", "en")
         a.get(f"lang_{lang}", a["lang_en"]).setChecked(True)
@@ -931,8 +953,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.converter.set_nan2008(s.release == "R6")
         from ..cores import get as get_core
         core = get_core(s.options.core)
-        self.config_label.setText(f" {core.title + ' · ' if core else ''}"
-                                  f"{arch_title(s.options.arch)} {s.release} · "
+        what = (f"{arch_title(s.options.arch)} {s.options.rv_extensions}" if s.rv
+                else f"{arch_title(s.options.arch)} {s.release}")
+        self.config_label.setText(f" {core.title + ' · ' if core else ''}{what} · "
                                   + (tr("big-endian") if s.endian == "big"
                                      else tr("little-endian")) + " ")
 
@@ -1182,15 +1205,7 @@ class MainWindow(QtWidgets.QMainWindow):
         goes together is kept so (emips.compat).  Returns True when
         something changed."""
         from ..compat import adjust
-        from ..options import is_rv
         s = self.session
-        if is_rv(prof.options.get("arch", "")):     # (the window's RISC-V: PLAN M25 4b)
-            text = tr("this is a RISC-V program ({flags}): the window runs RISC-V from "
-                      "a later version — use python3 -m emips run / debug "
-                      "FILE").format(flags=prof.describe())
-            self._log(text)
-            self.status.showMessage(text, 8000)
-            return False
         if not prof.differs(s.options, s.release, s.endian, s.mode, s.forwarding):
             return False
         options, _notes = adjust(prof.options_for(s.options), prof.release)
@@ -1617,7 +1632,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.hex_text is None and self.lang == "c":
                 self._log(tr("built for {arch} {release}, {endian}-endian: {n} instruction "
                              "words (the Disassembly pane shows the code)").format(
-                    arch=arch_title(s.options.arch), release=s.release, endian=s.endian,
+                    arch=arch_title(s.options.arch), release=s.options.rv_extensions if s.rv else s.release, endian=s.endian,
                     n=len(code)))
                 self._log(s.c_build)
                 for key in ("disassembly", "source"):
@@ -1626,7 +1641,7 @@ class MainWindow(QtWidgets.QMainWindow):
             elif self.hex_text is None:
                 self._log(tr("assembled for {arch} {release}, {endian}-endian: "
                              "{n} instruction words").format(
-                    arch=arch_title(s.options.arch), release=s.release, endian=s.endian,
+                    arch=arch_title(s.options.arch), release=s.options.rv_extensions if s.rv else s.release, endian=s.endian,
                     n=len(code)))
             for note in s.disk_notes:           # a disk image that is not there
                 self._log(tr("disk: {note}").format(note=note))

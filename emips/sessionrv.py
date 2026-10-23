@@ -293,3 +293,61 @@ def listing_row(session, prog, a: int, stop: int, labels) -> tuple[int, int, str
         return size, raw, d[1].text(raw, size, a)
     except RVDecodeError:
         return size, raw, "(illegal)"
+
+
+#: mip / mie bit names (priv. 3.1.9 / Table 14)
+IRQ_BITS = ((11, "MEI"), (9, "SEI"), (7, "MTI"), (5, "STI"), (3, "MSI"), (1, "SSI"))
+
+
+def _irq_names(v: int) -> str:
+    return " ".join(n for b, n in IRQ_BITS if v >> b & 1) or "-"
+
+
+def interrupt_lines(m) -> list[str]:
+    """The hart's interrupts (priv. 3.1.6.1 / 3.1.8 / 3.1.9 / 3.1.7): the
+    global enables, mip / mie, delegation, xtvec's mode, what is taken next
+    (the debugger's ``srs`` on MIPS, the register pane's Interrupts tab)."""
+    from . import rvcsr as CSR
+    from .simrv import INTERRUPT_NAMES
+    c = m.csrs
+    out = [f"mstatus.MIE {c.status_bit(CSR.MIE)}"
+           + (f", SIE {c.status_bit(CSR.SIE)}" if c.has_s else "")
+           + f"; the hart runs in {({3: 'M', 1: 'S', 0: 'U'})[m.priv]}-mode",
+           f"mip {_irq_names(c.mip())}   (0x{c.mip():x})",
+           f"mie {_irq_names(c.mie)}   (0x{c.mie:x})"]
+    if c.has_s:
+        out.append(f"mideleg {_irq_names(c.mideleg)} (to S-mode), medeleg 0x{c.medeleg:x}")
+    for name, tvec in (("mtvec", c.mtvec),) + ((("stvec", c.stvec),) if c.has_s else ()):
+        out.append(f"{name} 0x{tvec & ~3 & m.amask:x}: "
+                   + ("vectored (BASE + 4 x cause for interrupts)" if tvec & 3 == 1
+                      else "direct"))
+    req = m.interrupt_request()
+    out.append("taken before the next instruction: "
+               + (f"{INTERRUPT_NAMES.get(req[0], req[0])} -> {'S' if req[1] == 1 else 'M'}-mode"
+                  if req is not None else "none")
+               + ("  (WFI: waiting)" if m.waiting else ""))
+    return out
+
+
+def debug_lines(m) -> list[str]:
+    """The hart's debug state (Debug spec ch. 4-5): Debug Mode, dcsr, dpc,
+    the triggers (the debugger's ``ejtag`` on MIPS, the Debug tab)."""
+    from .rvdebug import CAUSE_SHIFT, DISABLED, EBREAKM, EBREAKS, EBREAKU, STEP
+    c = m.csrs
+    causes = {1: "ebreak", 2: "a trigger", 3: "a halt request", 4: "a single step",
+              5: "a reset halt request"}
+    if m.debug_mode:
+        out = [f"Debug Mode (Debug spec 4.1): entered by "
+               f"{causes.get(c.dcsr >> CAUSE_SHIFT & 7, '?')}, dpc 0x{c.dpc:x}; the Debug "
+               "Module drives the hart"]
+    else:
+        out = ["not in Debug Mode"]
+    ebreak = [k for bit, k in ((EBREAKM, "M"), (EBREAKS, "S"), (EBREAKU, "U")) if c.dcsr & bit]
+    out.append(f"dcsr 0x{c.dcsr:08x}: prv {c.dcsr & 3}, step {int(bool(c.dcsr & STEP))}, "
+               "ebreak enters Debug Mode in " + (", ".join(ebreak) or "no mode"))
+    used = [k for k, t in enumerate(m.tm.triggers) if t.type != DISABLED]
+    out.append(f"triggers: {m.tm.count} (Sdtrig), "
+               + (f"in use: {', '.join(str(k) for k in used)}" if used else "none in use"))
+    if m.debug_module is not None:
+        out.append("a Debug Module is attached (the JTAG DTM)")
+    return out

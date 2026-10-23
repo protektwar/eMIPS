@@ -79,8 +79,12 @@ class TraceView(QtWidgets.QWidget):
         try:
             for cb in [self.on, *self.options.values()]:
                 cb.setEnabled(m is not None)
-            if m is None:
-                self.state.setText("")
+            if m is None or m.rv:               # (MIPS Trace: a MIPS core's)
+                for cb in [self.on, *self.options.values()]:
+                    cb.setEnabled(False)
+                self.state.setText("" if m is None else tr(
+                    "MIPS Trace (PDtrace and the TCB, MD00439) belongs to MIPS cores: a "
+                    "RISC-V hart has none"))
                 self.text.setPlainText("")
                 return
             tcb = m.ejtag.tap.tcb
@@ -100,7 +104,7 @@ class TraceView(QtWidgets.QWidget):
             self._show(s)
 
     def _show(self, s: Session) -> None:
-        if s.machine is None:
+        if s.machine is None or s.machine.rv:
             return
         self.state.setText("\n".join(s.trace_state()[:2]))
         if not self.isVisible():

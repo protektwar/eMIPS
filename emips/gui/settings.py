@@ -139,6 +139,7 @@ class SettingsDialog(QtWidgets.QDialog):
             box.currentIndexChanged.connect(self._constrain)
         self.fpu.toggled.connect(self._constrain)
         self.nms.toggled.connect(self._constrain)
+        self.rv_modes.currentIndexChanged.connect(self._constrain)
         for box in (self.icache, self.dcache, self.l2, self.l3):
             box.editTextChanged.connect(self._constrain)
         for spin in (self.cores, self.vps, self.shadow_sets):
@@ -170,7 +171,28 @@ class SettingsDialog(QtWidgets.QDialog):
                           "mips64")
         self.arch.addItem(tr("nanoMIPS: the I7200's 16 / 32 / 48-bit instructions "
                              "(Release 6)"), "nanomips")
+        self.arch.addItem(tr("RISC-V RV32: a 32-bit hart (little-endian, no releases)"),
+                          "rv32")
+        self.arch.addItem(tr("RISC-V RV64: a 64-bit hart"), "rv64")
         form.addRow(tr("Architecture"), self.arch)
+        # the RISC-V hart's options (PLAN M25: the extensions, the privilege modes,
+        # GNU ld's relaxation)
+        self.rv_extensions = QtWidgets.QLineEdit()
+        self.rv_extensions.setToolTip(tr(
+            "RISC-V: the hart's extensions as an ISA string without rv32 / rv64, e.g. "
+            "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb (I, M, A, F, D, C, Zicsr, "
+            "Zifencei, Zicntr, Zihpm, Zba, Zbb)"))
+        form.addRow(tr("RISC-V extensions"), self.rv_extensions)
+        self.rv_modes = QtWidgets.QComboBox()
+        for key, text in (("msu", tr("M, S and U (paging: Sv32 / Sv39 / Sv48 / Sv57)")),
+                          ("mu", tr("M and U")), ("m", tr("M only"))):
+            self.rv_modes.addItem(text, key)
+        self.rv_modes.setToolTip(tr("RISC-V: the privilege modes the hart has (priv. 1.2)"))
+        form.addRow(tr("RISC-V privilege modes"), self.rv_modes)
+        self.rv_relax = QtWidgets.QCheckBox(tr("Linker relaxation (GNU's default)"))
+        self.rv_relax.setToolTip(tr("RISC-V: GNU ld's relaxation — calls, gp-relative "
+                                    "accesses, alignment (as -mrelax / ld --relax)"))
+        form.addRow("", self.rv_relax)
         # the nanoMIPS core's options (MD01251: Config5.NMS / CRCP / GI)
         self.nms = QtWidgets.QCheckBox(tr("nanoMIPS subset only (NMS)"))
         self.nms.setToolTip(tr("A core with the nanoMIPS subset (Config5.NMS = 1): the "
@@ -630,6 +652,9 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def set_values(self, release: str, endian: str, forwarding: bool, o: Options) -> None:
         self.arch.setCurrentIndex(max(0, self.arch.findData(o.arch)))
+        self.rv_extensions.setText(o.rv_extensions)
+        self.rv_modes.setCurrentIndex(max(0, self.rv_modes.findData(o.rv_modes)))
+        self.rv_relax.setChecked(o.rv_relax)
         self.nms.setChecked(o.nms)
         self.crc.setCurrentIndex(max(0, self.crc.findData(o.crc)))
         self.ginv.setCurrentIndex(max(0, self.ginv.findData(o.ginv)))
@@ -738,10 +763,25 @@ class SettingsDialog(QtWidgets.QDialog):
             mt_pm=self.mt_pm.currentData(), itc=self.itc.currentData(),
             core=self.core.currentData(), arch=self.arch.currentData(),
             nms=self.nms.isChecked(), crc=self.crc.currentData(),
-            ginv=self.ginv.currentData(), rv_extensions=self._given.rv_extensions,
-            rv_modes=self._given.rv_modes, rv_relax=self._given.rv_relax)
+            ginv=self.ginv.currentData(), rv_extensions=self._rv_extensions(),
+            rv_modes=self.rv_modes.currentData(), rv_relax=self.rv_relax.isChecked())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
+
+    def _rv_extensions(self) -> str:
+        """The extensions typed (lower case, no rv32 / rv64; the last good
+        ones while what is typed is not an ISA string eMIPS has)."""
+        from ..riscv import RVISA, parse_extensions
+        text = self.rv_extensions.text().strip().lower()
+        for p in ("rv32", "rv64"):
+            text = text[len(p):] if text.startswith(p) else text
+        try:
+            if "i" not in parse_extensions(text):
+                raise ValueError(text)
+            RVISA.for_core(64, text)
+        except (ValueError, KeyError):
+            return self._given.rv_extensions
+        return text
 
     def _board_spec(self) -> str:
         if self.board.currentData() == "flat":
@@ -852,6 +892,11 @@ class SettingsDialog(QtWidgets.QDialog):
             nano = fixed.arch == "nanomips"
             for w in (self.nms, self.crc, self.ginv):
                 w.setEnabled(nano)
+            rv = fixed.arch in ("rv32", "rv64")
+            for w in (self.rv_extensions, self.rv_modes, self.rv_relax):
+                w.setEnabled(rv)
+            self.release.setEnabled(not rv)     # (RISC-V: no releases, little-endian)
+            self.endian.setEnabled(not rv)
             self.iocu.setChecked(fixed.iocu)
             why = forbidden("iocu", True, fixed, release)
             self.iocu.setEnabled(why is None)

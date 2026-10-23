@@ -92,6 +92,9 @@ class TLBView(QtWidgets.QWidget):
     def refresh(self, s: Session) -> None:
         self._session = s
         m = s.machine
+        if m is not None and m.rv:              # a RISC-V hart: satp, its TLB
+            self._rv(m)
+            return
         if m is None or tv.kind(m) == "fixed":
             for t in (self.table, self.micro):
                 t.setRowCount(0)
@@ -202,6 +205,50 @@ class TLBView(QtWidgets.QWidget):
                 _set(t, r, c, text, bg, bold)
             t.item(r, 1).setToolTip(tr("* = replaced by the next miss of this micro-TLB"))
         t.resizeColumnsToContents()
+
+    def _rv(self, m) -> None:
+        """A RISC-V hart (priv. ch. 12): satp's scheme / ASID / root, the
+        entries its TLB caches (the leaf PTEs a walk found; SFENCE.VMA
+        flushes them) and the counters."""
+        mmu = m.mmu
+        self.micro.setRowCount(0)
+        self.micro.setColumnCount(0)
+        self.micro.setVisible(False)
+        t = self.table
+        if not hasattr(mmu, "tlb"):             # (M-only / M + U: no paging)
+            t.setRowCount(0)
+            t.setColumnCount(0)
+            self.address.setText(tr("No paging: this hart has no S-mode (Settings > "
+                                    "Processor > RISC-V privilege modes): PA = VA, "
+                                    "PMP checks the accesses."))
+            self.stats.setPlainText("")
+            self.reset.setEnabled(False)
+            return
+        self.reset.setEnabled(False)
+        scheme, asid, root = mmu._satp(m)
+        self.address.setText(html.escape(
+            tr("satp: {mode}, ASID {asid}, root page table at PA 0x{root:x} — M-mode "
+               "and Bare translate PA = VA").format(
+                mode=scheme.name if scheme is not None else "Bare", asid=asid,
+                root=root << 12)))
+        heads = [tr("ASID"), tr("VPN"), tr("page"), tr("PPN"), tr("PTE flags")]
+        t.setColumnCount(len(heads))
+        t.setHorizontalHeaderLabels(heads)
+        entries = list(mmu.tlb.values())
+        t.setRowCount(len(entries))
+        names = "VRWXUGAD"
+        for i, e in enumerate(reversed(entries)):           # (most recent first)
+            size = 4096 << (9 * e.level if m.xlen == 64 else 10 * e.level)
+            flags = "".join(c if e.pte >> k & 1 else "-" for k, c in enumerate(names))
+            cells = [str(e.asid), f"0x{e.vpn:x}", f"{size // 1024} KB" if size < 1 << 20
+                     else f"{size >> 20} MB" if size < 1 << 30 else f"{size >> 30} GB",
+                     f"0x{e.ppn:x}", flags]
+            for c, text in enumerate(cells):
+                _set(t, i, c, text, T().valid_fill if i == 0 else None, False)
+        t.resizeColumnsToContents()
+        self.stats.setPlainText(
+            f"TLB: {len(entries)} of {mmu.entries} entries\n"
+            f"hits {mmu.hits}   misses {mmu.misses}   page-table walks {mmu.walks}")
 
     def _bat(self, m, acc) -> None:
         mmu = m.mmu

@@ -66,7 +66,9 @@ class _Pane(QtWidgets.QWidget):
 
     @property
     def isa_name(self) -> str:
-        """"MIPS32 R5" / "MIPS64 R6" ..."""
+        """"MIPS32 R5" / "MIPS64 R6" ... / "RISC-V RV64" (no releases)."""
+        if self.arch in ("rv32", "rv64"):
+            return f"RISC-V {arch_title(self.arch)}"
         return f"{arch_title(self.arch)} {self.release}"
 
     def update_view(self) -> None:          # pragma: no cover - overridden

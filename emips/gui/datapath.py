@@ -25,7 +25,7 @@ from typing import Any
 
 from ..datapathinfo import PARTS as _PARTS
 from ..datapathinfo import control_of as _control_of, dest_of as _dest_of
-from ..datapathinfo import nano_of as _nano_of
+from ..datapathinfo import nano_of as _nano_of, rv_of as _rv_of
 from ..datapathinfo import coprocessor_of, coprocessor_reads
 from ..datapathinfo import details as _details_of, taken as _taken_of
 from ..datapathinfo import tlb_lines as _tlb_lines_of, word_of as _word
@@ -375,10 +375,15 @@ class DatapathView(QtWidgets.QGraphicsView):
                         (308, 382), (344, 382)], "write-back register number")
 
         # port labels on the register file and data memory
+        self.ports = {}
         for x, y, t in ((347, 280, "rs"), (347, 310, "rt"), (347, 374, "write reg"),
                         (347, 396, "write data"), (436, 292, "rd1"), (436, 362, "rd2"),
                         (987, 292, "addr"), (987, 382, "wdata"), (1084, 322, "rdata")):
-            self._text(x, y, t, 7, False, c.idle_text)
+            self.ports[t] = self._text(x, y, t, 7, False, c.idle_text)
+        # RISC-V: rd passes straight through (no RegDst mux)
+        wire("rd_pass", [(740, Y_DST), (764, Y_DST + 2)], "rd: bits 11..7 in every format")
+        self.wires["rd_pass"].show(False)
+        self._labels = "mips"
 
         self.values: dict[str, _Value] = {}
         for key, x, y, size in (
@@ -435,13 +440,9 @@ class DatapathView(QtWidgets.QGraphicsView):
             self.titles[st].setText("")
             self.bands[st].setBrush(QtGui.QBrush(QtGui.QColor(T().bubble)))
         self._cache_parts(s)
-        nano = bool(getattr(s.machine, "nano", False))
-        if self.parts["add4"].label.text() != ("+2/4/6" if nano else "+4"):
-            self.parts["add4"].rename(           # nanoMIPS: 16 / 32 / 48-bit instructions
-                *(("+2/4/6", "Adds the instruction's size (2, 4 or 6 bytes): the address "
-                   "of the next instruction\n(click: what happens inside)") if nano else
-                  ("+4", "Adds 4: address of the next instruction (PC + 4)\n(click: what "
-                   "happens inside)")))
+        m = s.machine
+        self._relabel("rv" if m is not None and m.rv else
+                      "nano" if getattr(m, "nano", False) else "mips")
         if s.machine is None:
             self.values["status"].set("no program loaded — open a file or pick File > Examples")
             return
@@ -455,7 +456,7 @@ class DatapathView(QtWidgets.QGraphicsView):
             self.titles[st].setText(_clip(d["text"], 28))
             if d.get("control") is None:
                 d = dict(d, control=_control_of(s, d))
-            if st in ("IF", "ID") or _word(s, d) != 0:     # a nop does nothing past ID
+            if st in ("IF", "ID") or not _is_nop(s, d):    # a nop does nothing past ID
                 getattr(self, f"_{st.lower()}")(s, d, ev)
             if st in ("IF", "MEM") and (d.get("cache") or d.get("tlb")):
                 self._cache(st, d.get("cache") or [], d.get("wait", 0), d.get("tlb") or [])
@@ -479,6 +480,52 @@ class DatapathView(QtWidgets.QGraphicsView):
 
     def _details(self, s: Session) -> tuple[dict, dict]:
         return _details_of(s)
+
+    #: what the parts are called on each architecture (key -> (label, tip));
+    #: RISC-V: P&H's RISC-V edition, Figure 4.65
+    _LABELS = {
+        "mips": {"add4": ("+4", "Adds 4: address of the next instruction (PC + 4)"),
+                 "sext": ("Sign-\nextend", "Sign- (or zero-) extends the 16-bit immediate "
+                                           "to 32 bits"),
+                 "vunit": ("FPU / MSA unit", "The coprocessor beside the ALU: the FPU's and "
+                           "MSA's registers ($fN = the low half of $wN) and execution "
+                           "units"),
+                 "btarget": ("Branch\ntarget", "PC + 4 + (offset << 2): the branch target, "
+                             "computed in ID"),
+                 "control": ("Control", "Main control unit: decodes the opcode / function "
+                             "into the control signals carried along the pipeline")},
+        "nano": {"add4": ("+2/4/6", "Adds the instruction's size (2, 4 or 6 bytes): the "
+                          "address of the next instruction")},
+        "rv": {"add4": ("+4/+2", "Adds the instruction's size: 4, or 2 for a C (compressed) "
+                        "instruction"),
+               "sext": ("Imm\nGen", "Immediate generator: assembles the I / S / B / U / "
+                        "J-type immediate from its bit fields, sign-extended from bit 31"),
+               "vunit": ("FPU (F / D)", "The floating-point unit beside the ALU: f0-f31, "
+                         "fcsr and the F / D execution units"),
+               "btarget": ("Branch\ntarget", "PC + offset (in bytes, always even: the "
+                           "textbook's shift left 1): the branch / jal target, computed in "
+                           "ID; jalr: rs1 + offset"),
+               "control": ("Control", "Main control unit: decodes the opcode (bits 6..0) "
+                           "into the control signals; funct3 / funct7 go to the ALU "
+                           "control")},
+    }
+    #: register-file port names (MIPS: rs / rt; RISC-V: rs1 / rs2)
+    _PORTS = {"mips": ("rs", "rt"), "nano": ("rs", "rt"), "rv": ("rs1", "rs2")}
+
+    def _relabel(self, kind: str) -> None:
+        """Name the parts for the architecture (once per change)."""
+        if kind == self._labels:
+            return
+        self._labels = kind
+        for key in self._LABELS["mips"]:
+            label, tip = self._LABELS[kind].get(key) or self._LABELS["mips"][key]
+            self.parts[key].rename(label, tip + "\n(click: what happens inside)")
+        rs, rt = self._PORTS[kind]
+        self.ports["rs"].setText(rs)
+        self.ports["rt"].setText(rt)
+        rv = kind == "rv"
+        self.parts["regdst"].show(not rv)       # RISC-V: rd needs no mux
+        self.wires["rd_pass"].show(rv)
 
     # caches ------------------------------------------------------------------
 
@@ -568,7 +615,11 @@ class DatapathView(QtWidgets.QGraphicsView):
         self.values["pc"].set(f"PC {d['pc']:0{s.hex_digits('pc')}x}")
         word = _word(s, d)
         i = _nano_of(s, d)
-        if i is not None:                       # nanoMIPS: its halfwords
+        r = _rv_of(s, d)
+        if r is not None:                       # RISC-V: a word, or a C halfword
+            self.values["word"].set(f"{r.raw:08x}" if r.size == 4 else
+                                    f"{r.raw:04x} (C: {r.base.name})")
+        elif i is not None:                     # nanoMIPS: its halfwords
             self.values["word"].set(" ".join(f"{(i.raw >> (16 * k)) & 0xFFFF:04x}"
                                              for k in range(i.size // 2 - 1, -1, -1)))
         elif d.get("compressed"):               # MIPS16e / microMIPS: the encoding, recoded
@@ -588,7 +639,22 @@ class DatapathView(QtWidgets.QGraphicsView):
                                                for i in range(0, len(items), 3)))
         word = _word(s, d)
         i = _nano_of(s, d)
-        if i is not None:                       # nanoMIPS: what the format reads
+        r = _rv_of(s, d)
+        if r is not None:                       # RISC-V: rs1 / rs2 and the Imm Gen
+            from ..riscv import FPR_NAMES, GPR_NAMES as RV_GPRS
+            from ..tracerv import fp_operands
+            fp = fp_operands(r.base.name)
+            reads = [(FPR_NAMES if k in fp else RV_GPRS)[r.f[k]]
+                     for k in ("rs1", "rs2", "rs3") if k in r.f]
+            self.values["regs"].set("read " + ("  ".join(reads) or "-"))
+            if fp and all(k in fp for k in ("rs1", "rs2", "rs3") if k in r.f):
+                for k in ("regs", "ifid_rs", "ifid_rt", "rd1_idex", "rd2_idex"):
+                    (self.parts.get(k) or self.wires[k]).set(None)   # (no x register read)
+            if "imm" in r.f and (ctl.get("ALUSrc") == "imm" or ctl.get("Branch")
+                                 or ctl.get("Jump")):
+                self._light(["sext", "ifid_sext", "sext_idex"], c)
+                self.values["imm"].set(f"imm {r.f['imm']}")
+        elif i is not None:                     # nanoMIPS: what the format reads
             from ..simnano import uses
             reads = [gpr_name(n, s.machine.names) for n in uses(i)[0]]
             self.values["regs"].set("read " + ("  ".join(reads[:3]) + (" …" if len(reads) > 3
@@ -644,7 +710,7 @@ class DatapathView(QtWidgets.QGraphicsView):
                     self.values["res"].set(f"EXCEPTION\n{v.exception}", T().red)
                 dest = _dest(s, d)
                 if dest is not None:
-                    self._light(["regdst", "dst_exmem"], c)
+                    self._light(["rd_pass" if s.machine.rv else "regdst", "dst_exmem"], c)
                     self.values["dst"].set(f"dest {dest[0]}")
                 return
         self._light(["fwda", "fwdb", "alu", "idex_fwda", "idex_fwdb", "fwda_alu",
@@ -669,7 +735,7 @@ class DatapathView(QtWidgets.QGraphicsView):
             self._light(["store_data"], c)
         dest = _dest(s, d)
         if dest is not None:
-            self._light(["regdst", "dst_exmem"], c)
+            self._light(["rd_pass" if s.machine.rv else "regdst", "dst_exmem"], c)
             self.values["dst"].set(f"dest {dest[0]}")
         if v.exception:
             self.values["res"].set(f"EXCEPTION\n{v.exception}", T().red)
@@ -718,6 +784,15 @@ class DatapathView(QtWidgets.QGraphicsView):
 
 def _dest(s, d):
     return _dest_of(d, s.machine.names)
+
+
+def _is_nop(s, d) -> bool:
+    """A nop (MIPS: the word 0; RISC-V: addi x0, x0, 0 / c.nop) does
+    nothing past ID."""
+    if s.machine is not None and s.machine.rv:
+        r = _rv_of(s, d)
+        return r is not None and r.raw in (0x00000013, 0x0001)
+    return _word(s, d) == 0
 
 
 #: the decoded arguments that are a nanoMIPS instruction's immediate, by

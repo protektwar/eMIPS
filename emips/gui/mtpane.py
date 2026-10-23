@@ -141,7 +141,9 @@ class MTView(QtWidgets.QTabWidget):
     def refresh(self, s: Session) -> None:
         self._session = s
         if s.machine is None or s.mt is None:
-            self.head.setText(tr("No MT Module. Choose one in Configure > Settings > "
+            self.head.setText(tr("The MT Module is a MIPS ASE (MD00378): a RISC-V hart has "
+                                 "none.") if s.machine is not None and s.machine.rv else
+                              tr("No MT Module. Choose one in Configure > Settings > "
                                  "Processor (MT Module), or use --mt VPES:TCS."))
             for t in (self.vpes, self.tcs, self.cells):
                 t.setRowCount(0)

@@ -84,7 +84,9 @@ class PartDialog(QtWidgets.QDialog):
                      stage=E(info.part.stage)))
         now = "".join(f"<li style='font-family:{mono}'>{E(line)}</li>" for line in info.now)
         msa = bool(getattr(s.machine, "msa", False))
-        logic = al.alu_logic(dpi.alu_view(s, self.key), s.release, s.options.arch, msa)
+        rv = s.machine is not None and s.machine.rv     # (RISC-V's gates: PLAN M25 4c)
+        logic = None if rv else al.alu_logic(dpi.alu_view(s, self.key), s.release,
+                                             s.options.arch, msa)
         if logic is not None:                   # (MIPS64: 64 slices)
             self.bit.setRange(0, logic.width - 1)
             self.bit.setToolTip(tr("Which of the {n} one-bit ALU slices to show gate by "
@@ -111,6 +113,9 @@ class PartDialog(QtWidgets.QDialog):
         while tabs.count():
             tabs.removeTab(0)
         html_ = ""
+        if s.machine is not None and s.machine.rv:
+            self.drawings.setVisible(False)
+            return html_
         nano = bool(getattr(s.machine, "nano", False))
         word = None if nano else dpi.control_word(s, self.key)
         insn = dpi.control_nano(s, self.key) if nano else None

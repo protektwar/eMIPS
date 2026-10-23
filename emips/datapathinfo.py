@@ -21,6 +21,15 @@ the address of the next instruction, the immediates the format's decode
 pseudocode assembles), and the descriptions read the instruction's
 fields from its encoding diagram (:func:`emips.tracenano.fields`) and its
 registers from :func:`emips.simnano.uses`.
+
+A RISC-V hart (PLAN M25 phase 4b) runs on the RISC-V edition's datapath
+(Patterson & Hennessy, *RISC-V Edition*, Figure 4.65 with 4.8's branch in
+ID): :data:`RV_PARTS` says what differs — the immediate generator (I / S /
+B / U / J formats) instead of sign-extend, the branch target PC + offset
+(the offset is in bytes: the textbook's "shift left 1"), rd always in
+bits 11..7 (no RegDst mux), the +2 / +4 adder of the C extension — and
+the descriptions read the instruction from :func:`emips.tracerv.fields`
+and :func:`emips.rvpipeline.analyze`.
 """
 
 from __future__ import annotations
@@ -279,6 +288,16 @@ def word_of(s, d: dict) -> int | None:
         return None
 
 
+def rv_of(s, d: dict):
+    """The RISC-V instruction (emips.riscv.RV) of a stage, or None (not a
+    RISC-V hart, a bubble, no code there)."""
+    m = s.machine
+    if m is None or not m.rv or d.get("pc") is None:
+        return None
+    from .sessionrv import _decode
+    return _decode(m, d["pc"])
+
+
 def nano_of(s, d: dict):
     """The nanoMIPS instruction (emips.nanomips.NM) of a stage, or None (not
     a nanoMIPS core, a bubble, no code there)."""
@@ -300,6 +319,10 @@ def control_of(s, d: dict) -> dict[str, Any] | None:
     from .pipeline import analyze, control_signals
     if d.get("control"):
         return d["control"]
+    if s.machine is not None and s.machine.rv:
+        from .rvpipeline import analyze as rv_analyze, control_signals as rv_signals
+        i = rv_of(s, d)
+        return rv_signals(i, rv_analyze(i)) if i is not None else None
     i = nano_of(s, d)
     if i is not None:
         dec = _nano_decode(i)
@@ -318,6 +341,10 @@ def fields_of(s, d: dict) -> list:
     v = d.get("view")
     if v is not None:
         return v.fields
+    if s.machine is not None and s.machine.rv:
+        from .tracerv import fields
+        i = rv_of(s, d)
+        return fields(i) if i is not None else []
     i = nano_of(s, d)
     if i is not None:
         from .tracenano import fields
@@ -338,6 +365,8 @@ def dest_of(d: dict, names: Any = None) -> tuple[str, int | None] | None:
     unchanged write takes the ALU result).  ``names``: the core's register
     names (Machine.names; default: by the view's width)."""
     v, ctl = d.get("view"), d.get("control") or {}
+    if names == "riscv":
+        return _rv_dest(v, ctl)
     gprs = [w for w in (v.reg_writes if v is not None else []) if w[0] in _GPRS]
     if gprs:
         return gprs[0][0], gprs[0][2]
@@ -354,6 +383,26 @@ def dest_of(d: dict, names: Any = None) -> tuple[str, int | None] | None:
     if names is None:
         names = "n64" if getattr(v, "digits", 8) == 16 else True
     return gpr_name(reg, names), value
+
+
+def _rv_dest(v, ctl: dict) -> tuple[str, int | None] | None:
+    """dest_of on a RISC-V hart: the x register written (RegWrite; rd is
+    the field named rd / rd' of the view's fields)."""
+    from .riscv import GPR_NAMES as RV_GPRS
+    gprs = [w for w in (v.reg_writes if v is not None else []) if w[0] in RV_GPRS[1:]]
+    if gprs:
+        return gprs[0][0], gprs[0][2]
+    if not ctl.get("RegWrite") or v is None or v.exception:
+        return None
+    rd = next((f for f in v.fields if f.name.startswith("rd") and f.meaning.startswith("x")),
+              None)
+    if rd is None:
+        return None
+    reg = int(rd.meaning[1:].split(" ")[0])
+    if reg == 0:
+        return None
+    value = None if ctl.get("MemtoReg") else (v.alu.result if v.alu is not None else None)
+    return RV_GPRS[reg], value
 
 
 def taken(d: dict, ev: dict) -> bool:
@@ -436,6 +485,10 @@ def part_info(s, key: str) -> PartInfo:
     if key in NANO_PARTS and getattr(s.machine, "nano", False):
         title, inside = NANO_PARTS[key]
         part = replace(part, title=title, inside=inside)
+    rv = s.machine is not None and s.machine.rv
+    if key in RV_PARTS and rv:
+        title, inside = RV_PARTS[key]
+        part = replace(part, title=title, inside=inside)
     det, ev = details(s)
     st = _stage_of(key)
     d = det.get(st) or {}
@@ -451,7 +504,8 @@ def part_info(s, key: str) -> PartInfo:
         info.now = [f"{st} holds a bubble this cycle: nothing to do."]
         return info
     pipeline = s.pipeline is not None
-    nano = _NANO_BUILDERS.get(key) if getattr(s.machine, "nano", False) else None
+    nano = (_RV_BUILDERS.get(key) if rv else
+            _NANO_BUILDERS.get(key) if getattr(s.machine, "nano", False) else None)
     lines = (nano or _BUILDERS[key])(s, d, det, ev, pipeline)
     info.now = [ln for ln in lines if ln is not None] or [
         f"{st} holds {text}: no instruction word to decode"]
@@ -655,6 +709,10 @@ def _operand(s, det, which: str, pipeline: bool) -> list[str]:
     op = v.alu.a if which == "a" else v.alu.b
     if op is None:
         return out + [f"operand {which}: not used"]
+    if s.machine.rv and which == "b" and not op.source.startswith("x"):
+        out.insert(0, f"ALUSrc takes the {op.source.split(' ')[-1]} for operand b"
+                      + ("; mux B carries rs2: the store data" if v.mem_writes else ""))
+        return out
     if which == "b" and not op.source.startswith("$") and getattr(s.machine, "nano", False):
         out.insert(0, f"ALUSrc takes the {op.source} for operand b"
                       + ("; mux B carries the store data" if v.mem_writes else ""))
@@ -689,7 +747,7 @@ def _alusrc(s, d, det, ev, pipeline):
 def coprocessor_reads(s, word: int | None) -> tuple[str, list[str]] | None:
     """An FPU / MSA instruction word in ID: ("fpu" | "msa", the registers it
     reads — the coprocessor's own and the GPRs it hands over), else None."""
-    if word is None or s.machine is None:
+    if word is None or s.machine is None or s.machine.rv:
         return None
     try:
         dec = s.machine.isa.decode(word)
@@ -719,6 +777,8 @@ def coprocessor_of(s, v) -> str | None:
     """"fpu" / "msa" when the FPU / MSA unit executes the instruction."""
     if v is None:
         return None
+    if getattr(v, "rv", False):                 # (RISC-V: the F / D unit)
+        return "fpu" if _rv_fp(v.name) else None
     if getattr(v, "lanes", None) is not None:
         return "msa"
     try:
@@ -1120,6 +1180,356 @@ _NANO_BUILDERS = {"pcmux": _nano_pcmux, "add4": _nano_add4, "imem": _nano_imem,
                   "control": _nano_control, "regs": _nano_regs, "sext": _nano_sext,
                   "btarget": _nano_btarget, "cmp": _nano_cmp, "regdst": _nano_regdst,
                   "fwdu": _nano_fwdu, "wbmux": _nano_wbmux}
+
+
+# ------------------------------------------------------------- RISC-V
+
+#: what is different inside on a RISC-V hart (P&H's RISC-V edition, Figure
+#: 4.65, branches in ID as its 4.8 does; the unprivileged spec 2.2-2.6 for
+#: the formats): (title, inside)
+RV_PARTS: dict[str, tuple[str, str]] = {
+    "pcmux": ("PC mux (PCSrc)",
+              "A 2-input multiplexer in front of the PC.  Its inputs are the address of "
+              "the next instruction (PC + 4, or PC + 2 after a 16-bit C instruction) and "
+              "the branch / jump target computed in ID; PCSrc is 1 when the branch in ID "
+              "is taken or the instruction there is jal / jalr.  RISC-V has no delay "
+              "slot: the instruction fetched behind a taken branch is dropped (a "
+              "bubble).  A trap or an mret / sret loads the PC another way: xtvec, "
+              "xepc."),
+    "pc": ("PC (program counter)",
+           "An XLEN-bit register (32 or 64) holding the address of the instruction being "
+           "fetched; RISC-V's pc is not one of the 32 x registers.  It is written at the "
+           "end of every cycle with what the PC mux chooses — unless the hazard detection "
+           "unit stalls the pipeline (PCWrite = 0)."),
+    "add4": ("+4 / +2 adder",
+             "Adds the instruction's size: 4 bytes, or 2 for a C (compressed) "
+             "instruction — the lowest two bits of the first halfword say which (11: 32 "
+             "bits, unpriv. 1.5).  The result goes to the PC mux and, through IF/ID, to "
+             "ID (jal / jalr link it into rd)."),
+    "imem": ("Instruction memory",
+             "Read-only for the pipeline: the address is the PC (2-byte aligned with C, "
+             "else 4), the output one instruction — a 32-bit word, or a 16-bit C "
+             "instruction the decoder expands to its 32-bit equivalent (unpriv. ch. 28).  "
+             "Instructions are always little-endian (1.5).  With caches it is the "
+             "I-cache; with paging the address is translated first."),
+    "control": ("Main control unit",
+                "Combinational logic: from the opcode (bits 6..0) it makes the control "
+                "signals (P&H RISC-V Figure 4.22: ALUSrc, MemtoReg, RegWrite, MemRead, "
+                "MemWrite, Branch, ALUOp); funct3 (14..12) and funct7 (31..25) go to the "
+                "ALU control.  The signals travel with the instruction through ID/EX, "
+                "EX/MEM and MEM/WB; Branch and Jump are used in ID, where branches are "
+                "decided."),
+    "regs": ("Register file",
+             "32 x registers of XLEN bits (x0 always reads 0) with two read ports and "
+             "one write port.  In ID it reads rs1 (bits 19..15) and rs2 (24..20): every "
+             "format keeps them in the same place, so the reads start before the "
+             "instruction is decoded.  WB writes rd in the first half of the cycle, so an "
+             "instruction in ID reads a value WB writes in the same cycle.  The F / D "
+             "registers f0-f31 are the FPU's own file."),
+    "sext": ("Immediate generator (Imm Gen)",
+             "Assembles the immediate from the instruction's bit fields for its format "
+             "(unpriv. 2.3): I-type bits 31..20, S-type 31..25 and 11..7, B-type the "
+             "same bits scrambled into an even offset, U-type 31..12 in the upper bits, "
+             "J-type a 21-bit even offset — every one sign-extended from bit 31, the "
+             "instruction's sign bit.  The result goes to ID/EX (operand b) and to the "
+             "branch-target adder."),
+    "btarget": ("Branch-target adder",
+                "An adder: PC + the offset of a branch (B-type) or jal (J-type) — the "
+                "offset counts bytes and is always even (the textbook's \"shift left "
+                "1\": the immediate generator drops bit 0).  jalr's target is rs1 + its "
+                "immediate with bit 0 cleared.  Decided in ID: the fetch goes there one "
+                "cycle after the branch was fetched, no delay slot."),
+    "cmp": ("Branch comparator",
+            "Compares the two registers read in ID for beq / bne (equal?), blt / bge "
+            "(signed) and bltu / bgeu (unsigned).  Its output, with Branch, drives "
+            "PCSrc.  An operand still in EX/MEM is forwarded to it; one in EX (or a load "
+            "in EX / MEM) makes the hazard unit stall."),
+    "hazard": ("Hazard detection unit",
+               "Compares the registers the instruction in ID reads with the destinations "
+               "of the instructions ahead (P&H RISC-V 4.7: ID/EX.MemRead and ID/EX.rd = "
+               "IF/ID.rs1 or rs2): a load in EX whose result ID needs (load-use), a "
+               "branch / jalr needing a result still in EX (or a load in EX / MEM), no "
+               "forwarding at all.  Then it stalls: PC and IF/ID keep their values and a "
+               "bubble (all control signals 0) goes into EX."),
+    "alu": ("ALU",
+            "The arithmetic-logic unit: add / sub, and, or, xor, the shifts, slt / sltu, "
+            "and Zba / Zbb's (sh1add, andn, min, rol, clz ...); the multiplier and "
+            "divider of M hold EX for their latency.  The ALU control picks the function "
+            "from ALUOp and funct3 / funct7.  Outputs: the result (a register value or a "
+            "memory address) and Zero.  RISC-V has no overflow traps."),
+    "alusrc": ("ALUSrc mux",
+               "Chooses ALU operand b: rs2 (R-type) or the immediate generator's value "
+               "(I-type arithmetic, loads, stores: the address offset).  Control signal "
+               "ALUSrc."),
+    "regdst": ("Destination register (rd)",
+               "No multiplexer here: RISC-V puts the destination register in bits 11..7 "
+               "in every format that has one (P&H RISC-V 4.4), so rd travels unchanged "
+               "through ID/EX, EX/MEM and MEM/WB to the register file's write port; the "
+               "hazard and forwarding units compare against it."),
+    "fwdu": ("Forwarding unit",
+             "Compares rs1 / rs2 of the instruction in EX with rd in EX/MEM and MEM/WB "
+             "(when their RegWrite is 1 and rd is not x0); the nearest match wins "
+             "(EX/MEM before MEM/WB).  It drives the select lines of muxes A and B (P&H "
+             "RISC-V 4.7, Figure 4.56)."),
+    "dmem": ("Data memory",
+             "Loads read and stores write at the address the ALU computed (rs1 + "
+             "offset), little-endian; MemRead / MemWrite.  A misaligned ordinary load / "
+             "store is done in hardware here (LR / SC / AMOs must be aligned).  With "
+             "caches it is the D-cache, with paging the address is translated first, "
+             "and PMP checks it."),
+    "vunit": ("FPU (F / D)",
+              "The floating-point unit beside the ALU (the textbook figure has none): "
+              "its own register file f0-f31 (FLEN = 64 with D: a single value is "
+              "NaN-boxed) and fcsr (frm, fflags); add / multiply / fused multiply-add / "
+              "divide / square root hold EX for their latency.  The integer datapath "
+              "hands it x operands (fmv.w.x, fcvt.s.w), takes x results back (fmv.x.w, "
+              "feq, fcvt.w.s) and computes the address of flw / fsd."),
+}
+
+
+def _rv_fp(name: str) -> bool:
+    """An F / D instruction the FPU executes (not its loads / stores)."""
+    from .tracerv import fp_operands
+    return bool(fp_operands(name)) and name not in ("flw", "fld", "fsw", "fsd")
+
+
+def _rv_size(s, d) -> int:
+    i = rv_of(s, d)
+    return i.size if i is not None else 4
+
+
+def _rv_pcmux(s, d, det, ev, pipeline):
+    pc, size = d.get("pc"), _rv_size(s, d)
+    nxt = (pc + size) & _mask() if pc is not None else None
+    idd = det.get("ID") or {} if pipeline else d
+    v = idd.get("view")
+    target = v.branch.target if v is not None and v.branch is not None else None
+    out = [f"input 0, PC + {size}: {_h(nxt)}",
+           f"input 1, branch / jump target from ID: {_h(target)}"
+           if target is not None else "input 1, branch / jump target: (no branch in ID)"]
+    stall = ev.get("stall")
+    if pipeline and stall and not stall.startswith(("memory", "I-miss")):
+        out.append("stall: the PC is not written (PCWrite = 0) — the same fetch again")
+    elif taken(idd, ev):
+        out.append(f"PCSrc = 1 (taken): the next PC is the target {_h(target)}"
+                   + (" — the instruction fetched behind the branch is dropped (no "
+                      "delay slot)" if pipeline else ""))
+    else:
+        out.append(f"PCSrc = 0: the next PC is {_h(nxt)}")
+    if any("handler" in e or e.startswith("interrupt") for e in ev.get("events") or []):
+        out.append("a trap this cycle: the PC is loaded from xtvec")
+    return out
+
+
+def _rv_add4(s, d, det, ev, pipeline):
+    pc, i = d.get("pc"), rv_of(s, d)
+    if i is None:
+        return [f"{_h(pc)}: no instruction to size"]
+    h0 = i.raw & 0xFFFF
+    why = (f"bits 1..0 = {h0 & 3:02b}: a 16-bit C instruction" if i.size == 2 else
+           "bits 1..0 = 11: a 32-bit instruction")
+    return [f"first halfword 0x{h0:04x}: {why} (unpriv. 1.5)",
+            f"{_h(pc)} + {i.size} = {_h((pc + i.size) & _mask())}",
+            "to the PC mux (input 0) and to IF/ID (the link address for jal / jalr)"]
+
+
+def _rv_imem(s, d, det, ev, pipeline):
+    i = rv_of(s, d)
+    out = [f"address (PC): {_h(d.get('pc'))}"]
+    if i is not None and i.size == 2:
+        out.append(f"reads the halfword 0x{i.raw:04x}: {i.row.name}, a C instruction — "
+                   f"the decoder expands it to {i.base.name} ({d.get('text')})")
+    elif i is not None:
+        out.append(f"reads the word 0x{i.raw:08x}: {d.get('text')}")
+    else:
+        out.append(f"reads: {d.get('text')}")
+    for a in d.get("cache") or []:
+        out.append(a.describe())
+    if d.get("wait"):
+        out.append(f"waiting for the line: {d['wait']} more cycle(s)")
+    return out
+
+
+_RV_SIGNALS = {
+    "RegDst": "rd is always bits 11..7 (no mux): - = no x register written",
+    "ALUSrc": "ALU operand b: rs2 (reg) or the immediate generator's value (imm)",
+    "ALUOp": "what the ALU does (with funct3 / funct7)",
+}
+
+
+def _rv_control(s, d, det, ev, pipeline):
+    fields = fields_of(s, d)
+    out = []
+    i = rv_of(s, d)
+    op = _field(fields, "opcode", "op")
+    if op is not None:
+        out.append(f"opcode ({op.msb}..{op.lsb}) = {op.bits} ({op.meaning})")
+    for name in ("funct3", "funct7"):
+        f = _field(fields, name)
+        if f is not None:
+            out.append(f"{name} ({f.msb}..{f.lsb}) = {f.bits}: to the ALU control")
+    if i is not None and i.size == 2:
+        out.append(f"a C instruction: decoded as its expansion, {i.base.name}")
+    for k, v in (control_of(s, d) or {}).items():
+        val = ("1" if v else "0") if isinstance(v, bool) else str(v)
+        out.append(f"{k} = {val}: {_RV_SIGNALS.get(k) or _SIGNALS.get(k, '')}")
+    return out
+
+
+def _rv_regs(s, d, det, ev, pipeline):
+    from .riscv import FPR_NAMES, GPR_NAMES as RV_GPRS
+    from .tracerv import fp_operands
+    out = []
+    i = rv_of(s, d)
+    if d.get("pc") is not None and i is not None:
+        fp = fp_operands(i.base.name)
+        reads = [f"{k} = {FPR_NAMES[i.f[k]] if k in fp else RV_GPRS[i.f[k]]}"
+                 for k in ("rs1", "rs2", "rs3") if k in i.f]
+        out.append(f"read ports (ID, {d.get('text')}): "
+                   + (", ".join(reads) if reads else "no register operands")
+                   + (" (f registers: the FPU's file)" if any(k in fp for k in
+                                                              ("rs1", "rs2", "rs3")
+                                                              if k in i.f) else ""))
+        v = d.get("view")
+        if v is not None and v.alu is not None:
+            for op in (v.alu.a, v.alu.b):
+                if op is not None and op.source.startswith("x"):
+                    out.append(f"  read {op.source}: {_h(op.value)}")
+        elif pipeline:
+            out.append("  the values go into ID/EX: see muxes A / B next cycle "
+                       "(a forwarded value may replace them)")
+    else:
+        out.append("ID holds a bubble: nothing is read")
+    wb = det.get("WB") or {}
+    dest = (dest_of(dict(wb, control=control_of(s, wb)), "riscv")
+            if wb.get("pc") is not None else None)
+    if dest is not None:
+        out.append(f"write port (WB, {wb.get('text')}): {dest[0]} <- {_h(dest[1])} "
+                   "(first half of the cycle)")
+    else:
+        out.append("write port: nothing written this cycle")
+    return out
+
+
+def rv_format(i) -> str:
+    from .tracerv import _format
+    return _format(i)
+
+
+def _rv_sext(s, d, det, ev, pipeline):
+    i = rv_of(s, d)
+    if i is None:
+        return []
+    imm = [f for f in fields_of(s, d) if f.name in ("imm", "shamt", "zimm")]
+    if not imm or "imm" not in i.f and "shamt" not in i.f:
+        return [f"not used: {d.get('text')} has no immediate"]
+    out = [f"{rv_format(i)}: " + ", ".join(f"bits {f.msb}..{f.lsb} = {f.bits}"
+                                            + (f" ({f.meaning.split(':')[0]})"
+                                               if f.meaning else "") for f in imm)]
+    if "imm" in i.f:
+        val = i.f["imm"]
+        out.append(f"immediate = {val} = {_h(val & _mask())} (sign-extended)"
+                   + ("; lui / auipc: the upper 20 bits" if i.base.name in ("lui", "auipc")
+                      else ""))
+    elif "shamt" in i.f:
+        out.append(f"shift amount = {i.f['shamt']}")
+    return out
+
+
+def _rv_btarget(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    i = rv_of(s, d)
+    if not (ctl.get("Branch") or ctl.get("Jump")) or i is None:
+        return [f"not used: {d.get('text')} is not a branch or jump"]
+    pc = d.get("pc")
+    out = []
+    v = d.get("view")
+    if i.base.name == "jalr":
+        out.append(f"jalr: rs1 + {i.f.get('imm', 0)}, bit 0 cleared (the adder's PC "
+                   "input is not used)")
+    else:
+        out.append(f"PC + offset = {_h(pc)} + {i.f.get('imm', 0)}")
+    if v is not None and v.branch is not None:
+        out.append(f"target = {_h(v.branch.target)}")
+    return out
+
+
+def _rv_cmp(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    if not ctl.get("Branch"):
+        return [f"not used: {d.get('text')} is not a conditional branch"]
+    v = d.get("view")
+    out = []
+    if v is not None and v.branch is not None:
+        out.append(f"condition: {v.branch.condition}")
+        out.append("taken" if v.branch.taken else "not taken")
+    fwd = [e for e in ev.get("events") or [] if "-> ID" in e]
+    out += [f"forwarded: {e}" for e in fwd]
+    if v is None and pipeline:
+        out.append("decided when the operands are ready (the hazard unit may stall it)")
+    return out
+
+
+def _rv_regdst(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    rd = next((f for f in fields_of(s, d) if f.name.startswith("rd")), None)
+    out = [f"rd (bits {rd.msb}..{rd.lsb}) = {rd.meaning}" if rd is not None else
+           f"{d.get('text')} has no rd field"]
+    dest = dest_of(dict(d, control=ctl), "riscv")
+    out.append(f"destination: {dest[0]}" if dest else "RegWrite = 0: no x register written")
+    return out
+
+
+def _rv_fwdu(s, d, det, ev, pipeline):
+    from .riscv import GPR_NAMES as RV_GPRS
+    if not pipeline:
+        return ["instruction mode: no pipeline — nothing to forward"]
+    exd = det.get("EX") or {}
+    i = rv_of(s, exd)
+    reads = ", ".join(RV_GPRS[i.f[k]] for k in ("rs1", "rs2") if i is not None and k in i.f)
+    out = [f"EX ({exd.get('text') or '(bubble)'}) reads: {reads or '-'}"]
+    for label, st in (("EX/MEM", "MEM"), ("MEM/WB", "WB")):
+        sd = det.get(st) or {}
+        dest = (dest_of(dict(sd, control=control_of(s, sd)), "riscv")
+                if sd.get("pc") is not None else None)
+        out.append(f"{label} writes: {dest[0] if dest else 'nothing'}")
+    fwd = [e for e in ev.get("events") or [] if e.startswith("forward")]
+    out += fwd or ["no match: the operands come from the register file"]
+    return out
+
+
+def _rv_wbmux(s, d, det, ev, pipeline):
+    ctl = control_of(s, d) or {}
+    dest = dest_of(dict(d, control=ctl), "riscv")
+    if dest is None:
+        return [f"RegWrite = 0: {d.get('text')} writes no x register"]
+    v = d.get("view")
+    load = bool(ctl.get("MemtoReg")) or (v is not None and bool(v.mem_reads)
+                                          and not v.mem_writes)
+    return [f"MemtoReg = {int(load)}: " + ("the loaded data" if load else "the ALU result"),
+            f"{dest[0]} <- {_h(dest[1])}"]
+
+
+def _rv_vunit(s, d, det, ev, pipeline):
+    from .riscv import FPR_NAMES
+    v = d.get("view")
+    if coprocessor_of(s, v) is None:
+        return [f"{d.get('text')}: not used (not an F / D operation)"]
+    out = [f"FPU: {d.get('text')}"]
+    for name, old, new in v.reg_writes:
+        if name in FPR_NAMES or name == "fcsr":
+            digits = 2 if name == "fcsr" else 16
+            out.append(f"{name}: 0x{old:0{digits}x} -> 0x{new:0{digits}x}")
+    if v.exception:
+        out.append(f"EXCEPTION: {v.exception}")
+    return out
+
+
+#: the RISC-V versions of the builders (the others serve every core)
+_RV_BUILDERS = {"pcmux": _rv_pcmux, "add4": _rv_add4, "imem": _rv_imem,
+                "control": _rv_control, "regs": _rv_regs, "sext": _rv_sext,
+                "btarget": _rv_btarget, "cmp": _rv_cmp, "regdst": _rv_regdst,
+                "fwdu": _rv_fwdu, "wbmux": _rv_wbmux, "vunit": _rv_vunit}
 
 
 # ------------------------------------------------------------- the MIPS 24K

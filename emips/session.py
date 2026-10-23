@@ -2978,6 +2978,8 @@ class Session:
     def debug_lines(self) -> list[str]:
         """:meth:`debug_state` as text (the debugger's ``ejtag``, the
         register pane's Debug tab)."""
+        if self.rv:                             # (RISC-V: Debug Mode, dcsr, triggers)
+            return RV.debug_lines(self.machine)
         st = self.debug_state()
         slot = " (in a delay slot: DEPC is its branch, Debug.DBD)" if st["dbd"] else ""
         if st["dm"]:
@@ -3023,6 +3025,8 @@ class Session:
     def interrupt_lines(self) -> list[str]:
         """:meth:`interrupt_state` as text (the debugger's ``srs``, the GUI's
         Interrupts tab)."""
+        if self.rv:                             # (RISC-V: mip / mie / delegation)
+            return RV.interrupt_lines(self.machine)
         st = self.interrupt_state()
         mode = {"compatibility": "interrupt compatibility mode",
                 "vectored": "vectored interrupts (VI)",

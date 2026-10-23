@@ -267,6 +267,8 @@ class RVMachine(S.Machine):
         self.reset_pc = self.pc
         #: the last instruction executed (an RV) — the views
         self.last_insn: RV | None = None
+        #: the F / D registers exist (the views; sim.Machine's MIPS FPU flag)
+        self.has_fpu = self.flen > 0
 
     # -- registers -------------------------------------------------------------
 

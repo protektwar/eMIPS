@@ -60,4 +60,9 @@ EXAMPLES = [
             output="1 1 2 "),
     Example("mips64_factorial.asm", "MIPS64: 64-bit registers (factorial of 20)",
             output="2432902008176640000"),
+    Example("rv_sum_array.asm", "RISC-V: the sum of an array (RV32)", output="sum = 31"),
+    Example("rv_factorial.asm", "RISC-V: a recursive function and the stack (RV64)",
+            output="-2102132736\n120"),
+    Example("rv_trap.asm", "RISC-V: a trap handler, an exception and an interrupt",
+            output="2"),
 ]

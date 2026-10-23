@@ -102,6 +102,18 @@ class CounterView(QtWidgets.QWidget):
     def refresh(self, s: Session) -> None:
         self._session = s
         m = s.machine
+        if m is not None and m.rv:              # a RISC-V hart: its counter CSRs
+            for i in range(2):
+                self.events[i].setEnabled(False)
+                self.counts[i].setText("-")
+            c = m.csrs
+            self.ratio.setText(tr(
+                "RISC-V: the counters are CSRs (Zicntr / Zihpm, priv. 3.1.10-3.1.11) — cycle "
+                "{cy:,}, instret {ir:,}, time {tm:,}; mhpmcounter3-31 count no event on this "
+                "hart (mhpmevent keeps what is written).  The MIPS performance counters "
+                "above belong to MIPS cores.").format(
+                    cy=c.read(0xB00), ir=c.read(0xB02), tm=m.mtime))
+            return
         self._loading = True
         try:
             for i in range(2):
