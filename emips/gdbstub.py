@@ -501,8 +501,14 @@ class GdbStub:
         / microMIPS code bit 0 is set (the ISA mode, as QEMU's stub and
         GDB's mips-tdep.c: is_compact_addr)."""
         s, m = self.s, self.m
-        if self.rv:
+        if self.rv and s.pipeline is None:
             return m.pc & m.amask
+        if self.rv:                             # (no ISA mode bit)
+            pc = s._stop_pc()
+            if pc is None:
+                nxt = s.pipeline.next_slot()
+                pc = nxt.pc if nxt is not None else m.pc
+            return pc & m.amask
         if s.pipeline is None:
             return (m.pc | m.isa_mode) & m.amask
         pc = s._stop_pc()

@@ -112,6 +112,9 @@ def begin(m, pc: int) -> RVView:
     v = RVView(pc, 0, "", False, (m, pc, before))
     v.digits = 8 if m.xlen == 32 else 16
     v.csr_before = None
+    #: the operands a pipeline bypassed (emips.rvpipeline: ("r", n) -> "forwarded
+    #: EX/MEM -> EX from ..."): the ALU / address views name the path
+    v.sources = m.rv_sources or {}
     m._mem_log = []
     if m.caches is not None:
         v.fetch = list(m.fetch_accesses)
@@ -337,13 +340,18 @@ def _operands(v: RVView, i, pc: int, before, after, log, mask: int, nxt: int | N
     def x(n: int) -> int:
         return regs0[n] & mask if n else 0
 
+    sources = getattr(v, "sources", None) or {}
+
+    def src(n: int) -> str:                     # (a bypass names its path)
+        return sources.get(("r", n)) or _reg(n)
+
     rd = f.get("rd")
     if name in _ALU:
-        a = Operand("rs1", x(f["rs1"]), _reg(f["rs1"])) if "rs1" in f else None
+        a = Operand("rs1", x(f["rs1"]), src(f["rs1"])) if "rs1" in f else None
         if name == "auipc":
             a = Operand("pc", pc, "the pc")
         if "rs2" in f:
-            b = Operand("rs2", x(f["rs2"]), _reg(f["rs2"]))
+            b = Operand("rs2", x(f["rs2"]), src(f["rs2"]))
         elif "imm" in f:
             b = Operand("imm", f["imm"] & mask, "the immediate")
         elif "shamt" in f:
@@ -358,7 +366,7 @@ def _operands(v: RVView, i, pc: int, before, after, log, mask: int, nxt: int | N
         addr = (base + f.get("imm", 0)) & mask
         ent = next((e for e in log if e[1] == addr), None)
         tr = ent[-1] if ent is not None else None
-        v.address = AddressView(Operand("rs1", base, _reg(f["rs1"])), f.get("imm", 0), addr,
+        v.address = AddressView(Operand("rs1", base, src(f["rs1"])), f.get("imm", 0), addr,
                                 size, "load" if name in _LOADS else "store",
                                 tr.segment if tr is not None else "-",
                                 {3: "M-mode", 1: "S-mode", 0: "U-mode"}[before[3]],

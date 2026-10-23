@@ -186,6 +186,9 @@ class RVMachine(S.Machine):
     names = "riscv"
     #: RISC-V Debug Mode (an attribute: it hides sim.Machine's EJTAG property)
     debug_mode = False
+    #: the operands the pipeline bypassed for the instruction it issues
+    #: (emips.rvpipeline; the views name the path)
+    rv_sources: dict | None = None
 
     def __init__(self, memory=None, pc: int = 0, *, arch: str = "rv64",
                  extensions: str = DEFAULT_EXTENSIONS, modes: str = "msu",
@@ -404,12 +407,14 @@ class RVMachine(S.Machine):
             return None
         return self.load_pa(pa, [pa + k for k in range(size)], pma_cca(self, pa), size)
 
-    def fetch(self, pc: int) -> RV:
+    def fetch(self, pc: int, triggers: bool = True) -> RV:
         """Fetch and decode the instruction at ``pc`` (its first halfword
         tells the size: 1.5); an illegal one raises :class:`RVTrap`.
         Execute triggers look at each parcel's address before it is
-        fetched, then at the whole instruction (Debug spec Table 13)."""
-        tm = self.tm
+        fetched, then at the whole instruction (Debug spec Table 13) —
+        ``triggers=False``: not (the pipeline's fetch ahead; the execute
+        triggers look when the instruction issues)."""
+        tm = self.tm if triggers else _NO_TRIGGERS
         if tm.fetch:
             tm.memory("execute", pc, 2)
         if pc & (self.ialign - 1):
@@ -442,19 +447,11 @@ class RVMachine(S.Machine):
             self.enter_debug(CAUSE_HALTREQ)
             return None
         pc = self.pc
-        tm = self.tm
-        tm.after = None
-        i: RV | None = None
         # dcsr.stepie = 0: no interrupt while stepping (4.9.1)
         req = None if self._stepping else self.interrupt_request()
         if req is not None:
-            self.waiting = False
-            if tm.icounts:                      # (a trap from an enabled mode counts)
-                tm.icount_trap(self.priv)
             self.advance(1)
-            prev = self.priv
-            self._enter(req[0], 0, pc, req[1], interrupt=True)
-            self._trap_triggers(req[0], True, prev)
+            self.take_interrupt(req, pc)
             return None
         if self.waiting:                        # WFI: until mip & mie (3.3.3)
             if self.csrs.mip() & self.csrs.mie:
@@ -462,31 +459,59 @@ class RVMachine(S.Machine):
             else:
                 self.advance(1)
                 return None
+        return self.issue(pc)
+
+    def take_interrupt(self, req: tuple[int, int], pc: int) -> None:
+        """Take the interrupt ``req`` (:meth:`interrupt_request`) before
+        the instruction at ``pc`` (xepc = pc)."""
+        tm = self.tm
+        tm.after = None
+        self.waiting = False
+        if tm.icounts:                          # (a trap from an enabled mode counts)
+            tm.icount_trap(self.priv)
+        prev = self.priv
+        self._enter(req[0], 0, pc, req[1], interrupt=True)
+        self._trap_triggers(req[0], True, prev)
+
+    def issue(self, pc: int, i: RV | None = None, fault: Exception | None = None, *,
+              clock: bool = True) -> RV | None:
+        """Execute the instruction at ``pc``: fetch it (or take ``i``, fetched
+        earlier — the pipeline —, or raise ``fault``, what its fetch found),
+        take its trap or the trigger it fires, retire it; ``self.pc`` is then
+        the next instruction (the next one, a jump's target, a trap vector).
+        ``clock``: one clock cycle passes (instruction mode; the pipeline
+        clocks the hart itself and clears :attr:`counter_written` after)."""
+        tm = self.tm
+        tm.after = None
+        tick = self.advance if clock else (lambda n: None)
         v = tracerv.begin(self, pc) if self.tracing else None   # (the view: emips.tracerv)
         try:
             if tm.icounts:
                 f = tm.icount()
                 if f is not None:
                     raise f
-            i = self.fetch(pc)
+            if fault is not None:
+                raise fault
+            if i is None:
+                i = self.fetch(pc)
             if v is not None:
                 tracerv.fetched(self, v, i)
             nxt = EXECUTORS[i.base.name](self, i, pc)
         except Fired as f:
-            self.advance(1)
+            tick(1)
             self._fire(f, pc)
             self._stepped()
             if v is not None:
                 self.last_view = tracerv.finish(self, v, i, None, "a trigger fired")
             return i
         except EnterDebug as e:
-            self.advance(1)
+            tick(1)
             self.enter_debug(e.cause, pc)
             if v is not None:
                 self.last_view = tracerv.finish(self, v, i, None, "Debug Mode")
             return i
         except RVTrap as t:
-            self.advance(1)
+            tick(1)
             self._trap(t, pc, i)
             self._stepped()
             if v is not None:
@@ -503,8 +528,9 @@ class RVMachine(S.Machine):
         if "minstret" not in self.counter_written:
             self.csrs.retire()
         self.last_insn = i
-        self.advance(1)
-        self.counter_written.clear()
+        if clock:
+            self.advance(1)
+            self.counter_written.clear()
         self.pc = (pc + i.size if nxt is None else nxt) & self.amask
         if self.call_hook is not None:          # (the debugger's call stack)
             self.call_hook(pc, i, i.raw, self.pc)
@@ -683,6 +709,13 @@ class RVMachine(S.Machine):
         if t & (self.ialign - 1):
             raise RVTrap(INSN_MISALIGNED, t)
         return t
+
+
+class _NoTriggers:
+    fetch = False
+
+
+_NO_TRIGGERS = _NoTriggers()
 
 
 # ------------------------------------------------------------------ executors

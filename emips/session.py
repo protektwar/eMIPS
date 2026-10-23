@@ -735,10 +735,6 @@ class Session:
         if self.rv:
             self.endian = "little"              # (decision 6: no big-endian RISC-V
             #                                     core; the CLI refuses --endian big)
-            if self.mode == "pipeline":
-                self.mode = "instruction"
-                self.program_notes.append(RV.RV_INSTRUCTION_MODE)
-                self.adjusted.append(RV.RV_INSTRUCTION_MODE)
             code = getattr(self.program, "rv_extensions", None)
             missing = code and RV.missing_extensions(self.options.rv_extensions, code)
             if missing:                         # (an ELF built for more)
@@ -1246,6 +1242,14 @@ class Session:
                 proc.pipeline.debug_stop = lambda pc: self._stops_at(pc, cpu)
                 self._keep_history(proc.pipeline)
             return proc.pipeline
+        if m.rv:                                # (RISC-V: P&H's RISC-V edition)
+            from .rvpipeline import RVPipeline
+            p = RVPipeline(m, forwarding=self.forwarding, latency=o.latency,
+                           memory=o.mem_timing, nonblocking=o.nonblocking)
+            cpu = m.cpu_num
+            p.debug_stop = lambda pc: self._stops_at(pc, cpu)
+            self._keep_history(p)
+            return p
         cls = Pipeline24K if o.model == "24k" else Pipeline
         p = cls(m, forwarding=self.forwarding, latency=o.latency,
                 memory=o.mem_timing, nonblocking=o.nonblocking)

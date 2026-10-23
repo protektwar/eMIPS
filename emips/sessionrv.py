@@ -32,11 +32,6 @@ M32 = 0xFFFFFFFF
 LINK = (1, 5)
 ECALL = 0x00000073
 
-#: why a RISC-V hart runs in instruction mode (its pipeline: phase 4a)
-RV_INSTRUCTION_MODE = ("RISC-V: instruction mode — the 5-stage pipeline of the RISC-V "
-                       "edition comes in PLAN M25 phase 4a")
-
-
 def make_core(session, cpu: int, mem, caches):
     """A RISC-V hart in its reset state on the session's memory, console
     and services."""
