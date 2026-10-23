@@ -45,7 +45,7 @@ priv. 12.1.11: physical = virtual) until phase 2.
   request), :meth:`RVMachine.resume` (DRET's work), and
   :meth:`RVMachine.execute_debug` — one instruction executed in Debug
   Mode as from a program buffer (4.1's rules).  The Debug Module that
-  drives them through abstract commands is phase 2f.
+  drives them through abstract commands: :mod:`emips.rvdm` (phase 2f).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ CAUSE_NAMES = {
 #: the cacheability the bare platform gives memory / the MMIO page
 CCA_CACHED, CCA_UNCACHED = 3, 2
 MMIO_BASE = 0xFFFF0000
-from .rvmmu import PA_BITS, pma_cca  # noqa: E402  (32-bit physical space, the PMAs)
+from .rvmmu import PA_BITS, RVMMU, pma_cca  # noqa: E402  (32-bit physical space, the PMAs)
 
 
 class RVTrap(Exception):
@@ -138,6 +138,12 @@ class BareMMU:
 
     def attach(self, m) -> None:
         self.m = m
+
+    @staticmethod
+    def effective_priv(m, kind: str) -> int:
+        """MPRV (an M + U hart has it: priv. 3.1.6.4) and the Debug
+        Module's accesses, as with S-mode (emips.rvmmu)."""
+        return RVMMU.effective_priv(m, kind)
 
     @staticmethod
     def _cca(m, pa: int) -> int:
@@ -243,11 +249,18 @@ class RVMachine(S.Machine):
         self.debug_mode = False
         self.halt_request = False
         self._stepping = False
+        #: the Debug Module the hart is attached to (emips.rvdm; it hears
+        #: of every halt: halt groups) and an access it makes for an
+        #: abstract command ("physical" / "virtual": aamvirtual)
+        self.debug_module = None
+        self.dm_access: str | None = None
         #: the trigger module (Debug spec ch. 5; emips.rvdebug)
         self.tm = Triggers(self, triggers)
         #: the CSRs (emips.rvcsr)
         self.csrs = CSR.CSRFile(self)
         self.pc = pc & self.amask
+        #: where a reset starts the hart (reset_hart: the platform's vector)
+        self.reset_pc = self.pc
         #: the last instruction executed (an RV) — the views
         self.last_insn: RV | None = None
 
@@ -574,6 +587,26 @@ class RVMachine(S.Machine):
         self.debug_mode = True
         self.waiting = False
         self._stepping = False
+        if self.debug_module is not None:
+            self.debug_module.hart_halted(self)
+
+    def reset_hart(self) -> None:
+        """A hart reset (the Debug Module's hartreset / ndmreset; priv.
+        3.4): M-mode at ``reset_pc``, the CSRs, PMP, triggers and the
+        TLB at their reset values, no reservation, out of Debug Mode and
+        WFI.  The x / f registers keep their (UNSPECIFIED) values."""
+        from .rvpmp import PMP
+        self.priv = 3
+        self.pc = self.reset_pc & self.amask
+        self.pmp = PMP(self.xlen, self.pmp.entries)
+        self.tm = Triggers(self, self.tm.count)
+        self.csrs = CSR.CSRFile(self)
+        self.debug_mode = self.waiting = self._stepping = self.halt_request = False
+        self.reservation = None
+        self.dm_access = None
+        flush = getattr(self.mmu, "sfence", None)
+        if flush is not None:
+            flush(self, None, None)
 
     def resume(self) -> None:
         """4.8 (DRET; the Debug Module's resume): PC = dpc, the mode =

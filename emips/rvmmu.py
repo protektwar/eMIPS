@@ -124,6 +124,8 @@ class RVMMU:
     def effective_priv(m, kind: str) -> int:
         """3.1.6.4: MPRV makes M-mode loads / stores use MPP's privilege."""
         c = m.csrs
+        if m.dm_access is not None:             # a Debug Module access (Debug spec 3.7.1.3:
+            return c.status_field(11, 3) if m.dm_access == "virtual" else 3   # aamvirtual)
         if kind != "fetch" and m.priv == 3 and c.status_bit(17):       # MPRV
             if m.debug_mode and not c.dcsr & 0x10:      # (Debug spec 4.1: dcsr.mprven)
                 return 3
