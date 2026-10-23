@@ -35,6 +35,17 @@ priv. 12.1.11: physical = virtual) until phase 2.
   ``0xFFFF0000``-``0xFFFFFFFF`` (RARS's MMIO page) is uncached.  The
   timer behind ``time``: :attr:`RVMachine.mtime` counts every
   ``ccres`` cycles (decision 9; the ACLINT's in phase 2).
+- **Debug** (phase 2e, The RISC-V Debug Specification 1.0): the trigger
+  module (``tm``, :mod:`emips.rvdebug`; ``triggers=`` of them, 4 by
+  default) is asked before each instruction (icount), for each fetch
+  parcel / load / store, and after each trap (itrigger / etrigger); a
+  trigger that fires raises a breakpoint exception or enters Debug Mode.
+  Debug Mode (Sdext, ch. 4): :meth:`RVMachine.enter_debug` (ebreak with
+  dcsr.ebreakm / s / u, a trigger with action 1, dcsr.step, a halt
+  request), :meth:`RVMachine.resume` (DRET's work), and
+  :meth:`RVMachine.execute_debug` — one instruction executed in Debug
+  Mode as from a program buffer (4.1's rules).  The Debug Module that
+  drives them through abstract commands is phase 2f.
 """
 
 from __future__ import annotations
@@ -46,6 +57,9 @@ from . import sim as S
 from .exceptions import SimException
 from .mmu import Translation
 from .riscv import RV, RVDecodeError, RVISA, size_of
+from .rvdebug import (BREAKPOINT as ACTION_BREAKPOINT, CAUSE_EBREAK, CAUSE_HALTREQ,
+                      CAUSE_STEP, CAUSE_TRIGGER, EBREAKM, EBREAKS, EBREAKU, MPTE, MTE, STEP,
+                      Fired, Triggers)
 
 M32 = 0xFFFFFFFF
 M64 = 0xFFFFFFFFFFFFFFFF
@@ -54,6 +68,12 @@ M64 = 0xFFFFFFFFFFFFFFFF
 INSN_MISALIGNED, INSN_ACCESS, ILLEGAL, BREAKPOINT = 0, 1, 2, 3
 LOAD_MISALIGNED, LOAD_ACCESS, STORE_MISALIGNED, STORE_ACCESS = 4, 5, 6, 7
 ECALL_U, ECALL_S, ECALL_M = 8, 9, 11
+#: the interrupts (priv. Table 14)
+INTERRUPT_NAMES = {1: "supervisor software interrupt", 3: "machine software interrupt",
+                   5: "supervisor timer interrupt", 7: "machine timer interrupt",
+                   9: "supervisor external interrupt", 11: "machine external interrupt"}
+#: the extensions of the default hart (Zihpm: hpmcounter3-31, read 0)
+DEFAULT_EXTENSIONS = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb"
 CAUSE_NAMES = {
     0: "instruction address misaligned", 1: "instruction access fault",
     2: "illegal instruction", 3: "breakpoint", 4: "load address misaligned",
@@ -65,8 +85,7 @@ CAUSE_NAMES = {
 #: the cacheability the bare platform gives memory / the MMIO page
 CCA_CACHED, CCA_UNCACHED = 3, 2
 MMIO_BASE = 0xFFFF0000
-#: the platform's physical address space (phase 1: 32 bits)
-PA_BITS = 32
+from .rvmmu import PA_BITS, pma_cca  # noqa: E402  (32-bit physical space, the PMAs)
 
 
 class RVTrap(Exception):
@@ -74,6 +93,24 @@ class RVTrap(Exception):
 
     def __init__(self, cause: int, tval: int = 0) -> None:
         super().__init__(CAUSE_NAMES.get(cause, f"cause {cause}"))
+        self.cause = cause
+        self.tval = tval
+
+
+class EnterDebug(Exception):
+    """An instruction enters Debug Mode (an ``ebreak`` with dcsr.ebreakX)."""
+
+    def __init__(self, cause: int) -> None:
+        super().__init__(cause)
+        self.cause = cause
+
+
+class DebugModeTrap(Exception):
+    """An exception of an instruction executed in Debug Mode: no trap is
+    taken (Debug spec 4.1 rule 4); the Debug Module reports it."""
+
+    def __init__(self, cause: int, tval: int = 0) -> None:
+        super().__init__(cause, tval)
         self.cause = cause
         self.tval = tval
 
@@ -103,26 +140,26 @@ class BareMMU:
         self.m = m
 
     @staticmethod
-    def _cca(pa: int) -> int:
-        return CCA_UNCACHED if MMIO_BASE <= pa <= M32 else CCA_CACHED
+    def _cca(m, pa: int) -> int:
+        return pma_cca(m, pa)
 
     def xlate(self, m, va: int, kind: str) -> tuple[int, int]:
         if va >> PA_BITS:
             raise RVTrap(INSN_ACCESS if kind == "fetch" else
                          STORE_ACCESS if kind == "store" else LOAD_ACCESS, va)
-        return va, self._cca(va)
+        return va, pma_cca(m, va)
 
     def peek(self, m, va: int) -> tuple[int, int] | None:
-        return None if va >> PA_BITS else (va, self._cca(va))
+        return None if va >> PA_BITS else (va, pma_cca(m, va))
 
     def describe(self, m, va: int, kind: str = "load") -> Translation:
         if va >> PA_BITS:
             return Translation(va, None, CCA_UNCACHED, "bare", False,
                                f"bare: no physical memory above {PA_BITS} bits",
                                fault="access fault")
-        how = "bare: PA = VA" + (", the MMIO page (uncached)" if self._cca(va) == CCA_UNCACHED
-                                 else "")
-        return Translation(va, va, self._cca(va), "bare", False, how)
+        cca = pma_cca(m, va)
+        how = "bare: PA = VA" + (", I/O (uncached)" if cca == CCA_UNCACHED else "")
+        return Translation(va, va, cca, "bare", False, how)
 
 
 def _s32(v: int) -> int:
@@ -140,16 +177,22 @@ class RVMachine(S.Machine):
 
     rv = True
     names = "riscv"
+    #: RISC-V Debug Mode (an attribute: it hides sim.Machine's EJTAG property)
+    debug_mode = False
 
     def __init__(self, memory=None, pc: int = 0, *, arch: str = "rv64",
-                 extensions: str = "imafdc_zicsr_zifencei_zicntr_zba_zbb",
+                 extensions: str = DEFAULT_EXTENSIONS, modes: str = "msu",
                  exceptions: str = "cp0", mmu: Any = None, caches=None, cpu: int = 0,
-                 **_ignored: Any) -> None:
+                 pmp: int = 0, triggers: int = 4, **_ignored: Any) -> None:
         if arch not in ("rv32", "rv64"):
             raise ValueError(f"arch must be 'rv32' or 'rv64', not {arch!r}")
+        if modes not in ("m", "mu", "msu"):
+            raise ValueError(f"modes must be 'm', 'mu' or 'msu', not {modes!r}")
+        if mmu is None:                         # S-mode: page-based translation (2b)
+            from .rvmmu import RVMMU
+            mmu = RVMMU() if "s" in modes else BareMMU()
         super().__init__(memory=memory, pc=0, endian="little", exceptions=exceptions,
-                         release="R6", mmu=mmu if mmu is not None else BareMMU(),
-                         caches=caches, cpu=cpu, fpu=False)
+                         release="R6", mmu=mmu, caches=caches, cpu=cpu, fpu=False)
         self.arch = arch
         #: XLEN (priv. 3.1.1: MXLEN = XLEN here)
         self.xlen = 32 if arch == "rv32" else 64
@@ -157,13 +200,28 @@ class RVMachine(S.Machine):
         self.vamask = self.amask
         self.wide = self.xlen == 64
         self.sgn = _s32 if self.xlen == 32 else _s64
-        #: the instructions (emips.riscv)
-        self.rvisa = RVISA.for_core(self.xlen, extensions)
+        #: the instructions (emips.riscv; S-mode brings SRET / SFENCE.VMA,
+        #: Sdext DRET — Debug spec 4.1: illegal outside Debug Mode)
+        self.rvisa = RVISA.for_core(self.xlen, extensions + ("_s" if "s" in modes else "")
+                                    + "_sdext")
         self.extensions = self.rvisa.extensions
         #: IALIGN (1.5): 16 with C, else 32
         self.ialign = 2 if "c" in self.extensions else 4
-        #: the privilege mode: 3 = M, 1 = S, 0 = U (phase 1: M only)
+        #: the privilege modes the hart has (priv. 1.2: M, M + U, M + S + U)
+        #: and the current one: 3 = M, 1 = S, 0 = U (reset: M, priv. 3.4)
+        self.modes = frozenset({"m": 3, "s": 1, "u": 0}[k] for k in modes)
         self.priv = 3
+        #: address translation (satp, priv. 12.1.11; emips.rvmmu): the MODEs
+        #: satp accepts (0 = Bare; Sv32 = 1; Sv39 / Sv48 / Sv57 = 8-10) and
+        #: whether a page-based mode exists
+        self.paging = "s" in modes
+        self.satp_modes = frozenset({0} | ({1} if self.xlen == 32 else {8, 9, 10})
+                                    if self.paging else {0})
+        #: WFI is waiting for an interrupt (priv. 3.3.3)
+        self.waiting = False
+        #: the platform's timer (emips.rvplatform.CLINT) and I/O regions (PMAs)
+        self.timer = None
+        self.io_regions: list[tuple[int, int]] = []
         #: the hart's number (mhartid)
         self.hartid = cpu
         #: the counters a CSR write set during this instruction (priv.
@@ -177,6 +235,16 @@ class RVMachine(S.Machine):
         #: emips.rvfpu NaN-boxes single values when FLEN = 64)
         self.fcsr = 0
         self.fpr = [0] * 32
+        #: Physical Memory Protection (priv. 3.7; emips.rvpmp): ``pmp`` entries
+        from .rvpmp import PMP
+        self.pmp = PMP(self.xlen, pmp)
+        #: Debug Mode (Debug spec ch. 4): in it, a halt request pending, the
+        #: hart resumed with dcsr.step (one instruction, then Debug Mode)
+        self.debug_mode = False
+        self.halt_request = False
+        self._stepping = False
+        #: the trigger module (Debug spec ch. 5; emips.rvdebug)
+        self.tm = Triggers(self, triggers)
         #: the CSRs (emips.rvcsr)
         self.csrs = CSR.CSRFile(self)
         self.pc = pc & self.amask
@@ -201,13 +269,42 @@ class RVMachine(S.Machine):
 
     @property
     def mtime(self) -> int:
-        """The platform timer (phase 1; decision 9)."""
+        """The platform timer: the ACLINT MTIMER's mtime (emips.rvplatform),
+        or without a platform cycles / CCRes (decision 9)."""
+        if self.timer is not None:
+            return self.timer.mtime()
         return self.cycles // self.ccres
 
     # -- the Machine's MIPS paths a RISC-V hart never takes --------------------
 
-    def interrupt_request(self, ixmt=None):         # interrupts: phase 2
+    def interrupt_request(self, ixmt=None) -> tuple[int, int] | None:
+        """The interrupt the hart takes now, as (cause, the mode it traps
+        to), or None (priv. 3.1.9 / 10.1.3: pending in mip and enabled in
+        mie; to M unless delegated, when M-mode is below M or MIE; to S
+        when delegated and the hart is in U, or in S with SIE; the
+        priority MEI, MSI, MTI, SEI, SSI, STI)."""
+        c = self.csrs
+        pend = c.mip() & c.mie
+        if not pend:
+            return None
+        m_ok = self.priv < 3 or c.status_bit(CSR.MIE)
+        s_ok = self.priv < 1 or (self.priv == 1 and c.status_bit(CSR.SIE))
+        for bit in CSR.PRIORITY:
+            if pend >> bit & 1:
+                if c.mideleg >> bit & 1:
+                    if s_ok:
+                        return bit, 1
+                elif m_ok:
+                    return bit, 3
         return None
+
+    def set_interrupt(self, bit: int, level: bool) -> None:
+        """A platform interrupt line (MSIP / MTIP / MEIP, the external
+        SEIP): mip bit ``bit`` follows it."""
+        if level:
+            self.irq_lines |= 1 << bit
+        else:
+            self.irq_lines &= ~(1 << bit)
 
     def pending_cache_error(self):
         return None
@@ -229,15 +326,90 @@ class RVMachine(S.Machine):
 
     # -- execution ---------------------------------------------------------------
 
+    def _half(self, addr: int) -> int:
+        """A fetched halfword; a fault names this halfword's address (priv.
+        3.1.16: the part of the instruction that faulted).  PMP checks each
+        16-bit parcel (as Spike fetches)."""
+        try:
+            if self.pmp.entries:
+                pa, _ = self._xlate(self, addr & self.amask, "fetch")
+                if not self.pmp.allows(pa, 2, "fetch", self.priv):
+                    raise RVTrap(INSN_ACCESS, addr)
+            return self.fetch_half(addr)
+        except RVTrap as t:
+            raise RVTrap(t.cause, addr) from None
+
+    def _access(self, addr: int, size: int, kind: str) -> tuple[list[int], int]:
+        """Translate an access (sim.Machine) and check PMP on its physical
+        bytes (priv. 3.7.1; fetches: per parcel in :meth:`_half`)."""
+        pas, cca = super()._access(addr, size, kind)
+        p = self.pmp
+        if p.entries and kind != "fetch":
+            k = "store" if kind == "store" else "load"
+            priv = self.mmu.effective_priv(self, k) if hasattr(self.mmu, "effective_priv") \
+                else self.priv
+            start = 0
+            for j in range(1, size + 1):           # (one check per physically contiguous run)
+                if j == size or pas[j] != pas[j - 1] + 1:
+                    if not p.allows(pas[start], j - start, k, priv):
+                        raise RVTrap(STORE_ACCESS if k == "store" else LOAD_ACCESS, addr)
+                    start = j
+        return pas, cca
+
+    def load(self, addr: int, size: int, kind: str = "load", pre: bool = True) -> int:
+        """sim.Machine's load, with the load triggers: the address before
+        the access (``pre``; LR / AMOs check it themselves, ahead of their
+        alignment), the data after it (Debug spec 5.5, Table 13)."""
+        tm = self.tm
+        if not tm.loads:
+            return super().load(addr, size, kind)
+        if pre:
+            tm.memory("load", addr, size)
+        v = super().load(addr, size, kind)
+        tm.memory("load", addr, size, v)
+        return v
+
+    def store(self, addr: int, value: int, size: int, *, gather: bool = True,
+              atomic: bool = False) -> bool | None:
+        """sim.Machine's store, after the store triggers (address and data)."""
+        if self.tm.stores:
+            self.tm.memory("store", addr, size, value & ((1 << 8 * size) - 1))
+        return super().store(addr, value, size, gather=gather, atomic=atomic)
+
+    def trigger_check(self, op: str, addr: int, size: int) -> None:
+        """The address triggers of an access (``op`` load / store) that
+        are checked ahead of its alignment (LR, AMOs)."""
+        if self.tm.loads if op == "load" else self.tm.stores:
+            self.tm.memory(op, addr, size)
+
+    def load_pte(self, pa: int, size: int) -> int:
+        """A page-table entry at physical address ``pa`` (emips.rvmmu; through
+        the caches, as an implicit load); None when PMP refuses it (an
+        S-mode read, priv. 3.7.2)."""
+        if not self.pmp.allows(pa, size, "load", 1):
+            return None
+        return self.load_pa(pa, [pa + k for k in range(size)], pma_cca(self, pa), size)
+
     def fetch(self, pc: int) -> RV:
         """Fetch and decode the instruction at ``pc`` (its first halfword
-        tells the size: 1.5); an illegal one raises :class:`RVTrap`."""
-        h = self.fetch_half(pc)
+        tells the size: 1.5); an illegal one raises :class:`RVTrap`.
+        Execute triggers look at each parcel's address before it is
+        fetched, then at the whole instruction (Debug spec Table 13)."""
+        tm = self.tm
+        if tm.fetch:
+            tm.memory("execute", pc, 2)
+        if pc & (self.ialign - 1):
+            raise RVTrap(INSN_MISALIGNED, pc)
+        h = self._half(pc)
         size = size_of(h)
         if size == 4:
-            raw = h | self.fetch_half((pc + 2) & self.amask) << 16
+            if tm.fetch:
+                tm.memory("execute", (pc + 2) & self.amask, 2)
+            raw = h | self._half((pc + 2) & self.amask) << 16
         else:
             raw = h
+        if tm.fetch and size:
+            tm.memory("execute", pc, size, raw)
         try:
             return self.rvisa.decode(raw, size or 4)
         except RVDecodeError:
@@ -248,16 +420,54 @@ class RVMachine(S.Machine):
         returns it (``None`` when the fetch or decode trapped)."""
         if self.halted:
             return None
+        if self.debug_mode:                     # halted (Debug spec 4.1): the Debug
+            self.advance(1)                     # Module drives the hart (phase 2f)
+            return None
+        if self.halt_request:                   # haltreq (4.7)
+            self.halt_request = False
+            self.enter_debug(CAUSE_HALTREQ)
+            return None
         pc = self.pc
+        tm = self.tm
+        tm.after = None
         i: RV | None = None
+        # dcsr.stepie = 0: no interrupt while stepping (4.9.1)
+        req = None if self._stepping else self.interrupt_request()
+        if req is not None:
+            self.waiting = False
+            if tm.icounts:                      # (a trap from an enabled mode counts)
+                tm.icount_trap(self.priv)
+            self.advance(1)
+            prev = self.priv
+            self._enter(req[0], 0, pc, req[1], interrupt=True)
+            self._trap_triggers(req[0], True, prev)
+            return None
+        if self.waiting:                        # WFI: until mip & mie (3.3.3)
+            if self.csrs.mip() & self.csrs.mie:
+                self.waiting = False
+            else:
+                self.advance(1)
+                return None
         try:
-            if pc & (self.ialign - 1):
-                raise RVTrap(INSN_MISALIGNED, pc)
+            if tm.icounts:
+                f = tm.icount()
+                if f is not None:
+                    raise f
             i = self.fetch(pc)
             nxt = EXECUTORS[i.base.name](self, i, pc)
+        except Fired as f:
+            self.advance(1)
+            self._fire(f, pc)
+            self._stepped()
+            return i
+        except EnterDebug as e:
+            self.advance(1)
+            self.enter_debug(e.cause, pc)
+            return i
         except RVTrap as t:
             self.advance(1)
             self._trap(t, pc, i)
+            self._stepped()
             return i
         except SimException as exc:
             self.exception_log.append({"name": getattr(exc, "name", None),
@@ -271,25 +481,145 @@ class RVMachine(S.Machine):
         self.advance(1)
         self.counter_written.clear()
         self.pc = (pc + i.size if nxt is None else nxt) & self.amask
+        if tm.after is not None:                # a timing-after trigger (5.7.12 hit = 3)
+            f, tm.after = tm.after, None
+            self._fire(f, self.pc)
+        self._stepped()
         return i
 
-    def _trap(self, t: RVTrap, pc: int, i: RV | None) -> None:
-        """Take a synchronous exception into M-mode (priv. 3.1.6.1,
-        3.1.7, 3.1.14-3.1.17)."""
+    def _trap(self, t: RVTrap, pc: int, i: RV | None, triggers: bool = True) -> None:
+        """Take a synchronous exception (priv. 3.1.8: to S-mode when
+        medeleg delegates it and the hart is in S or U); then the
+        etriggers (``triggers``: not for a trigger's own breakpoint)."""
         if self.exceptions == "raise":
             raise RVException(t.cause, t.tval, pc, name=i.name if i else None,
                               word=i.raw if i else None)
+        prev = self.priv
+        to = 1 if self.priv <= 1 and self.csrs.medeleg >> t.cause & 1 else 3
         self.exception_log.append({"name": CAUSE_NAMES.get(t.cause), "cause": t.cause,
                                    "tval": t.tval, "epc": pc, "word": i.raw if i else None,
-                                   "priv": self.priv})
+                                   "priv": self.priv, "to": to})
+        self._enter(t.cause, t.tval, pc, to, interrupt=False)
+        if triggers:
+            self._trap_triggers(t.cause, False, prev)
+
+    def _trap_triggers(self, cause: int, interrupt: bool, prev: int) -> None:
+        """Debug spec 5.7.14 / 5.7.15: an itrigger / etrigger fires after
+        the trap, before the handler's first instruction (tval 0)."""
+        if self.tm.traps:
+            f = self.tm.trap(cause, interrupt, prev)
+            if f is not None:
+                self._fire(f, self.pc)
+
+    def _fire(self, f: Fired, epc: int) -> None:
+        """A trigger's action (Table 12): a breakpoint exception (epc:
+        the instruction that matched, or the next one for timing after)
+        or Debug Mode (cause 2, dpc = epc)."""
+        if f.action == ACTION_BREAKPOINT:
+            self._trap(RVTrap(BREAKPOINT, f.tval), epc, None, triggers=False)
+        else:
+            self.enter_debug(CAUSE_TRIGGER, epc)
+
+    def _stepped(self) -> None:
+        """dcsr.step (4.5.1): after the instruction (or the trap it took,
+        the PC at the handler) the hart re-enters Debug Mode, cause 4."""
+        if self._stepping:
+            self._stepping = False
+            if not self.debug_mode:
+                self.enter_debug(CAUSE_STEP)
+
+    def _enter(self, cause: int, tval: int, pc: int, to: int, *, interrupt: bool) -> None:
+        """Trap entry (priv. 3.1.6.1, 3.1.7, 3.1.14-3.1.17; 10.1.1-10.1.9
+        for S-mode): xEPC, xCAUSE (the interrupt bit XLEN-1), xTVAL, the
+        xPIE / xIE / xPP stack, the PC from xtvec (vectored: BASE +
+        4 * cause for an interrupt); into M-mode tcontrol.MPTE = MTE, MTE
+        = 0 (Debug spec 5.7.6)."""
         c = self.csrs
-        c.mepc = pc & ~1
-        c.mcause = t.cause
-        c.mtval = t.tval & self.amask
-        c.set_status(mpie=c.status_bit(CSR.MIE), mie=0, mpp=self.priv)
+        code = cause | ((1 << (self.xlen - 1)) if interrupt else 0)
+        if interrupt:
+            self.exception_log.append({"name": INTERRUPT_NAMES.get(cause), "cause": code,
+                                       "epc": pc, "priv": self.priv, "to": to})
+        if to == 1:
+            c.sepc = pc & ~1
+            c.scause = code
+            c.stval = tval & self.amask
+            c.set_status(spie=c.status_bit(CSR.SIE), sie=0, spp=self.priv)
+            tvec = c.stvec
+        else:
+            c.mepc = pc & ~1
+            c.mcause = code
+            c.mtval = tval & self.amask
+            c.set_status(mpie=c.status_bit(CSR.MIE), mie=0, mpp=self.priv)
+            tvec = c.mtvec
+            tm = self.tm
+            if tm.count and not c.has_s:
+                tm.tcontrol = MPTE if tm.tcontrol & MTE else 0
+        self.priv = to                          # (the LR reservation survives a trap:
+        base = tvec & ~3                        # priv. 3.3.2 lets only xRET drop it)
+        self.pc = (base + 4 * cause if interrupt and tvec & 3 == 1 else base) & self.amask
+
+    # -- Debug Mode (Debug spec ch. 4) ---------------------------------------------------
+
+    def enter_debug(self, cause: int, dpc: int | None = None) -> None:
+        """4.7: dcsr.cause and prv, dpc = the next instruction (``dpc``, or
+        the PC), M-mode privilege; WFI ends."""
+        c = self.csrs
+        dpc = self.pc if dpc is None else dpc
+        self.exception_log.append({"name": "Debug Mode", "debug": cause, "epc": dpc,
+                                   "priv": self.priv})
+        c.dcsr = (c.dcsr & ~(7 << 6 | 3)) | cause << 6 | self.priv
+        c.dpc = dpc & self.amask & ~1
+        self.pc = dpc & self.amask
         self.priv = 3
-        self.reservation = None
-        self.pc = c.mtvec & ~3 & self.amask
+        self.debug_mode = True
+        self.waiting = False
+        self._stepping = False
+
+    def resume(self) -> None:
+        """4.8 (DRET; the Debug Module's resume): PC = dpc, the mode =
+        dcsr.prv (below M: MPRV = 0), out of Debug Mode; dcsr.step: one
+        instruction, then Debug Mode again."""
+        c = self.csrs
+        self.pc = c.read(0x7B1)
+        self.priv = c.dcsr & 3
+        if self.priv < 3:
+            c.set_status(mprv=0)
+        self.debug_mode = False
+        self._stepping = bool(c.dcsr & STEP)
+
+    def execute_debug(self, raw: int) -> str | None:
+        """Execute one instruction in Debug Mode, as from a program buffer
+        (4.1): M-mode rights (MPRV only with dcsr.mprven), no interrupts,
+        no triggers; an exception takes no trap — :class:`DebugModeTrap`
+        (rule 4).  ``ebreak`` ends the program ("ebreak"), DRET resumes
+        ("dret"), WFI is a nop (rule 8); control transfers, AUIPC (rules
+        10-12) and the instructions that change the mode (rule 9: ECALL,
+        MRET, SRET) are illegal here."""
+        if not self.debug_mode:
+            raise ValueError("the hart is not in Debug Mode")
+        size = 4 if raw & 3 == 3 else 2
+        try:
+            i = self.rvisa.decode(raw, size)
+        except RVDecodeError:
+            raise DebugModeTrap(ILLEGAL, raw) from None
+        name = i.base.name
+        if name == "ebreak":
+            return "ebreak"
+        if name == "dret":
+            self.resume()
+            return "dret"
+        if name in _DEBUG_ILLEGAL:
+            raise DebugModeTrap(ILLEGAL, raw)
+        if name != "wfi":
+            try:
+                EXECUTORS[name](self, i, self.pc)
+            except RVTrap as t:
+                raise DebugModeTrap(t.cause, t.tval) from None
+        if "minstret" not in self.counter_written:
+            self.csrs.retire()
+        self.advance(1)
+        self.counter_written.clear()
+        return None
 
     def target(self, pc: int, offset: int) -> int:
         """A branch / jump target, checked for IALIGN (2.5: an
@@ -465,12 +795,17 @@ def _ecall(m, i, pc):
 
 @_x("ebreak")
 def _ebreak(m, i, pc):
+    """A breakpoint exception, or Debug Mode when dcsr.ebreakm / ebreaks /
+    ebreaku has it for this mode (Debug spec 4.9.1)."""
+    if m.csrs.dcsr & {3: EBREAKM, 1: EBREAKS, 0: EBREAKU}[m.priv]:
+        raise EnterDebug(CAUSE_EBREAK)
     raise RVTrap(BREAKPOINT, pc)
 
 
 @_x("mret")
 def _mret(m, i, pc):
-    """priv. 3.3.2: MIE = MPIE, MPIE = 1, priv = MPP, MPP = U (M when no U)."""
+    """priv. 3.3.2: MIE = MPIE, MPIE = 1, priv = MPP, MPP = the least
+    privileged mode; MPRV = 0 when MPP is not M."""
     if m.priv != 3:
         raise RVTrap(ILLEGAL, i.raw)
     c = m.csrs
@@ -479,16 +814,56 @@ def _mret(m, i, pc):
     if mpp != 3:
         c.set_status(mprv=0)
     m.priv = mpp
-    return c.mepc & m.amask & ~(m.ialign - 1 if m.ialign == 4 else 1)
+    tm = m.tm
+    if tm.count and not c.has_s:                # Debug spec 5.7.6: MTE = MPTE
+        tm.tcontrol = MPTE | MTE if tm.tcontrol & MPTE else 0
+    return c.read(0x341)
+
+
+@_x("sret")
+def _sret(m, i, pc):
+    """priv. 3.3.2 / 10.1.1: S-mode or M-mode only, not in S-mode with
+    TSR; SIE = SPIE, SPIE = 1, priv = SPP, SPP = U, MPRV = 0."""
+    c = m.csrs
+    if not c.has_s or m.priv < 1 or (m.priv == 1 and c.status_bit(CSR.TSR)):
+        raise RVTrap(ILLEGAL, i.raw)
+    spp = c.status_bit(CSR.SPP)
+    c.set_status(sie=c.status_bit(CSR.SPIE), spie=1, spp=0, mprv=0)
+    m.priv = spp
+    return c.read(0x141)
 
 
 @_x("wfi")
 def _wfi(m, i, pc):
-    """priv. 3.3.3: WFI may be a NOP (phase 1: no interrupt can wake it)."""
+    """priv. 3.3.3: wait until an interrupt is pending and enabled in mie
+    (whatever the global enables).  Below M-mode with TW = 1, or in U-mode
+    when S-mode exists, an illegal instruction (eMIPS's time limit is
+    0, as Spike's)."""
+    c = m.csrs
+    if (m.priv < 3 and c.status_bit(CSR.TW)) or (m.priv == 0 and c.has_s):
+        raise RVTrap(ILLEGAL, i.raw)
+    if not c.mip() & c.mie and not m._stepping:     # (stepped: a nop, Debug spec 4.5.1)
+        m.waiting = True
 
 
-for _n in ("sret", "sfence.vma", "dret"):          # (no S-mode / Debug Mode: phase 2)
-    EXECUTORS[_n] = lambda m, i, pc: (_ for _ in ()).throw(RVTrap(ILLEGAL, i.raw))
+@_x("sfence.vma")
+def _sfence_vma(m, i, pc):
+    """priv. 10.2.1: S-mode or M-mode; in S-mode with TVM, illegal (the
+    translation caches it flushes: phase 2b)."""
+    c = m.csrs
+    if not c.has_s or m.priv < 1 or (m.priv == 1 and c.status_bit(CSR.TVM)):
+        raise RVTrap(ILLEGAL, i.raw)
+    flush = getattr(m.mmu, "sfence", None)
+    if flush is not None:
+        flush(m, _reg(m, i.f["rs1"]) if i.f["rs1"] else None,
+              _reg(m, i.f["rs2"]) if i.f["rs2"] else None)
+
+
+EXECUTORS["dret"] = lambda m, i, pc: (_ for _ in ()).throw(RVTrap(ILLEGAL, i.raw))
+#: (DRET outside Debug Mode: illegal — Debug spec 4.1; in it: execute_debug)
+#: what Debug Mode refuses (Debug spec 4.1 rules 9-12: eMIPS's choice)
+_DEBUG_ILLEGAL = frozenset({"jal", "jalr", "beq", "bne", "blt", "bge", "bltu", "bgeu",
+                            "auipc", "ecall", "mret", "sret"})
 
 
 # -- Zicsr (6.1; priv. 2.1) ---------------------------------------------------
@@ -504,7 +879,8 @@ def _csr(name: str, imm: bool, op: str) -> None:
         c.check(num, write=writes, insn=i.raw)
         old = c.read(num) if reads else 0       # (CSRRW with rd = x0: no read)
         if writes:
-            new = src if op == "w" else (old | src) if op == "s" else (old & ~src)
+            base = c.read_for_write(num) if op != "w" else 0
+            new = src if op == "w" else (base | src) if op == "s" else (base & ~src)
             c.write(num, new & m.amask)
         _set(m, rd, old)
     EXECUTORS[name] = ex
@@ -569,8 +945,9 @@ def _aligned(m: RVMachine, addr: int, size: int, store: bool) -> None:
 def _lr(size: int):
     def ex(m, i, pc):
         addr = _reg(m, i.f["rs1"])
+        m.trigger_check("load", addr, size)     # (Debug spec Table 13: before alignment)
         _aligned(m, addr, size, False)
-        v = m.load(addr, size)
+        v = m.load(addr, size, pre=False)
         m.reservation = (addr, size)
         _set(m, i.f["rd"], _s32(v) if size == 4 else v)
     return ex
@@ -584,6 +961,8 @@ def _sc(size: int):
         m.reservation = None                    # 14.2: SC invalidates it either way
         if ok:
             m.store(addr, _reg(m, i.f["rs2"]), size, atomic=True)
+        else:                                   # 13.2: "no SC.W shall retire unless it
+            m._access(addr, size, "store")      # passes memory permission checks"
         _set(m, i.f["rd"], 0 if ok else 1)
     return ex
 
@@ -596,6 +975,7 @@ def _amo(name: str, size: int, op: Callable[[int, int, int], int]) -> None:
 
     def ex(m, i, pc):
         addr = _reg(m, i.f["rs1"])
+        m.trigger_check("store", addr, size)    # (Spike: the store's address first)
         _aligned(m, addr, size, True)           # 14.4: store / AMO misaligned
         old = m.load(addr, size, "store")
         new = op(old, _reg(m, i.f["rs2"]) & ((1 << bits) - 1), bits)
