@@ -1,4 +1,4 @@
-"""The RISC-V assembler (PLAN M25 phase 3a): GNU as 2.42 for RISC-V, ported
+"""The RISC-V assembler (PLAN M25 phases 3a / 3b): GNU as 2.42 for RISC-V, ported
 from its source (``docs`` keeps ``gas/config/tc-riscv.c`` / ``.h``): one
 source file in, the object :mod:`emips.rvld` links.  Names follow gas's
 functions; port a behaviour from its source, never from a guess.
@@ -28,7 +28,15 @@ functions; port a behaviour from its source, never from a guess.
   with ``relax`` (gas's default, ``-mrelax``) the worst-case nops and an
   R_RISCV_ALIGN for the linker; without it the padding itself (a zero
   byte, at most one c.nop, then nops); nothing at all below the
-  instruction alignment.
+  instruction alignment.  With ``-mrelax`` (the option's final state) the
+  other code padding is zero bytes: ``frag_align_code``'s NOP_OPCODE.
+* **The object** (``_object``: ``fixup_segment`` / ``md_apply_fix`` /
+  ``tc_gen_reloc``): a fix against a local absolute symbol becomes a
+  constant, one against a local equate its target plus offset; every
+  relaxable relocation with a symbol, assembled with ``-mrelax``, gets an
+  R_RISCV_RELAX after it; the relocations sorted by offset, stably
+  (GAS_SORT_RELOCS); ``.size`` values, the RVC flag (``riscv_set_rvc``:
+  set by C in the architecture or ``.option rvc``, never cleared).
 * **Directives:** sections and subsections (``.text 1``: gas's frchains,
   concatenated in order; a code section's end padded to its alignment, as
   write.c's ``subsegs_finish_section``), symbols, data (``.byte`` ...
@@ -315,6 +323,8 @@ class Sym:
     external: bool = False
     weak: bool = False
     line: int = 0
+    size: "Expr | None" = None                  # .size (st_size, evaluated at the end)
+    type: str = ""                              # .type: "function" / "object" / ...
 
     @property
     def defined(self) -> bool:
@@ -598,7 +608,9 @@ class Assembler:
     # -- the source ---------------------------------------------------------
 
     def assemble(self, source: str) -> "AsmObject":
-        self.opts = Options(rvc="c" in self.exts, relax=self.default_relax, exts=self.exts)
+        self.opts = Options(rvc=bool({"c", "zca"} & self.exts), relax=self.default_relax,
+                            exts=self.exts)
+        self.rvc_flag = self.opts.rvc            # EF_RISCV_RVC (riscv_set_rvc never clears it)
         self.stack: list[Options] = []
         self.symbols: dict[str, Sym] = {}
         self.deferred: dict[str, Sym] = {}
@@ -1391,6 +1403,24 @@ class Assembler:
     def d_ignore(self, d: str, rest: str) -> None:
         pass
 
+    def d_type(self, d: str, rest: str) -> None:
+        """obj_elf_type: STT_FUNC / STT_OBJECT ... (ld's relaxation reads it)."""
+        name, _, kind = rest.partition(",")
+        kind = kind.strip().lstrip("@%#").strip('"').lower()
+        kind = {"stt_func": "function", "stt_object": "object", "stt_tls": "tls_object",
+                "stt_notype": "notype"}.get(kind, kind)
+        if kind not in ("function", "object", "tls_object", "notype", "common",
+                        "gnu_indirect_function", "gnu_unique_object"):
+            self.error(f"unrecognized symbol type \"{kind}\"")
+        self.symbol(name.strip()).type = kind
+
+    def d_size(self, d: str, rest: str) -> None:
+        """obj_elf_size: st_size, evaluated when the object is written."""
+        name, _, value = rest.partition(",")
+        if not value.strip():
+            self.error("expected comma after name in .size")
+        self.symbol(name.strip()).size = self._expr(value.strip())
+
     def d_equ(self, d: str, rest: str) -> None:
         name, _, value = rest.partition(",")
         name = name.strip()
@@ -1404,7 +1434,7 @@ class Assembler:
         name = rest.strip()
         if name == "rvc":
             o.exts = o.exts | {"c"}
-            o.rvc = True
+            o.rvc = self.rvc_flag = True
         elif name == "norvc":
             o.exts = o.exts - {"c"}
             o.rvc = False
@@ -1432,7 +1462,8 @@ class Assembler:
             else:
                 body = re.sub(r"^rv(32|64)", "", spec)
                 o.exts = closure(parse_extensions(body) | {"i"})
-            o.rvc = "c" in o.exts
+            o.rvc = bool({"c", "zca"} & o.exts)
+            self.rvc_flag |= o.rvc
         elif name == "push":
             self.stack.append(Options(o.rvc, o.relax, o.pic, o.exts))
         elif name == "pop":
@@ -1668,7 +1699,9 @@ class Assembler:
                 n = _relax_align(f.address + len(f.fix), f.power)
                 if f.max_skip and n > f.max_skip:
                     n = 0
-                f.pad = _nops_norelax(n)
+                # riscv_handle_align fills only without -mrelax (the option's
+                # final state); else frag_align_code's NOP_OPCODE byte, 0
+                f.pad = bytes(n) if self.opts.relax else _nops_norelax(n)
             elif f.kind == "align":
                 n = _relax_align(f.address + len(f.fix), f.power)
                 if f.max_skip and n > f.max_skip:
@@ -1747,13 +1780,45 @@ class Assembler:
                 data += f.fix + f.pad
             o.data = data
             obj.sections[name] = o
-        for fx in self.fixes:
+        for fx in self.fixes:                   # (md_apply_fix / tc_gen_reloc)
             o = obj.sections[fx.frag.section.name]
-            o.relocs.append(Reloc(fx.frag.address + fx.where, fx.reloc, fx.expr, fx.size,
-                                  fx.line, fx.relax))
+            e = fx.expr
+            sym = e.sym if e.op in ("symbol", "subtract") else None
+            sub = e.sub if e.op == "subtract" else None
+            addend = e.num
+            while sym is not None and not sym.external and sym.equated is not None \
+                    and sym.equated[0].op in ("symbol", "constant") and sub is None:
+                q = sym.equated[0]                # (adjust_reloc_syms: an equate's target)
+                addend += q.num
+                sym = q.sym
+            if sym is not None and sub is None and not sym.external \
+                    and sym.absolute is not None:
+                addend += sym.absolute            # (fixup_segment: a local absolute symbol)
+                sym = None
+            at = fx.frag.address + fx.where
+            o.relocs.append(Reloc(at, fx.reloc, sym, addend, fx.size, fx.line, sub))
+            if fx.reloc in _RELAXABLE and fx.relax and sym is not None:
+                o.relocs.append(Reloc(at, "RELAX", None, 0, 0, fx.line))
+        for o in obj.sections.values():         # GAS_SORT_RELOCS: by address, stable
+            o.relocs.sort(key=lambda r: r.offset)
         for frag, where, size, line in self.insns:
             obj.sections[frag.section.name].insns.append((frag.address + where, size, line))
+        for s in self.symbols.values():         # .size: st_size (elf_frob_symbol)
+            if s.size is not None:
+                obj.sizes[s] = self._size_value(s)
+        obj.rvc = self.rvc_flag
         return obj
+
+    def _size_value(self, s: Sym) -> int:
+        e = s.size
+        if e.op == "constant":
+            return e.num
+        if e.op == "subtract" and e.sym.segment() is e.sub.segment():
+            return e.num + e.sym.value() - e.sub.value()
+        if e.op == "symbol" and e.sym.segment() == "abs":
+            return e.num + e.sym.value()
+        raise AsmError(s.line, f".size expression for {s.name} does not evaluate to a "
+                               "constant", "")
 
 
 @dataclass
@@ -1763,11 +1828,19 @@ class AsmObject:
     xlen: int
     asm: Assembler
     sections: dict = field(default_factory=dict)
+    sizes: dict = field(default_factory=dict)       # Sym -> st_size
+    rvc: bool = False                               # EF_RISCV_RVC
 
     @property
     def symbols(self) -> dict[str, Sym]:
         return self.asm.symbols
 
+
+#: md_apply_fix's relaxable relocations (an R_RISCV_RELAX follows them with
+#: -mrelax; GOT_HI20 only from la / lga, which eMIPS's linker refuses)
+_RELAXABLE = frozenset(("HI20", "LO12_I", "LO12_S", "TPREL_HI20", "TPREL_LO12_I",
+                        "TPREL_LO12_S", "TPREL_ADD", "CALL", "CALL_PLT", "PCREL_HI20",
+                        "PCREL_LO12_I", "PCREL_LO12_S"))
 
 #: the relocation operators (percent_op_utype / itype / stype / rtype)
 _PCT_U = {"tprel_hi": "TPREL_HI20", "pcrel_hi": "PCREL_HI20", "got_pcrel_hi": "GOT_HI20",
@@ -1903,7 +1976,9 @@ _UNSUPPORTED = frozenset((".org", ".comm", ".lcomm", ".rept", ".endr", ".irp", "
 _DIRECTIVES = {
     **{d: Assembler.d_section for d in (".text", ".data", ".bss", ".section", ".previous")},
     **{d: Assembler.d_globl for d in (".globl", ".global", ".weak")},
-    **{d: Assembler.d_ignore for d in (".type", ".size", ".file", ".ident", ".attribute",
+    ".type": Assembler.d_type,
+    ".size": Assembler.d_size,
+    **{d: Assembler.d_ignore for d in (".file", ".ident", ".attribute",
                                         ".local", ".hidden", ".protected", ".extern",
                                         ".cfi_startproc", ".cfi_endproc", ".loc",
                                         ".cfi_def_cfa_offset", ".cfi_offset",
@@ -1929,30 +2004,27 @@ BOOT_SP = 0x7FFFEFFC
 
 
 def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTENSIONS,
-             relax: bool = False, bases: dict | None = None):
+             relax: bool = True, link_relax: bool = True, bases: dict | None = None):
     """Assemble and link a RISC-V ``source`` (``arch`` "rv32" / "rv64")
     into a :class:`emips.assembler.Program` (``arch`` set, ``rv`` = the
-    instructions' sizes).  ``relax``: gas's -mrelax (phase 3b links it)."""
+    instructions' sizes).  ``relax``: gas's -mrelax (its default) /
+    -mno-relax; ``link_relax``: ld's default / --no-relax."""
     from . import rvld
     from .assembler import Program, SourceLine
     if arch not in ("rv32", "rv64"):
         raise ValueError(f"arch must be rv32 or rv64, not {arch!r}")
-    if relax:
-        raise ValueError("linker relaxation is phase 3b: assemble with relax=False")
     asm = Assembler(32 if arch == "rv32" else 64, extensions, relax)
     obj = asm.assemble(source)
     try:
-        linked = rvld.link(obj, bases)
+        linked = rvld.link(obj, bases, link_relax)
     except rvld.LinkError as exc:
         raise AsmError(exc.line, exc.message,
                        asm.lines[exc.line - 1] if 0 < exc.line <= len(asm.lines) else "") from None
     prog = Program(endian="little", release="RV", arch=arch)
     prog.image = linked.image
-    for sec in obj.sections.values():
-        for off, size, line in sec.insns:
-            a = sec.address + off
-            prog.rv[a] = size
-            prog.source_map[a] = SourceLine(line, asm.lines[line - 1] if line else "")
+    for a, size, line in linked.insns:
+        prog.rv[a] = size
+        prog.source_map[a] = SourceLine(line, asm.lines[line - 1] if line else "")
     prog.symbols.update(linked.symbols)
     prog.segments = linked.segments
     for name in ("main", "_start", "__start"):
