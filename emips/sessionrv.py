@@ -21,6 +21,7 @@ MIPS paths have one test (``Session.rv``) each, not RISC-V cases inside.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import lru_cache
 
 from .exceptions import FetchError, SimException
@@ -76,9 +77,10 @@ def make_cluster(session, mem):
                       caches if caches is not None else None)
         m.pc = m.reset_pc = pc
         return m
-    shared = (lambda c: o.caches(core=c)) if cores == 1 else None
+    hw = replace(o, cache_init="hardware")   # (MD01502 3.5: no software can initialize them)
     return Cluster(cores, harts, factory, reset_pc, timer_div=o.count_rate,
-                   on_start=session._core_started, caches=shared)
+                   on_start=session._core_started,
+                   caches=lambda c: hw.caches(core=c, shared=True), l2=o.shared_levels()[0])
 
 
 def console_sink(session):
@@ -526,7 +528,9 @@ def p8700_lines(m) -> list[str]:
            f"{'illegal instruction' if p.config6 & P.RDTM_II else 'mipstvec, mcause 26'})",
            f"mipsconfig7 0x{p.config7:x}: misaligned loads / stores "
            f"{'trap' if p.misaligned_traps else 'in hardware'}",
-           f"mipsconfig1 0x{p.config1():08x}"]
+           f"mipsconfig1 0x{p.config1():08x}",
+           f"mipserrctl 0x{p.errors().errctl:08x}: ECC checks "
+           f"{'on' if p.errors().pe else 'off'} (PE); " + p.errors().describe()]
     pmas = []
     names = {0: "cacheable", 2: "uncached", 3: "uncached accelerated"}
     for k in range(m.pmp.entries):

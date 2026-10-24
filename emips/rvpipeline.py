@@ -379,6 +379,10 @@ class RVPipeline:
             m.enter_debug(CAUSE_HALTREQ)
             ev.append(f"halt request before {s.text}: Debug Mode, flush the pipeline")
             return "flush"
+        if m.caches is not None and m.caches.pending is not None and m.take_cache_error(s.pc):
+            ev.append(f"an L2 error before {s.text}: Cache Error, flush, fetch the handler "
+                      f"at 0x{m.pc:08x}")
+            return "flush"
         req = None if m._stepping else m.interrupt_request()
         if req is not None:
             m.take_interrupt(req, s.pc)

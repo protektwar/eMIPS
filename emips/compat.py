@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from . import cores as _cores
+from .cache import Geometry
 from .options import Options, arch_title
 
 RELEASE_ORDER = ("R1", "R2", "R3", "R5", "R6")
@@ -96,11 +97,32 @@ _RV_DEFAULTS = (
     ("nms", False, "the nanoMIPS subset belongs to nanoMIPS cores"),
     ("shadow_sets", 4, "shadow register sets belong to MIPS cores"),
     ("c_isa", "mips32", "MIPS16e / microMIPS are MIPS ISAs"),
+    ("cache_parity", False, "the RISC-V specifications define no cache error exception "
+                            "(the P8700's ECC and its Cache Error come with the preset)"),
+    ("cache_ecc", False, "the RISC-V specifications define no cache error exception "
+                         "(the P8700's ECC and its Cache Error come with the preset)"),
 )
 
 
 #: what the P8700 preset decides on a RISC-V hart (its cores and harts)
 _P8700_FIELDS = ("cores", "vps")
+
+
+def _ways(spec: str, level: int) -> int:
+    try:
+        g = Geometry.parse(spec, level)
+    except ValueError:
+        return 0
+    return 0 if g is None else g.ways
+
+
+def _eight_ways(spec: str, level: int) -> str:
+    """The same size in 8 ways (or, past Config2's 8192 sets, its sets in 8)."""
+    g = Geometry.parse(spec, level)
+    try:
+        return Geometry(g.size // (8 * g.line), 8, g.line, level).spec()
+    except ValueError:
+        return Geometry(g.sets, 8, g.line, level).spec()
 
 
 #: why the nanoMIPS core has no FPU / ISA modes / ...
@@ -132,13 +154,12 @@ RULES = (
                                 and _cores.CORES["p8700"].allows(f, getattr(o, f))))(f, v),
            (lambda f, v: lambda o: setattr(o, f, v))(f, v), why)
       for f, v, why in _RV_DEFAULTS),
-    Rule("icache", "cores", lambda o, r: _rv(o) and o.cores > 1 and "none" not in
-         (o.icache, o.dcache) or _rv(o) and o.cores > 1 and o.l2 != "none",
-         lambda o: (setattr(o, "icache", "none"), setattr(o, "dcache", "none"),
-                    setattr(o, "l2", "none")),
-         "the P8700's cores keep their caches coherent through the CM3.7 and its L2 — "
-         "modelled with the caches (PLAN M25 phase 5e): until then a multi-core P8700 runs "
-         "without caches"),
+    # a MIPS L2 / L3 has 1-8 ways (Config2.SA / TA); 16 are the P8700's (MD01502 3.3.7)
+    *(Rule(f, "arch", (lambda f: lambda o, r: not _rv(o) and _ways(getattr(o, f), lvl) > 8)(f),
+           (lambda f: lambda o: setattr(o, f, _eight_ways(getattr(o, f), lvl)))(f),
+           "Config2's SA / TA fields encode 1-8 ways (Vol. III 9.43): a MIPS L2 / L3 of "
+           "more ways gets 8 (the same size where Config2's sets per way allow it)")
+      for f, lvl in (("l2", 2), ("l3", 3))),
     # first, nanoMIPS (PLAN M23): an architecture of its own, Release 6 based —
     # what its cores do not have (the rules below see the settings they leave)
     Rule("arch", "release", lambda o, r: _nano(o) and r != "R6",
@@ -309,12 +330,17 @@ def adjust(o: Options, release: str, keep: frozenset[str] | set[str] = frozenset
     on purpose) are not adjusted."""
     o = replace(o, latency=dict(o.latency), mem_timing=dict(o.mem_timing))
     notes = []
-    for rule in RULES:
-        if rule.field not in keep and rule.broken(o, release):
-            old, why = getattr(o, rule.field), rule.reason(o, release)
-            rule.fix(o)
-            notes.append(f"{rule.field} {_shown(old)} -> {_shown(getattr(o, rule.field))}: "
-                         f"{why}")
+    for _ in range(3):                  # (a preset given up last frees what it allowed:
+        changed = False                 #  the P8700's cores / harts on a generic hart)
+        for rule in RULES:
+            if rule.field not in keep and rule.broken(o, release):
+                old, why = getattr(o, rule.field), rule.reason(o, release)
+                rule.fix(o)
+                changed = True
+                notes.append(f"{rule.field} {_shown(old)} -> "
+                             f"{_shown(getattr(o, rule.field))}: {why}")
+        if not changed:
+            break
     return o, notes
 
 

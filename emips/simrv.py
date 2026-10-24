@@ -370,6 +370,27 @@ class RVMachine(S.Machine):
     def pending_cache_error(self):
         return None
 
+    def _cache_arch(self, err) -> "RVTrap":
+        """An error found in a cache (sim.Machine's loads / stores / fetches
+        catch emips.cache.CacheError): the P8700's Cache Error, custom
+        exception 48 (emips.p8700err)."""
+        p = self.p8700
+        if p is None:                           # (no RISC-V cache error exists)
+            raise SimException(f"a cache error on a hart without one: {err}")
+        p.errors().from_error(err)
+        from .p8700err import CACHE_ERROR
+        return RVTrap(CACHE_ERROR, 0, custom=True)
+
+    def take_cache_error(self, pc: int) -> bool:
+        """An imprecise L2 error waiting (emips.cache.Caches.pending): the
+        Cache Error before the instruction at ``pc`` (xepc = pc)."""
+        c = self.caches
+        if c is None or c.pending is None or self.p8700 is None:
+            return False
+        self.waiting = False
+        self._trap(self._cache_arch(c.take_pending()), pc, None)
+        return True
+
     def advance(self, cycles: int = 1) -> None:
         self.cycles += cycles
         if "mcycle" not in self.counter_written:
@@ -513,6 +534,10 @@ class RVMachine(S.Machine):
             self.enter_debug(CAUSE_HALTREQ)
             return None
         pc = self.pc
+        if self.caches is not None and self.caches.pending is not None \
+                and self.take_cache_error(pc):  # (an imprecise L2 error, MD01502 3.3.8)
+            self.advance(1)
+            return None
         # dcsr.stepie = 0: no interrupt while stepping (4.9.1)
         req = None if self._stepping else self.interrupt_request()
         if req is not None:
@@ -639,6 +664,9 @@ class RVMachine(S.Machine):
             p.tlb_miss(miss)
         self._enter(t.cause, t.tval, pc, to, interrupt=False,
                     vector=p.vector(t.cause) if custom else None)
+        if custom and t.cause == 48:            # (a Cache Error sets ERL: MD01502 7.3.9)
+            from .p8700 import ERL
+            p.config5 |= ERL
         if triggers:
             self._trap_triggers(t.cause, False, prev)
 

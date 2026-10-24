@@ -25,10 +25,12 @@ which replace or join the generic hart's (:mod:`emips.rvcsr`):
 - **mipsintctl** (7.3.6): MIPS hardware interrupts 5..0 (MEI, MSI, MTI,
   SEI, STI, VSEI) go to their standard mip bits, or with the bit clear to
   mip[20] / [19] / VSTIP (6) / [18] / [17] / [16].  The interrupt
-  priority is the AIA's default order (riscv-interrupts 1.0 5.1: 23, 20,
-  MEI, MSI, MTI, SEI, SSI, STI, VSEI, VSTI, LCOFI, 19, 18, 17, 16).
+  priority is the AIA's default order (riscv-interrupts 1.0 5.1: 23, the
+  watchdog's 25, 20, MEI, MSI, MTI, SEI, SSI, STI, VSEI, VSTI, LCOFI, 19,
+  18, 17, 16).
 - **mipsconfig5.ERL** (7.3.9): no interrupts, every access uncached;
-  MRET / SRET clear it (NMI / Cache Error set it: phases 5d / 5e).
+  MRET / SRET clear it (NMI / Cache Error set it: emips.p8700ic /
+  emips.p8700err).
   MDIAGL is write-1-only.  The software table walker's fields (LEVEL,
   ATYPE, XATP, G, MTW / MPTW / MPPPS): :meth:`P8700.tlb_miss`,
   :meth:`P8700.m_trap`, :meth:`P8700.mret` (emips.p8700mmu).
@@ -38,7 +40,8 @@ which replace or join the generic hart's (:mod:`emips.rvcsr`):
   caches' bits of phase 5e),
   **mipsconfig8-11** (the prefetch trackers' registers, through 8 / 9 /
   10; PFEN), **mipsconfig1** (the L1 shapes and L2C, from the caches),
-  **mipscacheerr / mipserrctl / mipsdsprambase** (stored).
+  **mipscacheerr / mipserrctl** (the core's: emips.p8700err),
+  **mipsdsprambase** (stored).
 - **pmacfg0-15** (7.3.16): PMA *k* belongs to PMP entry *k* (OpenSBI's
   ``mips_p8700_pmp_set``): the lowest-numbered PMP entry whose range
   holds the address gives its CCA — 0 cacheable, 2 uncached, 3 uncached
@@ -138,7 +141,9 @@ class P8700:
         """The reset values (7.3: "Undefined" ones are 0, mipsintctl the
         standard routing — DEVIATIONS)."""
         self.mipstvec = self.mipstval = self.mipsscratch = 0
-        self.mipscacheerr = self.mipserrctl = self.mipsdsprambase = 0
+        self.mipsdsprambase = 0
+        #: mipscacheerr / mipserrctl when the hart has no core's (emips.p8700err)
+        self._errors = None
         self.mipsintctl = INTCTL_RESET
         self.config5 = self.config6 = self.config7 = 0
         self.config8 = self.config9 = self.config11 = 0
@@ -182,6 +187,21 @@ class P8700:
     @property
     def erl(self) -> bool:
         return bool(self.config5 & ERL)
+
+    # -- errors (7.3.4 / 7.3.5) ------------------------------------------------------
+
+    def errors(self):
+        """The core's mipscacheerr / mipserrctl (emips.p8700err: per core)."""
+        errs = getattr(self.m.caches, "errs", None)
+        if errs is not None:
+            return errs
+        if self._errors is None:
+            from .p8700err import CoreErrors
+            self._errors = e = CoreErrors()
+            mmu = getattr(self.m, "mmu", None)
+            if hasattr(mmu, "ecc_check"):       # (a hart on its own: its FTLB reports here)
+                e.mmus, mmu.errs = [mmu], e
+        return self._errors
 
     # -- the PMAs (7.3.16) --------------------------------------------------------
 
@@ -577,8 +597,10 @@ CSRS: list[CSR] = [
     CSR(0x7C0, "mipstvec", _p, _attr("mipstvec"), _w_tvec),
     CSR(0x7C3, "mipstval", _p, _attr("mipstval"), _store("mipstval")),
     CSR(0x7C4, "mipsscratch", _p, _attr("mipsscratch"), _store("mipsscratch")),
-    CSR(0x7C5, "mipscacheerr", _p, _attr("mipscacheerr"), _store("mipscacheerr", 0xFFFFFFFF)),
-    CSR(0x7C6, "mipserrctl", _p, _attr("mipserrctl"), _store("mipserrctl", 0x3FF << 10)),
+    CSR(0x7C5, "mipscacheerr", _p, lambda c: c.m.p8700.errors().cacheerr,
+        lambda c, v: setattr(c.m.p8700.errors(), "cacheerr", v & 0xFFFFFFFF)),
+    CSR(0x7C6, "mipserrctl", _p, lambda c: c.m.p8700.errors().errctl,
+        lambda c, v: c.m.p8700.errors().write_errctl(v)),
     CSR(0x7CB, "mipsintctl", _p, _attr("mipsintctl"), lambda c, v: c.m.p8700.write_intctl(v)),
     CSR(0x7CC, "mipsdsprambase", _p, _attr("mipsdsprambase"), _store("mipsdsprambase")),
     CSR(0x7D1, "mipsconfig1", _p, lambda c: c.m.p8700.config1()),

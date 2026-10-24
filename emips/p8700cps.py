@@ -22,7 +22,11 @@ blocks of Table 5.24 eMIPS has so far:
   written), CONTROL (stored; ARB_PRI_RAISE_CNT 32 at reset), REV (0x0A00:
   QEMU's), CPC_STATUS (1), ACCESS (cores 7:0, IOCUs 23:16; a core whose bit
   is 0 cannot write the GCR / CPC), SCRATCH0 / 1, SEM (5.14.1.31), the
-  error, MMIO-region and L2-prefetch registers stored.
+  CM's error registers (ERR_CONTROL, ERR_MASK / CAUSE / ADDR / MULT: the
+  Coherence Manager's), CACHE_REV, L2_CONFIG (the L2's shape, L2_BYPASS,
+  the cache-op write enables), L2_RAM_CONFIG (HCI_DONE), the L2 cache-op
+  state machine (L2SM_COP, L2SM_TAG_ADDR_COP: 3.6), the L2 tag / data / ECC
+  registers, the MMIO-region and L2-prefetch registers stored.
 - **GCR.Core** (5.14.3): Hn_RESET_BASE (0x2000 + 0x100 core + 8 hart; 47:12
   R/W, RESET_BASE_MODE reads 1) and COH_EN (0x20F8 + 0x100 core).
 - **CPC.Global** (5.14.4): REVISION, ROCC_CTL (a core's bit set by its
@@ -37,6 +41,10 @@ blocks of Table 5.24 eMIPS has so far:
   RESET_BASE), VP_RUNNING.  A core powered up or reset runs hart 0 (the
   si_core_vc_run_init pins: hart 0's 1).
 
+The caches (ch. 3): :class:`P8700CM` (``cm``) — MESI between the cores'
+L1 data caches, the shared L2 (write-back, write-allocate), FENCE.I on
+every I-cache; each core's L1s are shared by its harts.
+
 The ACLINT / APLIC at GCR_BASE + 0x50000 / 0x40000 / ...: ``ic``
 (emips.p8700ic), its timer compares done when the clock moves.  Choices:
 ``sim.DEVIATIONS["P8700 cluster"]``.
@@ -46,22 +54,42 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .coherence import CoherenceManager
+
 M32 = 0xFFFFFFFF
 M64 = 0xFFFFFFFFFFFFFFFF
 GCR_SIZE = 0x80000                      # (5.13: a 512 KB block, the AIA CM's)
 MAX_CORES, MAX_HARTS = 6, 2
 REV = 0x0A00                            # (QEMU's gcr-rev: the manual has none)
 CPC_REVISION = 0x0100
+CACHE_REVISION = 0x0100                 # (GCR_CACHE_REV: "from configuration")
 #: GCR.Global (5.14.1)
 CONFIG, BASE, CONTROL, REVR = 0x0000, 0x0008, 0x0010, 0x0030
 ERR_CONTROL, ERR_MASK, ERR_CAUSE, ERR_ADDR, ERR_MULT = 0x38, 0x40, 0x48, 0x50, 0x58
 CUSTOM_STATUS, CPC_STATUS, ACCESS = 0x0068, 0x00F0, 0x0120
 SCRATCH0, SCRATCH1, SEM = 0x0280, 0x0288, 0x0640
+CACHE_REV, L2_CONFIG, L2_RAM_CONFIG = 0x00E0, 0x0130, 0x0240
+L2_TAG_ADDR, L2_TAG_STATE, L2_DATA, L2_ECC = 0x0600, 0x0608, 0x0610, 0x0618
+L2SM_COP, L2SM_TAG_ADDR_COP = 0x0620, 0x0628
+#: their writable bits (5.14.1.25-28: what an L2 Load / Store Tag & Data
+#: cache op would use; rev. 1.84 has no instruction that runs one — stored)
+L2_STORED = {L2_TAG_ADDR: 0xFFFFFFFF8000, L2_TAG_STATE: 0x7FFF00000FFF, L2_DATA: M64,
+             L2_ECC: 1 << 63 | 0xFF << 32 | 1 << 31 | 0xFF}
+#: GCR_L2_CONFIG (5.14.1.15): REG_EXISTS, the COP write enables (26:24,
+#: COP_LRU_WE 1 at reset), L2_BYPASS (20)
+L2_CONFIG_RW, L2_BYPASS = 0x7 << 24 | 1 << 20, 1 << 20
+#: the L2 cache-op state machine (5.14.1.29 / 3.6): types and results
+COP_FLUSH, COP_INIT_TAG, COP_INIT, COP_HIT_INV, COP_HIT_WB_INV, COP_HIT_WB, COP_FETCH_LOCK = (
+    0, 1, 2, 4, 5, 6, 7)
+COP_DONE, COP_DONE_ERR = 1, 2
 L2_PFT_CONTROL, L2_PFT_CONTROL_B = 0x0300, 0x0308
 TIMEOUT_LIMIT, MMIO_REQ_LIMIT = 0x0650, 0x06F8
 MMIO = tuple(0x0700 + 0x10 * k + h for k in range(8) for h in (0, 8))
-STORED = (CONTROL, ERR_CONTROL, ERR_MASK, ERR_CAUSE, ERR_ADDR, ERR_MULT, SCRATCH0, SCRATCH1,
-          L2_PFT_CONTROL, L2_PFT_CONTROL_B, TIMEOUT_LIMIT, MMIO_REQ_LIMIT) + MMIO
+STORED = (CONTROL, SCRATCH0, SCRATCH1, L2_PFT_CONTROL, L2_PFT_CONTROL_B, TIMEOUT_LIMIT,
+          MMIO_REQ_LIMIT) + MMIO
+#: the error registers (5.14.1.5-9) -> the Coherence Manager's attributes
+CM_ERRORS = {ERR_MASK: "error_mask", ERR_CAUSE: "error_cause", ERR_ADDR: "error_addr",
+             ERR_MULT: "error_mult"}
 CONTROL_RESET = 32 << 25                # (ARB_PRI_RAISE_CNT)
 #: GCR.Core (5.14.3)
 CORE_BLOCK, CORE_STRIDE, COH_EN = 0x2000, 0x100, 0xF8
@@ -86,6 +114,11 @@ class GCR:
         self.cl = cl
         self.regs: dict[int, int] = dict.fromkeys(STORED, 0)
         self.regs[CONTROL] = CONTROL_RESET
+        self.err_control = 2                      # (L2_ECC_EN)
+        self.l2_config = 1 << 26                  # (COP_LRU_WE)
+        self.l2_regs = dict.fromkeys(L2_STORED, 0)
+        self.cop = 0                              # (L2SM_COP: RESULT, MODE, TYPE)
+        self.cop_range = 0                        # (L2SM_TAG_ADDR_COP)
         self.access = 0xFF00FF                    # (5.14.1.14: everyone may write)
         self.sem = 0
         self._base_hi: int | None = None          # (GCR_BASE's 32-bit write shadow)
@@ -143,6 +176,23 @@ class GCR:
             return self.sem
         if off == CUSTOM_STATUS:
             return 0
+        cm = cl.cm
+        if off == ERR_CONTROL:              # (5.14.1.5: L2 ECC always supported)
+            return self.err_control | 1
+        if off in CM_ERRORS:
+            return getattr(cm, CM_ERRORS[off])
+        if off == CACHE_REV:
+            return CACHE_REVISION
+        if off == L2_CONFIG:
+            return 1 << 31 | self.l2_config | cm.l2_config() & ~L2_BYPASS
+        if off == L2_RAM_CONFIG:            # (PRESENT, HCI_DONE: 5.14.1.20 / 3.5)
+            return 1 << 31 | 1 << 30
+        if off in L2_STORED:
+            return self.l2_regs[off]
+        if off == L2SM_COP:
+            return 1 << 31 | self.cop
+        if off == L2SM_TAG_ADDR_COP:
+            return self.cop_range
         if off in self.regs:
             return self.regs[off]
         if CORE_BLOCK <= off < CORE_BLOCK + MAX_CORES * CORE_STRIDE:
@@ -178,6 +228,27 @@ class GCR:
             if not (v >> 31 and self.sem >> 31):
                 self.sem = v
             return
+        cm = cl.cm
+        if off == ERR_CONTROL:              # (MEM_PARITY_EN, L2_ECC_EN)
+            self.err_control = ((self.err_control & ~mask) | value) & 0x22
+            cm.ecc_checking(bool(self.err_control & 2))
+            return
+        if off in CM_ERRORS:
+            self._put_error(off, value, mask)
+            return
+        if off == L2_CONFIG:
+            self.l2_config = ((self.l2_config & ~mask) | value) & L2_CONFIG_RW
+            cm.bypass = bool(self.l2_config & L2_BYPASS)
+            return
+        if off in L2_STORED:
+            self.l2_regs[off] = ((self.l2_regs[off] & ~mask) | value) & L2_STORED[off]
+            return
+        if off == L2SM_COP:
+            self._cop(m, value, mask)
+            return
+        if off == L2SM_TAG_ADDR_COP:        # (written only while the state machine idles)
+            self.cop_range = ((self.cop_range & ~mask) | value) & (M64 & ~0x3F)
+            return
         if off in self.regs:
             self.regs[off] = (self.regs[off] & ~mask) | value
             return
@@ -195,15 +266,158 @@ class GCR:
         if CPC <= off < CPC + 0x8000:
             cl.cpc_put(off, value, mask)
 
+    def _put_error(self, off: int, value: int, mask: int) -> None:
+        """5.14.1.6-9: ERR_MASK / ERR_ADDR R/W; ERR_CAUSE and ERR_MULT clear
+        when software writes the recorded ERR_TYPE (63:58) back."""
+        cm = self.cl.cm
+        if off in (ERR_CAUSE, ERR_MULT):
+            kind = cm.error_cause >> 58
+            if mask >> 58 == 0x3F and kind and (value >> 58) & 0x3F == kind:
+                cm.error_cause = cm.error_mult = 0
+                cm.error_changed()
+            return
+        name = CM_ERRORS[off]
+        width = M64 if off == ERR_MASK else (1 << 48) - 1
+        setattr(cm, name, ((getattr(cm, name) & ~mask) | value) & width)
+        if off == ERR_MASK:
+            cm.error_changed()
+
+    def domain(self, core: int) -> int:
+        """The coherence domain as the CM's bits (emips.coherence): a core
+        with COH_EN = 1 sees every other coherent core (5.14.3.x: COH_EN)."""
+        cl = self.cl
+        if not cl.coh_en[core]:
+            return 0
+        return sum(1 << j for j in range(cl.cores) if cl.coh_en[j])
+
+    # -- the L2 cache-op state machine (5.14.1.29 / 30, 3.6) ---------------------------
+
+    def _cop(self, m, value: int, mask: int) -> None:
+        """TYPE (4:2) is written only while idle; CMD 1 = START runs the
+        operation (eMIPS: at once, RESULT = DONE), 3 = ABORT (nothing runs
+        long enough to abort)."""
+        cop = self.cop
+        if cop & 0x20:                      # (RUNNING: never seen — the operation is done)
+            return
+        typ = ((cop & ~mask) | value) >> 2 & 7 if mask & 0x1C else cop >> 2 & 7
+        cmd = value & 3 if mask & 3 else 0
+        self.cop = (cop & 0x1C0) | typ << 2
+        if cmd == 1:
+            ok = self.cl.cm.l2_operation(typ, (self.cop_range & ((1 << 48) - 1)) & ~0x3F,
+                                         self.cop_range >> 48, getattr(m, "caches", None))
+            self.cop = (COP_DONE if ok else COP_DONE_ERR) << 6 | typ << 2
+
+
+class P8700CM(CoherenceManager):
+    """The CM3.7's coherence and its L2 (MD01502 3.3.5 / 3.3.7 / 3.4, ch. 5):
+    eMIPS's Coherence Manager (MESI between the cores' L1 data caches,
+    interventions, the L2 behind them) with what the P8700 has — no CM
+    address regions (its MMIO regions route uncached requests), the L2
+    write-back *write-allocate* (3.3.8), GCR_L2_CONFIG.L2_BYPASS, the
+    L2 cache-op state machine; caches initialized by hardware at reset
+    (3.5; the L1s too: no instruction can initialize them)."""
+
+    def __init__(self, cl: "Cluster", l2=None) -> None:
+        # (3.3.8 / 5.14.1.5: the L2's SEC-DED is always there)
+        super().__init__(cl, l2=l2, ecc=True, hardware_init=True, seed=0x8700)
+        self.error_mask = 0                 # (5.14.1.6: reset 0)
+        #: GCR_L2_CONFIG.L2_BYPASS: every request goes to memory
+        self.bypass = False
+        if self.l2 is not None:
+            self.l2.write_allocate = True
+            self.l2.on_corrected = self._l2_corrected
+
+    def _l2_corrected(self, cache, s: int, w: int, k: int, bit: int) -> None:
+        """A corrected L2 error: recorded in the requesting core's
+        mipscacheerr (ARRAY L2Data)."""
+        from .p8700err import CORRECTED, L2_DATA
+        errs = getattr(self.current, "errs", None)
+        if errs is not None:
+            errs.record(CORRECTED, L2_DATA, bits=bit, way=w, index=s, word=k)
+
+    #: FENCE.I invalidates every core's I-cache (3.3.10)
+    fence_i_global = True
+
+    def l2_policy(self, pa: int) -> str:
+        return "bypass" if self.bypass else "wb"
+
+    def _region_attr(self, pa: int) -> tuple[int, bool]:
+        return 0, True
+
+    @property
+    def memory_sync0(self) -> bool:         # (no SYNCCTL in the CM3.7's CONTROL)
+        return False
+
+    def drop_l2(self, pa: int) -> bool:
+        return False
+
+    def l2_only_sync(self, pa: int) -> bool:
+        return False
+
+    def describe(self) -> list[str]:
+        out = []
+        cl = self.cps
+        for j in sorted(self.cores):
+            coh = self._coherence(j)
+            frm = [str(i) for i in sorted(self.cores) if i != j and coh >> i & 1]
+            out.append(f"core {j}: COH_EN {cl.coh_en[j]}, "
+                       + ("coherent" if coh >> j & 1 else "not coherent")
+                       + (f", interventions from core(s) {', '.join(frm)}" if frm else ""))
+        out.append(", ".join(f"{k} {v}" for k, v in self.counts.items()))
+        if self.l2 is not None:
+            out.append(f"shared {self.l2.name}: {self.l2.geometry.describe()}, write-back "
+                       "write-allocate" + (" (L2_BYPASS: bypassed)" if self.bypass else ""))
+        out.append(self.describe_error())
+        return out
+
+    def ecc_checking(self, on: bool) -> None:
+        """GCR_ERR_CONTROL.L2_ECC_EN (phase 5e2)."""
+        for c in self.secondary:
+            c.check = on and self.ecc
+
+    def l2_operation(self, typ: int, start: int, lines: int, req=None) -> bool:
+        """The L2SM's operation (5.14.1.29, 3.6.1 / 3.6.2): 0 a full flush
+        (every dirty line written back, every line invalidated), 1 / 2 the
+        full initialization (tags; tags and data), 4-7 Hit Invalidate / Hit
+        Writeback Invalidate / Hit Writeback / Fetch and Lock on ``lines``
+        lines from ``start``.  Returns False on an error (DONE - ERR)."""
+        from .cache import Caches
+        c = self.l2
+        if c is None:
+            return True
+        if req is None and self.cores:
+            req = self.current or next(iter(self.cores.values()))
+        if req is not None:
+            self.claim(req)
+        if typ in (COP_FLUSH, COP_INIT_TAG, COP_INIT):
+            for s in range(c.sets):
+                for w in range(c.ways):
+                    ln = c.lines[s][w]
+                    if typ == COP_FLUSH and ln.valid and ln.dirty:
+                        c.write_back(s, w, c.below)
+                    Caches._invalidate(c, s, w)
+                    if typ == COP_INIT:
+                        ln.data[:] = bytes(c.line)
+                        c._set_data_parity(ln, 0, c.line)
+            return True
+        if typ in (COP_HIT_INV, COP_HIT_WB_INV, COP_HIT_WB, COP_FETCH_LOCK) and req is not None:
+            for k in range(min(lines, 1 << 16)):
+                pa = (start + k * c.line) & M32
+                req._cache_op(typ << 2 | 3, pa, pa, 5)
+        return True
+
 
 class Cluster:
     """See the module docstring.  ``factory(cluster, core, hart, pc)`` makes a
     hart in its reset state starting at ``pc``; ``on_start(i, m)`` hears of a
     hart made afresh (VP_RUN, a core reset)."""
 
+    #: what the Coherence Manager asks of its system (emips.coherence)
+    cm3, iocu = True, False
+
     def __init__(self, cores: int, harts: int, factory: Callable[..., Any], reset_pc: int,
                  *, timer_div: int = 2, on_start: Callable[[int, Any], None] | None = None,
-                 caches: Callable[[int], Any] | None = None) -> None:
+                 caches: Callable[[int], Any] | None = None, l2=None) -> None:
         if not 1 <= cores <= MAX_CORES or not 1 <= harts <= MAX_HARTS:
             raise ValueError(f"the P8700 has 1-{MAX_CORES} cores of 1-{MAX_HARTS} harts "
                              "(MD01502 1.1)")
@@ -229,7 +443,20 @@ class Cluster:
         self._since = 0
         self.gcr = GCR(self)
         self.timer = _Timer(self)
+        #: the CM3.7: coherence, the L2, the error registers
+        self.cm = P8700CM(self, l2)
+        #: each core's L1s, shared by its harts (3.3: "The L1 instruction and
+        #: data caches are shared by all Harts in the same core")
         self._caches = [caches(c) if caches is not None else None for c in range(cores)]
+        from .p8700err import CoreErrors, equip
+        #: each core's mipscacheerr / mipserrctl (emips.p8700err)
+        self.errors = [CoreErrors() for _ in range(cores)]
+        for c, ch in enumerate(self._caches):
+            if ch is not None:
+                equip(ch, self.errors[c])   # (the ECC L1s)
+                self.cm.attach(c, ch)
+                ch.alias_free = True        # (3.3.2: "logic to correct virtual aliasing")
+        self.cm.ecc_checking(True)          # (GCR_ERR_CONTROL.L2_ECC_EN resets to 1)
         self.ftlbs: list[Any] = [None] * cores
         self.machines: list[Any] = [None] * n
         for i in range(n):
@@ -269,6 +496,11 @@ class Cluster:
         m.timer = self.timer
         self._io(m)
         mmu = m.mmu
+        if hasattr(mmu, "ecc_check"):       # (2.2: the FTLB's ECC reports to the core)
+            errs = self.errors[c]
+            mmu.errs = errs
+            mmu.ecc_check = errs.pe
+            errs.mmus = [x for x in errs.mmus if x is not None] + [mmu]
         if hasattr(mmu, "share_ftlb"):      # (2.6: a core's harts share its FTLB)
             if self.ftlbs[c] is None:
                 self.ftlbs[c] = mmu

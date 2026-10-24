@@ -78,7 +78,7 @@ class Debugger(cmd.Cmd):
     #: commands of MIPS hardware (CP0, EJTAG, the CPS, the 24K ...): on a
     #: RISC-V hart they say what to use instead
     MIPS_ONLY = frozenset(("srs", "ejtag", "probe", "board", "disk", "trace", "tap", "cp0",
-                           "dsp", "msa", "mt", "vp", "tc", "translate", "cm", "cps", "gic",
+                           "dsp", "msa", "mt", "vp", "tc", "translate", "cps", "gic",
                            "tlb", "mpu", "core"))
 
     def onecmd(self, line: str) -> bool:
@@ -1233,17 +1233,20 @@ class Debugger(cmd.Cmd):
             self.say(cv.format_set(c, cv.split(c, va, pa).index))
 
     def do_cm(self, arg: str) -> None:
-        """cm [LOC]   the Coherence Manager of a multi-core system (--cores N):
-          cm        the coherence domain (GCR_Cx_COHERENCE of every core),
+        """cm [LOC]   the Coherence Manager of a multi-core system (--cores N;
+        the P8700's CM3.7 with any number of cores):
+          cm        the coherence domain (GCR_Cx_COHERENCE / COH_EN of every core),
                     what the CM did (requests, interventions, cache-to-cache
                     transfers, invalidations, upgrades, writebacks,
                     globalized cache operations), the shared L2, its error
           cm LOC    the MESI state of LOC's line in every core's data cache"""
         self._need_program()
         s = self.s
-        if s.cps is None:
-            raise CliError("one core: no Coherence Manager (set cores 2..6)")
-        cm = s.cps.cm
+        cps = s.cps if s.cps is not None else s.rvcps     # (the P8700's CM3.7: any cores)
+        if cps is None:
+            raise CliError("no Coherence Manager: one MIPS core (set cores 2..6) or a "
+                           "RISC-V hart without the P8700 preset")
+        cm = cps.cm
         if not arg.strip():
             self.say("\n".join(cm.describe()))
             return
@@ -1460,8 +1463,9 @@ class Debugger(cmd.Cmd):
 
     def do_p8700(self, arg: str) -> None:
         """p8700   RISC-V: the MIPS P8700's own registers — the hart ID, mipstvec,
-        mipsintctl's routing, mipsconfig5-7, the PMAs, the four counters
-        (MD01502 ch. 7 / 11)"""
+        mipsintctl's routing, mipsconfig5-7, mipserrctl / mipscacheerr, the PMAs,
+        the four counters, the TLBs, the cluster and its interrupt controller
+        (MD01502 ch. 2 / 5-8 / 11)"""
         self._need_program()
         m = self.s.machine
         if not m.rv:

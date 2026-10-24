@@ -41,7 +41,7 @@ FIELDS = ("release", "compressed", "fpu", "dsp", "msa", "mt", "mmu", "icache", "
           "l3", "cores", "vps", "shadow_sets", "model")
 #: the settings a RISC-V core preset decides (PLAN M25 phase 5: the MIPS
 #: settings do not apply to a RISC-V hart, emips.compat)
-RV_FIELDS = ("rv_extensions", "rv_modes", "cores", "vps")
+RV_FIELDS = ("rv_extensions", "rv_modes", "icache", "dcache", "l2", "l3", "cores", "vps")
 
 
 def _pow2(n: int) -> bool:
@@ -55,7 +55,8 @@ class CacheChoice:
     with ``way_kb`` (the smallest and largest way, KB, a power of two),
     any number of ``ways`` of such ways up to ``max_kb``.  ``min_kb``: (line,
     the smallest size with that line) pairs (the I7200's L2: 32-byte lines
-    from 128 KB)."""
+    from 128 KB); ``ways_kb``: (size, ways) pairs whose size has only those
+    ways (the P8700's L2: 256 KB 8-way, the others 16-way)."""
     sizes: tuple[int, ...] = ()
     ways: tuple[int, ...] = (4,)
     lines: tuple[int, ...] = (32,)
@@ -63,6 +64,7 @@ class CacheChoice:
     way_kb: tuple[int, int] | None = None
     max_kb: int = 0
     min_kb: tuple[tuple[int, int], ...] = ()
+    ways_kb: tuple[tuple[int, int], ...] = ()
 
     def allows(self, spec: str, level: int = 1) -> bool:
         try:
@@ -82,6 +84,9 @@ class CacheChoice:
                     and kb <= self.max_kb)
         if g.ways == 1 and kb in self.direct:
             return True
+        only = dict(self.ways_kb).get(kb)
+        if only is not None:
+            return g.ways == only and kb in self.sizes
         return g.ways in self.ways and kb in self.sizes and kb > 0
 
     def text(self) -> str:
@@ -97,6 +102,8 @@ class CacheChoice:
                f"{'/'.join(map(str, self.lines))}-byte lines")
         for line, kb in self.min_kb:
             out += f" ({line}-byte lines from {kb} KB)"
+        for kb, ways in self.ways_kb:
+            out += f" ({kb} KB: {ways}-way)"
         if self.direct:
             out += f" (or {'/'.join(map(str, self.direct))} KB direct-mapped)"
         return out
@@ -310,6 +317,8 @@ _CPS_NOTE = ("eMIPS builds a CPS (the CM, CPC, GIC) only with 2 or more cores, a
 _L1_5K = CacheChoice(sizes=(0,), ways=(1, 2, 3, 4), lines=(32,), way_kb=(4, 16), max_kb=64)
 #: the I6400's L1 (MD01196 3.4: 32 or 64 KB, 4-way, 64-byte lines)
 _L1_I6400 = CacheChoice(sizes=(32, 64), ways=(4,), lines=(64,))
+#: the P8700's L1 I / D (MD01502 Table 3.1: 32 / 64 KB, 4-way, 64-byte lines)
+_L1_P8700 = CacheChoice(sizes=(32, 64), ways=(4,), lines=(64,))
 
 
 def _5k(name: str, title: str, fpu: bool) -> Core:
@@ -594,16 +603,23 @@ CORES: dict[str, Core] = {c.name: c for c in (
 
     # -- RISC-V (PLAN M25 phase 5) --
     Core("p8700", "MIPS P8700", "RV", 0x00, ("auto",), (True,), ("auto",), ("auto",),
-         ("fixed",), NO_CACHE, NO_CACHE, None, (1, 2, 3, 4, 5, 6), (4,), ("5-stage",),
-         build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1, vps=1),
+         ("fixed",), _L1_P8700, _L1_P8700,
+         CacheChoice(sizes=(256, 512, 1024, 2048, 4096, 8192), ways=(16,), lines=(64,),
+                     ways_kb=((256, 8),)),
+         (1, 2, 3, 4, 5, 6), (4,), ("5-stage",),
+         build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1, vps=1,
+                    icache="64K:4:64", dcache="64K:4:64", l2="1M:16:64", l3="none"),
          source="MD01502 (the P8700 / P8700-F Multiprocessing System Programmer's Guide "
                 "1.80: RV64GC Zba Zbb, 1.2; the custom instructions, Appendix B; the CSRs "
-                "and causes, ch. 7; the counters, 11.1), QEMU's mips-p8700 (marchid "
+                "and causes, ch. 7; the counters, 11.1; rev. 1.84: the MMU, ch. 2, the "
+                "caches, ch. 3, the CM / CPC, ch. 5 / 6, the interrupt controller, ch. 8), "
+                "QEMU's mips-p8700 (marchid "
                 "0x8000000000000201, Sv48), OpenSBI's P8700 platform code, Linux's "
                 "\"Zalrsc only\" patch (no AMOs)",
          missing=("the P8700's out-of-order multithreaded pipeline (eMIPS: the textbook "
-                  "5-stage)", "TLB ECC (phase 5e)",
-                  "its caches and their CSRs, the CM3.7's L2 and coherence (phase 5e)",
+                  "5-stage)",
+                  "load / store bonding (3.3.6: invisible but for speed), the L2's "
+                  "prefetcher, its RAM wait states",
                   "MIPS Hybrid Debug (eMIPS: the RISC-V Debug specification's)",
                   "the DSPRAM, L1 prefetching (the trackers' registers are stored), "
                   "MDIAGR / MDIAGW (undocumented)"),

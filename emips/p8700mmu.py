@@ -49,6 +49,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .cache import ecc_check, ecc_encode
 from .mmu import Translation
 from .rvmmu import (ACCESS_FAULT, FAULT, PA_BITS, PAGE, SCHEMES, A, D, G, PageFault, R,
                     RVMMU, Scheme, U, V, W, X)
@@ -88,6 +89,9 @@ class Entry:
     level: int
     leaf: bool
     half: list = field(default_factory=lambda: [None, None])
+    #: the check bits (2.2: ECC on the tag and the data; kept for every entry)
+    tchk: int = 0
+    dchk: list = field(default_factory=lambda: [0, 0])
 
     def covers(self, vpn: int, asid: int) -> bool:
         return (self.asid == -1 or self.asid == asid) and vpn >> (self.shift + 1) == self.tag
@@ -98,6 +102,25 @@ class Entry:
     @property
     def empty(self) -> bool:
         return self.half[0] is None and self.half[1] is None
+
+
+def _tag_word(e: Entry) -> int:
+    """An entry's tag RAM word: G, the ASID, the tag, the page size, the
+    level, leaf."""
+    return (int(e.asid == -1) | (e.asid & 0xFFFF) << 1 | (e.tag & ((1 << 36) - 1)) << 17
+            | e.shift << 53 | e.level << 58 | int(e.leaf) << 60)
+
+
+def _set_tag_word(e: Entry, w: int) -> None:
+    e.asid = -1 if w & 1 else (w >> 1) & 0xFFFF
+    e.tag, e.shift = (w >> 17) & ((1 << 36) - 1), (w >> 53) & 31
+    e.level, e.leaf = (w >> 58) & 3, bool(w >> 60 & 1)
+
+
+def seal(e: Entry) -> None:
+    """Recompute an entry's check bits after a write."""
+    e.tchk = ecc_encode(_tag_word(e).to_bytes(8, "little"))
+    e.dchk = [ecc_encode((p or 0).to_bytes(8, "little")) for p in e.half]
 
 
 class _Tree:
@@ -158,6 +181,10 @@ class P8700MMU(RVMMU):
         #: the MMUs sharing this FTLB (2.6: a core's harts; their micro-TLBs
         #: are cleared when it changes)
         self.group: list[P8700MMU] = [self]
+        #: the FTLB's ECC (2.2): checked with mipserrctl.PE, reported to the
+        #: core's mipscacheerr (emips.p8700err.CoreErrors)
+        self.ecc_check = False
+        self.errs = None
 
     def share_ftlb(self, owner: "P8700MMU") -> None:
         """Use ``owner``'s FTLB (another hart of the core, 2.6)."""
@@ -199,10 +226,57 @@ class P8700MMU(RVMMU):
                     self.vtree.touch(k)
                 return e
         if leaf:
-            for e in self.ftlb[self._fset(vpn, self.fshift)]:
+            s = self._fset(vpn, self.fshift)
+            if touch and self.ecc_check:
+                self._ecc(s)
+            for e in self.ftlb[s]:
                 if e is not None and e.covers(vpn, asid) and e.pte(vpn) is not None:
                     return e
         return None
+
+    def _ecc(self, s: int) -> None:
+        """2.2: a lookup reads the set's ways — a single-bit error is
+        corrected (and scrubbed), a multiple-bit one is uncorrectable: the
+        access takes a Cache Error (Table 2.2, mipscacheerr ARRAY 4 / 5)."""
+        from .p8700err import CORRECTED, FTLB_DATA, FTLB_TAG, UNCORRECTABLE
+        errs = self.errs
+        for w, e in enumerate(self.ftlb[s]):
+            if e is None:
+                continue
+            checks = [(FTLB_TAG, _tag_word(e), e.tchk, None)]
+            checks += [(FTLB_DATA, e.half[h], e.dchk[h], h) for h in (0, 1)
+                       if e.half[h] is not None]
+            for array, word, chk, h in checks:
+                raw = word.to_bytes(8, "little")
+                status, fixed = ecc_check(raw, chk)
+                if status == "ok":
+                    continue
+                if status == "uncorrectable":
+                    if errs is not None:
+                        errs.record(UNCORRECTABLE, array, way=w, index=s)
+                    from .simrv import RVTrap
+                    raise RVTrap(48, 0, custom=True)
+                value = int.from_bytes(fixed, "little")
+                if h is None:
+                    _set_tag_word(e, value)
+                else:
+                    e.half[h] = value
+                seal(e)                                 # (scrubbed)
+                if errs is not None:
+                    bit = (word ^ value).bit_length() - 1 if word != value else 0x3E
+                    errs.record(CORRECTED, array, bits=bit, way=w, index=s)
+
+    def inject(self, s: int, w: int, *, array: str = "tag", bit: int = 0,
+               half: int = 0) -> None:
+        """Fault injection: flip one bit of FTLB entry (set ``s``, way ``w``):
+        its tag word or a PTE (``half``) without its check bits."""
+        e = self.ftlb[s][w]
+        if array == "tag":
+            _set_tag_word(e, _tag_word(e) ^ 1 << bit)
+        elif array == "data":
+            e.half[half] ^= 1 << bit
+        else:
+            raise ValueError(f"array must be tag or data, not {array!r}")
 
     def _micro(self, kind: str, vpn: int, asid: int, *, record: bool) -> Entry | None:
         """The ITLB / DTLB (4 KB / 64 KB pieces, LRU); a miss refills from the
@@ -283,6 +357,7 @@ class P8700MMU(RVMMU):
                 e = self.vtlb[k] = Entry(key, tag, shift, level, leaf)
                 self.vtree.touch(k)
         e.half[(vpn >> shift) & 1] = pte
+        seal(e)
         self._changed()
         return "FTLB" if to_ftlb else "VTLB"
 
@@ -306,6 +381,7 @@ class P8700MMU(RVMMU):
                         and (e.asid == asid or -1 in (e.asid, asid)) and e.leaf == leaf \
                         and (leaf or e.shift == shift):     # (non-leaf levels nest)
                     e.half[h] = None
+                    seal(e)
         for k, e in enumerate(self.vtlb):
             if e is not None:
                 clear(e)

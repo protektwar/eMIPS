@@ -229,8 +229,9 @@ class Geometry:
         if self.line not in lines:
             raise ValueError(f"line size must be 4, 8, ..., {lines[-1]} bytes, "
                              f"not {self.line}")
-        if not 1 <= self.ways <= 8:
-            raise ValueError(f"associativity must be 1..8 ways, not {self.ways}")
+        most = 8 if self.level == 1 else 16          # (Config2.SA: 8; the P8700's L2: 16)
+        if not 1 <= self.ways <= most:
+            raise ValueError(f"associativity must be 1..{most} ways, not {self.ways}")
         if self.level == 1 and self.way_bytes < 1024:
             raise ValueError(f"a way of {self.way_bytes} bytes is too small: "
                              f"TagLo holds tags of 1 KB ways and larger")
@@ -554,6 +555,9 @@ class Cache:
     level = 1
     #: a data cache of a CPS core: its lines have MESI states
     mesi = False
+    #: the bytes one check covers when a partial store must read them first
+    #: (0: per-byte parity; the P8700's ECC: 4, emips.p8700err)
+    WORD = 0
 
     def __init__(self, kind: str, geometry: Geometry, *, parity: bool = False) -> None:
         self.kind = kind
@@ -621,7 +625,7 @@ class Cache:
             return False
         if self.plru:
             ws = self.ws[s]
-            for (na, da), (_, db) in zip(_tree_path(a), _tree_path(b)):
+            for (na, da), (_, db) in zip(_tree_path(a, self.tree), _tree_path(b, self.tree)):
                 if da != db:
                     return (ws >> na & 1) == da
             return False
@@ -646,7 +650,7 @@ class Cache:
         recently used."""
         ws = self.ws[s] if ws is None else ws
         if self.plru:
-            for node, d in _tree_path(way):
+            for node, d in _tree_path(way, self.tree):
                 ws = ws | (1 << node) if d else ws & ~(1 << node)
         else:
             for b, (i, j) in enumerate(self.pairs):
@@ -659,7 +663,7 @@ class Cache:
     def make_lru(self, s: int, way: int) -> None:
         ws = self.ws[s]
         if self.plru:
-            for node, d in _tree_path(way):
+            for node, d in _tree_path(way, self.tree):
                 ws = ws & ~(1 << node) if d else ws | (1 << node)
         else:
             for b, (i, j) in enumerate(self.pairs):
@@ -691,11 +695,11 @@ class Cache:
         if not cand:
             cand = list(ways)
         if self.plru:
-            ws, lo, hi = self.ws[s], 0, 8
+            ws, lo, hi = self.ws[s], 0, self.tree
             while hi - lo > 1:
                 mid = (lo + hi) // 2
                 width = hi - lo
-                node = 0 if width == 8 else (1 + lo // 4 if width == 4 else 3 + lo // 2)
+                node = self.tree // width - 1 + lo // width     # (heap order)
                 older = 1 - (ws >> node & 1)                 # the side not used last
                 sides = ((lo, mid), (mid, hi))
                 a, b = sides[older]
@@ -766,9 +770,10 @@ class Cache:
 
     def lookup(self, va: int, pa: int, bus, *, allocate: bool = True,
                way0: bool = False, not_way0: bool = False,
-               kind: str = "read") -> tuple[int, int | None]:
+               kind: str = "read", zero: bool = False) -> tuple[int, int | None]:
         """``(set, way)`` holding ``pa``; a miss fills a line when
-        ``allocate`` (way ``None`` otherwise).  Counts hits and misses
+        ``allocate`` (way ``None`` otherwise; ``zero``: with zeros, dirty —
+        the caller writes all of it).  Counts hits and misses
         (:class:`CacheStats`, by ``kind`` of access) and, while watched,
         records a :class:`CacheAccess`."""
         s, tag = self.set_of(va), self.tag_of(pa)
@@ -802,7 +807,7 @@ class Cache:
             if old.valid:
                 rec.victim = self.line_pa(old.tag, s)
                 rec.victim_dirty = self.writable and old.dirty
-        self.replace(s, w, tag, bus)
+        self.replace(s, w, tag, bus, zero=zero)
         return s, w
 
     def note_hit(self, kind: str, va: int, pa: int, s: int, w: int) -> None:
@@ -890,7 +895,7 @@ class Cache:
 
     def randomize(self, rng: random.Random) -> None:
         """Power-up contents: every array bit undefined."""
-        lru_bits = 7 if self.plru else len(self.pairs)
+        lru_bits = self.tree - 1 if self.plru else len(self.pairs)
         for s in range(self.sets):
             for ln in self.lines[s]:
                 ln.tag = rng.getrandbits(32 - self.tag_shift)
@@ -931,11 +936,14 @@ class Cache:
                              f"not {array!r}")
 
 
-def _tree_path(w: int) -> tuple[tuple[int, int], ...]:
-    """(node, direction) from the root to way ``w`` in the 7-bit pseudo-LRU
-    tree of 8 ways: node 0 splits ways 0-3 / 4-7, nodes 1-2 the halves,
-    nodes 3-6 the pairs; a node bit names the side used last."""
-    return ((0, w >> 2 & 1), (1 + (w >> 2 & 1), w >> 1 & 1), (3 + (w >> 1), w & 1))
+def _tree_path(w: int, ways: int = 8) -> tuple[tuple[int, int], ...]:
+    """(node, direction) from the root to way ``w`` in the pseudo-LRU tree
+    of ``ways`` (8: 7 bits, 16: 15 bits) in heap order: node 0 splits the
+    ways in halves, nodes 1-2 the halves, ... (8 ways: nodes 3-6 the
+    pairs); a node bit names the side used last."""
+    depth = ways.bit_length() - 1
+    return tuple(((1 << d) - 1 + (w >> (depth - d)), w >> (depth - d - 1) & 1)
+                 for d in range(depth))
 
 
 class SecondaryCache(Cache):
@@ -950,6 +958,8 @@ class SecondaryCache(Cache):
         self.level = LEVEL[kind]
         self.tag_shift = self.index_bit           # PIPT: no index bits in the tag
         self.plru = geometry.ways > 4
+        #: the pseudo-LRU tree's ways (8 up to 8 ways, 16 above)
+        self.tree = 1 << (geometry.ways - 1).bit_length()
         self.groups = max(self.line // 8, 1)
         self.group = min(8, self.line)
         if ecc:
@@ -963,9 +973,14 @@ class SecondaryCache(Cache):
         self.timing = None
         #: single-bit errors corrected (24K performance counter event 22)
         self.corrected = 0
+        #: (cache, set, way, doubleword, bit) of each correction, or None
+        self.on_corrected = None
         #: a CPS's shared L2: pa -> "wb" / "wt" / "bypass" (the CM's address
         #: regions, emips.coherence)
         self.policy = None
+        #: a write miss allocates the line (the P8700's L2, MD01502 3.3.8: the
+        #: rest of the line read from below unless the write covers it)
+        self.write_allocate = False
 
     def set_of(self, va: int) -> int:
         return (va >> self.line_shift) & (self.sets - 1)
@@ -1007,6 +1022,10 @@ class SecondaryCache(Cache):
         status, data = ecc_check(raw, ln.ecc[k])
         if status == "corrected":
             self.corrected += 1
+            if self.on_corrected is not None:
+                bit = next((8 * i + (a ^ b).bit_length() - 1
+                            for i, (a, b) in enumerate(zip(raw, data)) if a != b), 0x3F)
+                self.on_corrected(self, s, w, k, bit)
         elif status == "uncorrectable":
             self._fail(CacheError(self, data=True, way=w,
                                   index=(s << self.line_shift) | (k * g),
@@ -1067,7 +1086,8 @@ class SecondaryCache(Cache):
                        through: bool = False) -> None:
         """A write from above (an eviction, a write-through store): a hit
         updates the line (dirty unless ``through``), a miss goes on below
-        (no write allocate); ``through`` writes go on below as well."""
+        (no write allocate) or, with :attr:`write_allocate`, fills the line
+        first; ``through`` writes go on below as well."""
         if self.policy is not None:
             mode = self.policy(pa)
             if mode == "bypass":
@@ -1082,7 +1102,9 @@ class SecondaryCache(Cache):
             k = min(n - i, self.line - off)
             part = (known >> i) & ((1 << k) - 1)
             if part:
-                s, w = self.lookup(a, a, self.below, allocate=False, kind="write")
+                whole = k == self.line and part == (1 << k) - 1    # (nothing to read)
+                s, w = self.lookup(a, a, self.below, kind="write",
+                                   allocate=self.write_allocate and not through, zero=whole)
                 if w is not None:
                     self._merge(s, w, off, data[i:i + k], part)
                     if not through:
@@ -1450,6 +1472,8 @@ class Caches:
         self.pending: CacheError | None = None
         #: Config2.L2B: the L2 is bypassed
         self.l2_bypass = False
+        #: the D-cache corrects virtual aliases (:meth:`_unalias`; the P8700)
+        self.alias_free = False
         #: while watched: every access (CacheAccess), in the order made
         self.log: list[CacheAccess] | None = None
         #: a core of a CPS: the Coherence Manager (emips.coherence), which
@@ -1527,6 +1551,8 @@ class Caches:
                 **kw) -> tuple[int, int | None]:
         """``c.lookup``; a coherent refill asks the Coherence Manager with
         ``intent`` and takes the MESI state it answers."""
+        if self.alias_free and c is self.d:
+            self._unalias(c, va, pa)
         if self.cm is None or not self.coherent(cca):
             return c.lookup(va, pa, self, kind=kind, **kw)
         self._intent, self._fill = intent, None
@@ -1538,6 +1564,25 @@ class Caches:
             self._intent = None
         self._apply_fill(c, s, w, log, mark)
         return s, w
+
+    def _unalias(self, c: Cache, va: int, pa: int) -> None:
+        """A D-cache that corrects virtual aliases (the P8700's, MD01502
+        3.3.2): a line the access would miss in its set but that sits in
+        another of the PA's sets (another virtual colour) is written back
+        if dirty and invalidated there — the refill then brings it to the
+        access's set, so a physical line is never in two sets."""
+        tag = c.tag_of(pa)
+        s = c.set_of(va)
+        if c.find(s, tag) is not None:
+            return
+        for a in c.alias_sets(pa):
+            if a == s:
+                continue
+            w = c.find(a, tag)
+            if w is not None:
+                if c._dirty(a, w):
+                    c.write_back(a, w, self)
+                self._invalidate(c, a, w)
 
     def _apply_fill(self, c: Cache, s: int, w: int | None, log, mark: int) -> None:
         fill, self._fill = self._fill, None
@@ -1801,6 +1846,8 @@ class Caches:
         if t.active:
             t.line_access(pas[0] & ~d.line_mask)
         if w is not None:
+            if d.check and d.parity and d.WORD and (off % d.WORD or size % d.WORD):
+                d._check_data(s, w, off, size)           # (a word in part: read first)
             ln = d.lines[s][w]
             if ln.shared:                                # S -> M: an upgrade
                 if self.coherent(cca):
@@ -2077,11 +2124,18 @@ class Caches:
                 for w in range(d.ways):
                     if d.lines[s][w].valid and d._dirty(s, w):
                         d.write_back(s, w, self)
-        if self.i is not None:
-            for s in range(self.i.sets):
-                for w in range(self.i.ways):
-                    if self.i.lines[s][w].valid:
-                        self._invalidate(self.i, s, w)
+        icaches = [self.i]
+        if self.cm is not None and getattr(self.cm, "fence_i_global", False):
+            # (the P8700, MD01502 3.3.10: "operates on all instruction caches in
+            # a cluster")
+            icaches = [c.i for c in self.cm.cores.values()]
+        for ic in icaches:
+            if ic is None:
+                continue
+            for s in range(ic.sets):
+                for w in range(ic.ways):
+                    if ic.lines[s][w].valid:
+                        self._invalidate(ic, s, w)
         self.sync(0)
 
     def prefetch(self, hint: int, va: int, pa: int, cca: int) -> None:
