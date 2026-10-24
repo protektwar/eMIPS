@@ -58,6 +58,8 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#223-mips64-64-bit-programs">2.23 MIPS64: 64-bit programs</a></li>
 <li><a href="#224-nanomips-16--32--and-48-bit-instructions">2.24 nanoMIPS: 16-, 32- and 48-bit instructions</a></li>
 <li><a href="#225-msa-128-bit-vectors">2.25 MSA: 128-bit vectors</a></li>
+<li><a href="#226-risc-v-rv32-and-rv64">2.26 RISC-V: RV32 and RV64</a></li>
+<li><a href="#227-the-mips-p8700-a-risc-v-core">2.27 The MIPS P8700: a RISC-V core</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -2148,7 +2150,260 @@ uses MSA through GCC's <code>msa.h</code> and its auto-vectorizer (<code>python3
 emips cc --msa</code>, <a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>, Lab 72).  Labs 68–72 add arrays, brighten
 an image, multiply fractions, enable MSA on first use and compare C with and
 without vectors.  On MIPS64 (<code>--arch mips64</code>) MSA is the same, with
-<code>copy_s.d</code> / <code>fill.d</code> / <code>insert.d</code> for 64-bit GPRs.</p>
+<code>copy_s.d</code> / <code>fill.d</code> / <code>insert.d</code> for 64-bit GPRs.</p><h2 id="226-risc-v-rv32-and-rv64">2.26 RISC-V: RV32 and RV64</h2>
+<p><strong>RISC-V</strong> is the open instruction set that grew out of the same
+Berkeley and Stanford RISC ideas as MIPS — and MIPS itself builds RISC-V cores
+now (the P8700, <a href="#227-the-mips-p8700-a-risc-v-core">2.27</a>).  eMIPS runs it as
+another architecture next to MIPS32, MIPS64 and nanoMIPS: a program asks for it
+with <code># eMIPS: --arch rv32</code> or <code>--arch rv64</code> (the command line's
+<code>--arch</code>, or RV32 / RV64 on the Machine toolbar).  The rules are the
+ratified RISC-V specifications (the unprivileged and privileged volumes); the
+assembler gives the bytes GNU <code>as</code> and <code>ld</code> give, and the system
+calls are those of RARS, the RISC-V MARS (<a href="06-reference.html#61-system-calls">6.1</a>).  The
+same program as in <a href="#21-the-shape-of-a-program">2.1</a>'s style:</p>
+<pre><code class="language-asm"># output: 55\n0x00000037
+# arch: rv32
+        .data
+nums:   .word   1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+        .text
+main:   la      a0, nums
+        li      a1, 10
+        call    sum                 # jal ra, sum: no delay slot
+        mv      s0, a0
+        li      a7, 1               # print_int (RARS: the service in a7)
+        ecall
+        li      a0, '\n'
+        li      a7, 11              # print_char
+        ecall
+        mv      a0, s0
+        li      a7, 34              # print_hex
+        ecall
+        li      a7, 10              # exit
+        ecall
+
+sum:    li      t0, 0               # a0 = the array, a1 = how many
+1:      lw      t1, 0(a0)
+        add     t0, t0, t1
+        addi    a0, a0, 4
+        addi    a1, a1, -1
+        bnez    a1, 1b              # bne a1, zero: compare and branch at once
+        mv      a0, t0              # the result in a0
+        ret                         # jalr zero, 0(ra)
+</code></pre>
+<p>Side by side:</p>
+<table>
+<thead>
+<tr><th></th><th>MIPS32</th><th>RISC-V</th></tr>
+</thead>
+<tbody>
+<tr><td>registers</td><td><code>$0</code>–<code>$31</code> (<code>$zero</code>, <code>$v0</code>, <code>$a0</code>,
+<code>$t0</code> ... <code>$ra</code>), plus HI / LO</td><td><code>x0</code>–<code>x31</code>: <code>zero</code>,
+<code>ra</code>, <code>sp</code>, <code>gp</code>, <code>tp</code>, <code>t0</code>–<code>t6</code>, <code>s0</code>–<code>s11</code>,
+<code>a0</code>–<code>a7</code> (arguments and results); no HI / LO; RV64's are 64 bits</td></tr>
+<tr><td>formats</td><td>R, I, J; a 6-bit opcode</td><td>R, I, S, B, U, J; a 7-bit
+opcode, rd / rs1 / rs2 always in the same bits, immediates cut into pieces so
+that their sign is always bit 31 (<a href="05-understanding.html#51-how-an-instruction-is-encoded">5.1</a>)</td></tr>
+<tr><td>branches</td><td><code>beq</code> / <code>bne</code> on two registers, the others against
+zero (<code>slt</code> + <code>bne</code> for <code>blt</code>); a delay slot</td><td><code>beq</code>,
+<code>bne</code>, <code>blt</code>, <code>bge</code>, <code>bltu</code>, <code>bgeu</code> on any two registers; no delay
+slot</td></tr>
+<tr><td>calls</td><td><code>jal</code> (within the 256 MB region), <code>jr $ra</code></td><td><code>jal
+rd, label</code> (±1 MB, PC-relative), <code>jalr rd, imm(rs1)</code>; <code>call</code> /
+<code>ret</code> / <code>tail</code> are pseudo-instructions</td></tr>
+<tr><td>constants</td><td><code>lui</code> + <code>ori</code></td><td><code>lui</code> + <code>addi</code> (which
+sign-extends: the assembler rounds the upper part), <code>auipc</code> for addresses
+relative to the PC</td></tr>
+<tr><td>multiply, divide</td><td><code>mult</code> / <code>div</code> into HI / LO</td><td>the M
+extension: <code>mul</code>, <code>mulh</code>, <code>div</code>, <code>rem</code> into any register;
+division by zero gives -1 (and the dividend as remainder) — no trap</td></tr>
+<tr><td>the system</td><td><code>syscall</code> with <code>$v0</code>; CP0 (<code>mfc0</code> /
+<code>mtc0</code>); <code>eret</code></td><td><code>ecall</code> with <code>a7</code>; CSRs (<code>csrr</code>,
+<code>csrw</code>, <code>csrs</code>, <code>csrc</code> ...); <code>mret</code> / <code>sret</code></td></tr>
+<tr><td>16-bit code</td><td>MIPS16e / microMIPS: a mode
+(<a href="#219-mips16e-16-bit-instructions">2.19</a>)</td><td>the C extension: 16-bit forms mixed
+freely, no mode — the assembler picks them (<code>.option norvc</code> stops it)</td></tr>
+<tr><td>byte order</td><td>big- or little-endian</td><td>little-endian</td></tr>
+<tr><td>floating point</td><td>CP1: <code>$f0</code>–<code>$f31</code>, FCSR</td><td>F / D:
+<code>f0</code>–<code>f31</code>, <code>fcsr</code> (<code>frm</code>, <code>fflags</code>); a single in a double
+register is NaN-boxed</td></tr>
+</tbody>
+</table>
+<p><strong>Extensions.</strong>  A hart is RV32I or RV64I plus the extensions it
+has: by default <code>imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb</code> — M
+(multiply), A (atomics: <code>lr</code> / <code>sc</code>, <code>amoadd</code> ...), F and D
+(floating point), C (compressed), the CSR instructions, <code>fence.i</code>, the
+counters and Zba / Zbb (address generation and basic bit manipulation:
+<code>sh1add</code>, <code>andn</code>, <code>clz</code>, <code>rev8</code> ...).  <code>--rv-ext</code> (Settings →
+Processor) chooses others, as an ISA string; an instruction of an extension the
+hart lacks is an illegal instruction.  Without C, every instruction is 32 bits
+and must be 4-byte aligned.</p>
+<p><strong>Privilege modes and traps.</strong>  A hart runs in Machine (M),
+Supervisor (S) or User (U) mode (<code>--rv-modes msu</code>, <code>mu</code> or
+<code>m</code>); a program starts in M-mode (<code>--boot user</code>: U-mode).  An exception
+or an interrupt is a <strong>trap</strong>: the hart saves the PC in
+<code>mepc</code>, the reason in <code>mcause</code> (and an address or the instruction
+in <code>mtval</code>), goes to M-mode and jumps to <code>mtvec</code>; <code>mret</code> comes
+back.  Unlike MIPS there is no fixed vector and no kernel segment: software
+sets <code>mtvec</code>, and <code>medeleg</code> / <code>mideleg</code> hand traps from S- and
+U-mode to an S-mode handler (<code>stvec</code>, <code>sepc</code>, <code>scause</code>,
+<code>sret</code>).  A U-mode program that touches a machine CSR takes an
+<em>illegal instruction</em> trap:</p>
+<pre><code class="language-asm"># output: cause 2, mtval 0x300022f3\nback in U-mode
+# arch: rv32
+        .text
+main:   la      t0, handler
+        csrw    mtvec, t0           # where traps go (direct mode)
+        li      t0, 0x1800
+        csrc    mstatus, t0         # MPP = 0: mret goes to U-mode
+        la      t0, user
+        csrw    mepc, t0
+        mret                        # "return" into user mode
+
+user:   csrr    t0, mstatus         # a U-mode program may not read it
+        la      a0, msg
+        li      a7, 4               # print_string
+        ecall
+        li      a7, 10
+        ecall
+
+        .balign 4                   # (mtvec's BASE: 4-byte aligned)
+handler:
+        la      a0, cause
+        li      a7, 4
+        ecall
+        csrr    a0, mcause          # 2: illegal instruction
+        li      a7, 1
+        ecall
+        la      a0, tval
+        li      a7, 4
+        ecall
+        csrr    a0, mtval           # the instruction itself
+        li      a7, 34
+        ecall
+        li      a0, '\n'
+        li      a7, 11
+        ecall
+        csrr    t0, mepc            # skip it: 4 bytes (csrr is never compressed)
+        addi    t0, t0, 4
+        csrw    mepc, t0
+        mret                        # back to U-mode (MPP), after it
+        .data
+cause:  .asciz  "cause "
+tval:   .asciz  ", mtval "
+msg:    .asciz  "back in U-mode"
+</code></pre>
+<p>What else to know:</p>
+<ul>
+<li><strong>System calls.</strong>  <code>ecall</code> with a RARS service number in
+<code>a7</code> is that service (arguments in <code>a0</code> ..., results in
+<code>a0</code>); an <code>ecall</code> with any other number is a real trap (cause 8 from
+U-mode, 9 from S, 11 from M), for your handler.</li>
+<li><strong>Memory.</strong>  RARS's layout: code at 0x00400000, data at
+0x10010000 (<code>gp</code> = 0x10010800), the stack below 0x7ffff000, the MMIO
+console at 0xffff0000 (<a href="#210-the-memory-mapped-console">2.10</a>; its interrupt is
+MEIP, mip bit 11).  M-mode addresses are physical; in S- and U-mode
+<code>satp</code> can turn on Sv32 (RV32) or Sv39 / Sv48 / Sv57 (RV64) paging, and
+PMP (<code>pmpcfg</code> / <code>pmpaddr</code>) limits what the lower modes reach.  A
+misaligned access is a trap (cause 4 or 6) unless the core does it in hardware.</li>
+<li><strong>Atomics.</strong>  <code>lr.w</code> / <code>sc.w</code> are MIPS's <code>ll</code> /
+<code>sc</code> (<code>sc</code> writes 0 on success); <code>amoadd.w</code>, <code>amoswap.w</code> ...
+do a read-modify-write in one instruction.</li>
+<li><strong>The pipeline</strong> is Patterson &amp; Hennessy's RISC-V edition:
+the same five stages as MIPS's, branches decided in ID and predicted not taken —
+a taken branch costs one cycle instead of filling a delay slot
+(<a href="05-understanding.html#55-branches-and-the-delay-slot">5.5</a>).  The window draws the
+RISC-V datapath (Imm Gen, no RegDst multiplexer) and its control as gates
+(<a href="03-the-gui.html">Phase 3</a>).</li>
+<li><strong>C, ELF, GDB</strong>: <code>python3 -m emips cc --arch rv32</code> (a
+RISC-V GCC or clang, <a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>), RISC-V ELF
+executables, and <code>gdb</code> with the stub's RISC-V target
+(<a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>).  The debugger's <code>csr</code> shows the
+CSRs (MIPS's <code>cp0</code> and other MIPS-only commands say so).</li>
+</ul>
+<h2 id="227-the-mips-p8700-a-risc-v-core">2.27 The MIPS P8700: a RISC-V core</h2>
+<p>The <strong>P8700</strong> is MIPS's RISC-V multiprocessor: up to six RV64GC
+cores of one or two harts (hardware threads) each, with MIPS's Coherence
+Manager, caches and cluster power control around them.  <code>--core p8700</code>
+(<a href="06-reference.html#611-real-mips-cores">6.11</a>) builds it as its manual describes it,
+with <code>--cores N</code> and <code>--vps 2</code> (two harts a core).  Beyond the standard
+ISA it has:</p>
+<ul>
+<li><strong>Its own instructions</strong>: <code>mips.ccmov rd, rs2, rs1, rs3</code> (rd =
+rs2 ≠ 0 ? rs1 : rs3, a conditional move), <code>mips.ldp</code> / <code>mips.sdp</code>
+(<code>mips.lwp</code> / <code>mips.swp</code>) loading or storing two registers at once,
+<code>mips.pref</code>, and the barriers <code>mips.ehb</code> / <code>mips.ihb</code> /
+<code>mips.pause</code>.</li>
+<li><strong>No AMO instructions</strong> (only <code>lr</code> / <code>sc</code>): an
+<code>amoadd</code> traps, for M-mode software to emulate; reading <code>time</code> traps
+too.</li>
+<li><strong>Its own CSRs</strong>: <code>mipstvec</code> (the vector of its custom
+exceptions — TLB misses with a software walk, the Cache Error), the
+<code>mipsconfig</code> registers, the PMAs that make a region cached or uncached
+(<code>pmacfg</code>), four performance counters, <code>mipscacheerr</code> /
+<code>mipserrctl</code>; the debugger's <code>p8700</code> lists them.</li>
+<li><strong>The cluster</strong>: <code>mhartid</code> is the core number times 16
+plus the hart; the GCR block (at 0x380000 below a program at 0x00400000) holds
+each hart's reset address and the Cluster Power Controller, which powers cores
+up and starts harts; the ACLINT gives timers and inter-processor interrupts,
+the APLIC the devices' interrupts (the console: source 4).</li>
+<li><strong>Caches</strong>: each core's L1 instruction and data caches (32 or 64
+KB, shared by its harts) and an L2 of 256 KB-8 MB in the Coherence Manager,
+which keeps the cores' data caches coherent (MESI: a core sees another's
+stores).  Errors in them, and in the TLB, are corrected or reported with
+<code>mipscacheerr</code> and the Cache Error exception.</li>
+</ul>
+<pre><code class="language-asm"># output: max 9, hart 0x00000010\n
+# arch: rv64
+# core: p8700
+# cores: 2
+        .text
+main:   csrr    t0, mhartid         # CORENUM &lt;&lt; 4 | HARTNUM
+        bnez    t0, other
+wait:   la      t1, done            # hart 0 waits for core 1's hart
+        ld      t2, 0(t1)
+        beqz    t2, wait
+        li      a7, 10
+        ecall
+
+other:  addi    sp, sp, -16
+        mips.sdp s0, s1, 0(sp)      # two registers stored in one instruction
+        li      s0, 4
+        li      s1, 9
+        slt     t1, s0, s1
+        mips.ccmov a1, t1, s1, s0   # a1 = t1 != 0 ? s1 : s0 — the larger
+        la      a0, text
+        li      a7, 4
+        ecall
+        mv      a0, a1
+        li      a7, 1
+        ecall
+        la      a0, comma
+        li      a7, 4
+        ecall
+        csrr    a0, mhartid
+        li      a7, 34
+        ecall
+        li      a0, '\n'
+        li      a7, 11
+        ecall
+        mips.ldp s0, s1, 0(sp)      # and loaded back in one
+        addi    sp, sp, 16
+        la      t1, done
+        li      t2, 1
+        sd      t2, 0(t1)           # (the Coherence Manager carries it to core 0)
+idle:   j       idle
+        .data
+done:   .dword  0
+text:   .asciz  "max "
+comma:  .asciz  ", hart "
+</code></pre>
+<p>With the kernel or user boot every hart starts at <code>main</code> (as on a MIPS
+multi-core system, <a href="05-understanding.html#59-more-than-one-core">5.9</a>); with <code>--boot
+reset</code> only core 0's hart 0 runs and must power the others up, as the P8700's
+boot code does.  Its MMU (a VTLB, an FTLB and micro-TLBs, filled by a hardware
+walker or by a software handler with <code>mips.mtlbwr</code>),
+interrupt controller and caches are those of its manual: the debugger's
+<code>p8700</code>, <code>cpu</code> and <code>cm</code>, and the window's panes, show them.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

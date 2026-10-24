@@ -1,0 +1,6 @@
+# Lab 74 — a service of your own: the checks of a solution
+# (python3 -m emips check docs/guide/labs/rv_ecall.asm, or Run → Check)
+eMIPS: --arch rv32
+check: output is "42"          (service 100 doubled 21)
+check: exceptions == 1         (one trap: the ecall of service 100)
+check: $a0 == 42

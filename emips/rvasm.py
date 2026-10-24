@@ -395,6 +395,9 @@ class _Expressions:
 
     def __init__(self, asm: "Assembler") -> None:
         self.asm = asm
+        #: .eqv: symbols stay symbols (read.c s_set: "no attempt is made to
+        #: evaluate the expression or any part of it immediately")
+        self.late = False
 
     def parse(self, s: str, i: int, rank: int = 0) -> tuple[Expr, int]:
         left, i = self._operand(s, i)
@@ -470,6 +473,8 @@ class _Expressions:
 
     def _symbol(self, name: str) -> Expr:
         sym = self.asm.symbol_ref(name)
+        if self.late:
+            return Expr("symbol", 0, sym)
         if sym.equated is not None and sym.equated[0].op == "constant":
             return Expr("constant", sym.equated[0].num)
         if sym.absolute is not None:
@@ -1454,9 +1459,14 @@ class Assembler:
     def d_equ(self, d: str, rest: str) -> None:
         name, _, value = rest.partition(",")
         name = name.strip()
-        if d == ".equiv" and self.symbols.get(name) is not None and self.symbols[name].defined:
+        if d in (".equiv", ".eqv") and self.symbols.get(name) is not None \
+                and self.symbols[name].defined:     # (read.c s_set: .eqv is .equiv, evaluated late)
             self.error(f"symbol `{name}' is already defined")
-        self._equate(name, value.strip())
+        self.expr.late = d == ".eqv"
+        try:
+            self._equate(name, value.strip())
+        finally:
+            self.expr.late = False
 
     def d_option(self, d: str, rest: str) -> None:
         """s_riscv_option."""
@@ -1998,11 +2008,22 @@ def _scrub(text: str) -> str:
             out.append(ch)
             i += 1
             continue
+        if ch == "'":                       # (LEX_IS_ONECHAR_QUOTE: 'x' -> its number)
+            c = rest[i + 1] if i + 1 < len(rest) else "\0"
+            i += 2
+            if c == "\\" and i < len(rest):
+                c = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}.get(rest[i], rest[i])
+                i += 1
+            if i < len(rest) and rest[i] == "'":
+                i += 1
+            out.append(str(ord(c) & 0xFF))
+            continue
         if ch in " \t":
             j = i
             while j < len(rest) and rest[j] in " \t":
                 j += 1
-            if out and j < len(rest) and _SYMCH.match(out[-1]) and _SYMCH.match(rest[j]):
+            if out and j < len(rest) and _SYMCH.match(out[-1]) and (
+                    _SYMCH.match(rest[j]) or rest[j] == "'"):   # (state 10: foo 'b')
                 out.append(" ")
             i = j
             continue
@@ -2032,7 +2053,7 @@ _DIRECTIVES = {
                                         ".cfi_def_cfa", ".cfi_def_cfa_register",
                                         ".cfi_restore", ".cfi_sections", ".end",
                                         ".variant_cc", ".func", ".endfunc")},
-    **{d: Assembler.d_equ for d in (".equ", ".set", ".equiv")},
+    **{d: Assembler.d_equ for d in (".equ", ".set", ".equiv", ".eqv")},
     ".option": Assembler.d_option,
     **{d: Assembler.d_data for d in _DATA_SIZES},
     **{d: Assembler.d_float for d in (".float", ".single", ".double")},

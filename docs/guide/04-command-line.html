@@ -114,9 +114,9 @@ output — the test suite re-runs them.</p>
 <td>the MIPS32 / MIPS64 release (default R5; nanoMIPS: R6, the only one)</td>
 </tr>
 <tr>
-<td><code>--arch mips32|mips64|nanomips</code></td>
+<td><code>--arch mips32|mips64|nanomips|rv32|rv64</code></td>
 <td>all</td>
-<td>the architecture (default <code>mips32</code>): <code>mips64</code> = a MIPS64 core — 64-bit registers, HI / LO and PC, the doubleword instructions (<code>daddu</code>, <code>ld</code>, <code>dsll32</code>, <code>dmult</code> ...), <code>dli</code> / <code>dla</code>, the n64 register names (<code>$a4</code>–<code>$a7</code> = <code>$8</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>); with the fixed mapping it addresses the 32-bit compatibility segments (Config.AT = 1: any other 64-bit address is an Address Error), with a TLB (<code>--mmu tlb</code>, <code>ftlb</code>, <code>+sc</code>, <code>+pw</code>) the whole 64-bit address space (Config.AT = 2: xuseg, xsseg, xkphys, xkseg; the boot firmware sets Status.KX / SX / UX and handles the XTLB Refills); it runs in instruction mode and on the 5-stage pipeline (the 24K is a MIPS32 core: <code>--model 24k</code> becomes 5-stage; DMULT / DDIV take the MIPS64 5K's 9 / 67 cycles); the boot sets Status.FR (64-bit FPRs), the user boot Status.PX (64-bit operations in User Mode).  <code>nanomips</code> = a nanoMIPS32 core (the I7200's instruction set): 16-, 32- and 48-bit instructions, Release 6 based, no delay slots, no FPU; the program is assembled and linked as the nanoMIPS toolchain's <code>as</code> and <code>ld</code> do (the same bytes); the p32 register names (<code>$t4</code> / <code>$t5</code> = <code>$2</code> / <code>$3</code>, <code>$a0</code>–<code>$a7</code> = <code>$4</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>) — so the system call number goes in <code>$t4</code>, its arguments in <code>$a0</code>–<code>$a2</code>; every MMU, caches and cores, the Malta (<code>--board malta</code>: its boot monitor as nanoMIPS code); instruction mode and the 5-stage pipeline (<code>--model 24k</code> becomes 5-stage: the 24K is a MIPS32 core); nanoMIPS ELF executables, C (<code>cc --arch nanomips</code>, <a href="#411-cc--build-a-c-program">4.11</a>) and GDB (<code>nanomips-elf-gdb</code>, <a href="#412-gdb--debugging-with-gdb">4.12</a>)</td>
+<td>the architecture (default <code>mips32</code>): <code>mips64</code> = a MIPS64 core — 64-bit registers, HI / LO and PC, the doubleword instructions (<code>daddu</code>, <code>ld</code>, <code>dsll32</code>, <code>dmult</code> ...), <code>dli</code> / <code>dla</code>, the n64 register names (<code>$a4</code>–<code>$a7</code> = <code>$8</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>); with the fixed mapping it addresses the 32-bit compatibility segments (Config.AT = 1: any other 64-bit address is an Address Error), with a TLB (<code>--mmu tlb</code>, <code>ftlb</code>, <code>+sc</code>, <code>+pw</code>) the whole 64-bit address space (Config.AT = 2: xuseg, xsseg, xkphys, xkseg; the boot firmware sets Status.KX / SX / UX and handles the XTLB Refills); it runs in instruction mode and on the 5-stage pipeline (the 24K is a MIPS32 core: <code>--model 24k</code> becomes 5-stage; DMULT / DDIV take the MIPS64 5K's 9 / 67 cycles); the boot sets Status.FR (64-bit FPRs), the user boot Status.PX (64-bit operations in User Mode).  <code>nanomips</code> = a nanoMIPS32 core (the I7200's instruction set): 16-, 32- and 48-bit instructions, Release 6 based, no delay slots, no FPU; the program is assembled and linked as the nanoMIPS toolchain's <code>as</code> and <code>ld</code> do (the same bytes); the p32 register names (<code>$t4</code> / <code>$t5</code> = <code>$2</code> / <code>$3</code>, <code>$a0</code>–<code>$a7</code> = <code>$4</code>–<code>$11</code>, <code>$t0</code>–<code>$t3</code> = <code>$12</code>–<code>$15</code>) — so the system call number goes in <code>$t4</code>, its arguments in <code>$a0</code>–<code>$a2</code>; every MMU, caches and cores, the Malta (<code>--board malta</code>: its boot monitor as nanoMIPS code); instruction mode and the 5-stage pipeline (<code>--model 24k</code> becomes 5-stage: the 24K is a MIPS32 core); nanoMIPS ELF executables, C (<code>cc --arch nanomips</code>, <a href="#411-cc--build-a-c-program">4.11</a>) and GDB (<code>nanomips-elf-gdb</code>, <a href="#412-gdb--debugging-with-gdb">4.12</a>).  <code>rv32</code> / <code>rv64</code> = a RISC-V hart (<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>): the RISC-V registers and CSRs, M / S / U modes, RARS's system calls (the service in <code>a7</code>) and memory map, little-endian; the program is assembled and linked as GNU <code>as</code> and <code>ld</code> do (relaxation included, the same bytes); instruction mode and Patterson &amp; Hennessy's RISC-V pipeline; RISC-V ELF executables, C (<code>cc --arch rv32</code>) and GDB; no release, board, MMU or MIPS ASE options (they are MIPS's)</td>
 </tr>
 <tr>
 <td><code>--nms</code></td>
@@ -127,6 +127,21 @@ output — the test suite re-runs them.</p>
 <td><code>--relax</code></td>
 <td>all</td>
 <td>nanoMIPS: the linker's relaxations (<code>ld --relax</code>) of a <code>.linkrelax</code> program — calls, branches and <code>$gp</code> accesses that fit a shorter form once every address is known are shrunk; <code>asm</code> prints what the linker did (<code># ld: ...</code> lines; the expansions of what does not reach happen without it) (<a href="05-understanding.html#lab-65--what-the-linker-does">Lab 65</a>)</td>
+</tr>
+<tr>
+<td><code>--rv-ext EXTS</code></td>
+<td>all</td>
+<td>RISC-V: the hart's extensions as an ISA string (default <code>imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb</code>; <code>i</code> is needed, <code>g</code> = <code>imafd_zicsr_zifencei</code>): an instruction of a missing extension is an illegal instruction, the program is assembled for these (<code>--rv-ext imac</code>: no FPU; without <code>c</code> every instruction is 32 bits)</td>
+</tr>
+<tr>
+<td><code>--rv-modes msu|mu|m</code></td>
+<td>all</td>
+<td>RISC-V: the privilege modes the hart has (default <code>msu</code>: Machine, Supervisor, User — paging needs S; <code>m</code>: only Machine mode)</td>
+</tr>
+<tr>
+<td><code>--no-relax</code></td>
+<td>all</td>
+<td>RISC-V: no linker relaxation (GNU <code>as -mno-relax</code>, <code>ld --no-relax</code>): calls stay <code>auipc</code> + <code>jalr</code>, <code>la</code> stays two instructions even when one would do</td>
 </tr>
 <tr>
 <td><code>--crc auto|none|crc</code> / <code>--ginv auto|none|ginvi|ginvt</code></td>
@@ -301,7 +316,7 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--core NAME</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>a real MIPS core (<code>24kf</code>, <code>m14k</code>, <code>p5600</code> ...; <a href="#413-cores--real-mips-cores">4.13</a>): its release, compressed ISA, FPU, MMU, caches, cores, shadow sets, pipeline model and PRId; the other flags choose among what the core can be built with, a flag it cannot have is refused (<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>)</td>
+<td>a real MIPS core (<code>24kf</code>, <code>m14k</code>, <code>p5600</code> ...; <a href="#413-cores--real-mips-cores">4.13</a>): its release, compressed ISA, FPU, MMU, caches, cores, shadow sets, pipeline model and PRId; the other flags choose among what the core can be built with, a flag it cannot have is refused (<a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>).  <code>p8700</code> is MIPS's RISC-V core (<a href="02-writing-programs.html#227-the-mips-p8700-a-risc-v-core">Phase 2, 2.27</a>): RV64, 1–6 cores (<code>--cores</code>) of 1–2 harts (<code>--vps</code>), its caches, MMU, Coherence Manager and interrupt controller</td>
 </tr>
 <tr>
 <td><code>--no-header</code></td>
@@ -644,6 +659,14 @@ condition and increment) gets a breakpoint on each.</p>
 <td>PC, HI, LO, Status, Cause, EPC, BadVAddr, Count, Compare, IntCtl, SRSCtl, SRSMap (in Debug Mode Debug, DEPC, DESAVE), FCSR</td>
 </tr>
 <tr>
+<td><code>csr</code> / <code>csr NAME|NUMBER ...</code></td>
+<td>RISC-V: the trap and status CSRs (<code>mstatus</code>, <code>mtvec</code>, <code>mepc</code>, <code>mcause</code>, <code>mtval</code>, <code>mie</code>, <code>mip</code>, <code>satp</code> ... and the privilege mode) / those CSRs (<code>csr medeleg 0x300</code>).  The MIPS-only commands (<code>cp0</code>, <code>tlb</code>, <code>cps</code>, <code>gic</code> ...) say so on a hart</td>
+</tr>
+<tr>
+<td><code>p8700</code></td>
+<td>the MIPS P8700's own registers (<code>--core p8700</code>): the hart ID, <code>mipstvec</code>, <code>mipsintctl</code>'s routing, <code>mipsconfig5</code>–<code>7</code>, <code>mipserrctl</code> / <code>mipscacheerr</code>, the PMAs, its four counters, its TLBs, the cluster (GCR and CPC: each core's power state, each hart's reset address) and the interrupt controller (ACLINT, APLIC)</td>
+</tr>
+<tr>
 <td><code>srs</code> / <code>srs N</code></td>
 <td>the interrupt mode (compatibility / vectored), the next vector, the GPR shadow sets (current, previous, the exceptions' set, SRSMap) / set N's registers</td>
 </tr>
@@ -809,7 +832,7 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>cm</code></td>
-<td>the Coherence Manager (<code>--cores N</code>): each core's GCR_COHERENCE (coherent mode, whose interventions it receives), what the CM did (requests, interventions, cache-to-cache transfers, invalidations, upgrades, writebacks, globalized cache operations), the shared L2, the CM error (<a href="05-understanding.html#coherent-caches">Phase 5, Coherent caches</a>)</td>
+<td>the Coherence Manager (<code>--cores N</code>; the P8700's with any number of cores): each core's GCR_COHERENCE (COH_EN on the P8700: coherent mode, whose interventions it receives), what the CM did (requests, interventions, cache-to-cache transfers, invalidations, upgrades, writebacks, globalized cache operations), the shared L2, the CM error (<a href="05-understanding.html#coherent-caches">Phase 5, Coherent caches</a>)</td>
 </tr>
 <tr>
 <td><code>cm LOC</code></td>
@@ -1003,8 +1026,12 @@ the program exited
 <td>MSA and its vector register partitioning (like <code>--msa</code> / <code>--msa-wrp</code>)</td>
 </tr>
 <tr>
-<td><code>set arch mips32|mips64|nanomips</code></td>
+<td><code>set arch mips32|mips64|nanomips|rv32|rv64</code></td>
 <td>the architecture (like <code>--arch</code>): the program is assembled again for it</td>
+</tr>
+<tr>
+<td><code>set rv-ext EXTS</code> / <code>set rv-modes msu|mu|m</code> / <code>set relax on|off</code></td>
+<td>a RISC-V hart's extensions and privilege modes, the linker's relaxation (like <code>--rv-ext</code>, <code>--rv-modes</code>, <code>--no-relax</code>)</td>
 </tr>
 <tr>
 <td><code>set nms on|off</code> / <code>set crc auto|none|crc</code> / <code>set ginv auto|none|ginvi|ginvt</code></td>
@@ -1127,7 +1154,8 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--arch mips32|mips64|nanomips] [--nms] [--little] [-O 0|1|2|3|s]
+                    [--arch mips32|mips64|nanomips|rv32|rv64] [--rv-ext EXTS] [--nms] [--little]
+                    [-O 0|1|2|3|s]
                     [--mips16 | --micromips] [--no-fpu] [--dsp | --dspr2] [--msa] [--core NAME] [-v]
 </code></pre>
 <p>Builds an ELF executable for eMIPS with clang or a MIPS GCC (and GNU
@@ -1151,6 +1179,12 @@ of the nanoMIPS subset (<code>-march=32r6s</code>; a full-ISA ELF is refused on
 one).  That release has libgcc — the soft-float arithmetic, 64-bit
 division — for little-endian full-ISA code only: other builds work while
 they need none of it, and say so when they do.
+<code>--arch rv32</code> / <code>rv64</code> builds for a RISC-V hart with a
+RISC-V GCC (<code>riscv64-unknown-elf-gcc</code>, <code>riscv64-linux-gnu-gcc</code> ...) or
+clang: <code>-march</code> / <code>-mabi</code> from <code>--rv-ext</code> (ilp32d / lp64d with D,
+soft float without F), RARS's memory map and system calls (<code>emips.h</code>'s
+wrappers use <code>ecall</code>), libgcc for what the extensions lack (a multiply
+without M).
 <code>--no-fpu</code> builds for a core without an FPU (<code>-msoft-float</code>):
 integer code needs nothing more, float arithmetic calls the soft-float
 routines (<code>__addsf3</code> ...) of a MIPS GCC's soft-float libgcc — a
@@ -1387,6 +1421,18 @@ their p32 names), <code>pc</code>, <code>status</code>, <code>badvaddr</code>, <
 have.  The ELF eMIPS writes for an assembly program is a nanoMIPS one
 (EM_NANOMIPS, the p32 ABI), with a line table for the 16-, 32- and
 48-bit instructions.</p>
+<p>A <strong>RISC-V</strong> program (<code>--arch rv32</code> / <code>rv64</code>, or a
+RISC-V ELF from <code>cc --arch rv32</code>) is debugged with <code>gdb-multiarch</code>
+(or a <code>riscv64-*-gdb</code>): the stub describes the hart as GDB's RISC-V
+features — <code>zero</code> ... <code>t6</code> and <code>pc</code> (<code>org.gnu.gdb.riscv.cpu</code>),
+the 32 FPRs by their ABI names (<code>ft0</code>, <code>fa0</code>, <code>fs0</code> ...) and
+<code>fcsr</code> with F / D (a D register shows its <code>float</code> and <code>double</code>
+views), every CSR the hart has (<code>p $mcause</code>,
+<code>info registers csr</code>) and the privilege mode (<code>$priv</code>); the
+architecture is <code>riscv:rv32</code> / <code>riscv:rv64</code>, and the ELF eMIPS
+writes for an assembly program is a RISC-V one with its extensions in
+<code>.riscv.attributes</code>, so GDB disassembles the compressed instructions.  The
+P8700's harts are GDB's threads.</p>
 <h2 id="413-cores--real-mips-cores">4.13 cores — real MIPS cores</h2>
 <pre><code class="language-text">python3 -m emips cores [NAME]
 </code></pre>
@@ -1576,7 +1622,7 @@ check: cycles &lt; 400
 <li><strong>Solve the exercise first</strong>, then write the checks and run them on your
   solution until they all pass — and on the program as you hand it out:
   it should fail exactly the checks the exercise is about.  The labs of
-  this guide that have checks (<a href="05-understanding.html#513-labs">5.13</a>) were
+  this guide that have checks (<a href="05-understanding.html#515-labs">5.15</a>) were
   made so: <code>docs/guide/labs/*.check</code> are examples.</li>
 <li><strong>Check what a correct program does, not how</strong>: its output, the values
   it leaves where the exercise says they go (a result in <code>$v0</code> by the

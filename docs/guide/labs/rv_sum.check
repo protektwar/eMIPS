@@ -1,0 +1,6 @@
+# Lab 73 — Lab 3's loop on RISC-V: the checks of a solution
+# (python3 -m emips check docs/guide/labs/rv_sum.asm, or Run → Check)
+eMIPS: --arch rv32 --pipeline
+check: output is "36"          (it computes the same sum)
+check: stalls == 0             (nothing waits)
+check: cycles <= 62            (what is left: the taken branches, the ecalls)

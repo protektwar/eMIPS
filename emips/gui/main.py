@@ -1551,14 +1551,19 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.guide
 
     def open_guide_program(self, text: str) -> None:
-        """A program of the guide into the editor (its ``# release:`` line
-        switches the release), assembled."""
+        """A program of the guide into the editor (its ``# release:``,
+        ``# arch:``, ``# core:`` ... lines set up the machine:
+        emips.profile.guide_profile), assembled."""
         if not self._confirm_discard(tr("User Guide")):
             return
         self._set_text(text, tr("guide example"), None, None)
-        m = re.search(r"^#\s*release:\s*(R\d)\s*$", text, re.M)
-        if m and m.group(1) != self.session.release:
-            self.set_release(m.group(1), reload=False)
+        from ..profile import guide_profile
+        try:
+            prof = guide_profile(text)
+        except ValueError:
+            prof = None
+        if prof is not None:
+            self.apply_profile(prof)
         self.assemble()
         self.raise_()
         self.activateWindow()

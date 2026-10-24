@@ -44,6 +44,20 @@ choice open, it says which one it made.
   [--nms]`); nanoMIPS ELF executables, C with the nanoMIPS toolchain's
   GCC (`cc --arch nanomips`) and GDB; the Malta board with a nanoMIPS boot
   monitor; in the window, with its datapath, panes and tools.
+- **RISC-V** — RV32 and RV64 harts as the ratified specifications define
+  them, next to MIPS: the base ISAs with M, A, F, D, C, the CSRs, Zba /
+  Zbb (any ISA string); Machine, Supervisor and User mode, traps and
+  delegation, Sv32-Sv57 paging and PMP, the Debug specification's triggers
+  and Debug Mode; RARS's system calls and memory map; an assembler and
+  linker that give GNU `as` and `ld`'s bytes; Patterson & Hennessy's
+  RISC-V pipeline and datapath, its control logic as gates; RISC-V ELF, C
+  (`cc --arch rv32`) and GDB (`--arch rv32 | rv64`).
+- **The MIPS P8700** — MIPS's RISC-V multiprocessor (`--core p8700`): up
+  to six cores of two harts, its custom instructions and CSRs, its MMU
+  (VTLB, FTLB, micro-TLBs, a hardware or a software table walk), the
+  Coherence Manager with its L2 and MESI between the cores, the Cluster
+  Power Controller, the ACLINT and the APLIC, the ECC of its caches and
+  TLB with the Cache Error exception.
 - **The DSP Module** — SIMD on bytes and halfwords, saturating and
   fixed-point arithmetic, four accumulators (Revisions 1 to 3), in
   MIPS32 and microMIPS, on both pipelines, from C and in GDB.
@@ -65,7 +79,8 @@ choice open, it says which one it made.
   protection unit).
 - **Real MIPS cores** — presets for the 4Kc, 24Kc / 24Kf, 34Kc / 34Kf,
   1004Kc / 1004Kf, interAptiv, P5600, M14K / M14Kc, microAptiv UC / UP,
-  the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600 and the nanoMIPS I7200:
+  the MIPS64 5Kc / 5Kf, 20Kc, I6400 and P6600, the nanoMIPS I7200 and the
+  RISC-V P8700:
   each core's release, compressed ISA, FPU, DSP Module, MT Module, MSA, MMU,
   caches and PRId as its manuals allow.
 - **A real core's pipeline** — a model of the MIPS 24K's 8-stage pipeline
@@ -188,7 +203,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 72 labs
+computer architecture behind every number on the screen (with 77 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

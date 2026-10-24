@@ -105,7 +105,9 @@ the choices it is not built with greyed out with the reason;
 <a href="06-reference.html#611-real-mips-cores">Phase 6, 6.11</a>), the <strong>architecture
 and release</strong> (MIPS32 R1–R6; MIPS64 R1–R6: 64-bit registers and the
 doubleword instructions; nanoMIPS R6: the I7200's 16-, 32- and 48-bit
-instructions), the <strong>board</strong> (flat memory or the MIPS Malta), the
+instructions; RISC-V RV32 / RV64: a RISC-V hart, little-endian, no releases —
+<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>; the P8700 core
+brings RV64 and its cluster), the <strong>board</strong> (flat memory or the MIPS Malta), the
 <strong>MMU</strong> (fixed mapping, BAT, the 24K's TLB, VTLB + FTLB), the number of
 <strong>cores</strong> and the 24K's L1 <strong>caches</strong>; the mode box beside the run
 buttons chooses Instruction, the 5-stage pipeline or the <strong>24K
@@ -547,6 +549,25 @@ nanoMIPS has no funct field common to its formats, <strong>ALUOp</strong> names 
 ALU's function itself (0000 add … 1011 rotate right, 1111 not the ALU); the ALU
 control turns it, with ALUSrc (a shift by a register), into the same ALU's
 lines.</p>
+<p>On a <strong>RISC-V</strong> hart the drawing becomes Patterson &amp; Hennessy's RISC-V
+datapath: the adder is <strong>+4/+2</strong> (a C instruction is 2 bytes), the
+sign-extension box is the <strong>Imm Gen</strong> (it assembles the I, S, B, U or J
+immediate from its pieces: <a href="05-understanding.html#six-formats">5.13</a>), the
+register file reads <strong>rs1</strong> and <strong>rs2</strong>, and there is no RegDst
+multiplexer — rd is always bits 11–7.  Branches and jumps are decided in ID with
+no delay slot; a taken one flushes the instruction behind it.  The control is
+RISC-V's: the <strong>opcode PLA</strong> reads bits 6–0 and, for the opcodes whose
+instructions need different signals (SYSTEM, OP-IMM, OP-FP ...), enables a
+<strong>secondary decoder</strong> on the bits that tell them apart (<code>b25</code>,
+<code>b14</code> …); a C instruction arrives as its 32-bit expansion.
+<strong>ALUOp</strong> has 3 bits (000 add, 001 branch, 010 R-type: funct7 / funct3
+decide, 011 I-type, 100 / 101 RV64's word operations, 111 not the ALU), and the
+<strong>ALU control</strong> reads it with funct3 and bits 30, 29, 27 and 25 — the same
+ALU, whose B-invert also makes <code>andn</code>, <code>orn</code> and
+<code>xnor</code>.  Here Lab 73's loop is at cycle 7: the <code>add</code> waits in ID
+for <code>t3</code>, which the <code>lw</code> in EX is still loading (a load-use stall), and
+IF holds a 16-bit instruction (<code>0291</code>: C's <code>addi</code>):</p>
+<p><img alt="The RISC-V datapath at a load-use stall (labs/rv_sum.asm, cycle 7)" src="img/03-rv-datapath.png"></p>
 <p><img alt="The main control: the opcode decoder for addiu" src="img/03-datapath-control.png"></p>
 <p><img alt="The ALU control for addu" src="img/03-datapath-alu-control.png"></p>
 <p><img alt="Inside the ALU: addu, bit 0" src="img/03-datapath-alu.png"></p>
@@ -680,9 +701,15 @@ pseudo-instruction's several instructions at once).</p>
   and the FPU's <strong>FCSR</strong>.  MIPS64: <code>pc</code>, <code>hi</code>, <code>lo</code>, EPC, BadVAddr and
   the TLB's address registers in 16 digits, the 32-bit ones in 8.
   nanoMIPS: no <code>hi</code> / <code>lo</code> (Release 6 has none), no FCSR, and
-  <strong>BadInstrX</strong> (the third halfword of a 48-bit instruction) after BadInstr.</li>
+  <strong>BadInstrX</strong> (the third halfword of a 48-bit instruction) after BadInstr.
+  On a RISC-V hart the tab is <strong>PC / CSRs</strong>: <code>pc</code>, the privilege
+  mode and the trap and status CSRs (<code>mstatus</code>, <code>mtvec</code>,
+  <code>mepc</code>, <code>mcause</code>, <code>mtval</code>, <code>mie</code> / <code>mip</code>,
+  <code>satp</code> …; the P8700's own after them), and the GPRs tab names
+  <code>x0</code>–<code>x31</code> by their ABI names.</li>
 <li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
-  double.</li>
+  double.  On a RISC-V hart <code>f0</code>–<code>f31</code> as wide as its FLEN (F: 32, D:
+  64; a single in a 64-bit register is NaN-boxed) and <code>fcsr</code>.</li>
 <li><strong>DSP</strong> (a core with the DSP Module) — DSPControl and its fields (pos,
   scount, the carry, EFI, ccond, the overflow flags and what set them) and
   the four accumulators <code>ac0</code>–<code>ac3</code> (<code>ac0</code> is HI / LO); a value the
@@ -983,7 +1010,19 @@ other change restarts it.</p>
 <tbody>
 <tr>
 <td>Architecture</td>
-<td>MIPS32 (default), MIPS64: 64-bit registers, the doubleword instructions, the n64 register names (<code>--arch mips64</code>), or nanoMIPS: the I7200's 16-, 32- and 48-bit instructions, the p32 register names, Release 6 (<code>--arch nanomips</code>)</td>
+<td>MIPS32 (default), MIPS64: 64-bit registers, the doubleword instructions, the n64 register names (<code>--arch mips64</code>), or nanoMIPS: the I7200's 16-, 32- and 48-bit instructions, the p32 register names, Release 6 (<code>--arch nanomips</code>), or RISC-V RV32 / RV64: a RISC-V hart (<code>--arch rv32</code> / <code>rv64</code>; the release and byte order are greyed out)</td>
+</tr>
+<tr>
+<td>RISC-V extensions</td>
+<td>the hart's ISA string (<code>imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb</code> by default; while what is typed is not a valid one, the last valid one stays) (<code>--rv-ext</code>)</td>
+</tr>
+<tr>
+<td>RISC-V privilege modes</td>
+<td>M, S and U (default), M and U, or M only (<code>--rv-modes</code>)</td>
+</tr>
+<tr>
+<td>Linker relaxation (GNU's default)</td>
+<td>RISC-V: GNU ld's relaxation — calls, <code>gp</code>-relative accesses and alignment shrunk once every address is known (<code>--no-relax</code> turns it off)</td>
 </tr>
 <tr>
 <td>nanoMIPS subset only (NMS)</td>
@@ -1326,7 +1365,7 @@ Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
 Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers
 <code>$8</code>); Zoom In / Out / Reset; Datapath Part Numbers; Reset Layout.</p>
 <p><strong>Tools</strong> — Instruction Reference, Encoder / Decoder, Number Converter.</p>
-<p><strong>Configure</strong> — Settings…; Architecture and Release (MIPS32 / MIPS64 R1–R6, nanoMIPS R6); Byte Order; Theme; Language.</p>
+<p><strong>Configure</strong> — Settings…; Architecture and Release (MIPS32 / MIPS64 R1–R6, nanoMIPS R6, RISC-V RV32 / RV64); Byte Order; Theme; Language.</p>
 <p><strong>Help</strong> — User Guide (F1: this guide in a window of its own — see
 <a href="#the-user-guide">The user guide</a>), What's in eMIPS (every feature and where it
 is), Quick Start, Keyboard Shortcuts (the complete list, as

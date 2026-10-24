@@ -44,7 +44,9 @@ with lab exercises you can check with eMIPS itself.</p>
 <li><a href="#510-exceptions-kernel-mode-and-interrupts">5.10 Exceptions, kernel mode and interrupts</a></li>
 <li><a href="#511-floating-point-ieee-754">5.11 Floating point (IEEE 754)</a></li>
 <li><a href="#512-vectors-inside-msa">5.12 Vectors: inside MSA</a></li>
-<li><a href="#513-labs">5.13 Labs</a></li>
+<li><a href="#513-inside-a-risc-v-hart">5.13 Inside a RISC-V hart</a></li>
+<li><a href="#514-the-mips-p8700-inside">5.14 The MIPS P8700 inside</a></li>
+<li><a href="#515-labs">5.15 Labs</a></li>
 </ul>
 <hr>
 <h2 id="51-how-an-instruction-is-encoded">5.1 How an instruction is encoded</h2>
@@ -3083,11 +3085,166 @@ register, so a scalar <code>add.d $f5</code> followed by <code>addv.d</code> rea
 <code>ld.df</code> is a load: its result comes after MEM (a load-use stall for an
 instruction that uses it right away).  The 24K model has no MSA: an MSA
 program in 24K mode runs on the 5-stage pipeline, with a note (Lab 68).</p>
-<h2 id="513-labs">5.13 Labs</h2>
+<h2 id="513-inside-a-risc-v-hart">5.13 Inside a RISC-V hart</h2>
+<p>A RISC-V hart (<code>--arch rv32</code> / <code>rv64</code>,
+<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>) runs on the same
+machinery as a MIPS core — memory, caches, the 5-stage pipeline, the window's
+panes — with the RISC-V rules in place of MIPS's.  Where they differ is
+worth seeing.</p>
+<h3 id="six-formats">Six formats</h3>
+<p>Every 32-bit RISC-V instruction keeps its registers in the same bits —
+rd in 11:7, rs1 in 19:15, rs2 in 24:20 — and its opcode in 6:0 (the two low
+bits 11: a 32-bit instruction).  The decoder reads the registers before it
+knows the format.  The immediates are cut into pieces so that the sign is
+always bit 31:</p>
+<table>
+<thead>
+<tr><th>Format</th><th>Used by</th><th>The immediate</th></tr>
+</thead>
+<tbody>
+<tr><td>R</td><td><code>add</code>, <code>mul</code>, <code>sll</code> ...</td><td>none (funct7 31:25, funct3 14:12)</td></tr>
+<tr><td>I</td><td><code>addi</code>, loads, <code>jalr</code>, CSRs</td><td>imm[11:0] = 31:20</td></tr>
+<tr><td>S</td><td>stores</td><td>imm[11:5] = 31:25, imm[4:0] = 11:7 (where rd would be)</td></tr>
+<tr><td>B</td><td>branches</td><td>imm[12|10:5] = 31:25, imm[4:1|11] = 11:7 — in halfwords</td></tr>
+<tr><td>U</td><td><code>lui</code>, <code>auipc</code></td><td>imm[31:12] = 31:12</td></tr>
+<tr><td>J</td><td><code>jal</code></td><td>imm[20|10:1|11|19:12] = 31:12 — in halfwords, ±1 MB</td></tr>
+</tbody>
+</table>
+<p>An I-type immediate has 12 bits: <code>lw a0, 0x1000(s1)</code> does not
+exist (Lab 75 meets it); <code>li</code> / <code>la</code> build larger values with
+<code>lui</code> or <code>auipc</code> first, and because <code>addi</code> sign-extends its
+12 bits, the upper part is rounded up when bit 11 is set.  The C extension's
+16-bit forms (the low two bits not 11) are expansions of 32-bit instructions:
+the instruction pane shows the 16-bit fields and the 32-bit instruction it
+stands for.</p>
+<h3 id="the-pipeline-without-a-delay-slot">The pipeline without a delay slot</h3>
+<p>The 5-stage pipeline is the one of Patterson &amp; Hennessy's RISC-V
+edition: as in <a href="#55-branches-and-the-delay-slot">5.5</a>, a branch compares and
+computes its target in ID — but the instruction behind it is no delay slot.
+It is fetched as a guess (<em>not taken</em>); when the branch is taken, it is
+thrown away: one bubble per taken branch, <code>jal</code> and <code>jalr</code>.  The
+hazards are the same: a load followed by its user waits one cycle; a branch
+whose register comes from the instruction just before it waits one cycle (two
+after a load), because the comparison happens in ID.  Instructions that change
+what later fetches mean — <code>ecall</code>, <code>mret</code>, <code>fence.i</code>,
+<code>sfence.vma</code>, every CSR write — <em>serialize</em>: the instructions
+fetched after them are fetched again.  The datapath shows it: an Imm Gen box
+where MIPS sign-extends, no RegDst multiplexer (rd is always 11:7), and an
+adder of +2 or +4 for the next PC (Lab 73).</p>
+<h3 id="traps-step-by-step">Traps, step by step</h3>
+<p>When an instruction faults, an interrupt is due or <code>ecall</code> asks for
+the operating system, the hart:</p>
+<ol>
+<li>writes the address of the instruction (or, for an interrupt, of the next
+one) to <code>mepc</code>, the reason to <code>mcause</code> (bit XLEN-1 set for an
+interrupt) and the extra information to <code>mtval</code> — the bad address, or
+the illegal instruction;</li>
+<li>saves the interrupt enable and the mode in <code>mstatus</code>: MPIE ← MIE,
+MIE ← 0, MPP ← the mode it was in;</li>
+<li>goes to M-mode at <code>mtvec</code>'s BASE (with MODE = 1, interrupts at BASE
++ 4 × cause).</li>
+</ol>
+<p><code>mret</code> undoes it: the mode from MPP, MIE from MPIE, the PC from
+<code>mepc</code>.  For an exception, <code>mepc</code> is the instruction itself — a
+handler that wants to go on after it adds its size, 4 or 2 (Lab 74).  With
+<code>medeleg</code> / <code>mideleg</code> the traps of S- and U-mode go to S-mode
+instead (<code>sepc</code>, <code>scause</code>, <code>stval</code>, <code>stvec</code>,
+<code>sret</code>; SPIE / SIE / SPP in <code>sstatus</code>).  An interrupt is taken
+when its bit is set in both <code>mip</code> and <code>mie</code> and the mode allows it:
+always in a lower mode, in M-mode only with <code>mstatus</code>.MIE = 1.
+<code>wfi</code> waits for one.  The register pane's PC / CSRs and Interrupts
+tabs show all of it; the debugger's <code>csr</code> too.</p>
+<h3 id="pages-and-pmp">Pages and PMP</h3>
+<p>In S- and U-mode, <code>satp</code> turns paging on: its MODE (Sv32 on RV32,
+Sv39 / Sv48 / Sv57 on RV64) and the physical page number of the first-level
+table.  Sv32 has two levels of 1024 four-byte PTEs: VA bits 31:22 index the
+first table, 21:12 the second, 11:0 are the offset.  A PTE with R, W or X set
+is a leaf (a 4 KB page — or, at the first level, a 4 MB <em>megapage</em>, whose
+PPN must be 4 MB aligned); one with only V set points to the next table.  Its
+other bits: U (user may use it), G (global), A (accessed) and D (dirty) — eMIPS
+does not set A and D itself (Svade): a PTE with A = 0, or D = 0 for a store, is
+a page fault, and the operating system sets them.  A miss walks the table
+through the caches (two reads for Sv32) and keeps the result in the TLB, which
+only <code>sfence.vma</code> empties: change a PTE, then fence (Lab 75).  M-mode
+addresses are physical.  <strong>PMP</strong> (<code>pmpcfg</code> /
+<code>pmpaddr</code>) gives physical address ranges read / write / execute rights
+for S- and U-mode (and, locked, for M-mode); with any entry set, S and U may
+touch only what an entry allows.</p>
+<h3 id="debugging-a-hart">Debugging a hart</h3>
+<p>The Debug specification's <strong>triggers</strong> (<code>tselect</code>,
+<code>tdata1</code> / <code>tdata2</code>: an address match, an instruction count,
+an exception or an interrupt) raise a breakpoint exception or enter <strong>Debug
+Mode</strong>, where the hart stops with its PC in <code>dpc</code> and the reason in
+<code>dcsr</code>; <code>dret</code> leaves.  The register pane's Debug tab lists
+them.</p>
+<h2 id="514-the-mips-p8700-inside">5.14 The MIPS P8700 inside</h2>
+<p><code>--core p8700</code> (<a href="02-writing-programs.html#227-the-mips-p8700-a-risc-v-core">Phase
+2, 2.27</a>) puts RISC-V harts into a MIPS multiprocessor: what 5.8 to 5.10 tell
+about MIPS's caches, TLBs, Coherence Manager and power controller comes back,
+with RISC-V's rules for the harts.</p>
+<h3 id="harts-cores-and-the-cluster">Harts, cores and the cluster</h3>
+<p>A core has one or two harts (<code>--vps</code>): each with its own registers,
+CSRs and PC, sharing the core's caches and FTLB.  <code>mhartid</code> = core × 16
++ hart.  The <strong>GCR</strong> block (512 KB, below the program: 0x380000) holds
+the Coherence Manager's registers, each hart's reset address (RESET_BASE) and
+the <strong>Cluster Power Controller</strong>: a core is powered down (D0), clocked
+off (U2), running (U5) or running coherently (U6); <code>PwrUp</code> starts its
+hart 0 at its RESET_BASE, <code>VP_RUN</code> / <code>VP_STOP</code> start and stop
+harts.  The CPC also counts <code>mtime</code>.  With the kernel or user boot
+everything is up and coherent; with <code>--boot reset</code> the program does
+it, as the P8700's boot code does.</p>
+<h3 id="the-p8700s-mmu">The P8700's MMU</h3>
+<p>Sv39 / Sv48 page tables, cached in a VTLB of 64 entries (every page size),
+an FTLB of 128 sets × 4 ways (4 KB or 64 KB pages, shared by the core's
+harts) and two micro-TLBs in front of them.  A miss is walked by hardware —
+or, with <code>mipsconfig7</code>.DHTW = 1, by software: a custom exception
+(Instruction / Load / Store TLB Miss, satp TLB Miss) through
+<code>mipstvec</code> gives the handler the address of the missing PTE in
+<code>mipstval</code>, and <code>mips.mtlbwr</code> writes it — MIPS's refill handler
+(<a href="#the-tlb">5.8</a>) on RISC-V page tables.  The TLB pane shows the
+entries.</p>
+<h3 id="caches-and-coherence">Caches and coherence</h3>
+<p>Each core has L1 instruction and data caches (32 or 64 KB, 4-way, 64-byte
+lines, LRU); the L2 (256 KB to 8 MB) sits in the Coherence Manager and is
+write-back and write-allocate.  A region's PMA (<code>pmacfg</code>, by PMP entry)
+makes it cacheable and coherent, uncached or uncached accelerated.  Coherent
+data caches follow MESI (<a href="#coherent-caches">5.9</a>): a core whose COH_EN is
+set takes part, a store invalidates the other copies, a miss on a line another
+core has Modified is served cache to cache.  Two harts writing different words
+of one 64-byte line make it bounce between the cores — <em>false sharing</em>
+(Lab 76); the debugger's <code>cm</code> counts what the CM did.
+<code>fence.i</code> invalidates every core's I-cache (MD01502 3.3.10), and the
+GCR's L2 cache-op state machine flushes or initializes the L2.</p>
+<h3 id="interrupts-nmi-and-the-watchdog">Interrupts, NMI and the watchdog</h3>
+<p>The <strong>ACLINT</strong> gives each hart a software interrupt (MSIP: an IPI,
+cause 3), a timer (MTIMECMP against the CPC's <code>mtime</code>, cause 7) and a
+supervisor software interrupt (SETSSIP); the <strong>APLIC</strong> brings the
+devices' interrupt lines (the console is source 4) to MEIP / SEIP, and can
+turn a source into an <strong>NMI</strong>: the hart goes to its reset address with
+<code>mcause</code> 0 and <code>mipsconfig5</code>.ERL set.  <code>mipsintctl</code> can
+route the MIPS interrupt lines to the custom <code>mip</code> bits 16–20 (the timer to
+VSTIP) instead.
+A <strong>watchdog</strong> counts down with <code>mtime</code> and, if software does
+not reload it, interrupts (cause 25), then raises an NMI or resets the
+cluster.</p>
+<h3 id="when-a-bit-flips-ecc-and-the-cache-error">When a bit flips: ECC and the Cache Error</h3>
+<p>The data cache keeps an ECC per 32-bit word and per tag, the instruction
+cache an error-detecting code, the L2 and the FTLB ECC too.  With
+<code>mipserrctl</code>.PE = 1 a single flipped bit is corrected (and the RAM
+scrubbed); two flipped bits in a clean data line are "corrected" by fetching the
+line again, in an instruction cache always; in a dirty line or in a tag they
+are lost — a <strong>Cache Error</strong>: custom exception 48 through
+<code>mipstvec</code>, with <code>mipsconfig5</code>.ERL set (every access uncached
+until <code>mret</code>).  <code>mipscacheerr</code> says which array, way, index and
+word, and whether it was corrected; an L2 error is reported after the
+instruction that met it (imprecise).  A test can flip bits on purpose
+(the caches' and the FTLB's <code>inject</code>); the debugger's <code>p8700</code>
+shows the register.</p>
+<h2 id="515-labs">5.15 Labs</h2>
 <p>Each lab gives a task, a way to check your answer with eMIPS, and the
 answer (click to open it — try first!).  The lab programs are in
 <code>docs/guide/labs/</code>.  The labs that ask you to write or change a
-program — 3, 4, 12, 15, 20, 21, 58 and 61 — also come with <strong>checks</strong>, a file
+program — 3, 4, 12, 15, 20, 21, 58, 61, 66, 69, 71, 73, 74 and 75 — also come with <strong>checks</strong>, a file
 next to the program (<code>lab4_misaligned.check</code> for
 <code>lab4_misaligned.asm</code>): <strong>Run → Check</strong> (F8) or
 <code>python3 -m emips check docs/guide/labs/PROGRAM.asm</code> runs your version
@@ -4845,6 +5002,124 @@ four partial sums in a vector, then the four words with <code>copy_s.w</code> an
 <code>addu</code>.  N = 256 is a multiple of 4, so there is no left-over loop.  The
 auto-vectorizer needs only <code>-mmsa</code> (and -O3): unlike the DSP Module's
 saturating adds (Lab 51), plain C arithmetic maps onto MSA directly.</p>
+</details>
+<h3 id="lab-73--no-delay-slot">Lab 73 — No delay slot</h3>
+<p><a href="labs/rv_sum.asm"><code>labs/rv_sum.asm</code></a> is Lab 3's loop on a RISC-V hart
+(<code># eMIPS: --arch rv32</code>): the same eight numbers, the same 36.  Run it on
+the pipeline (<code>python3 -m emips pipe docs/guide/labs/rv_sum.asm</code>): how
+many cycles, instructions and stalls?  Remove the stalls without changing what
+it computes (<a href="labs/rv_sum.check"><code>labs/rv_sum.check</code></a> checks it).
+How close do you get to Lab 3's 53 cycles, and why not closer?  Then compare the
+sizes of the code (<code>python3 -m emips asm</code>): as handed out, with
+<code>.option norvc</code> on its first line, and Lab 3's MIPS program.</p>
+<details>
+<summary>Answer</summary>
+<p>78 cycles for 49 instructions: 8 load-use stalls (<code>add</code> right after
+the <code>lw</code>), 8 branch stalls (<code>bnez t1</code> right after the
+<code>addi</code> that writes <code>t1</code>: the comparison is in ID).  Move the two
+<code>addi</code>s between the load and the <code>add</code> — then the branch's register
+is two instructions old too — and both kinds go: 62 cycles.  What is left above
+the 49 instructions is 4 cycles to fill the pipeline, 7 for the taken
+branches (each throws away the instruction fetched after it: there is no delay
+slot to put useful work in) and 2 for the <code>ecall</code>s, which serialize.
+Lab 3's solution reaches 53 because its delay slot does the <code>addu</code> — but
+it needs 57 instructions as handed out (eight <code>nop</code>s in the slots), RISC-V
+49.  The code: 40 bytes with C (eight of the fourteen instructions are 16-bit),
+56 with <code>.option norvc</code>, 60 for MIPS (15 words: <code>la</code> is two, and
+the delay slot's <code>nop</code>).</p>
+</details>
+<h3 id="lab-74--a-service-of-your-own">Lab 74 — A service of your own</h3>
+<p><a href="labs/rv_ecall.asm"><code>labs/rv_ecall.asm</code></a> drops into U-mode and asks
+for service 100, which RARS does not have: the <code>ecall</code> traps to its
+M-mode handler, which doubles <code>a0</code>.  It should print 42 — it never ends.
+Find out why (<code>python3 -m emips debug docs/guide/labs/rv_ecall.asm</code>,
+<code>step</code>, <code>csr mepc mcause</code>), fix it and check the fix
+(<a href="labs/rv_ecall.check"><code>labs/rv_ecall.check</code></a>).  What would change
+if the program set bit 8 of <code>medeleg</code> first?</p>
+<details>
+<summary>Answer</summary>
+<p><code>mepc</code> is the <code>ecall</code> itself (2.26: an exception's own
+address), so <code>mret</code> runs it again: the trap repeats forever, doubling
+<code>a0</code> each time until it is 0 (12499 traps in the check's 100 000 steps).
+Add 4 to <code>mepc</code> before <code>mret</code> (<code>csrr t0, mepc</code>, <code>addi
+t0, t0, 4</code>, <code>csrw mepc, t0</code> — an <code>ecall</code> is never compressed);
+then one trap, and 42.  A real kernel's ecall handler does exactly this.  With
+<code>medeleg</code> bit 8 set, a U-mode <code>ecall</code> traps to S-mode — to
+<code>stvec</code>, with <code>sepc</code> / <code>scause</code> — which this program never set
+up (and its hart would need S-mode, <code>--rv-modes msu</code>, the default):
+delegation is how an operating system in S-mode gets its system calls without
+M-mode in between.</p>
+</details>
+<h3 id="lab-75--pages">Lab 75 — Pages</h3>
+<p><a href="labs/rv_pages.asm"><code>labs/rv_pages.asm</code></a> builds an Sv32 page table in
+M-mode — two megapages for its code and data (VA = PA) and a second-level table
+for 0x80000000 — turns paging on and goes to S-mode, which reads one word at
+0x80000000 and one at 0x80001000.  It prints <code>1111 13 0x80001000</code>.  What
+do 13 and 0x80001000 say?  Map the second page so that the program prints
+<code>1111 2222</code> (<a href="labs/rv_pages.check"><code>labs/rv_pages.check</code></a>).
+Why is the pointer to the second-level table <code>... | 0x01</code> and a page's
+PTE <code>... | 0xc7</code>?  What happens with <code>0x47</code> instead of
+<code>0xc7</code>?</p>
+<details>
+<summary>Answer</summary>
+<p>13 is a <em>load page fault</em> and 0x80001000 the address
+(<code>mtval</code>): VA bits 31:22 = 0x200 picked the pointer in
+<code>root</code>, bits 21:12 = 1 picked <code>leaf[1]</code>, which is 0 — not valid.
+The trap went to M-mode (not delegated), whose handler printed it.  Add, after
+<code>leaf[0]</code>'s store: <code>la t2, page1</code>, <code>srli t0, t2, 2</code>, <code>ori
+t0, t0, 0xc7</code>, <code>sw t0, 4(t1)</code> — the PPN in bits 31:10 (the address
+shifted right by 12, then left by 10), the flags below.  A PTE with only V
+(0x01) points to the next table; R / W / X make it a leaf: 0xc7 = D, A, W, R,
+V.  0x47 has D = 0: the <em>load</em> still works, a store there would be a store
+page fault — eMIPS, like Spike by default, never sets A or D itself (Svade), so
+an operating system sets them, or uses such faults to learn which pages were
+used and written.  Each first access to a page walks the table — two PTE reads —
+and keeps the translation in the TLB until an <code>sfence.vma</code>.</p>
+</details>
+<h3 id="lab-76--one-line-two-cores">Lab 76 — One line, two cores</h3>
+<p><a href="labs/p8700_share.asm"><code>labs/p8700_share.asm</code></a> runs on a two-core
+P8700 (<code># eMIPS: --core p8700 --cores 2</code>): each core adds 1 to its own
+counter 100 times, then core 0 prints the total, 200.  The counters are 8 bytes
+apart.  Run it and look at the Coherence Manager
+(<code>python3 -m emips debug docs/guide/labs/p8700_share.asm -c run -c cm</code>),
+and on the pipeline (<code>python3 -m emips run --pipeline
+docs/guide/labs/p8700_share.asm</code>).  Then put the counters 64 bytes apart
+(<code>.eqv APART, 64</code>) and do it again.  What happened, and why do the cores
+never get a wrong total either way?</p>
+<details>
+<summary>Answer</summary>
+<p>8 bytes apart: 402 requests to the CM, 402 interventions, 201
+cache-to-cache transfers, 200 invalidations, 200 upgrades, 201 writebacks; 3522
+cycles on the pipeline, 2581 of them waiting for memory (CPI 6.70).  The two
+counters share one 64-byte line, so every store of one core needs it Modified
+and takes it from the other: the line bounces between the cores 200 times,
+although they never touch the same word.  64 bytes apart: 5 requests (the first
+misses), 1068 cycles (CPI 2.03), 150 waiting for memory.  The
+total is right both times because MESI keeps one owner for a line: a store
+waits until its core holds the line, so no update is lost — false sharing
+costs time, not correctness.  Real code pads per-core data to the line size
+(Lab 19 shows the same on MIPS cores).</p>
+</details>
+<h3 id="lab-77--64-bit-arithmetic-on-32-bits">Lab 77 — 64-bit arithmetic on 32 bits</h3>
+<p><a href="labs/c_rv.c"><code>labs/c_rv.c</code></a> hashes a 43-character text 100 times
+with 64-bit FNV-1a (an XOR and a multiply by 0x100000001b3 per character) and
+prints <code>0xdaddb8dc 0xb537ace9</code>.  It is built at <code>-O 2</code> for RV32
+(<code>c_rv_32.elf</code>) and RV64 (<code>c_rv_64.elf</code>) with <code>cc --arch rv32</code>
+/ <code>rv64</code> (<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  How many
+instructions does each run?  Compare <code>fnv64</code>'s loop in the two listings
+(<code>python3 -m emips dis docs/guide/labs/c_rv_32.elf</code>): how does RV32 do
+the 64-bit multiply, and why does it XOR only one register?</p>
+<details>
+<summary>Answer</summary>
+<p>44441 and 22945 instructions.  RV64's loop is 5 instructions a character —
+<code>addi</code>, <code>xor</code>, <code>lbu</code>, <code>mul</code>, <code>bnez</code> — with the
+prime in a register.  RV32's is 10: the hash lives in two registers, and
+(hi · 2³² + lo) × (2⁴⁰ + 435) keeps only 64 bits: the low word is lo × 435
+(<code>mul</code>), the high word hi × 435 (<code>mul</code>) plus the carry of lo × 435
+(<code>mulhu</code>) plus lo × 2⁸ (a <code>slli</code> — the 2⁴⁰ part reaches the high
+word only) — three multiplies, a shift and two adds.  A character is 8 bits,
+so the XOR changes the low word only.  That is the cost of a 32-bit machine on
+64-bit data: about twice the work here (Lab 62 compares MIPS32 and MIPS64).</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

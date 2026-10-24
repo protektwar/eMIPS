@@ -1,0 +1,5 @@
+# Lab 75 — pages: the checks of a solution
+# (python3 -m emips check docs/guide/labs/rv_pages.asm, or Run → Check)
+eMIPS: --arch rv32
+check: output is "1111 2222"   (both pages mapped)
+check: exceptions == 0         (no page fault)
