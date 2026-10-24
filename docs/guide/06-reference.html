@@ -155,164 +155,6 @@ for teachers.</p>
 </tbody>
 </table>
 <p>Any other number in <code>$v0</code> takes the <strong>System Call exception</strong>.</p>
-<p>On <strong>RISC-V</strong> (<code>--arch rv32</code> / <code>rv64</code>,
-<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>) the services are
-RARS's: <code>ecall</code> with the number in <code>a7</code>, arguments in <code>a0</code>–<code>a2</code>
-/ <code>fa0</code>, results in <code>a0</code> / <code>fa0</code>.  The common ones:</p>
-<table>
-<thead>
-<tr>
-<th style="text-align: right;"><code>a7</code></th>
-<th>Service</th>
-<th>In</th>
-<th>Out</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: right;">1</td>
-<td>PrintInt</td>
-<td><code>a0</code></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">2</td>
-<td>PrintFloat</td>
-<td><code>fa0</code></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">3</td>
-<td>PrintDouble</td>
-<td><code>fa0</code></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">4</td>
-<td>PrintString</td>
-<td><code>a0</code> = address</td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">5</td>
-<td>ReadInt</td>
-<td></td>
-<td><code>a0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">6</td>
-<td>ReadFloat</td>
-<td></td>
-<td><code>fa0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">7</td>
-<td>ReadDouble</td>
-<td></td>
-<td><code>fa0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">8</td>
-<td>ReadString</td>
-<td><code>a0</code> = buffer, <code>a1</code> = length</td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">9</td>
-<td>Sbrk</td>
-<td><code>a0</code> = bytes</td>
-<td><code>a0</code> = address</td>
-</tr>
-<tr>
-<td style="text-align: right;">10</td>
-<td>Exit</td>
-<td></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">11</td>
-<td>PrintChar</td>
-<td><code>a0</code></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">12</td>
-<td>ReadChar</td>
-<td></td>
-<td><code>a0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">17</td>
-<td>GetCWD</td>
-<td><code>a0</code> = buffer, <code>a1</code> = length</td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">30</td>
-<td>Time</td>
-<td></td>
-<td><code>a0</code> / <code>a1</code> = ms (low / high)</td>
-</tr>
-<tr>
-<td style="text-align: right;">32</td>
-<td>Sleep</td>
-<td><code>a0</code> = ms</td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">34</td>
-<td>PrintIntHex</td>
-<td><code>a0</code></td>
-<td>e.g. <code>0x0000002a</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">35</td>
-<td>PrintIntBinary</td>
-<td><code>a0</code></td>
-<td>32 digits</td>
-</tr>
-<tr>
-<td style="text-align: right;">36</td>
-<td>PrintIntUnsigned</td>
-<td><code>a0</code></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align: right;">41</td>
-<td>RandInt</td>
-<td><code>a0</code> = stream</td>
-<td><code>a0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">42</td>
-<td>RandIntRange</td>
-<td><code>a0</code> = stream, <code>a1</code> = bound</td>
-<td><code>a0</code></td>
-</tr>
-<tr>
-<td style="text-align: right;">63</td>
-<td>Read</td>
-<td><code>a0</code> = fd, <code>a1</code> = buffer, <code>a2</code> = length</td>
-<td><code>a0</code> = bytes</td>
-</tr>
-<tr>
-<td style="text-align: right;">64</td>
-<td>Write</td>
-<td><code>a0</code> = fd, <code>a1</code> = buffer, <code>a2</code> = length</td>
-<td><code>a0</code> = bytes</td>
-</tr>
-<tr>
-<td style="text-align: right;">93</td>
-<td>Exit2</td>
-<td><code>a0</code> = exit code</td>
-<td></td>
-</tr>
-</tbody>
-</table>
-<p>Also 31 / 33 (MIDI: time only), 40 / 43 / 44 (random seed, float, double),
-57 / 62 / 1024 (close, seek, open: no files to reach).  Any other number is a
-real <strong>environment call</strong> trap: <code>mcause</code> 8, 9 or 11 (from U-, S- or
-M-mode).</p>
 <h2 id="62-registers">6.2 Registers</h2>
 <table>
 <thead>
@@ -406,102 +248,6 @@ names are the n64 ABI's: <code>$8</code>–<code>$11</code> are <code>$a4</code>
 <code>$12</code>–<code>$15</code> are <code>$t0</code>–<code>$t3</code>, and there is no <code>$t4</code>–<code>$t7</code>; <code>$sp</code>
 starts at <code>0x7fffeff0</code>
 (<a href="02-writing-programs.html#223-mips64-64-bit-programs">Phase 2, 2.23</a>).</p>
-<p>A <strong>RISC-V</strong> hart (<code>--arch rv32</code> / <code>rv64</code>) has <code>x0</code>–<code>x31</code>
-(32 or 64 bits) and <code>pc</code>; no HI / LO:</p>
-<table>
-<thead>
-<tr>
-<th>Number</th>
-<th>Name</th>
-<th>Use</th>
-<th style="text-align: center;">Preserved across calls</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>x0</code></td>
-<td><code>zero</code></td>
-<td>always 0</td>
-<td style="text-align: center;">—</td>
-</tr>
-<tr>
-<td><code>x1</code></td>
-<td><code>ra</code></td>
-<td>return address</td>
-<td style="text-align: center;">no</td>
-</tr>
-<tr>
-<td><code>x2</code></td>
-<td><code>sp</code></td>
-<td>stack pointer</td>
-<td style="text-align: center;">yes</td>
-</tr>
-<tr>
-<td><code>x3</code></td>
-<td><code>gp</code></td>
-<td>global pointer (<code>.sdata</code>, relaxation)</td>
-<td style="text-align: center;">—</td>
-</tr>
-<tr>
-<td><code>x4</code></td>
-<td><code>tp</code></td>
-<td>thread pointer</td>
-<td style="text-align: center;">—</td>
-</tr>
-<tr>
-<td><code>x5–x7</code></td>
-<td><code>t0–t2</code></td>
-<td>temporaries</td>
-<td style="text-align: center;">no</td>
-</tr>
-<tr>
-<td><code>x8</code></td>
-<td><code>s0 / fp</code></td>
-<td>saved, frame pointer</td>
-<td style="text-align: center;">yes</td>
-</tr>
-<tr>
-<td><code>x9</code></td>
-<td><code>s1</code></td>
-<td>saved</td>
-<td style="text-align: center;">yes</td>
-</tr>
-<tr>
-<td><code>x10–x11</code></td>
-<td><code>a0–a1</code></td>
-<td>arguments, results</td>
-<td style="text-align: center;">no</td>
-</tr>
-<tr>
-<td><code>x12–x17</code></td>
-<td><code>a2–a7</code></td>
-<td>arguments (<code>a7</code>: the system call)</td>
-<td style="text-align: center;">no</td>
-</tr>
-<tr>
-<td><code>x18–x27</code></td>
-<td><code>s2–s11</code></td>
-<td>saved</td>
-<td style="text-align: center;">yes</td>
-</tr>
-<tr>
-<td><code>x28–x31</code></td>
-<td><code>t3–t6</code></td>
-<td>temporaries</td>
-<td style="text-align: center;">no</td>
-</tr>
-</tbody>
-</table>
-<p>With F / D: <code>f0</code>–<code>f31</code> (<code>ft0</code>–<code>ft11</code> temporaries,
-<code>fs0</code>–<code>fs11</code> saved, <code>fa0</code>–<code>fa7</code> arguments) and <code>fcsr</code> (the
-rounding mode <code>frm</code> and the flags <code>fflags</code>).  Instead of CP0 a hart has
-<strong>CSRs</strong>, read and written with <code>csrr</code> / <code>csrw</code> / <code>csrs</code> /
-<code>csrc</code>: <code>mstatus</code>, <code>misa</code>, <code>mtvec</code>, <code>mepc</code>,
-<code>mcause</code>, <code>mtval</code>, <code>mie</code> / <code>mip</code>, <code>medeleg</code> /
-<code>mideleg</code>, <code>mscratch</code>, the S-mode ones (<code>sstatus</code>, <code>stvec</code>,
-<code>satp</code> ...), <code>pmpcfg</code> / <code>pmpaddr</code>, the counters (<code>cycle</code>,
-<code>instret</code>, <code>time</code>, <code>mhpmcounter</code>N) and the debug ones — the
-debugger's <code>csr</code> shows them.</p>
 <h2 id="63-cp0-registers-and-their-bits">6.3 CP0 registers and their bits</h2>
 <p>Read with <code>mfc0 rt, $n</code>, write with <code>mtc0 rt, $n</code> (kernel mode).  The
 ones a student program uses:</p>
@@ -1170,111 +916,6 @@ or <code>0xbfc00300</code> with Status.BEV = 1.  An uncorrectable L2 / L3 ECC er
 is <strong>imprecise</strong>: the instruction that met it completes (a load gets the
 bad value) and the exception comes before the next one, with ErrorEPC
 pointing there; one met by an instruction fetch is taken at that fetch.</p>
-<p>On <strong>RISC-V</strong> a trap writes the reason to <code>mcause</code> (<code>scause</code> when
-delegated): the top bit says <em>interrupt</em>, the rest is the code
-(<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>):</p>
-<table>
-<thead>
-<tr>
-<th style="text-align: right;">Code</th>
-<th style="text-align: center;">Interrupt</th>
-<th>Cause</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: right;">1</td>
-<td style="text-align: center;">yes</td>
-<td>supervisor software interrupt</td>
-</tr>
-<tr>
-<td style="text-align: right;">3</td>
-<td style="text-align: center;">yes</td>
-<td>machine software interrupt (an IPI)</td>
-</tr>
-<tr>
-<td style="text-align: right;">5</td>
-<td style="text-align: center;">yes</td>
-<td>supervisor timer interrupt</td>
-</tr>
-<tr>
-<td style="text-align: right;">7</td>
-<td style="text-align: center;">yes</td>
-<td>machine timer interrupt</td>
-</tr>
-<tr>
-<td style="text-align: right;">9</td>
-<td style="text-align: center;">yes</td>
-<td>supervisor external interrupt</td>
-</tr>
-<tr>
-<td style="text-align: right;">11</td>
-<td style="text-align: center;">yes</td>
-<td>machine external interrupt (the console)</td>
-</tr>
-<tr>
-<td style="text-align: right;">13</td>
-<td style="text-align: center;">yes</td>
-<td>counter overflow (Sscofpmf)</td>
-</tr>
-<tr>
-<td style="text-align: right;">0</td>
-<td style="text-align: center;"></td>
-<td>instruction address misaligned (a jump to an odd address without C)</td>
-</tr>
-<tr>
-<td style="text-align: right;">1</td>
-<td style="text-align: center;"></td>
-<td>instruction access fault (PMP, no memory)</td>
-</tr>
-<tr>
-<td style="text-align: right;">2</td>
-<td style="text-align: center;"></td>
-<td>illegal instruction (<code>mtval</code> = the instruction)</td>
-</tr>
-<tr>
-<td style="text-align: right;">3</td>
-<td style="text-align: center;"></td>
-<td>breakpoint (<code>ebreak</code>)</td>
-</tr>
-<tr>
-<td style="text-align: right;">4</td>
-<td style="text-align: center;"></td>
-<td>load address misaligned</td>
-</tr>
-<tr>
-<td style="text-align: right;">5</td>
-<td style="text-align: center;"></td>
-<td>load access fault</td>
-</tr>
-<tr>
-<td style="text-align: right;">6</td>
-<td style="text-align: center;"></td>
-<td>store / AMO address misaligned</td>
-</tr>
-<tr>
-<td style="text-align: right;">7</td>
-<td style="text-align: center;"></td>
-<td>store / AMO access fault</td>
-</tr>
-<tr>
-<td style="text-align: right;">8 / 9 / 11</td>
-<td style="text-align: center;"></td>
-<td>environment call from U / S / M-mode (<code>ecall</code>)</td>
-</tr>
-<tr>
-<td style="text-align: right;">12 / 13 / 15</td>
-<td style="text-align: center;"></td>
-<td>instruction / load / store page fault (<code>mtval</code> = the address)</td>
-</tr>
-</tbody>
-</table>
-<p>The <strong>P8700</strong> adds custom exceptions that go to <code>mipstvec</code> in M-mode:
-24 / 25 / 27 instruction / load / store TLB miss and 60 satp TLB miss (with
-the software table walk), 26 Read Time (reading <code>time</code>), 48 Cache Error
-(an uncorrectable cache or TLB error; it sets <code>mipsconfig5.ERL</code>) — and an
-AMO, which it does not have, also goes there as cause 2 for the software to
-emulate.  Its NMI (cause 0) goes to the hart's reset address.</p>
 <h2 id="66-memory-map">6.6 Memory map</h2>
 <table>
 <thead>
@@ -1475,14 +1116,6 @@ The assembler's messages are in <a href="02-writing-programs.html#217-common-ass
 </table>
 <p>A program that never ends and never reads input — an endless loop —
 simply keeps running: press <strong>Pause</strong> (F6) or <strong>Ctrl+C</strong> in the terminal.</p>
-<p>A <strong>RISC-V</strong> program has RARS's layout: <code>.text</code> at <code>0x00400000</code>,
-<code>.data</code> at <code>0x10010000</code> (then <code>.sdata</code> / <code>.bss</code>; <code>gp</code> =
-<code>0x10010800</code>), the heap from <code>0x10040000</code>, <code>sp</code> = <code>0x7fffeffc</code>
-(RV64: <code>0x7fffeff0</code>), the MMIO console at <code>0xffff0000</code>.  Addresses are
-physical in M-mode; there is no kernel segment (a handler is wherever
-<code>mtvec</code> says).  The P8700 puts its GCR block (the CM, the CPC, the ACLINT
-at +0x50000, the APLIC at +0x40000) in the 512 KB below the program's entry
-page: <code>0x00380000</code> for a program at <code>0x00400000</code>.</p>
 <h2 id="68-what-is-not-simulated">6.8 What is not simulated</h2>
 <p>eMIPS models a MIPS32 core with its CP0, FPU and the classic pipeline.
 Not included:</p>
@@ -1525,12 +1158,6 @@ Not included:</p>
 <li><strong>CP0 hazards in the 5-stage model</strong> (<code>ehb</code> is a no-op there; the 24K
   model has them, <a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)
   and some CP0 registers;</li>
-<li><strong>RISC-V</strong>: the H (hypervisor), V (vectors) and Q extensions, the
-  AIA's IMSIC (message-signalled interrupts); a timer and an interrupt
-  controller on a generic hart (its only interrupt source is the console, on
-  MEIP; the P8700 has the ACLINT and the APLIC); on the P8700 its
-  out-of-order multithreaded pipeline (eMIPS: the 5-stage one) and MIPS's
-  Hybrid Debug (eMIPS: the RISC-V Debug specification's);</li>
 <li><strong>with more than one core</strong> (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>):
   the CPC
   carries a command out at once (no power-up delays); the instruction
@@ -1607,20 +1234,6 @@ instructions, no delay slots, the p32 register names, programs assembled and
 linked as nanoMIPS's own toolchain does; C, GDB, the DSP and MT ASEs, every
 MMU (and the I7200's MPU), several cores and the Malta work on it too
 (<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">Phase 2, 2.24</a>, Labs 63–67).</p>
-<p><strong>Can eMIPS run RISC-V?</strong>  Yes: <code>--arch rv32</code> / <code>rv64</code> is a
-RISC-V hart (RV32I / RV64I with M, A, F, D, C, the CSRs, Zba / Zbb by
-default; M, S and U-mode, Sv32–Sv57 paging, PMP, the Debug specification's
-triggers and Debug Mode), with RARS's system calls and memory map
-and programs assembled and linked as GNU <code>as</code> and <code>ld</code> do; C, GDB, the
-5-stage pipeline (Patterson &amp; Hennessy's RISC-V edition) and the window's
-views work on it.  <code>--core p8700</code> is MIPS's RISC-V multiprocessor
-(<a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26 / 2.27</a>).</p>
-<p><strong>My RISC-V program says <em>illegal instruction</em>.</strong>  The hart lacks
-the instruction's extension (<code>--rv-ext</code>: <code>mul</code> needs M, <code>fadd.s</code> F,
-<code>lr.w</code> A — the P8700 has no AMOs, only <code>lr</code> / <code>sc</code>), or it is a
-privileged one in a lower mode (a U-mode <code>csrr mstatus</code>), or the CSR does
-not exist; <code>mtval</code> holds the instruction.  A MIPS instruction
-(<code>addiu</code>, <code>syscall</code>) is an assembly error on RISC-V.</p>
 <p><strong>Where are my settings stored?</strong>  <code>~/.config/eMIPS/eMIPS.ini</code> (Linux;
 the equivalent per-user folder elsewhere).  Delete it to start fresh.</p>
 <p><strong>An MSA instruction stops my program with <em>Reserved Instruction</em> (or
@@ -1978,21 +1591,6 @@ note.</p>
 <td>1–4</td>
 <td><code>0x00010000</code></td>
 </tr>
-<tr>
-<td><code>p8700</code></td>
-<td>MIPS P8700</td>
-<td>RISC-V RV64</td>
-<td>C</td>
-<td>yes (F, D)</td>
-<td>no</td>
-<td>1–2 harts a core</td>
-<td>no</td>
-<td>Sv39 / Sv48: VTLB 64 + FTLB 128x4, micro-TLBs, a hardware or software walk</td>
-<td>32 / 64 KB, 4-way, 64-byte lines (L2 256 KB 8-way, 512 KB–8 MB 16-way)</td>
-<td>5-stage</td>
-<td>1–6</td>
-<td>marchid <code>0x8000000000000201</code></td>
-</tr>
 </tbody>
 </table>
 <p>A program finds out which core it runs on as an operating system's
@@ -2050,21 +1648,6 @@ model's: neither manual gives the Processor ID.  Not modelled: its
 9-stage dual-issue pipeline (an MT nanoMIPS core runs in instruction
 mode), the scratchpad RAMs, the QoS policy manager and its OCI debug
 system with the Fast Debug Channel.</p>
-<p>The <strong>P8700</strong> preset makes a <strong>RISC-V</strong> machine (choosing it sets
-<code>--arch rv64</code>; <a href="02-writing-programs.html#227-the-mips-p8700-a-risc-v-core">Phase 2, 2.27</a>):
-RV64GC with Zba / Zbb and MIPS's own instructions (<code>mips.ccmov</code>, the pair
-loads and stores, <code>mips.pref</code>, the barriers), no AMOs, 1 to 6 cores of 1 or
-2 harts, its CSRs (<code>mipstvec</code>, <code>mipsconfig</code>, the PMAs, four performance
-counters), its MMU (a 64-entry VTLB, a 128 x 4 FTLB shared by a core's harts,
-micro-TLBs, a hardware table walker or a software one with
-<code>mips.mtlbwr</code>), the CM3.7 (the GCRs, the Cluster Power Controller,
-coherent L1 data caches and the L2), the ACLINT and the APLIC, and the ECC of
-its caches and FTLB with the Cache Error exception (the P8700 Programmer's
-Guide, rev. 1.80 / 1.84).  It identifies itself with <code>mvendorid</code> 0x127
-(MIPS), <code>marchid</code> 0x8000000000000201 and <code>mhartid</code> = core × 16 + hart.
-Not modelled: its out-of-order multithreaded pipeline (eMIPS: the 5-stage
-one), MIPS's Hybrid Debug, the DSPRAM, load / store bonding and the L2's
-prefetcher (they change only the speed).</p>
 <h2 id="612-glossary">6.12 Glossary</h2>
 <table>
 <thead>
@@ -2309,38 +1892,6 @@ prefetcher (they change only the speed).</p>
 <tr>
 <td>gating storage, ITC</td>
 <td>memory whose loads and stores wait: a load from an empty cell or a store to a full one stops its thread until another thread makes it possible; the 34K's Inter-Thread Communication unit has FIFO and semaphore cells (Lab 56)</td>
-</tr>
-<tr>
-<td>hart</td>
-<td>a hardware thread (RISC-V): one PC and register set; the P8700 has one or two per core</td>
-</tr>
-<tr>
-<td>CSR</td>
-<td>control and status register (RISC-V): <code>mstatus</code>, <code>mtvec</code>, <code>mcause</code> ... — what CP0 is to MIPS</td>
-</tr>
-<tr>
-<td>M / S / U-mode</td>
-<td>RISC-V's privilege modes: Machine (everything), Supervisor (an operating system), User</td>
-</tr>
-<tr>
-<td>trap delegation</td>
-<td><code>medeleg</code> / <code>mideleg</code>: traps from S- and U-mode go to an S-mode handler instead of M-mode's</td>
-</tr>
-<tr>
-<td>PMP</td>
-<td>physical memory protection (RISC-V): address ranges with read / write / execute rights for S- and U-mode (and locked ones for M)</td>
-</tr>
-<tr>
-<td>Sv39 / Sv48</td>
-<td>RISC-V's page tables of 3 / 4 levels (39 / 48-bit virtual addresses), turned on by <code>satp</code></td>
-</tr>
-<tr>
-<td>NaN-boxing</td>
-<td>a single-precision value in a 64-bit FP register has all ones above it; anything else reads as the canonical NaN</td>
-</tr>
-<tr>
-<td>ACLINT / APLIC</td>
-<td>RISC-V's timer / software-interrupt unit and its interrupt controller for devices (the P8700's are in its GCR block)</td>
 </tr>
 </tbody>
 </table>

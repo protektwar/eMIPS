@@ -123,32 +123,6 @@ def header_args(text: str) -> list[str] | None:
     return None
 
 
-#: the user guide's example markers (tests/test_guide.py) -> the header's flags
-_GUIDE_MARKERS = {"release": "--release", "arch": "--arch", "core": "--core",
-                  "cores": "--cores", "vps": "--vps", "boot": "--boot", "l2": "--l2"}
-
-
-def guide_profile(text: str) -> Profile | None:
-    """The settings a user-guide example asks for with its first comment
-    lines (``# arch: rv32``, ``# core: p8700``, ``# caches: 32K`` ...): the
-    window's *Open in the editor*.  None: none of them."""
-    flags: list[str] = []
-    for line in text.splitlines():
-        m = re.match(r"#\s*([a-z0-9-]+):\s?(.*)$", line)
-        if not m:
-            break
-        key, value = m.group(1), m.group(2).strip()
-        if key in _GUIDE_MARKERS:
-            flags += [_GUIDE_MARKERS[key], value]
-        elif key == "caches":
-            flags += ["--icache", value, "--dcache", value]
-        elif key == "write-buffer":
-            flags.append("--write-buffer")
-    if not flags:
-        return None
-    return read("# eMIPS: " + shlex.join(flags))
-
-
 def _resolve_disk(spec: str, base: Path | None) -> str:
     """A ``--disk`` value with its image file relative to the program's
     folder (``base``)."""
