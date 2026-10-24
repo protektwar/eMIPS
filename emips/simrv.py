@@ -68,8 +68,11 @@ M64 = 0xFFFFFFFFFFFFFFFF
 INSN_MISALIGNED, INSN_ACCESS, ILLEGAL, BREAKPOINT = 0, 1, 2, 3
 LOAD_MISALIGNED, LOAD_ACCESS, STORE_MISALIGNED, STORE_ACCESS = 4, 5, 6, 7
 ECALL_U, ECALL_S, ECALL_M = 8, 9, 11
+#: an NMI's request (interrupt_request; the P8700: emips.p8700ic)
+NMI = -1
 #: the interrupts (priv. Table 14)
-INTERRUPT_NAMES = {1: "supervisor software interrupt", 3: "machine software interrupt",
+INTERRUPT_NAMES = {NMI: "non-maskable interrupt",
+                   1: "supervisor software interrupt", 3: "machine software interrupt",
                    5: "supervisor timer interrupt", 7: "machine timer interrupt",
                    9: "supervisor external interrupt", 11: "machine external interrupt"}
 #: the extensions of the default hart (Zihpm: hpmcounter3-31, read 0)
@@ -202,6 +205,11 @@ class RVMachine(S.Machine):
     rv_sources: dict | None = None
     #: the MIPS P8700's own state (emips.p8700) on a P8700 hart
     p8700 = None
+    #: the 64-byte granule of the LR reservation of a P8700 cluster's hart
+    #: (another hart's store there clears it; ``cluster``: sim.Machine)
+    lr_granule: int | None = None
+    #: the NMI input is asserted (a P8700's APLIC / watchdog)
+    nmi_pending = False
 
     def __init__(self, memory=None, pc: int = 0, *, arch: str = "rv64",
                  extensions: str = DEFAULT_EXTENSIONS, modes: str = "msu",
@@ -328,6 +336,8 @@ class RVMachine(S.Machine):
         mie; to M unless delegated, when M-mode is below M or MIE; to S
         when delegated and the hart is in U, or in S with SIE; the
         priority MEI, MSI, MTI, SEI, SSI, STI)."""
+        if self.nmi_pending and not self.debug_mode:
+            return NMI, 3                       # (non-maskable: before every interrupt)
         c = self.csrs
         pend = c.mip() & c.mie
         if not pend:
@@ -433,6 +443,11 @@ class RVMachine(S.Machine):
         """sim.Machine's store, after the store triggers (address and data)."""
         if self.tm.stores:
             self.tm.memory("store", addr, size, value & ((1 << 8 * size) - 1))
+        cl = self.cluster
+        if cl is not None and any(o.reservation is not None for o in cl.machines if o is not self):
+            pa = self.translate(addr).pa        # (MD01502 3.2: the other harts' granule)
+            if pa is not None:
+                cl.stored(self, pa)
         return super().store(addr, value, size, gather=gather, atomic=atomic)
 
     def trigger_check(self, op: str, addr: int, size: int) -> None:
@@ -518,6 +533,10 @@ class RVMachine(S.Machine):
         tm = self.tm
         tm.after = None
         self.waiting = False
+        if req[0] == NMI:
+            self.nmi_pending = False
+            self._take_nmi(pc)
+            return
         if tm.icounts:                          # (a trap from an enabled mode counts)
             tm.icount_trap(self.priv)
         prev = self.priv
@@ -691,6 +710,30 @@ class RVMachine(S.Machine):
             e.update(addr=pc, vector=self.pc,
                      why=f"{'s' if to == 1 else 'm'}cause 0x{code & self.amask:x}, "
                          f"{'s' if to == 1 else 'm'}tval 0x{tval & self.amask:x}")
+
+    def _take_nmi(self, pc: int) -> None:
+        """An NMI (priv. 3.4: M-mode, mepc = the interrupted instruction,
+        mcause 0 = "unknown" — the P8700's Table 7.6): the M-mode trap's
+        MPIE / MIE / MPP stack, mipsconfig5.ERL = 1 (7.3.9: no interrupt
+        until MRET / SRET), the vector = the hart's RESET_BASE (the MIPS
+        way: DEVIATIONS)."""
+        c = self.csrs
+        self.exception_log.append({"name": INTERRUPT_NAMES[NMI], "cause": 0, "epc": pc,
+                                   "priv": self.priv, "to": 3})
+        c.mepc, c.mcause, c.mtval = pc & ~1, 0, 0
+        p = self.p8700
+        if p is not None:
+            p.m_trap(False, c.status_field(CSR.MPP_SHIFT, 3))
+            p.config5 |= 1                      # (ERL)
+        c.set_status(mpie=c.status_bit(CSR.MIE), mie=0, mpp=self.priv)
+        self.priv = 3
+        cl = self.cluster
+        if cl is not None and p is not None:
+            self.pc = cl.reset_base[cl.index(p.core, p.hart)] & self.amask
+        else:
+            self.pc = self.reset_pc & self.amask
+        e = self.exception_log[-1]
+        e.update(error=e["name"], addr=pc, vector=self.pc, why="mcause 0x0 (NMI)")
 
     # -- Debug Mode (Debug spec ch. 4) ---------------------------------------------------
 
@@ -1130,6 +1173,9 @@ def _lr(size: int):
         _aligned(m, addr, size, False)
         v = m.load(addr, size, pre=False)
         m.reservation = (addr, size)
+        if m.cluster is not None:
+            pa = m.translate(addr).pa
+            m.lr_granule = None if pa is None else pa >> 6
         _set(m, i.f["rd"], _s32(v) if size == 4 else v)
     return ex
 

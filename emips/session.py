@@ -260,6 +260,8 @@ class Session:
         self.machines: list[Machine] = []
         self.pipelines: list = []
         self.cps: CPS | None = None
+        #: the MIPS P8700's cluster (emips.p8700cps): the machines are its harts
+        self.rvcps = None
         #: the MT processor (emips.mt): the machines are its VPEs
         self.mt = None
         self.cpu = 0
@@ -694,6 +696,7 @@ class Session:
         self.program = None
         self.machine = self.pipeline = self.console = self.services = None
         self.machines, self.pipelines, self.cps = [], [], None
+        self.rvcps = None
         self.views, self.last_view, self.steps = {}, None, 0
 
     def unload(self) -> None:
@@ -701,6 +704,7 @@ class Session:
         self.program = None
         self.machine = self.pipeline = self.console = self.services = None
         self.machines, self.pipelines, self.cps = [], [], None
+        self.rvcps = None
         self.source, self.listing, self.kind = "", "", "asm"
         self.errors, self.views = [], {}
         self.output, self.steps, self.last_view, self.run_to = "", 0, None, None
@@ -779,7 +783,13 @@ class Session:
         n = o.cores
         mtc = self.mt_config()
         self.mt = None
-        if mtc is not None and n == 1:          # an MT processor: its VPEs (emips.mt)
+        self.rvcps = None
+        if self.rv and RV.cluster_config(self) is not None:     # the P8700 (emips.p8700cps)
+            self.cps = None
+            self.rvcps = RV.make_cluster(self, mem)
+            self.machines = self.rvcps.machines
+            n = len(self.machines)
+        elif mtc is not None and n == 1:          # an MT processor: its VPEs (emips.mt)
             from .mt import Processor
             n, tcs = mtc
             shared = o.caches(core=0)           # one L1 / L2 for the VPEs
@@ -855,9 +865,13 @@ class Session:
                     if self.board is not None:  # its stack in kuseg (the TLB maps it)
                         from .malta import USER_SP
                         m.write_reg(29, USER_SP - i * CORE_STACK)
-                if boot and i:                  # its own stack
+                if boot and i and self.rv:      # its own stack
+                    m.write_reg(2, self.machines[0].read_reg(2) - i * CORE_STACK)
+                elif boot and i:
                     top = self.board.stack_top() if self.board is not None else BOOT_SP
                     m.write_reg(29, top - i * CORE_STACK)
+            if boot and self.rvcps is not None:
+                self.rvcps.boot()
             if boot and self.cps is not None:
                 self.cps.boot()
                 if self.board is not None:
@@ -1306,6 +1320,8 @@ class Session:
         TC that runs or waits)."""
         if self.mt is not None:
             return [v for v in range(len(self.machines)) if self.mt.alive(v)]
+        if self.rvcps is not None:
+            return self.rvcps.running()
         if self.cps is None:
             return [0] if self.machines else []
         return self.cps.running_vps()
@@ -1430,7 +1446,8 @@ class Session:
         no core runs any more."""
         if not self.machines:
             return True
-        if self.mt is None and self.cps is None and len(self.machines) == 1:   # (one core)
+        if self.mt is None and self.cps is None and self.rvcps is None \
+                and len(self.machines) == 1:   # (one core)
             p = self.pipelines[0]
             return self.machines[0].halted and (p is None or p.empty())
         for m, p in zip(self.machines, self.pipelines):
@@ -1472,6 +1489,9 @@ class Session:
         cpu = None
         if self.cps is not None:
             self.cps.clock = steps              # one cycle (instruction) per step
+        rvcps = self.rvcps
+        if rvcps is not None:
+            rvcps.clock = steps
         watched = None
         try:
             if dispatch:
@@ -1485,7 +1505,8 @@ class Session:
                     self.mt.prepare()
             cm3 = self.cps is not None and self.cps.cm3
             for cpu in cores if not dispatch else ():
-                if cm3 and not self.cps.vp_runs(cpu):
+                if cm3 and not self.cps.vp_runs(cpu) or rvcps is not None \
+                        and not rvcps.runs(cpu):
                     continue                    # a VP an earlier one stopped / reset
                 try:
                     self._step_core(cpu)
@@ -1501,14 +1522,15 @@ class Session:
             if cpu != self.cpu:
                 self.select(cpu)                # show the core that stopped
             where = (f"VP {cpu}: " if self.cps is not None and self.mt is not None else
-                     f"{self.cpu_name(cpu)}: " if self.cps is not None else
+                     f"{self.cpu_name(cpu)}: " if self.cps is not None
+                     or rvcps is not None and len(self.machines) > 1 else
                      f"VPE {cpu}: " if self.mt is not None and len(self.machines) > 1 else "")
             res.fault = exc
             res.error = f"{where}{type(exc).__name__}: {exc}" + self._no_handler_hint(exc) \
                 + self._past_end_hint(exc) + self._moved_code_hint(exc)
             res.stopped = "halt"
             return res
-        if self.cps is not None:
+        if self.cps is not None or rvcps is not None:
             self.select(self.cpu)               # a core may have restarted
         else:
             self.last_view = self._last_views[self.cpu]
@@ -1529,7 +1551,8 @@ class Session:
             for e in m.exception_log[start:]:
                 if "vector" in e:
                     res.exceptions.append(dict(e, cpu=i) if self.cps is not None
-                                          or self.mt is not None else e)
+                                          or self.mt is not None or rvcps is not None
+                                          and len(self.machines) > 1 else e)
         if self.halted:
             res.stopped = "exit"
         elif watched is not None:
@@ -1539,8 +1562,8 @@ class Session:
 
     def _step_core(self, cpu: int) -> None:
         m, p = self.machines[cpu], self.pipelines[cpu]
-        if m.vpcore is not None and m.caches is not None:
-            m.caches.m = m                      # (a Release 6 VP: the core's caches)
+        if (m.vpcore is not None or m.cluster is not None) and m.caches is not None:
+            m.caches.m = m                      # (a Release 6 VP / P8700 hart: its core's)
         if p is None:                           # (only the last view is shown)
             m.last_view = None
             m.fetch_tlb = []
@@ -2176,6 +2199,8 @@ class Session:
     def cpu_name(self, i: int) -> str:
         """How the views name machine ``i``: "core N"; with MT cores in a
         CPS "VP N (core C)"; one MT core "VPE N"."""
+        if self.rvcps is not None:
+            return self.rvcps.hart_name(i)
         if self.mt is not None and self.cps is not None:
             return f"VP {i} (core {self.cps.vp_core(i)})"
         if self.mt is not None:
@@ -3173,6 +3198,14 @@ class Session:
                         state = "VP stopped (CPC VP_RUNNING = 0)"
                     elif m.vpcore is not None and m.vpcore.disabled(k):
                         state += ", held by a DVP"
+            elif self.rvcps is not None:            # the P8700's harts (emips.p8700cps)
+                from .p8700cps import STATE_NAMES
+                cl = self.rvcps
+                c, h = divmod(i, cl.harts)
+                state = STATE_NAMES.get(cl.state[c], str(cl.state[c]))
+                if not cl.running_mask[c] >> h & 1 and cl.state[c] in (6, 7):
+                    state = "hart stopped (CPC VP_RUNNING = 0)"
+                coherent = bool(cl.coh_en[c])
             elif self.mt is not None:               # the VPEs of one MT core
                 state, coherent = ("active" if self.mt.vpa[i] else
                                    "not active (VPEConf0.VPA = 0)"), False

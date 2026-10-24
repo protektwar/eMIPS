@@ -80,7 +80,9 @@ def _rv(o: Options) -> bool:
 _RV_DEFAULTS = (
     ("board", "flat", "the Malta's core cards carry MIPS CPUs (MD00048); a RISC-V program "
                       "runs on the flat RARS memory map"),
-    ("cores", 1, "a generic RISC-V core is one hart here; several harts on one platform "
+    ("cores", 1, "a generic RISC-V core is one hart here; several cores and harts are the "
+                 "P8700 preset's (--core p8700, PLAN M25 phase 5d); several harts on one "
+                 "platform "
                  "come with the P8700 preset (PLAN M25 phase 5)"),
     ("model", "5-stage", "the 24K is a MIPS32 core (MD00343)"),
     ("mmu", "fixed", "a RISC-V hart translates with satp (Sv32 / Sv39 / Sv48 / Sv57, the "
@@ -90,11 +92,15 @@ _RV_DEFAULTS = (
     ("dsp", "auto", "the DSP Module is a MIPS ASE"),
     ("msa", "auto", "MSA is a MIPS ASE (RISC-V's vectors are the V extension)"),
     ("mt", "auto", "the MT Module is a MIPS ASE"),
-    ("vps", 1, "Release 6 VPs belong to MIPS cores"),
+    ("vps", 1, "Release 6 VPs belong to MIPS cores (the P8700's harts a core: --core p8700)"),
     ("nms", False, "the nanoMIPS subset belongs to nanoMIPS cores"),
     ("shadow_sets", 4, "shadow register sets belong to MIPS cores"),
     ("c_isa", "mips32", "MIPS16e / microMIPS are MIPS ISAs"),
 )
+
+
+#: what the P8700 preset decides on a RISC-V hart (its cores and harts)
+_P8700_FIELDS = ("cores", "vps")
 
 
 #: why the nanoMIPS core has no FPU / ISA modes / ...
@@ -121,9 +127,18 @@ class Rule:
 
 RULES = (
     # first, RISC-V (PLAN M25): another architecture — none of the MIPS settings
-    *(Rule(f, "arch", (lambda f, v: lambda o, r: _rv(o) and getattr(o, f) != v)(f, v),
+    *(Rule(f, "arch", (lambda f, v: lambda o, r: _rv(o) and getattr(o, f) != v
+                       and not (f in _P8700_FIELDS and o.core == "p8700"
+                                and _cores.CORES["p8700"].allows(f, getattr(o, f))))(f, v),
            (lambda f, v: lambda o: setattr(o, f, v))(f, v), why)
       for f, v, why in _RV_DEFAULTS),
+    Rule("icache", "cores", lambda o, r: _rv(o) and o.cores > 1 and "none" not in
+         (o.icache, o.dcache) or _rv(o) and o.cores > 1 and o.l2 != "none",
+         lambda o: (setattr(o, "icache", "none"), setattr(o, "dcache", "none"),
+                    setattr(o, "l2", "none")),
+         "the P8700's cores keep their caches coherent through the CM3.7 and its L2 — "
+         "modelled with the caches (PLAN M25 phase 5e): until then a multi-core P8700 runs "
+         "without caches"),
     # first, nanoMIPS (PLAN M23): an architecture of its own, Release 6 based —
     # what its cores do not have (the rules below see the settings they leave)
     Rule("arch", "release", lambda o, r: _nano(o) and r != "R6",
@@ -218,7 +233,7 @@ RULES = (
          lambda o: setattr(o, "mt", "auto"),
          "the MT Module needs Release 2-5 (MD00378 1.1: Release 2; Release 6 replaced "
          "it with DVP / EVP and has none of its instructions)"),
-    Rule("vps", "release", lambda o, r: o.vps > 1 and r != "R6",
+    Rule("vps", "release", lambda o, r: o.vps > 1 and r != "R6" and not _rv(o),
          lambda o: setattr(o, "vps", 1),
          "virtual processors are Release 6 multi-threading (Vol. III 9.8, Config5.VP; "
          "before Release 6: the MT Module)"),

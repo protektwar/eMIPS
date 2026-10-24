@@ -41,7 +41,7 @@ FIELDS = ("release", "compressed", "fpu", "dsp", "msa", "mt", "mmu", "icache", "
           "l3", "cores", "vps", "shadow_sets", "model")
 #: the settings a RISC-V core preset decides (PLAN M25 phase 5: the MIPS
 #: settings do not apply to a RISC-V hart, emips.compat)
-RV_FIELDS = ("rv_extensions", "rv_modes", "cores")
+RV_FIELDS = ("rv_extensions", "rv_modes", "cores", "vps")
 
 
 def _pow2(n: int) -> bool:
@@ -273,6 +273,8 @@ class Core:
                 else:
                     out.append(spec)
             return ", ".join(out)
+        if name == "vps" and self.rv:
+            return "/".join(map(str, self.vps)) + " harts a core"
         if name == "vps":
             return ("one VP a core (no Release 6 multi-threading)" if self.vps == (1,)
                     else "/".join(map(str, self.vps)) + " VPs a core (Release 6, a CM3)")
@@ -592,22 +594,22 @@ CORES: dict[str, Core] = {c.name: c for c in (
 
     # -- RISC-V (PLAN M25 phase 5) --
     Core("p8700", "MIPS P8700", "RV", 0x00, ("auto",), (True,), ("auto",), ("auto",),
-         ("fixed",), NO_CACHE, NO_CACHE, None, (1,), (4,), ("5-stage",),   # (not its: RV_FIELDS)
-         build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1),
+         ("fixed",), NO_CACHE, NO_CACHE, None, (1, 2, 3, 4, 5, 6), (4,), ("5-stage",),
+         build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1, vps=1),
          source="MD01502 (the P8700 / P8700-F Multiprocessing System Programmer's Guide "
                 "1.80: RV64GC Zba Zbb, 1.2; the custom instructions, Appendix B; the CSRs "
                 "and causes, ch. 7; the counters, 11.1), QEMU's mips-p8700 (marchid "
                 "0x8000000000000201, Sv48), OpenSBI's P8700 platform code, Linux's "
                 "\"Zalrsc only\" patch (no AMOs)",
          missing=("the P8700's out-of-order multithreaded pipeline (eMIPS: the textbook "
-                  "5-stage)", "TLB ECC (phase 5e)", "several harts and cores, the CM3.7, "
-                  "CPC, ACLINT / APLIC (phase 5d)", "its caches and their CSRs (phase 5e)",
+                  "5-stage)", "TLB ECC (phase 5e)",
+                  "its caches and their CSRs, the CM3.7's L2 and coherence (phase 5e)",
                   "MIPS Hybrid Debug (eMIPS: the RISC-V Debug specification's)",
                   "the DSPRAM, L1 prefetching (the trackers' registers are stored), "
                   "MDIAGR / MDIAGW (undocumented)"),
          notes=("no AMO instructions: an AMO traps for M-mode emulation (mipsconfig6)",
                 "the time CSR traps (Read Time, cause 26, or an illegal instruction)"),
-         arch="rv64", rv_extensions=(_P8700_EXTENSIONS,), rv_modes=("msu",)),
+         arch="rv64", rv_extensions=(_P8700_EXTENSIONS,), rv_modes=("msu",), vps=(1, 2)),
 )}
 
 #: the generic eMIPS core's name (no preset): any setting, PRId 0

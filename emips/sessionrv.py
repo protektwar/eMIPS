@@ -52,13 +52,47 @@ def make_core(session, cpu: int, mem, caches):
     return m
 
 
+def cluster_config(session) -> tuple[int, int] | None:
+    """(cores, harts a core) of the P8700's cluster (emips.p8700cps): the
+    preset always has its Coherence Manager and CPC, even with one hart."""
+    o = session.options
+    if o.core != "p8700":
+        return None
+    return o.cores, o.vps
+
+
+def make_cluster(session, mem):
+    """The P8700 cluster on the session's memory: every hart as
+    :func:`make_core` makes it, the reset PC = the program's entry page (the
+    GCR block below it, every RESET_BASE at it)."""
+    from .p8700cps import Cluster
+    o = session.options
+    cores, harts = cluster_config(session)
+    entry = getattr(session.program, "entry", None)
+    reset_pc = (entry if entry is not None else 0x00400000) & ~0xFFF
+
+    def factory(cl, core, hart, pc, caches):
+        m = make_core(session, core * harts + hart, mem,
+                      caches if caches is not None else None)
+        m.pc = m.reset_pc = pc
+        return m
+    shared = (lambda c: o.caches(core=c)) if cores == 1 else None
+    return Cluster(cores, harts, factory, reset_pc, timer_div=o.count_rate,
+                   on_start=session._core_started, caches=shared)
+
+
 def console_sink(session):
-    """The console's interrupt lines -> the hart's MEIP (bit 11)."""
+    """The console's interrupt lines -> the hart's MEIP (bit 11); on a
+    P8700 the APLIC's source 4 (the Boston board's UART, QEMU's)."""
     levels = {}
 
     def sink(line: int, on: bool) -> None:
         levels[line] = on
-        if session.machines:
+        cl = session.rvcps
+        if cl is not None and cl.ic is not None:    # (the P8700: the APLIC's UART source)
+            from .p8700ic import UART_SOURCE
+            cl.ic.set_input(UART_SOURCE, any(levels.values()))
+        elif session.machines:
             session.machines[0].set_interrupt(11, any(levels.values()))
     return sink
 
@@ -510,4 +544,8 @@ def p8700_lines(m) -> list[str]:
     out += p.counters.lines()
     if hasattr(m.mmu, "lines"):                 # (its TLBs: emips.p8700mmu)
         out += m.mmu.lines(m)
+    if m.cluster is not None:                   # (the cluster: emips.p8700cps)
+        out += m.cluster.lines()
+        if m.cluster.ic is not None:
+            out += m.cluster.ic.lines()
     return out

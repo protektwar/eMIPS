@@ -652,6 +652,47 @@ DEVIATIONS: dict[str, str] = {
                  "restores them and clears MPPPS.  Svnapot (64 KB pages) is on: the TLBs "
                  "and walker have 64 KB pages, and Svnapot is how RISC-V page tables hold "
                  "them.  TLB ECC (mipscacheerr 4 / 5): phase 5e.",
+    "P8700 cluster": "emips.p8700cps (PLAN M25 phase 5d; MD01502 rev. 1.84 ch. 5 / 6): "
+                     "one cluster (CLUSTERNUM 0, no NoC); 1-6 cores of 1-2 harts (1.1; "
+                     "6.5.10 says up to four in one place); GCR_BASE resets to the 512 KB "
+                     "block below the program's entry page (5.14.1.2's rule with eMIPS's "
+                     "reset PC; QEMU's Boston: 0x1FB80000 below 0x1FC00000) and every "
+                     "RESET_BASE to that page; REV 0x0A00 (QEMU's), CPC REVISION 0x0100.  The "
+                     "registers eMIPS has no behaviour for (CONTROL, the error, MMIO-region, "
+                     "L2-prefetch, sequencer and clock registers) are stored; the debug / "
+                     "trace / FDC blocks read 0.  A powered-up or reset core runs hart 0 "
+                     "(the si_core_vc_run_init pins); VP_RUN and a core reset start a hart "
+                     "afresh at its RESET_BASE (QEMU's cpu_reset), VP_STOP keeps its state.  "
+                     "ClockOff / PwrDown / Reset of a coherent core wait for COH_EN = 0; "
+                     "PwrUp from U2 gives the clock back.  mtime ticks every Count-rate "
+                     "clocks of the cluster (one clock = one step), is writable (8.1.3.1's "
+                     "synchronisation writes it although Table 5.99 says R), HRTIME = the "
+                     "clock.  Kernel / user boot = every core coherent, every hart running "
+                     "main (OpenSBI starts the others through the HSM; eMIPS's boot starts "
+                     "them all, as for a MIPS CPS); reset boot = core 0's hart 0.  The "
+                     "harts of a core share its FTLB and caches; a core's micro-TLBs and "
+                     "VTLB are each hart's.  An LR reservation is lost when another hart "
+                     "stores to its 64-byte granule (3.2).  Multi-core caches wait for "
+                     "phase 5e (the CM's coherence and L2): compat turns them off.  The "
+                     "interrupt controller: \"P8700 interrupt controller\".",
+    "P8700 interrupt controller": "emips.p8700ic (PLAN M25 phase 5d2; MD01502 rev. 1.84 "
+                                  "ch. 8): what the manual leaves to the configuration "
+                                  "is QEMU's Boston P8700 board's — 53 APLIC sources, 3 "
+                                  "priority bits (IPRIOLEN), the console on source 4 (the "
+                                  "board's UART).  MTIMECMP resets to all ones (8.2.1.2's "
+                                  "MIPS choice).  An NMI (8.3.3.18-21: nmie = 1, the "
+                                  "source's interrupt enable 0) is signalled once when the "
+                                  "source becomes pending (again after it was not); the "
+                                  "trap writes mepc, mcause = 0, mtval = 0, sets "
+                                  "mipsconfig5.ERL, stacks MIE as a trap does and goes to "
+                                  "the hart's RESET_BASE (the reset vector: eMIPS's NMI "
+                                  "vector), in M-mode, ignoring mstatus.MIE.  The "
+                                  "watchdog's mip bit 25 is a local interrupt of the "
+                                  "default order of the AIA (5.1: the major identities "
+                                  "above 16 first), just below 23.  Its stage-2 "
+                                  "event 3 (the SoC pin) does nothing: eMIPS has no SoC "
+                                  "around the cluster; event 2 resets every hart of the "
+                                  "cluster as the CPC's core reset.",
     "RISC-V pipeline": "emips.rvpipeline (PLAN M25 phase 4a) is Patterson & Hennessy's "
                        "RISC-V edition (ch. 4) with its 4.8 choice: branches, jal and "
                        "jalr resolve in ID, predicted not taken (one bubble when taken), "
@@ -2222,6 +2263,8 @@ class Machine:
     nano = False
     #: a RISC-V hart (emips.simrv: not a MIPS core at all; PLAN M25)
     rv = False
+    #: the P8700 cluster of a RISC-V hart (emips.p8700cps; MIPS cores: None)
+    cluster = None
     #: the ABI's register names (emips.syntax.gpr_name): o32's, "n64"
     #: (MIPS64), "p32" (nanoMIPS), "riscv" (emips.riscv.GPR_NAMES)
     names: bool | str = True

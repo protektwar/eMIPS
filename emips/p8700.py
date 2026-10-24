@@ -86,7 +86,7 @@ INTERRUPT_NAMES = {IMPRECISE_BUS_ERROR: "imprecise bus error interrupt",
                    16: "custom interrupt 16 (VSEI routed)", 17: "custom interrupt 17 (STI routed)",
                    18: "custom interrupt 18 (SEI routed)", 19: "custom interrupt 19 (MSI routed)",
                    20: "custom interrupt 20 (MEI routed)", 6: "VSTIP (MTI routed)",
-                   10: "VSEIP"}
+                   10: "VSEIP", 25: "watchdog interrupt"}
 
 #: mipsconfig5 (7.3.9): the software table walker's fields (phase 5c)
 ERL, MPTW, MTW, MPPPS, MDIAGL = 1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 5
@@ -104,11 +104,14 @@ CONFIG7_MASK = 0x7FFFFFFF & ~(1 << 24) & ~(1 << 10) & ~(1 << 8)
 ROUTES = {5: (11, 20), 4: (3, 19), 3: (7, 6), 2: (9, 18), 1: (5, 17), 0: (10, 16)}
 _BY_LINE = {std: (n, custom) for n, (std, custom) in ROUTES.items()}
 INTCTL_RESET = 0x3F
-#: the mip / mie bits the hardware lines may reach, the counter overflow
-LINE_BITS = sum(1 << b for pair in ROUTES.values() for b in pair)
+#: the mip / mie bits the hardware lines may reach (+ the watchdog's 25,
+#: MD01502 8.2.1.3), the counter overflow
+WDT = 25
+LINE_BITS = sum(1 << b for pair in ROUTES.values() for b in pair) | 1 << WDT
 LCOFI = 13
-#: the interrupt priority (riscv-interrupts 1.0 5.1's default order)
-PRIORITY = (23, 20, 11, 3, 7, 9, 1, 5, 10, 6, 13, 19, 18, 17, 16)
+#: the interrupt priority (riscv-interrupts 1.0 5.1's default order; the
+#: custom 25 below 23)
+PRIORITY = (23, 25, 20, 11, 3, 7, 9, 1, 5, 10, 6, 13, 19, 18, 17, 16)
 
 #: the prefetch trackers (7.3.12-7.3.14): 2 groups x 4 entries, registers
 #: 0-4 of 3 / 4 / 6 / 15 / 6 bits
@@ -162,7 +165,7 @@ class P8700:
     def routed(self) -> int:
         out = 0
         lines = self.lines
-        for bit in range(16):
+        for bit in range(lines.bit_length()):
             if lines >> bit & 1:
                 route = _BY_LINE.get(bit)
                 if route is None:

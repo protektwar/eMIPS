@@ -155,6 +155,15 @@ class P8700MMU(RVMMU):
         self.wait = 0
         self.notes: list[str] = []
         self.ftlb64 = False
+        #: the MMUs sharing this FTLB (2.6: a core's harts; their micro-TLBs
+        #: are cleared when it changes)
+        self.group: list[P8700MMU] = [self]
+
+    def share_ftlb(self, owner: "P8700MMU") -> None:
+        """Use ``owner``'s FTLB (another hart of the core, 2.6)."""
+        self.ftlb, self.fnext, self.group = owner.ftlb, owner.fnext, owner.group
+        self.ftlb64 = owner.ftlb64
+        self.group.append(self)
 
     # -- configuration (mipsconfig7) ------------------------------------------------
 
@@ -165,8 +174,10 @@ class P8700MMU(RVMMU):
         """FTLB64 changed: the FTLB's entries are of the other size — gone."""
         big = bool(self._config7(m) & FTLB64)
         if big != self.ftlb64:
-            self.ftlb64 = big
-            self.ftlb = [[None] * self.ways for _ in range(self.sets)]
+            for mmu in self.group:
+                mmu.ftlb64 = big
+            for ways in self.ftlb:          # (in place: the harts share it)
+                ways[:] = [None] * self.ways
             self._changed()
 
     @property
@@ -231,9 +242,11 @@ class P8700MMU(RVMMU):
     # -- writes ---------------------------------------------------------------------
 
     def _changed(self) -> None:
-        """2.1.1: the micro-TLBs are cleared whenever the TLB changes."""
-        self.itlb.clear()
-        self.dtlb.clear()
+        """2.1.1: the micro-TLBs are cleared whenever the TLB changes (every
+        hart's that shares the FTLB)."""
+        for mmu in self.group:
+            mmu.itlb.clear()
+            mmu.dtlb.clear()
 
     def write(self, m, va: int, pte: int, level: int, asid: int, g: bool) -> str:
         """Put ``pte`` (of ``level``, for ``va``) into the VTLB / FTLB as the
@@ -328,7 +341,8 @@ class P8700MMU(RVMMU):
 
     def flush_all(self) -> None:
         self.vtlb = [None] * self.nv
-        self.ftlb = [[None] * self.ways for _ in range(self.sets)]
+        for ways in self.ftlb:
+            ways[:] = [None] * self.ways
         self._changed()
 
     # -- translation ----------------------------------------------------------------
