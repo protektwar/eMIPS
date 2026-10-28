@@ -63,7 +63,7 @@ to know exactly what something does.</p>
 <tr>
 <td>2</td>
 <td><strong>Toolbar</strong></td>
-<td>Assemble (Build for C), Reset, Step Back, Step, Step Line, Run, Pause; the mode (instruction, 5-stage pipeline, 24K pipeline); forwarding; the core (with more than one); the run speed — and the <strong>Machine</strong> toolbar: release, board, MMU, cores, caches (<a href="#the-machine-toolbar">below</a>)</td>
+<td>Assemble (Build for C), Reset, Step Back, Step, Step Line, Run, Pause; the mode (instruction, 5-stage pipeline, 24K pipeline, P8700 pipeline); forwarding; the core (with more than one); the run speed — and the <strong>Machine</strong> toolbar: release, board, MMU, cores, caches (<a href="#the-machine-toolbar">below</a>)</td>
 </tr>
 <tr>
 <td>3</td>
@@ -705,8 +705,17 @@ pseudo-instruction's several instructions at once).</p>
   On a RISC-V hart the tab is <strong>PC / CSRs</strong>: <code>pc</code>, the privilege
   mode and the trap and status CSRs (<code>mstatus</code>, <code>mtvec</code>,
   <code>mepc</code>, <code>mcause</code>, <code>mtval</code>, <code>mie</code> / <code>mip</code>,
-  <code>satp</code> …; the P8700's own after them), and the GPRs tab names
-  <code>x0</code>–<code>x31</code> by their ABI names.</li>
+  <code>satp</code> …; the P8700's own after them; with the hypervisor extension V
+  after the mode, and the hypervisor's and the guest's CSRs — <code>hstatus</code>,
+  <code>hgatp</code>, <code>htval</code>, <code>vsstatus</code> … <code>vsatp</code>), and the GPRs tab names
+  <code>x0</code>–<code>x31</code> by their ABI names.  The <strong>Interrupts</strong> tab of a
+  hart shows the enables, <code>mip</code> / <code>mie</code>, the delegations and what is
+  taken next; with the AIA also <code>mtopi</code> / <code>stopi</code> /
+  <code>vstopi</code>, <code>mvien</code> / <code>mvip</code>, <code>hvictl</code>, the iprio
+  numbers and each IMSIC file's delivery, threshold, <code>topei</code> and pending /
+  enabled identities; with Zicfilp / Zicfiss ELP, the modes that enforce landing
+  pads, <code>ssp</code> and where the shadow stack is active (ELP and
+  <code>ssp</code> are in the CSR list too).</li>
 <li><strong>FPU</strong> — <code>$f0</code>–<code>$f31</code> (64 bits in hex), read as a single and as a
   double.  On a RISC-V hart <code>f0</code>–<code>f31</code> as wide as its FLEN (F: 32, D:
   64; a single in a 64-bit register is NaN-boxed) and <code>fcsr</code>.</li>
@@ -726,6 +735,14 @@ pseudo-instruction's several instructions at once).</p>
   instruction pane shows an MSA instruction's operands and result element by
   element.
 <p><img alt="The MSA tab: dotp_s.h has just written $w3, highlighted; the elements shown as signed halfwords" src="img/03-msa.png"></p></li>
+<li><strong>Vector</strong> (a RISC-V hart with V or a Zve*) — VLEN, ELEN and the
+  floating-point element widths, <code>mstatus.VS</code>, vtype decoded, vl of
+  VLMAX, vstart, vxrm, vxsat, and <code>v0</code>–<code>v31</code> element by element in
+  the view chosen (e8 / e16 / e32 / e64 as hex, signed, unsigned or floating
+  point); the elements the last step changed are highlighted
+  (<a href="02-writing-programs.html#228-risc-v-vectors-the-v-extension">Phase 2, 2.28</a>).  The
+  debugger's <code>vec</code> prints the same; the instruction pane lists the
+  elements a vector instruction changed.</li>
 <li><strong>Interrupts</strong> — the interrupt mode (compatibility, vectored, EIC),
   the vector spacing, what is pending and enabled (or, in EIC mode, the
   RIPL the controller requests, Status.IPL and the RIPL / shadow set
@@ -867,7 +884,15 @@ branches</strong> sends the PC of every branch, <strong>No overflow</strong> sta
 rather than lose trace.  Below: the state of the TCB and the program
 flow regenerated from the trace words (the last 200 instructions; only
 while the pane is shown).  The settings are TAP scans, kept across Reset
-and Step Back (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>).</p>
+and Step Back (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>).
+On a RISC-V hart the pane drives the RISC-V trace instead: the protocol
+(<strong>E-Trace</strong> or <strong>N-Trace</strong>), <strong>Implicit return</strong>,
+<strong>Branch prediction</strong> and <strong>Jump cache</strong> (E-Trace),
+<strong>HTM</strong> and <strong>Repeated history</strong> (N-Trace), <strong>Sequential
+jumps</strong>, <strong>Timestamps</strong>; below, the encoder and the RAM sink, then
+the regenerated flow — or, with <strong>Packets</strong>, the packets / messages the
+encoder sent and why (<a href="05-understanding.html#instruction-trace-e-trace-and-n-trace">Phase
+5, 5.13</a>).</p>
 <h3 id="board">Board</h3>
 <p>The <strong>Board</strong> pane (a tab of the bottom area) shows the board the program
 runs on.</p>
@@ -1021,6 +1046,14 @@ other change restarts it.</p>
 <td>M, S and U (default), M and U, or M only (<code>--rv-modes</code>)</td>
 </tr>
 <tr>
+<td>RISC-V interrupt controller</td>
+<td>none (default: the console's wire to MEIP), the PLIC, the APLIC (direct delivery), or an IMSIC per hart with the APLIC sending MSIs — it adds Smaia / Ssaia (<code>--rv-intc</code>, <a href="02-writing-programs.html#231-risc-v-interrupts-as-memory-writes-the-aia">Phase 2, 2.31</a>); with one, Cores gives the platform that many harts</td>
+</tr>
+<tr>
+<td>RISC-V RNMI handlers</td>
+<td>with Smrnmi: the addresses (or labels) of the resumable NMI's handler and its exception handler (<code>--rv-rnmi</code>; empty: 0, as QEMU and Spike)</td>
+</tr>
+<tr>
 <td>Linker relaxation (GNU's default)</td>
 <td>RISC-V: GNU ld's relaxation — calls, <code>gp</code>-relative accesses and alignment shrunk once every address is known (<code>--no-relax</code> turns it off)</td>
 </tr>
@@ -1078,7 +1111,7 @@ other change restarts it.</p>
 </tr>
 <tr>
 <td>Cores</td>
-<td>1 (default) to 4: more than one is a multi-core system (one memory, the Coherence Manager, the Cluster Power Controller, <a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); the toolbar then has a <strong>core selector</strong> — the core the panes show, with its power state; every running core steps together.  The data caches are kept coherent: the Caches pane shows each line's MESI state (M / E / S), the last access what the Coherence Manager did (<a href="05-understanding.html#coherent-caches">Coherent caches</a>)</td>
+<td>1 (default) to 6: more than one is a multi-core system (on a RISC-V hart: that many harts on the interrupt controller's platform) (one memory, the Coherence Manager, the Cluster Power Controller, <a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>); the toolbar then has a <strong>core selector</strong> — the core the panes show, with its power state; every running core steps together.  The data caches are kept coherent: the Caches pane shows each line's MESI state (M / E / S), the last access what the Coherence Manager did (<a href="05-understanding.html#coherent-caches">Coherent caches</a>)</td>
 </tr>
 <tr>
 <td>GPR shadow sets</td>
@@ -1359,7 +1392,7 @@ keyboard focus (the editor, a console field ...).</p>
 Check (F8) and Checks File… (<a href="#checking-your-program-the-checks-pane">3.3</a>);
 Debug Interrupt (DINT: EJTAG Debug Mode, <a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>);
 GDB Server (GDB debugs the program, <a href="04-command-line.html#gdb-and-the-window">Phase 4</a>);
-Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline); Forwarding.</p>
+Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline / MIPS P8700 pipeline — with <code>--core p8700</code>: the Datapath pane then shows its window, queues and predictors); Forwarding.</p>
 <p><strong>View</strong> — show or hide each pane (Datapath, Pipeline, Disassembly,
 Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
 Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers

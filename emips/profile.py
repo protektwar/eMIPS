@@ -35,7 +35,8 @@ PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
                   "shadow_sets", "boot", "compressed", "fpu", "dsp", "msa", "msa_wrp", "mt",
                   "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv",
-                  "rv_extensions", "rv_modes", "rv_relax")
+                  "rv_extensions", "rv_modes", "rv_relax", "rv_rnmi", "rv_intc", "l2_waits",
+                  "dspram")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -44,6 +45,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--arch", choices=("mips32", "mips64", "nanomips", "rv32", "rv64"))
     p.add_argument("--rv-ext", dest="rv_extensions")
     p.add_argument("--rv-modes", dest="rv_modes", choices=("msu", "mu", "m"))
+    p.add_argument("--rv-rnmi", dest="rv_rnmi")
+    p.add_argument("--rv-intc", dest="rv_intc", choices=("none", "plic", "aplic", "imsic"))
+    p.add_argument("--l2-waits", dest="l2_waits")
+    p.add_argument("--dspram", type=int)
     p.add_argument("--no-relax", dest="no_relax", action="store_true")
     p.add_argument("--nms", action="store_true")
     p.add_argument("--crc", choices=("auto", "none", "crc"))
@@ -51,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--little", action="store_true")
     p.add_argument("--board")
     p.add_argument("--disk", action="append")
-    p.add_argument("--model", choices=("5-stage", "24k"))
+    p.add_argument("--model", choices=("5-stage", "24k", "p8700"))
     p.add_argument("--caches", action="store_true")
     p.add_argument("--icache")
     p.add_argument("--dcache")
@@ -125,12 +130,13 @@ def header_args(text: str) -> list[str] | None:
 
 #: the user guide's example markers (tests/test_guide.py) -> the header's flags
 _GUIDE_MARKERS = {"release": "--release", "arch": "--arch", "core": "--core",
-                  "cores": "--cores", "vps": "--vps", "boot": "--boot", "l2": "--l2"}
+                  "cores": "--cores", "vps": "--vps", "boot": "--boot", "l2": "--l2",
+                  "rv-ext": "--rv-ext", "rv-intc": "--rv-intc"}
 
 
 def guide_profile(text: str) -> Profile | None:
     """The settings a user-guide example asks for with its first comment
-    lines (``# arch: rv32``, ``# core: p8700``, ``# caches: 32K`` ...): the
+    lines (``# arch: rv32``, ``# rv-ext: gcv``, ``# core: p8700``, ``# caches: 32K`` ...): the
     window's *Open in the editor*.  None: none of them."""
     flags: list[str] = []
     for line in text.splitlines():
@@ -180,10 +186,11 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
                  "shadow_sets", "boot", "cache_init", "compressed", "dsp", "msa", "msa_wrp",
                  "mt", "mt_pm", "itc", "vps", "itu", "core", "arch", "crc", "ginv",
-                 "rv_extensions", "rv_modes"):
+                 "rv_extensions", "rv_modes", "rv_rnmi", "rv_intc", "l2_waits", "dspram"):
         v = getattr(ns, name)
         if v is not None:
-            o[name] = v.lower() if isinstance(v, str) and name != "boot" else v
+            o[name] = v.lower() if isinstance(v, str) and name not in ("boot", "rv_rnmi") \
+                else v
     if ns.disk:
         o["disks"] = ",".join(_resolve_disk(d, Path(base) if base is not None else None)
                               for d in ns.disk)

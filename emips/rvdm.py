@@ -7,8 +7,13 @@ harts of one platform (:class:`emips.simrv.RVMachine`): its registers
 on the Debug Module Interface (:meth:`DebugModule.dmi_read` /
 :meth:`dmi_write`, 7 address bits), run control (haltreq, resumereq,
 halt-on-reset, hartreset, ndmreset, ackhavereset), the hart array mask
-(hasel, hawindowsel / hawindow), halt and resume groups (dmcs2; no
-external triggers), halt summaries, the abstract commands Access
+(hasel, hawindowsel / hawindow), halt and resume groups with external
+triggers (dmcs2, 3.6: hgselect / dmexttrigger; LF11 — two bidirectional
+triggers, ``on_ext_trigger`` is told when one is notified, and
+:meth:`DebugModule.external_trigger` is one firing), authentication
+(LF11: authdata, dmstatus.authenticated / authbusy — Spike's scheme: read
+a challenge, write it plus the secret; until then the DM reads 0 and
+ignores writes but for 3.12's exceptions), halt summaries, the abstract commands Access
 Register (GPRs, FPRs, CSRs — dpc is the PC —, postexec, postincrement),
 Quick Access and Access Memory (physical or as M-mode with MPRV:
 aamvirtual, postincrement), abstractauto, the Program Buffer (with an
@@ -90,8 +95,12 @@ class DebugModule:
     #: the highest halt / resume group (dmcs2.group is 5 bits)
     GROUPS = 31
 
+    #: DM external triggers (3.6: 0-7 bidirectional by convention)
+    EXT_TRIGGERS = 2
+
     def __init__(self, harts: list["RVMachine"], *, progbufsize: int = 2,
-                 datacount: int = 4, sba: int = 64, impebreak: bool = True) -> None:
+                 datacount: int = 4, sba: int = 64, impebreak: bool = True,
+                 auth_secret: int | None = None) -> None:
         if not 1 <= datacount <= 12 or not 0 <= progbufsize <= 16:
             raise ValueError("datacount must be 1-12, progbufsize 0-16")
         if progbufsize == 1 and not impebreak:
@@ -104,6 +113,10 @@ class DebugModule:
         self.sba = sba
         self.impebreak = impebreak
         self.hartsellen = _width(len(harts))
+        self.auth_secret = auth_secret
+        self._challenge_seed = 0x5EED
+        #: called with k when DM external trigger k is notified (3.6)
+        self.on_ext_trigger = None
         self._reset_dm()
         self.dmactive = False
 
@@ -126,6 +139,12 @@ class DebugModule:
         self.autoexecdata = 0
         self.autoexecprogbuf = 0
         self.grouptype = 0
+        self.hgselect = 0
+        self.dmexttrigger = 0
+        self.ext_halt = [0] * self.EXT_TRIGGERS
+        self.ext_resume = [0] * self.EXT_TRIGGERS
+        self.authenticated = self.auth_secret is None
+        self._new_challenge()
         self.sbcs_access = 2
         self.sbreadonaddr = self.sbreadondata = self.sbautoincrement = False
         self.sberror = 0
@@ -135,6 +154,12 @@ class DebugModule:
         for h in self.harts:
             h.haltreq = False
             h.haltgroup = h.resumegroup = 0
+
+    def _new_challenge(self) -> None:
+        """A new authentication challenge (Spike: random; eMIPS: a fixed
+        sequence, so a replay sees the same ones)."""
+        self._challenge_seed = (self._challenge_seed * 1103515245 + 12345) & M32
+        self.challenge = self._challenge_seed
 
     def _selected(self) -> list[_Hart]:
         """The currently selected harts (3.3): hartsel's (if it exists) and,
@@ -163,6 +188,33 @@ class DebugModule:
             if other is not h and other.haltgroup == h.haltgroup and not other.m.debug_mode \
                     and self.available(other):
                 other.m.enter_debug(CAUSE_GROUP)
+        self._notify(self.ext_halt, h.haltgroup)
+
+    def _notify(self, groups: list[int], group: int) -> None:
+        """3.6: the external triggers in that group are notified."""
+        if self.on_ext_trigger is None:
+            return
+        for k, g in enumerate(groups):
+            if g and g == group:
+                self.on_ext_trigger(k)
+
+    def external_trigger(self, k: int) -> None:
+        """DM external trigger ``k`` fires (3.6): the running harts of its
+        halt group halt (cause 6), the halted ones of its resume group
+        resume."""
+        if not self.dmactive or k >= self.EXT_TRIGGERS:
+            return
+        g = self.ext_halt[k]
+        if g:
+            for h in self.harts:
+                if h.haltgroup == g and not h.m.debug_mode and self.available(h):
+                    h.m.enter_debug(CAUSE_GROUP)
+        g = self.ext_resume[k]
+        if g:
+            for h in self.harts:
+                if h.resumegroup == g and h.m.debug_mode and self.available(h):
+                    h.m.resume()
+                    h.resumeack = True
 
     def _halt(self, h: _Hart, cause: int = CAUSE_HALTREQ) -> None:
         if not h.m.debug_mode and self.available(h):
@@ -178,6 +230,8 @@ class DebugModule:
             if x.m.debug_mode and self.available(x):
                 x.m.resume()
                 x.resumeack = True
+        if h.resumegroup:
+            self._notify(self.ext_resume, h.resumegroup)
 
     def _reset(self, h: _Hart, held: bool) -> None:
         """hartreset / ndmreset (3.2): held while the bit is 1; released, the
@@ -200,7 +254,19 @@ class DebugModule:
     # -- the DMI ---------------------------------------------------------------------
 
     def dmi_read(self, addr: int) -> int:
-        """A DMI read (3.14; unimplemented registers read 0)."""
+        """A DMI read (3.14; unimplemented registers read 0; before
+        authentication only 3.12's: dmstatus' authenticated / authbusy /
+        version, dmcontrol.dmactive, authdata)."""
+        if not self.authenticated:
+            if addr == DMSTATUS:
+                return 3
+            if addr == DMCONTROL:
+                return int(self.dmactive)
+            if addr == AUTHDATA and self.dmactive:
+                return self.challenge
+            return 0
+        if addr == AUTHDATA:
+            return self.challenge if self.auth_secret is not None and self.dmactive else 0
         if not self.dmactive and addr != DMCONTROL:
             return self._dmstatus() if addr == DMSTATUS else 0
         if DATA0 <= addr < DATA0 + self.datacount:
@@ -231,9 +297,13 @@ class DebugModule:
             return sum(1 << i for i in range(32)
                        if base + i < len(self.harts) and self.mask[base + i])
         if addr == DMCS2:
-            h = self._hart()
-            group = 0 if h is None else (h.resumegroup if self.grouptype else h.haltgroup)
-            return self.grouptype << 11 | group << 2
+            if self.hgselect:
+                k = self.dmexttrigger
+                group = (self.ext_resume if self.grouptype else self.ext_halt)[k]
+            else:
+                h = self._hart()
+                group = 0 if h is None else (h.resumegroup if self.grouptype else h.haltgroup)
+            return self.grouptype << 11 | self.dmexttrigger << 7 | group << 2 | self.hgselect
         if addr in (HALTSUM0, HALTSUM1, HALTSUM2, HALTSUM3):
             return self._haltsum(addr)
         if addr == SBCS:
@@ -253,10 +323,23 @@ class DebugModule:
     def dmi_write(self, addr: int, value: int) -> None:
         """A DMI write (3.14)."""
         value &= M32
+        if not self.authenticated:              # (3.12: only dmactive and authdata)
+            if addr == DMCONTROL:
+                if value & 1 and not self.dmactive:
+                    self.dmactive = True
+                elif not value & 1:
+                    self._reset_dm()
+            elif addr == AUTHDATA and self.dmactive:
+                self._authenticate(value)
+            return
         if addr == DMCONTROL:
             self._write_dmcontrol(value)
             return
         if not self.dmactive:
+            return
+        if addr == AUTHDATA:
+            if self.auth_secret is not None:
+                self._authenticate(value)
             return
         if DATA0 <= addr < DATA0 + self.datacount:
             self.data[addr - DATA0] = value
@@ -367,12 +450,28 @@ class DebugModule:
                 v |= 1 << bit
         return v
 
+    def _authenticate(self, value: int) -> None:
+        """authdata (3.14.16) with Spike's scheme: the challenge plus the
+        secret unlocks; anything else locks and draws a new challenge."""
+        if value == (self.challenge + self.auth_secret) & M32:
+            self.authenticated = True
+        else:
+            self.authenticated = False
+            self._new_challenge()
+
     def _write_dmcs2(self, value: int) -> None:
-        """3.14.17: halt groups (grouptype 0) and resume groups (1); no DM
-        external triggers (hgselect, dmexttrigger tied to 0)."""
+        """3.14.17: halt groups (grouptype 0) and resume groups (1) of the
+        selected harts (hgselect 0) or of DM external trigger dmexttrigger
+        (hgselect 1; a trigger that does not exist reads 0)."""
         self.grouptype = value >> 11 & 1
-        if value >> 1 & 1 and not value & 1:   # hgwrite, for harts
+        self.hgselect = value & 1
+        k = value >> 7 & 0xF
+        self.dmexttrigger = k if k < self.EXT_TRIGGERS else 0
+        if value >> 1 & 1:                      # hgwrite
             group = value >> 2 & 0x1F
+            if self.hgselect:
+                (self.ext_resume if self.grouptype else self.ext_halt)[self.dmexttrigger] = group
+                return
             for h in self._selected():
                 if self.grouptype:
                     h.resumegroup = group
@@ -553,8 +652,9 @@ class DebugModule:
 
     @property
     def sba_asize(self) -> int:
-        from .rvmmu import PA_BITS
-        return PA_BITS if self.sba else 0
+        """sbcs.sbasize: the bus's address width — the harts' physical one
+        (LF13)."""
+        return self.harts[0].m.pabits if self.sba else 0
 
     def _sbcs(self) -> int:
         v = (1 << 29 if self.sba else 0) | self.sbbusyerror << 22 | self.sbreadonaddr << 20
@@ -580,7 +680,6 @@ class DebugModule:
     def _sb_target(self) -> tuple[int, int] | None:
         """(address, bytes) of the access, or None with sberror set: an
         unsupported size (4), a misaligned address (3), nothing there (2)."""
-        from .rvmmu import PA_BITS
         n = 1 << self.sbcs_access
         if self.sbcs_access > 3 or 8 * n > self.sba:
             self.sberror = 4
@@ -589,7 +688,7 @@ class DebugModule:
         if a % n:
             self.sberror = 3
             return None
-        if a + n > 1 << PA_BITS:
+        if a + n > 1 << self.sba_asize:
             self.sberror = 2
             return None
         return a, n

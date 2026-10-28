@@ -3,8 +3,11 @@ phase 1b).
 
 The rows are ``emips/data/riscv.json``'s (generated from RISC-V
 International's riscv-opcodes; never edited by hand): per XLEN the
-instructions of RV32I / RV64I, M, A, F, D, C, Zicsr, Zifencei, Zba, Zbb
-and the privileged ones, each a mask / match and its operand arguments.
+instructions of RV32I / RV64I, M, A, F, D, C, Zicsr, Zifencei, Zba, Zbb,
+Zbs, Zbc, Zbkb / Zbkc / Zbkx, Zicond, Zawrs, Zimop / Zcmop and the
+privileged ones, each a mask / match, its operand arguments and the
+extensions that bring it (``ext``, or any of ``alts``: Zbb's ``rol`` is
+Zbkb's too).
 The normative text is The RISC-V Instruction Set Manual, Volume I:
 Unprivileged Architecture, 20250508; where a section is cited, it is
 that manual's.
@@ -19,11 +22,11 @@ that manual's.
   with the same specificity (checked when the ISA is built).
 - :meth:`RVISA.decode` → :class:`RV`: the row, the size, the raw bits and
   the operand values ``f`` (registers ``rd`` / ``rs1`` / ``rs2`` / ``rs3``,
-  immediates assembled and sign-extended as 2.3 / 2.4 and 28.3 (the C
+  immediates assembled and sign-extended as 2.3 / 2.4 and 27.2 (the C
   formats) define them: ``imm`` (a U-type's already shifted by 12),
   ``shamt``, ``csr``, ``zimm``, ``rm``, ``aq`` / ``rl``, ``pred`` /
   ``succ`` / ``fm``).  A compressed instruction carries its expansion
-  (decision 5, 28.4-28.7: "expands to"): ``i.base`` is the 32-bit row it
+  (decision 5, 27.3-27.5: "expands to"): ``i.base`` is the 32-bit row it
   is, ``i.f`` the expansion's operands (``c.addi16sp`` = ``addi`` with
   ``rd`` = ``rs1`` = 2).  Reserved encodings raise :class:`RVDecodeError`
   (an illegal instruction); HINTs decode as their instruction (they
@@ -63,7 +66,7 @@ FPR_NAMES = ("ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7",
              "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",
              "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7",
              "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11")
-#: the rounding-mode field (14.2 Table 14.1; objdump's names)
+#: the rounding-mode field (20.2 Table 25; objdump's names)
 RM_NAMES = ("rne", "rtz", "rdn", "rup", "rmm", None, None, "dyn")
 #: FENCE predecessor / successor sets (2.7: I O R W from bit 3 down)
 PRED_SUCC = (None, "w", "r", "rw", "o", "ow", "or", "orw",
@@ -74,7 +77,7 @@ CSR_NAMES = {int(k): v for k, v in _DATA["binutils"]["csrs"].items()}
 #: an operand argument of riscv-opcodes -> (the value it makes, the
 #: instruction bits (hi, lo) and the value bit they start at, the value's
 #: sign width when the argument completes a signed immediate, a register
-#: offset) — 2.3 Figure 2.4 / 28.3 Table 28.x.  Arguments that make two
+#: offset) — 2.3 and 27.2 (Table 37).  Arguments that make two
 #: values (``rd_rs1_p``) list both names.
 _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, int]] = {
     "rd": (("rd",), ((11, 7, 0),), 0, 0),
@@ -99,7 +102,7 @@ _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, i
     "bimm12lo": (("imm",), ((11, 8, 1), (7, 7, 11)), 0, 0),
     "imm20": (("imm",), ((31, 12, 12),), 32, 0),
     "jimm20": (("imm",), ((31, 31, 20), (30, 21, 1), (20, 20, 11), (19, 12, 12)), 21, 0),
-    # compressed registers: rd' / rs1' / rs2' = x8-x15 (28.2 Table 28.1)
+    # compressed registers: rd' / rs1' / rs2' = x8-x15 (27.2 Table 38)
     "rd_p": (("rd",), ((4, 2, 0),), 0, 8),
     "rs1_p": (("rs1",), ((9, 7, 0),), 0, 8),
     "rs2_p": (("rs2",), ((4, 2, 0),), 0, 8),
@@ -111,7 +114,7 @@ _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, i
     "c_rs1_n0": (("rs1",), ((11, 7, 0),), 0, 0),
     "c_rs2_n0": (("rs2",), ((6, 2, 0),), 0, 0),
     "c_rs2": (("rs2",), ((6, 2, 0),), 0, 0),
-    # compressed immediates (28.3-28.6)
+    # compressed immediates (27.3-27.5)
     "c_nzuimm10": (("imm",), ((12, 11, 4), (10, 7, 6), (6, 6, 2), (5, 5, 3)), 0, 0),
     "c_uimm7lo": (("imm",), ((6, 6, 2), (5, 5, 6)), 0, 0),
     "c_uimm7hi": (("imm",), ((12, 10, 3),), 0, 0),
@@ -151,21 +154,57 @@ _ARGS: dict[str, tuple[tuple[str, ...], tuple[tuple[int, int, int], ...], int, i
     "mips_hint": (("hint",), ((11, 7, 0),), 0, 0),
     "mips_imm9": (("imm",), ((28, 20, 0),), 0, 0),
     "mips_level": (("level",), ((22, 20, 0),), 0, 0),
+    # the MOPs' number n (unpriv. ch. 10: MOP.R.n n[4] n[3:2] n[1:0], MOP.RR.n
+    # n[2] n[1:0], C.MOP.n n[3:1] with n odd)
+    "mop_r_t_30": (("n",), ((30, 30, 4),), 0, 0),
+    "mop_r_t_27_26": (("n",), ((27, 26, 2),), 0, 0),
+    "mop_r_t_21_20": (("n",), ((21, 20, 0),), 0, 0),
+    "mop_rr_t_30": (("n",), ((30, 30, 2),), 0, 0),
+    "mop_rr_t_27_26": (("n",), ((27, 26, 0),), 0, 0),
+    "c_mop_t": (("n",), ((10, 8, 1),), 0, 1),
+    # Zcb / Zcmp / Zcmt (unpriv. 28.12-28.14): the byte / halfword offsets,
+    # the register list, the extra stack adjustment, two s registers (a
+    # number 0-7: s0, s1, s2-s7), the jump table's index
+    "c_uimm2": (("imm",), ((6, 6, 0), (5, 5, 1)), 0, 0),
+    "c_uimm1": (("imm",), ((5, 5, 1),), 0, 0),
+    "c_rlist": (("rlist",), ((7, 4, 0),), 0, 0),
+    "c_spimm": (("spimm",), ((3, 2, 0),), 0, 0),
+    "c_sreg1": (("sreg1",), ((9, 7, 0),), 0, 0),
+    "c_sreg2": (("sreg2",), ((4, 2, 0),), 0, 0),
+    "c_index": (("index",), ((9, 2, 0),), 0, 0),
+    # Zkn* / Zks* (31.4): the byte select of the AES32 / SM4 instructions, the
+    # AES key schedule's round number
+    "bs": (("bs",), ((31, 30, 0),), 0, 0),
+    "rnum": (("rnum",), ((23, 20, 0),), 0, 0),
+    # V (unpriv. 30.5 / 30.6 / 30.7): the vector registers, the mask bit, the
+    # segment count, a vtype immediate, the vector instructions' immediates
+    "vd": (("vd",), ((11, 7, 0),), 0, 0),
+    "vs3": (("vs3",), ((11, 7, 0),), 0, 0),
+    "vs1": (("vs1",), ((19, 15, 0),), 0, 0),
+    "vs2": (("vs2",), ((24, 20, 0),), 0, 0),
+    "vm": (("vm",), ((25, 25, 0),), 0, 0),
+    "nf": (("nf",), ((31, 29, 0),), 0, 0),
+    "wd": (("wd",), ((26, 26, 0),), 0, 0),
+    "simm5": (("imm",), ((19, 15, 0),), 5, 0),
+    "zimm10": (("vtypei",), ((29, 20, 0),), 0, 0),
+    "zimm11": (("vtypei",), ((30, 20, 0),), 0, 0),
+    "zimm6hi": (("imm",), ((26, 26, 5),), 0, 0),
+    "zimm6lo": (("imm",), ((19, 15, 0),), 0, 0),
 }
 
-#: what a zero in a "nonzero" argument means (28.3-28.8 and Table 28.x
+#: what a zero in a "nonzero" argument means (27.3-27.7 and Table 39
 #: "RVC HINT instructions"): "reserved" = an illegal instruction, "hint" =
 #: the instruction itself (it changes nothing).  A rule names the row and
 #: the value that must not be zero.
 ZERO_RULES: dict[tuple[str, str], str] = {
-    ("c.addi4spn", "imm"): "reserved",          # 28.5: nzuimm = 0 reserved
-    ("c.addi16sp", "imm"): "reserved",          # 28.5: nzimm = 0 reserved
-    ("c.lui", "imm"): "reserved",               # 28.5: nzimm = 0 reserved
-    ("c.lwsp", "rd"): "reserved",               # 28.3: rd = x0 reserved
+    ("c.addi4spn", "imm"): "reserved",          # 27.5: nzuimm = 0 reserved
+    ("c.addi16sp", "imm"): "reserved",          # 27.5: nzimm = 0 reserved
+    ("c.lui", "imm"): "reserved",               # 27.5: nzimm = 0 reserved
+    ("c.lwsp", "rd"): "reserved",               # 27.3: rd = x0 reserved
     ("c.ldsp", "rd"): "reserved",
-    ("c.jr", "rs1"): "reserved",                # 28.4: rs1 = x0 reserved
-    ("c.addiw", "rd"): "reserved",              # 28.5: rd = x0 reserved
-    ("c.lui", "rd"): "hint",                    # Table 28.x: rd = x0 HINT
+    ("c.jr", "rs1"): "reserved",                # 27.4: rs1 = x0 reserved
+    ("c.addiw", "rd"): "reserved",              # 27.5: rd = x0 reserved
+    ("c.lui", "rd"): "hint",                    # Table 39: rd = x0 HINT
     ("c.li", "rd"): "hint",
     ("c.addi", "rd"): "hint",
     ("c.addi", "imm"): "hint",                  # c.addi rd, 0
@@ -179,7 +218,7 @@ ZERO_RULES: dict[tuple[str, str], str] = {
 }
 
 #: every compressed row -> (the 32-bit instruction it expands to, the
-#: operands the expansion fixes) — 28.3-28.8
+#: operands the expansion fixes) — 27.3-27.5
 EXPAND: dict[str, tuple[str, dict[str, int]]] = {
     "c.addi4spn": ("addi", {"rs1": 2}),
     "c.fld": ("fld", {}), "c.lw": ("lw", {}), "c.flw": ("flw", {}), "c.ld": ("ld", {}),
@@ -206,14 +245,73 @@ EXPAND: dict[str, tuple[str, dict[str, int]]] = {
     "c.add": ("add", {}),
     "c.fsdsp": ("fsd", {"rs1": 2}), "c.swsp": ("sw", {"rs1": 2}),
     "c.fswsp": ("fsw", {"rs1": 2}), "c.sdsp": ("sd", {"rs1": 2}),
+    # 10.1: "the choice of expansion (if any) is left to the extension that
+    # redefines the MOP ... a Zcmop instruction that does not write a value
+    # can expand into a write to x0" (sim.DEVIATIONS["RISC-V"])
+    "c.mop.N": ("addi", {"rd": 0, "rs1": 0, "imm": 0}),
+    # Zcb (28.12: each page's "32-bit equivalent")
+    "c.lbu": ("lbu", {}), "c.lhu": ("lhu", {}), "c.lh": ("lh", {}), "c.sb": ("sb", {}),
+    "c.sh": ("sh", {}), "c.zext.b": ("andi", {"imm": 255}), "c.sext.b": ("sext.b", {}),
+    "c.zext.h": ("zext.h", {}), "c.sext.h": ("sext.h", {}),
+    "c.zext.w": ("add.uw", {"rs2": 0}), "c.not": ("xori", {"imm": -1}),
+    "c.mul": ("mul", {}),
+    # Zicfiss (33.2.4 / 33.2.5: "C.SSPUSH x1 expands to SSPUSH x1")
+    "c.sspush.x1": ("sspush.x1", {"rs2": 1}), "c.sspopchk.x5": ("sspopchk.x5", {"rs1": 5}),
 }
+#: the register a Zicfiss row names in its encoding (33.2.4 / 33.2.5: only
+#: x1 and x5): the operand its executor and the views read
+CFI_FIXED: dict[str, dict[str, int]] = {
+    "sspush.x1": {"rs2": 1}, "sspush.x5": {"rs2": 5},
+    "sspopchk.x1": {"rs1": 1}, "sspopchk.x5": {"rs1": 5}}
+#: 32-bit rows whose operand may not be zero (33.2.6: "Encoding rd as x0
+#: is not supported for SSRDP" — that word is MOP.R.28, a MOP)
+NONZERO32: dict[str, str] = {"ssrdp": "rd"}
+#: compressed rows with no 32-bit equivalent ("No direct equivalent encoding
+#: exists": Zcmp's and Zcmt's): their own row is their base
+NO_EXPANSION = frozenset({"cm.push", "cm.pop", "cm.popret", "cm.popretz", "cm.mvsa01",
+                          "cm.mva01s", "cm.jalt"})
 
 #: the extensions every core has (the privileged base: mret / wfi)
 BASE_EXTENSIONS = frozenset({"i", "priv"})
 #: what an extension brings with it (binutils' implicit subsets: the
 #: classes of its table are tested on the closure)
 IMPLIED = {"g": ("i", "m", "a", "f", "d", "zicsr", "zifencei"), "m": ("zmmul",),
-           "d": ("f",), "f": ("zicsr",), "zicntr": ("zicsr",), "zihpm": ("zicsr",)}
+           "d": ("f",), "f": ("zicsr",), "zicntr": ("zicsr",), "zihpm": ("zicsr",),
+           # LF2 (binutils' riscv_implicit_subsets)
+           "q": ("d",), "zfh": ("zfhmin",), "zfhmin": ("f",), "zfa": ("f",),
+           "zdinx": ("zfinx",), "zhinx": ("zhinxmin",), "zhinxmin": ("zfinx",),
+           "zfinx": ("zicsr",),
+           # LF3 (28.2-28.10): C's parts and the extensions on top of Zca
+           "c": ("zca",), "zcf": ("zca", "f"), "zcd": ("zca", "d"), "zcb": ("zca",),
+           "zcmp": ("zca",), "zcmt": ("zca", "zicsr"), "zcmop": ("zca",),
+           # LF4 (13.2 / 13.4, 15, 16): A's parts, CAS and the byte / half AMOs
+           "a": ("zaamo", "zalrsc"), "zacas": ("zaamo",), "zabha": ("zaamo",),
+           # LF5 (31.3.10-31.3.12): the scalar cryptography groups
+           "zk": ("zkn", "zkr", "zkt"), "zkn": ("zbkb", "zbkc", "zbkx", "zkne", "zknd", "zknh"),
+           "zks": ("zbkb", "zbkc", "zbkx", "zksed", "zksh"),
+           # LF6 (30.18; binutils' riscv_implicit_subsets): V and its parts
+           "v": ("zve64d", "zvl128b"), "zve64d": ("d", "zve64f"),
+           "zve64f": ("zve32f", "zve64x", "zvl64b"), "zve32f": ("f", "zve32x", "zvl32b"),
+           "zve64x": ("zve32x", "zvl64b"), "zve32x": ("zvl32b", "zicsr"),
+           "zvfh": ("zvfhmin", "zfhmin"), "zvfhmin": ("zve32f",),     # (30.18.6-7)
+           # LF6e (32.2; binutils' riscv_implicit_subsets): the crypto groups
+           "zvbb": ("zvkb",), "zvkn": ("zvkned", "zvknha", "zvknhb", "zvkb", "zvkt"),
+           "zvknc": ("zvkn", "zvbc"), "zvkng": ("zvkn", "zvkg"),
+           "zvks": ("zvksed", "zvksh", "zvkb", "zvkt"), "zvksc": ("zvks", "zvbc"),
+           "zvksg": ("zvks", "zvkg"),
+           # LF7 (priv. ch. 21; binutils' riscv_implicit_subsets)
+           "h": ("zicsr",),
+           # LF8 (binutils 2.45's riscv_implicit_subsets; Sstc brings Zicntr: Spike)
+           "smstateen": ("ssstateen",), "smcsrind": ("sscsrind",), "smcdeleg": ("ssccfg",),
+           "ssccfg": ("sscsrind",), "sstc": ("zicsr", "zicntr"), "sscofpmf": ("zicsr",),
+           "smcntrpmf": ("zicsr",), "smepmp": ("zicsr",), "smrnmi": ("zicsr",),
+           "svadu": ("zicsr",), "ssstateen": ("zicsr",), "sscsrind": ("zicsr",),
+           # LF9: Smaia / Ssaia (their CSRs: emips.rvcsr — Smaia brings Ssaia and the
+           # indirect CSRs only on a hart with S-mode)
+           "smaia": ("zicsr",), "ssaia": ("zicsr",),
+           # LF10 (33.1 / 33.2: Zicfiss depends on Zimop; binutils 2.45's)
+           "zicfilp": ("zicsr",), "zicfiss": ("zimop", "zicsr"),
+           **{f"zvl{1 << k}b": (f"zvl{1 << (k - 1)}b",) for k in range(6, 17)}}
 
 
 def closure(extensions: Iterable[str]) -> frozenset:
@@ -264,19 +362,26 @@ class Row:
     ext: tuple[str, ...]
     file: str
     specificity: int = field(compare=False)
+    #: every set of extensions that brings the row (``ext`` first)
+    alts: tuple[tuple[str, ...], ...] = field(default=(), compare=False)
 
     @property
     def compressed(self) -> bool:
         return self.size == 2
 
+    def available(self, extensions) -> bool:
+        """The row is in a core with ``extensions`` (a closed set)."""
+        return any(set(a) <= extensions for a in self.alts or (self.ext,))
+
 
 ROWS: tuple[Row, ...] = tuple(
     Row(r["name"], tuple(r["xlen"]), r["size"], r["mask"], r["match"], tuple(r["args"]),
-        tuple(r["ext"]), r["file"], bin(r["mask"]).count("1"))
+        tuple(r["ext"]), r["file"], bin(r["mask"]).count("1"),
+        tuple(tuple(a) for a in [r["ext"], *r.get("also", ())]))
     for r in _DATA["rows"])
 NAMES = frozenset(r.name for r in ROWS)
-assert set(EXPAND) == {r.name for r in ROWS if r.compressed}, \
-    {r.name for r in ROWS if r.compressed} ^ set(EXPAND)
+assert set(EXPAND) | NO_EXPANSION == {r.name for r in ROWS if r.compressed}, \
+    {r.name for r in ROWS if r.compressed} ^ (set(EXPAND) | NO_EXPANSION)
 
 
 @dataclass(frozen=True)
@@ -289,6 +394,11 @@ class RV:
     raw: int
     f: Mapping[str, int]
     base: Row
+    #: XLEN when the floating-point operands are x registers (Zfinx & co.,
+    #: unpriv. ch. 26), else 0
+    inx: int = 0
+    #: the decoding core's XLEN (0: unknown)
+    xlen: int = 0
 
     @property
     def name(self) -> str:
@@ -321,9 +431,33 @@ class RVISA:
         if xlen not in (32, 64):
             raise ValueError(f"xlen must be 32 or 64, not {xlen!r}")
         exts = set(closure(set(extensions) | BASE_EXTENSIONS))
+        if "c" in exts:                         # 28.2: C+F implies Zcf (RV32), C+D Zcd
+            exts |= {"zcf"} if "f" in exts and xlen == 32 else set()
+            exts |= {"zcd"} if "d" in exts else set()
+        if "zcf" in exts and xlen == 64:
+            raise ValueError("Zcf is RV32 only (unpriv. 28.6)")
+        if exts & {"zcmp", "zcmt"} and "zcd" in exts:
+            raise ValueError("Zcmp / Zcmt reuse c.fsdsp's encodings: they cannot be had with "
+                             "Zcd (C with D; unpriv. 28.9 / 28.10)")
+        if "zfinx" in exts and "f" in exts:
+            raise ValueError("Zfinx puts F's instructions on the x registers (unpriv. ch. 26): "
+                             "it cannot be had with F, D, Q, Zfh, Zfhmin or Zfa")
+        if xlen == 32 and exts & {"svpbmt", "svnapot"}:
+            raise ValueError(f"{', '.join(sorted(exts & {'svpbmt', 'svnapot'}))}: an Sv39 "
+                             "PTE's bits — RV64 only (priv. 13 / 14)")
+        if "sscofpmf" in exts and "zihpm" not in exts:
+            raise ValueError("Sscofpmf adds to the hpmcounters: it needs Zihpm (priv. 20)")
+        for need, group in (("zve64x", {"zvbc", "zvknhb"}),
+                            ("zve32x", {"zvbb", "zvkb", "zvkg", "zvkned", "zvknha", "zvksed",
+                                        "zvksh"})):
+            if exts & group and need not in exts:
+                raise ValueError(f"{', '.join(sorted(exts & group))}: the vector cryptography "
+                                 f"needs a vector unit with {need.capitalize()} (unpriv. 32.2)")
         self.xlen = xlen
+        #: Zfinx & co. (ch. 26): the floating-point operands are x registers
+        self.inx = "zfinx" in exts
         self.extensions = frozenset(exts)
-        self.rows = tuple(r for r in ROWS if xlen in r.xlen and set(r.ext) <= exts)
+        self.rows = tuple(r for r in ROWS if xlen in r.xlen and r.available(exts))
         self.by_name = {r.name: r for r in self.rows}
         self._buckets: dict[int, list[Row]] = {}
         for r in self.rows:
@@ -373,6 +507,9 @@ class RVISA:
         raw &= (1 << (8 * size)) - 1
         for r in self._buckets.get(self._key(raw, size), ()):
             if raw & r.mask == r.match:
+                nz = NONZERO32.get(r.name)
+                if nz is not None and not (raw >> 7) & 0x1F:
+                    continue                    # (ssrdp x0 = the MOP below it)
                 i = self._make(r, raw)
                 break
         else:
@@ -385,7 +522,18 @@ class RVISA:
     def _make(self, r: Row, raw: int) -> RV:
         f = _fields(r, raw)
         if not r.compressed:
-            return RV(r, 4, raw, f, r)
+            if (r.name == "amocas.q" or r.name == "amocas.d" and self.xlen == 32) \
+                    and (f["rd"] | f["rs2"]) & 1:   # (15.1: odd pair registers reserved)
+                raise RVDecodeError("reserved", raw, 4, r.name)
+            if r.name in CFI_FIXED:
+                f.update(CFI_FIXED[r.name])
+            return RV(r, 4, raw, f, r, self.xlen if self.inx else 0, self.xlen)
+        if r.name in NO_EXPANSION:
+            if r.name.startswith("cm.p") and f["rlist"] < 4:   # (28.13.7: reserved)
+                raise RVDecodeError("reserved", raw, 2, r.name)
+            if r.name == "cm.mvsa01" and f["sreg1"] == f["sreg2"]:     # (28.13.11)
+                raise RVDecodeError("reserved", raw, 2, r.name)
+            return RV(r, 2, raw, f, r, self.xlen if self.inx else 0, self.xlen)
         for (name, value), what in ZERO_RULES.items():
             if name == r.name and what == "reserved" and f.get(value) == 0:
                 raise RVDecodeError("reserved", raw, 2, r.name)
@@ -394,7 +542,15 @@ class RVISA:
         if base is None:                        # (an ISA without the expansion)
             raise RVDecodeError("unknown", raw, 2, r.name)
         f.update(fixed)
-        return RV(r, 2, raw, f, base)
+        return RV(r, 2, raw, f, base, self.xlen if self.inx else 0, self.xlen)
+
+
+def check_extensions(text: str) -> None:
+    """Raise ValueError (with the reason) when ``text`` is no ISA string a
+    hart can have: no base I, or an extension without one it depends on."""
+    if "i" not in parse_extensions(text):
+        raise ValueError("an RV32I / RV64I base (i) is needed")
+    RVISA.for_core(64, text)
 
 
 def parse_extensions(text: str) -> frozenset[str]:
@@ -437,6 +593,75 @@ _ENTRIES = tuple(
            e["match"], e["mask"], e["func"], e["alias"])
     for e in _DATA["binutils"]["entries"])
 _START = {int(k): v for k, v in _DATA["binutils"]["start"].items()}
+
+
+def _c_hexfloat(x: float) -> str:
+    """C's printf %a of a double (0x1p-2, 0x1.4p+0, -0x1p+0)."""
+    if x == 0:
+        return "0x0p+0"
+    h = float.hex(x)                            # (-0x1.4000000000000p-2)
+    mant, exp = h.split("p")
+    mant = mant.rstrip("0").rstrip(".")
+    return f"{mant}p{exp if exp[0] in '+-' else '+' + exp}"
+
+
+#: FLI.[HSDQ]'s constant as objdump prints it (riscv_fli_symval, else
+#: riscv_fli_numval with %a)
+FLI_TEXT = tuple(
+    sym or _c_hexfloat(v) for sym, v in zip(
+        [None, "min"] + [None] * 28 + ["inf", "nan"],
+        [-1.0, 0.0, 2.0 ** -16, 2.0 ** -15, 2.0 ** -8, 2.0 ** -7, 0.0625, 0.125, 0.25, 0.3125,
+         0.375, 0.4375, 0.5, 0.625, 0.75, 0.875, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 8.0,
+         16.0, 128.0, 256.0, 2.0 ** 15, 2.0 ** 16, 0.0, 0.0]))
+
+
+#: vtype's fields as objdump names them (riscv-opc.c riscv_vsew / riscv_vlmul /
+#: riscv_vta / riscv_vma; 30.3.4)
+VSEW = ("e8", "e16", "e32", "e64", None, None, None, None)
+VLMUL = ("m1", "m2", "m4", "m8", None, "mf8", "mf4", "mf2")
+
+
+def vtype_text(imm: int) -> str | None:
+    """vsetvli / vsetivli's vtype immediate as text ("e32,m1,ta,ma"), or
+    None when objdump prints the number (a reserved value, bits above 7)."""
+    sew, lmul = VSEW[imm >> 3 & 7], VLMUL[imm & 7]
+    if imm >> 8 or sew is None or lmul is None:
+        return None
+    return f"{sew},{lmul},{'ta' if imm >> 6 & 1 else 'tu'},{'ma' if imm >> 7 & 1 else 'mu'}"
+
+
+def sreg(n: int) -> int:
+    """Zcmp's s-register number (0-7) -> x8, x9, x18-x23 (28.13.11)."""
+    return n + 16 if n > 1 else n + 8
+
+
+def rlist_regs(rlist: int) -> list[int]:
+    """The x registers of a PUSH / POP register list (28.13.7): ra, then
+    s0-s1, s2-s9, s10-s11 (rlist 15)."""
+    if rlist < 4:
+        return []
+    order = [1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    return order[:13 if rlist == 15 else rlist - 3]
+
+
+def sp_base(rlist: int, xlen: int) -> int:
+    """The smallest stack adjustment of a register list (28.13.7: the
+    registers' bytes rounded up to 16; binutils' riscv_get_sp_base)."""
+    need = len(rlist_regs(rlist)) * (xlen // 8)
+    return (need + 15) // 16 * 16
+
+
+def spimm(w: int, xlen: int) -> int:
+    """The stack adjustment objdump prints for cm.push / cm.pop (riscv-dis.c
+    riscv_get_spimm, negative for cm.push), with riscv_get_sp_base's
+    unsigned 32-bit arithmetic — which gives the reserved register lists
+    0-3 (28.13.7) a value too."""
+    rl, size = _x(w, 4, 4), xlen // 8
+    need = ((rl - 3) * size + (size if rl == 15 else 0)) & 0xFFFFFFFF
+    base = ((need // 16 + (need % 16 != 0)) * 16) & 0xFFFFFFFF
+    v = _sx(base, 32) + (_x(w, 2, 2) << 4)
+    v = _sx(v, 32)
+    return -v if w & 0xFF03 == 0xB802 else v
 
 
 def _sx(v: int, bits: int) -> int:
@@ -485,6 +710,24 @@ def _match(e: _Entry, w: int) -> bool:
         return rd != 0 and _ci(w) != 0
     if fn == "match_c_slli64":
         return _ci(w) == 0
+    if fn == "match_sreg1_not_eq_sreg2":                # (2.45: Zcmp, Zcmt)
+        return _x(w, 7, 3) != _x(w, 2, 3)
+    if fn == "match_cm_jt":
+        return _x(w, 2, 8) < 32
+    if fn == "match_cm_jalt":
+        return 32 <= _x(w, 2, 8) < 256
+    if fn == "match_vs1_eq_vs2":                        # (V: vmmv.m / vnot.v ...)
+        return _x(w, 15, 5) == _x(w, 20, 5)
+    if fn == "match_vd_eq_vs1_eq_vs2":
+        return rd == _x(w, 15, 5) == _x(w, 20, 5)
+    if fn == "match_rs2_rd_even":                       # (2.45: AMOCAS.D on RV32, .Q)
+        return not (_x(w, 20, 5) | rd) & 1
+    if fn == "match_rd_x1x5_opcode":                    # (2.45: Zicfiss)
+        return rd in (1, 5)
+    if fn == "match_rs1_x1x5_opcode":
+        return _x(w, 15, 5) in (1, 5)
+    if fn == "match_rs2_x1x5_opcode":
+        return _x(w, 20, 5) in (1, 5)
     raise AssertionError(fn)
 
 
@@ -516,7 +759,27 @@ class Disassembler:
         return f"x{n}" if self.numeric else GPR_NAMES[n]
 
     def _fpr(self, n: int) -> str:
+        if "zfinx" in self.extensions:          # (riscv-dis.c: Zfinx prints GPRs)
+            return self._gpr(n)
         return f"f{n}" if self.numeric else FPR_NAMES[n]
+
+    def _reg_list(self, rl: int) -> str:
+        """riscv-dis.c (2.45) print_reg_list: {ra}, {ra,s0}, {ra,s0-sN} (numeric:
+        {x1,x8-x9,x18-xN})."""
+        g = self._gpr
+        out = [g(1)]
+        start = 18 if self.numeric else 8
+        if rl == 5:
+            out.append(g(8))
+        elif rl == 6 or (self.numeric and rl > 6):
+            out.append(f"{g(8)}-{g(9)}")
+        if rl == 15:
+            out.append(f"{g(start)}-{g(27)}")
+        elif rl == 7 and self.numeric:
+            out.append(g(18))
+        elif rl > 6:
+            out.append(f"{g(start)}-{g(rl + 11)}")
+        return ",".join(out)
 
     def _addr(self, a: int) -> str:
         a &= (1 << self.xlen) - 1
@@ -625,7 +888,7 @@ class Disassembler:
                     out.append(self._fpr(_x(w, 2, 3) + 8))
                 else:
                     raise AssertionError(f"C{c}")
-            elif ch in ",()":
+            elif ch in ",(){}":
                 out.append(ch)
             elif ch == "0":
                 if k == len(args) - 1:
@@ -690,6 +953,66 @@ class Disassembler:
                 out.append(CSR_NAMES.get(csr) or f"0x{csr:x}")
             elif ch == "Z":
                 out.append(str(rs1))
+            elif ch == "W" and args[k + 1:k + 3] == "fv":       # Zfa: FLI's constant
+                k += 2
+                out.append(FLI_TEXT[rs1])
+            elif ch == "W" and args[k + 1:k + 3] == "if":       # Zicbop: an S-type offset
+                k += 2
+                out.append(str(_stype(w)))
+            elif ch == "W" and args[k + 1:k + 2] == "c":        # Zcb / Zcmp / Zcmt
+                k += 2
+                c = args[k]
+                if c == "b":
+                    out.append(str(_x(w, 6, 1) | _x(w, 5, 1) << 1))
+                elif c == "h":
+                    out.append(str(_x(w, 5, 1) << 1))
+                elif c == "f":
+                    out.append("255")
+                elif c in "12":
+                    out.append(self._gpr(sreg(_x(w, 7, 3) if c == "1" else _x(w, 2, 3))))
+                elif c == "r":
+                    out.append(self._reg_list(_x(w, 4, 4)))
+                elif c == "p":
+                    out.append(str(spimm(w, self.xlen)))
+                elif c in "iI":
+                    out.append(str(_x(w, 2, 8)))
+                else:
+                    raise AssertionError(f"Wc{c}")
+            elif ch == "V":                                     # V (riscv-dis.c's RVV)
+                k += 1
+                c = args[k]
+                if c in "df":
+                    out.append(f"v{rd}")
+                elif c == "e":
+                    out.append(f"v{rd}" if _x(w, 26, 1) else self._gpr(0))
+                elif c == "s":
+                    out.append(f"v{rs1}")
+                elif c in "tuv":
+                    out.append(f"v{_x(w, 20, 5)}")
+                elif c == "0":
+                    out.append("v0")
+                elif c in "bc":
+                    imm = _x(w, 20, 10 if c == "b" else 11)
+                    out.append(vtype_text(imm) or str(imm))
+                elif c == "i":
+                    out.append(str(_sx(_x(w, 15, 5), 5)))
+                elif c == "j":
+                    out.append(str(_x(w, 15, 5)))
+                elif c == "k":
+                    out.append(str(_x(w, 29, 3)))
+                elif c == "l":
+                    out.append(str(_x(w, 15, 5) | _x(w, 26, 1) << 5))
+                elif c == "m":
+                    if not _x(w, 25, 1):
+                        out += [",", "v0.t"]
+                else:
+                    raise AssertionError(f"V{c}")
+            elif ch in "[]":
+                out.append(ch)
+            elif ch == "y":                                     # (scalar crypto: bs)
+                out.append(f"0x{_x(w, 30, 2):x}")
+            elif ch == "Y":                                     # (aes64ks1i: rnum)
+                out.append(f"0x{_x(w, 20, 4):x}")
             elif ch == "r":                                     # (2.45: rs3 as an x register)
                 out.append(self._gpr(_x(w, 27, 5)))
             elif ch == "X" and args[k + 1:k + 2] == "m":        # 2.45: the MIPS operands

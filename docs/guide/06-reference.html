@@ -1269,6 +1269,41 @@ delegated): the top bit says <em>interrupt</em>, the rest is the code
 </tr>
 </tbody>
 </table>
+<p>With the <strong>hypervisor extension</strong> (<a href="02-writing-programs.html#229-risc-v-a-hypervisor-and-its-guest">Phase
+2, 2.29</a>) cause 8 is also VU-mode's ecall and 9 HS-mode's, and these come
+in: interrupts 2 / 6 / 10 — the guest's software / timer / external
+interrupts (VSSI / VSTI / VSEI: into VS-mode as 1 / 5 / 9), 12 — a guest
+external interrupt for the hypervisor (SGEI: a guest interrupt file of the
+IMSIC signals, <code>--rv-intc imsic</code>); exceptions 10
+— <code>ecall</code> from VS-mode, 20 / 21 / 23 — instruction / load / store
+<em>guest-page fault</em> (the hypervisor's G-stage translation failed:
+<code>mtval</code> / <code>stval</code> the guest's virtual address, <code>mtval2</code> /
+<code>htval</code> its guest physical address &gt;&gt; 2), 22 — <em>virtual
+instruction</em> (a guest tried what only the hypervisor may: <code>mtval</code> =
+the instruction).  None of 10 and 20-23 can be delegated to the guest
+(<code>hedeleg</code>'s bits read 0).</p>
+<p>With <strong>Smrnmi</strong> (<a href="02-writing-programs.html#230-risc-v-privileged-additions-counters-cache-blocks-rnmis">Phase
+2, 2.30</a>) a resumable NMI has no <code>mcause</code> code: it writes
+<code>mncause</code> (the interrupt bit and the platform's code), <code>mnepc</code>
+and <code>mnstatus</code>, and goes to the RNMI handler (<code>--rv-rnmi</code>);
+while <code>mnstatus.NMIE</code> = 0 every interrupt waits and an M-mode exception
+goes to the RNMI exception handler.  Interrupt 13 (Sscofpmf) is a counter that
+wrapped: its <code>mhpmevent</code> has OF set.</p>
+<p>With <strong>Zicfilp / Zicfiss</strong> (<a href="02-writing-programs.html#232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">Phase
+2, 2.32</a>) exception 18 is a <em>software check</em>: <code>mtval</code> 2 = a
+landing-pad fault (an indirect jump's target is no 4-byte aligned
+<code>lpad</code> with the right label), 3 = a shadow-stack fault
+(<code>sspopchk</code> found a different return address).  A shadow-stack
+instruction's memory faults are always the store ones (7, 15, 23).</p>
+<p>With the <strong>AIA</strong> (<a href="02-writing-programs.html#231-risc-v-interrupts-as-memory-writes-the-aia">Phase
+2, 2.31</a>) interrupts 14-63 exist too: local or custom interrupts M-mode
+raises for S-mode through <code>mvien</code> / <code>mvip</code> (and a hypervisor
+for its guest through <code>hvien</code> / <code>hvip</code>, or any number through
+<code>hvictl</code>); <code>mtopi</code> / <code>stopi</code> / <code>vstopi</code> name the
+one each level takes next.  An external interrupt (11 / 9 / 10) then means
+"an interrupt file has a pending, enabled identity": the handler reads
+<code>mtopei</code> / <code>stopei</code> / <code>vstopei</code> to find out which, and
+writes it to claim it.</p>
 <p>The <strong>P8700</strong> adds custom exceptions that go to <code>mipstvec</code> in M-mode:
 24 / 25 / 27 instruction / load / store TLB miss and 60 satp TLB miss (with
 the software table walk), 26 Read Time (reading <code>time</code>), 48 Cache Error
@@ -1525,12 +1560,12 @@ Not included:</p>
 <li><strong>CP0 hazards in the 5-stage model</strong> (<code>ehb</code> is a no-op there; the 24K
   model has them, <a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)
   and some CP0 registers;</li>
-<li><strong>RISC-V</strong>: the H (hypervisor), V (vectors) and Q extensions, the
-  AIA's IMSIC (message-signalled interrupts); a timer and an interrupt
-  controller on a generic hart (its only interrupt source is the console, on
-  MEIP; the P8700 has the ACLINT and the APLIC); on the P8700 its
-  out-of-order multithreaded pipeline (eMIPS: the 5-stage one) and MIPS's
-  Hybrid Debug (eMIPS: the RISC-V Debug specification's);</li>
+<li><strong>RISC-V</strong>: the ratified privileged extensions double-trap
+  detection (Smdbltrp / Ssdbltrp), control-transfer records (Smctr / Ssctr),
+  Ssqosid, pointer masking, Svukte and Svrsw60t59b, and the BF16 extensions; on
+  the P8700 its undocumented MDIAGR / MDIAGW, and what its Hybrid Debug
+  specification (not public) would add to what eMIPS takes from EJTAG
+  (<a href="05-understanding.html#hybrid-debug">5.14</a>);</li>
 <li><strong>with more than one core</strong> (<a href="05-understanding.html#59-more-than-one-core">Phase 5, 5.9</a>):
   the CPC
   carries a command out at once (no power-up delays); the instruction
@@ -1609,7 +1644,9 @@ MMU (and the I7200's MPU), several cores and the Malta work on it too
 (<a href="02-writing-programs.html#224-nanomips-16--32--and-48-bit-instructions">Phase 2, 2.24</a>, Labs 63–67).</p>
 <p><strong>Can eMIPS run RISC-V?</strong>  Yes: <code>--arch rv32</code> / <code>rv64</code> is a
 RISC-V hart (RV32I / RV64I with M, A, F, D, C, the CSRs, Zba / Zbb by
-default; M, S and U-mode, Sv32–Sv57 paging, PMP, the Debug specification's
+default, Zbs, Zbc, Zbkb / Zbkc / Zbkx, Zicond, Zawrs, the may-be-operations,
+Q, Zfh, Zfa, Zfinx, Zcb, Zcmp, Zcmt, Zacas, Zabha and scalar cryptography on
+request; M, S and U-mode, Sv32–Sv57 paging, PMP, the Debug specification's
 triggers and Debug Mode), with RARS's system calls and memory map
 and programs assembled and linked as GNU <code>as</code> and <code>ld</code> do; C, GDB, the
 5-stage pipeline (Patterson &amp; Hennessy's RISC-V edition) and the window's
@@ -2062,9 +2099,32 @@ coherent L1 data caches and the L2), the ACLINT and the APLIC, and the ECC of
 its caches and FTLB with the Cache Error exception (the P8700 Programmer's
 Guide, rev. 1.80 / 1.84).  It identifies itself with <code>mvendorid</code> 0x127
 (MIPS), <code>marchid</code> 0x8000000000000201 and <code>mhartid</code> = core × 16 + hart.
-Not modelled: its out-of-order multithreaded pipeline (eMIPS: the 5-stage
-one), MIPS's Hybrid Debug, the DSPRAM, load / store bonding and the L2's
-prefetcher (they change only the speed).</p>
+In pipeline mode it runs on its own out-of-order pipeline
+(<a href="05-understanding.html#the-p8700s-own-pipeline">5.14</a>; <code>--model
+5-stage</code> for the textbook one).  MD01502 gives its units and latencies
+(Table 12.1), bonding and the predictors' switches; GCC's and LLVM's P8700
+models give the queues (ALQ, AGQ, FPQ of 16), the 96-entry window, issue width
+4 and the misprediction penalty (8); eMIPS assumes the rest: a 7-cycle front end,
+a 16-entry instruction buffer per hart, the window split between the harts, a
+TAGE of a 4096-entry base and four 1024-entry tables (histories 5 / 15 / 44 /
+130), a 64-entry BTB, a 32-entry JRC, a 16-entry RPS per hart, DIV 7 + one cycle
+per 4 significant dividend bits, FDIV / FSQRT the table's minimum for zero /
+infinite / NaN operands, else its maximum.  The rest of its memory system
+(<a href="05-understanding.html#the-rest-of-the-memory-system">5.14</a>): the L2 and
+L1 prefetchers (the P6600's description; OpenSBI's settings at boot), the L2's wait
+states, the MMIO regions, the IOCU, the DSPRAM; its DMA device is Xilinx's AXI CDMA
+(the Boston board is a Xilinx FPGA).  Its <strong>Hybrid Debug</strong>
+(<a href="05-understanding.html#hybrid-debug">5.14</a>): the <em>MIPS Hybrid Debug
+Specification</em> is not public, so eMIPS takes EJTAG's mechanisms where MD01502 names
+them — a Debug Mode that runs a handler (vector RESET_BASE + 0x480, or dmseg +
+0x200 with the probe's ProbTrap: the I6400's rule), dseg / dmseg / drseg at EJTAG's
+addresses sign-extended, the DCR, EJTAG's breakpoint registers (8 + 8, shared), the
+TAP's instruction numbers — and assumes the rest: the Hybrid Debug register at CSR
+0x7CF, a 64 KB DBU RAM, the register-bus master's address layout (Table 5.1's IDs in
+bits 61:56), the FDC's TAP register, APLIC sources 6 (FDC) and 7 (the CM's counters),
+each hart's trace encoder at drseg 0x8000 and its own debug monitor.  The CM has no
+PDTrace of its own (its TCB registers read 0); its counters count the P5600 CM's
+events 0, 8 and 9.</p>
 <h2 id="612-glossary">6.12 Glossary</h2>
 <table>
 <thead>
@@ -2321,6 +2381,18 @@ prefetcher (they change only the speed).</p>
 <tr>
 <td>M / S / U-mode</td>
 <td>RISC-V's privilege modes: Machine (everything), Supervisor (an operating system), User</td>
+</tr>
+<tr>
+<td>HS / VS / VU-mode, V</td>
+<td>with RISC-V's hypervisor extension: V = 0 is the hypervisor's world (HS-mode is S-mode there), V = 1 a guest's — VS-mode its kernel, VU-mode its programs, both translated twice</td>
+</tr>
+<tr>
+<td>G-stage, guest physical address</td>
+<td>the hypervisor's translation (<code>hgatp</code>) of the addresses a guest thinks are physical; its faults are guest-page faults</td>
+</tr>
+<tr>
+<td>VMID</td>
+<td>the virtual machine's number in <code>hgatp</code>: the TLB keeps several guests' translations apart by it, as by the ASID within one</td>
 </tr>
 <tr>
 <td>trap delegation</td>

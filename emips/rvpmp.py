@@ -21,6 +21,13 @@ entries up, as OpenSBI does) and their CSRs:
   fetch, 5 load, 7 store / AMO); page-table walks are checked with
   S-mode's privilege (3.7.2).
 
+**Smepmp** (LF8, priv. ch. 6; Spike's ``access_ok`` / ``pmp_ok``):
+``mseccfg`` (RLB, MMWP, MML) — RLB lets locked entries be written; with
+MML, L means M-mode-only, RW = 01 (and LRWX = 1111) a shared region (the
+truth table of 6.2.1), an M-mode-only or locked shared rule with X cannot
+be added unless RLB, and with MML or MMWP an M-mode access no entry matches
+fails (MML: fetches only — MMWP: every access).
+
 Choices: ``sim.DEVIATIONS["RISC-V"]``.
 """
 
@@ -48,6 +55,8 @@ class PMP:
         self.version = 0
         #: pmpaddr's width: physical addresses of 56 (RV64) / 34 (RV32) bits
         self.addr_mask = (1 << 54) - 1 if xlen == 64 else M32
+        #: Smepmp's mseccfg (emips.rvcsr keeps it here too): MML 1, MMWP 2, RLB 4
+        self.mseccfg = 0
 
     # -- the CSRs -----------------------------------------------------------------
 
@@ -60,13 +69,17 @@ class PMP:
 
     def write_cfg(self, n: int, value: int) -> None:
         self.version += 1
+        rlb, mml = self.mseccfg & 4, self.mseccfg & 1
         for k in range(self.xlen // 8):
             i = n * 4 + k
-            if i >= self.entries or self.cfg[i] & L:
+            if i >= self.entries or (self.cfg[i] & L and not rlb):
                 continue
             c = (value >> (8 * k)) & (R | W | X | 3 << A_SHIFT | L)
-            if not c & R:
-                c &= ~W                         # R = 0, W = 1: reserved (Spike)
+            if not mml and not c & R:
+                c &= ~W                         # R = 0, W = 1: reserved (Spike) — shared with MML
+            if not rlb and mml and c & L and (c & (R | W | X)) != R | W | X and \
+                    (c & X or (c & (R | W)) == W):
+                continue                        # (6.2.4b: no executable M-only / locked shared)
             self.cfg[i] = c
 
     def read_addr(self, i: int) -> int:
@@ -74,9 +87,10 @@ class PMP:
 
     def write_addr(self, i: int, value: int) -> None:
         self.version += 1
-        if i >= self.entries or self.cfg[i] & L:
+        rlb = self.mseccfg & 4
+        if i >= self.entries or (self.cfg[i] & L and not rlb):
             return
-        if i + 1 < self.entries and self.cfg[i + 1] & L and \
+        if i + 1 < self.entries and self.cfg[i + 1] & L and not rlb and \
                 (self.cfg[i + 1] >> A_SHIFT) & 3 == TOR:
             return
         self.addr[i] = value & self.addr_mask
@@ -99,7 +113,8 @@ class PMP:
         return base & ~(size - 1), (base & ~(size - 1)) + size
 
     def allows(self, pa: int, size: int, kind: str, priv: int) -> bool:
-        """3.7.1 (see the module docstring); ``kind``: fetch / load / store."""
+        """3.7.1 (see the module docstring); ``kind``: fetch / load / store
+        / hlvx (HLVX.HU / WU: both R and X, 21.3.1)."""
         if not self.entries:
             return True
         end = pa + size
@@ -113,11 +128,20 @@ class PMP:
             if pa < lo or end > hi:
                 return False                    # some but not all bytes
             c = self.cfg[i]
+            if self.mseccfg & 1:                # Smepmp's MML: 6.2.1
+                return _mml_ok(c, kind, priv == 3)
             if priv == 3 and not c & L:
                 return True
-            need = X if kind == "fetch" else W if kind == "store" else R
-            return bool(c & need)
-        return priv == 3
+            need = X if kind == "fetch" else W if kind == "store" else \
+                R | X if kind == "hlvx" else R  # (HLVX: read and execute, priv. 21.3.1)
+            return c & need == need
+        if priv != 3 or self.mseccfg & 2:       # (MMWP: M-mode denied too)
+            return False
+        return not self.mseccfg & 1 or kind in ("load", "store")    # (MML: no M fetch)
+
+    def locked(self) -> bool:
+        """Some entry has L (mseccfg.RLB stays 0 then: 6.2.2b)."""
+        return any(self.cfg[i] & L for i in range(self.entries))
 
     def lines(self) -> list[str]:
         """The configured entries (the views)."""
@@ -132,3 +156,21 @@ class PMP:
             out.append(f"pmp{i}: {names[(c >> A_SHIFT) & 3]:5} {perm} {'L' if c & L else ' '} "
                        f"0x{rng[0]:x}-0x{rng[1] - 1:x}")
         return out
+
+
+def _mml_ok(c: int, kind: str, m_mode: bool) -> bool:
+    """6.2.1's table (mseccfg.MML = 1), as Spike's ``access_ok``: L marks an
+    M-mode-only rule, RW = 01 a shared region (X: S / U may write it; with L
+    shared code, X: M may read it), LRWX = 1111 shared read-only data."""
+    load, store, fetch = kind in ("load", "hlvx"), kind == "store", kind == "fetch"
+    hlvx = kind == "hlvx"
+    r, w, x, lk = c & R, c & W, c & X, c & L
+    if r and w and x and lk:
+        return load and not hlvx
+    if not r and w:                             # a shared region
+        return bool((not lk and x and ((load and not hlvx) or store))
+                    or (not lk and not x and ((load and not hlvx) or (store and m_mode)))
+                    or (lk and fetch) or (lk and load and x and m_mode))
+    if m_mode != bool(lk):
+        return False
+    return bool((load and r and (not hlvx or x)) or (store and w) or (fetch and x))

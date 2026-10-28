@@ -43,7 +43,9 @@ TEXT_BASE, DATA_BASE = 0x00400000, 0x10010000
 NOP32, NOP16 = 0x00000013, 0x0001
 MATCH_JAL, MATCH_JALR, MATCH_C_J, MATCH_C_JAL = 0x6F, 0x67, 0xA001, 0x2001
 MATCH_C_LUI, MATCH_C_LI, MATCH_LUI, MASK_AUIPC = 0x6001, 0x4001, 0x37, 0x7F
-X_RA, X_SP, X_GP = 1, 2, 3
+X_RA, X_SP, X_GP, X_TP = 1, 2, 3, 4
+#: the RISC-V TLS ABI: dtpoff = address - the TLS segment - 0x800
+DTP_OFFSET = 0x800
 ELF_MAXPAGESIZE = 0x1000
 #: the relocations ld's pass 0 relaxes (when an R_RISCV_RELAX follows)
 _RELAX_TYPES = {"CALL": "call", "CALL_PLT": "call", "HI20": "lui", "LO12_I": "lui",
@@ -78,6 +80,7 @@ class ObjSection:
     insns: list = field(default_factory=list)       # (offset, size, line)
     address: int = 0
     done: bool = False                               # sec_flg0: an ALIGN was handled
+    tls: bool = False                                # SHF_TLS (.tdata / .tbss)
 
 
 class LinkError(Exception):
@@ -92,6 +95,13 @@ LAYOUT = [
     (".text", ((".text",), (".text.",)), "text"),
     (".rodata", ((".rodata",), (".rodata.",)), "text"),
     (".data", ((".data",), (".data.",)), "data"),
+    # LF12: the TLS image and the GOT after .data (ld's script has them
+    # before it; eMIPS keeps .data at RARS's 0x10010000); .tbss takes room
+    # here — eMIPS runs the image as thread 0's block (tp = .tdata)
+    (".tdata", ((".tdata",), (".tdata.",)), "data"),
+    (".tbss", ((".tbss",), (".tbss.",)), "data"),
+    (".got", ((".got",), ()), "data"),
+    (".got.plt", ((".got.plt",), ()), "data"),
     (".sdata", ((".srodata", ".sdata"), (".srodata.", ".sdata.")), "data"),
     (".sbss", ((".sbss",), (".sbss.",)), "data"),
     (".bss", ((".bss",), (".bss.",)), "data"),
@@ -99,6 +109,8 @@ LAYOUT = [
 
 
 def _output_of(name: str) -> str | None:
+    if name in ("COMMON", "TCOMMON"):           # (ld's script: *(COMMON) in .bss,
+        return ".bss" if name == "COMMON" else ".tbss"      # *(.tcommon) in .tbss)
     for out, (exact, prefixes), _seg in LAYOUT:
         if name in exact or name.startswith(prefixes):
             return out
@@ -116,6 +128,8 @@ class Linked:
     image: dict = field(default_factory=dict)
     segments: dict = field(default_factory=dict)
     insns: list = field(default_factory=list)
+    #: the TLS segment: (address, initialized bytes, size) — thread 0's tp
+    tls: tuple | None = None
 
 
 def _align(v: int, power: int) -> int:
@@ -178,6 +192,8 @@ class Linker:
                     raise LinkError(0, f"section `{name}' has no place in eMIPS's memory map")
                 continue
             self.by_out[out].append(sec)
+        self._commons()
+        self._got()
         for v in self.by_out.values():          # .srodata before .sdata
             v.sort(key=lambda s: (0 if s.name.startswith(".srodata") else 1)
                    if s.name.startswith((".srodata", ".sdata")) else 0)
@@ -190,6 +206,88 @@ class Linker:
         self.max_alignment: int | None = None
         self.max_alignment_for_gp: int | None = None
         self.first_section = None
+
+    def _commons(self) -> None:
+        """lang_common / bfd_define_common_symbol: the common symbols in ld's
+        hash-table order (bfd_hash_traverse: by bucket, the newest first)
+        into a COMMON input section, the last of .bss (ld's script:
+        ``*(COMMON)``), each at its alignment (log2 of st_value)."""
+        commons = [(k, s) for k, s in enumerate(self.obj.symbols.values())
+                   if s.common is not None]
+        if not commons:
+            return
+        commons.sort(key=lambda ks: (_bfd_hash(ks[1].name) % BFD_HASH_SIZE, -ks[0]))
+        secs = {}
+        for _k, s in commons:                   # (.tls_common: .tcommon in .tbss)
+            name, out = ("TCOMMON", ".tbss") if s.tls else ("COMMON", ".bss")
+            sec = secs.get(name)
+            if sec is None:
+                sec = secs[name] = ObjSection(name, 0, False, True)
+                sec.tls = s.tls
+                sec.size = 0
+                self.obj.sections[name] = sec
+                self.by_out[out].append(sec)
+            power = max(s.common_align - 1, 0).bit_length()      # (bfd_log2)
+            sec.align = max(sec.align, power)
+            sec.size = _align(sec.size, power)
+            self.loc[s] = [sec, sec.size]
+            self.size[s] = s.common
+            sec.size += s.common
+        for sec in secs.values():
+            sec.data = bytearray(sec.size)
+
+    def _got(self) -> None:
+        """riscv_elf_create_got_section / check_relocs / size_dynamic_sections:
+        a .got (its header word: _DYNAMIC, 0 in a static link) and a .got.plt
+        (two words: -1, 0) once a GOT_HI20 / TLS_GOT_HI20 / TLS_GD_HI20 (or
+        _GLOBAL_OFFSET_TABLE_) is used; then the slots — the local symbols'
+        first, in symbol-table order (a word; a GD reference two), the
+        global ones in ld's hash order (GD two words, then IE one, else
+        one)."""
+        kinds = {"GOT_HI20": 1, "TLS_GD_HI20": 2, "TLS_GOT_HI20": 4}
+        self.tls_type: dict = {}
+        for sec in self.obj.sections.values():
+            for r in sec.relocs:
+                k = kinds.get(r.type)
+                if k is not None and r.sym is not None:
+                    self.tls_type[r.sym] = self.tls_type.get(r.sym, 0) | k
+        gsym = self.obj.symbols.get("_GLOBAL_OFFSET_TABLE_")
+        self.got = self.gotplt = None
+        self.got_offset: dict = {}
+        if not self.tls_type and (gsym is None or gsym.defined):
+            return
+        w = self.xlen // 8
+        power = 3 if self.xlen == 64 else 2
+        self.got = ObjSection(".got", power, False, False)
+        size = w                                # (got_header_size)
+        order = list(self.obj.symbols.values())
+        local = [s for s in order if s in self.tls_type and not (s.external or s.weak)]
+        glob = sorted(((k, s) for k, s in enumerate(order)
+                       if s in self.tls_type and (s.external or s.weak)),
+                      key=lambda ks: (_bfd_hash(ks[1].name) % BFD_HASH_SIZE, -ks[0]))
+        for s in local:
+            self.got_offset[s] = size
+            size += w * (2 if self.tls_type[s] & 2 else 1)
+        for _k, s in glob:
+            self.got_offset[s] = size
+            t = self.tls_type[s]
+            size += w * ((2 if t & 2 else 0) + (1 if t & 4 else 0) if t & 6 else 1)
+        self.got.data = bytearray(size)
+        self.obj.sections[".got"] = self.got
+        self.by_out[".got"].append(self.got)
+        self.gotplt = ObjSection(".got.plt", power, False, False)
+        self.gotplt.data = bytearray((-1 & ((1 << 8 * w) - 1)).to_bytes(w, "little") + bytes(w))
+        self.obj.sections[".got.plt"] = self.gotplt
+        self.by_out[".got.plt"].append(self.gotplt)
+        if gsym is not None and not gsym.defined:
+            self.loc[gsym] = [self.got, 0]
+
+    def _tls_base(self) -> int:
+        """elf_hash_table (info)->tls_sec->vma: the first TLS output section."""
+        for out in (".tdata", ".tbss"):
+            if self.by_out[out]:
+                return self.out_addr[out]
+        raise LinkError(0, "TLS relocation without a TLS section (.tdata / .tbss)")
 
     def _place(self, s) -> None:
         if s is None or s in self.loc:
@@ -415,8 +513,19 @@ class Linker:
             again[0] = True
             delete(sec, o + 2, 2, nxt)
 
-    def _relax_tls(self, *args) -> None:
-        """TPREL: thread-local storage is refused when relocating."""
+    def _relax_tls(self, sec, sym_sec, nxt, rel, symval, reserve, again, pcgp,
+                   undefined_weak, delete) -> None:
+        """_bfd_riscv_relax_tls_le: a tp offset within 12 bits — the lui and
+        the add go, the low part addresses tp."""
+        if _high(symval - self._tls_base()) != 0:
+            return
+        if rel.type == "TPREL_LO12_I":
+            rel.type = "TPREL_I"
+        elif rel.type == "TPREL_LO12_S":
+            rel.type = "TPREL_S"
+        else:                                   # TPREL_HI20 / TPREL_ADD
+            again[0] = True
+            delete(sec, rel.offset, 4, rel)
 
     def _relax_pc(self, sec, sym_sec, nxt, rel, symval, reserve, again, pcgp,
                   undefined_weak, delete) -> None:
@@ -546,9 +655,41 @@ class Linker:
         for name, sec in self.obj.sections.items():
             if sec.data or sec.bss:
                 out.segments[name] = (sec.address, sec.address + len(sec.data))
+        if self.by_out[".tdata"] or self.by_out[".tbss"]:
+            base = self._tls_base()
+            end = max(s.address + len(s.data) for out in (".tdata", ".tbss")
+                      for s in self.by_out[out])
+            init = max((s.address + len(s.data) for s in self.by_out[".tdata"]), default=base)
+            out.tls = (base, init - base, end - base)
         return out
 
     # -- relocating (riscv_elf_relocate_section) ---------------------------------------
+
+    def _got_slot(self, r: Reloc, t: str) -> int:
+        """The GOT slot's address, its contents written the first time
+        (a static link: the address; IE tpoff; GD module 1 + dtpoff)."""
+        s = r.sym
+        if s not in self.got_offset:
+            raise LinkError(r.line, f"no GOT entry for `{s.name if s else '*ABS*'}'")
+        w = self.xlen // 8
+        off = self.got_offset[s]
+        kind = self.tls_type[s]
+        d = self.got.data
+
+        def put(o: int, v: int) -> None:
+            d[o:o + w] = (v & ((1 << 8 * w) - 1)).to_bytes(w, "little")
+
+        addr = self.sym_value(s, r.line)
+        if t == "GOT_HI20":
+            put(off, addr)
+            return self.got.address + off
+        ie_off = 2 * w if kind & 2 and kind & 4 else 0
+        if kind & 2:
+            put(off, 1)                             # (module 1: the executable)
+            put(off + w, addr - self._tls_base() - DTP_OFFSET)
+        if kind & 4:
+            put(off + ie_off, addr - self._tls_base())
+        return self.got.address + off + (ie_off if t == "TLS_GOT_HI20" else 0)
 
     def _overflow(self, r: Reloc) -> None:
         name = r.sym.name if r.sym is not None else "*ABS*"
@@ -561,6 +702,8 @@ class Linker:
         mask = M32 if self.xlen == 32 else M64
         pcrel_hi: dict[int, int] = {}
         lo_relocs: list = []
+        uleb_set: Reloc | None = None
+        uleb_value = 0
 
         def get(o: int, n: int) -> int:
             return int.from_bytes(d[o:o + n], "little")
@@ -573,11 +716,77 @@ class Linker:
             p = sec.address + o
             if t in ("ALIGN", "RELAX", "NONE", "DELETE"):
                 continue
-            if t in ("TPREL_HI20", "TPREL_LO12_I", "TPREL_LO12_S", "TPREL_ADD", "TLS_GOT_HI20",
-                     "TLS_GD_HI20", "GOT_HI20"):
-                raise LinkError(r.line, f"R_RISCV_{_RNAME.get(t, t)}: thread-local storage and "
-                                        "the GOT are not supported (a static link of position-"
-                                        "dependent code)")
+            if t == "SET_ULEB128":              # (riscv_elf_relocate_section: kept for
+                if uleb_set is not None:        # the SUB_ULEB128 at the same offset)
+                    raise LinkError(r.line, "Mismatched R_RISCV_SET_ULEB128, it must be paired "
+                                            "with and applied before R_RISCV_SUB_ULEB128")
+                uleb_set, uleb_value = r, self.value(r) - r.addend
+                continue
+            if t == "SUB_ULEB128":
+                if uleb_set is None or uleb_set.offset != o:
+                    raise LinkError(r.line, "Mismatched R_RISCV_SUB_ULEB128, it must be paired "
+                                            "with and applied after R_RISCV_SET_ULEB128")
+                v = (uleb_value - (self.sym_value(r.sym, r.line) if r.sym is not None else 0)
+                     + uleb_set.addend) & mask
+                uleb_set = None
+                n = 1                           # (perform_relocation: the original length)
+                while d[o + n - 1] & 0x80:
+                    n += 1
+                if v.bit_length() > 7 * n and v:
+                    raise LinkError(r.line, f"final size of uleb128 value at offset 0x{o:x} in "
+                                            f"{sec.name} exceeds available space")
+                out = bytearray(b"\x80" * (n - 1) + b"\0")
+                k = 0
+                while True:
+                    c = v & 0x7F
+                    v >>= 7
+                    out[k] = c | (0x80 if v or k < n - 1 else 0)
+                    k += 1
+                    if not v:
+                        break
+                d[o:o + n] = out
+                continue
+            if t in ("GOT_HI20", "TLS_GOT_HI20", "TLS_GD_HI20"):
+                v = self._got_slot(r, t) - p        # (riscv_record_pcrel_hi_reloc)
+                if not self._utype_ok(high_part(v)):
+                    self._overflow(r)
+                pcrel_hi[p & mask] = v
+                put(o, 4, get(o, 4) & ~enc_u(-1) | enc_u(high_part(v)))
+                continue
+            if t == "TPREL_ADD":
+                continue
+            if t in ("TPREL_HI20", "TPREL_LO12_I", "TPREL_LO12_S", "TPREL_I", "TPREL_S"):
+                v = self.value(r) - self._tls_base()        # (tpoff: TP_OFFSET 0)
+                if t == "TPREL_HI20":
+                    if not self._utype_ok(high_part(v)):
+                        self._overflow(r)
+                    put(o, 4, get(o, 4) & ~enc_u(-1) | enc_u(high_part(v)))
+                    continue
+                insn = get(o, 4)
+                if t in ("TPREL_I", "TPREL_S") and _valid_i(v):
+                    insn = insn & ~(31 << 15) | X_TP << 15      # (tp as the base)
+                enc = enc_i if t.endswith("_I") else enc_s
+                put(o, 4, insn & ~enc(-1) | enc(v))
+                continue
+            if t in ("TLS_DTPREL32", "TLS_DTPREL64"):
+                put(o, 4 if t.endswith("32") else 8,
+                    self.value(r) - self._tls_base() - DTP_OFFSET)
+                continue
+            if t in _STANDALONE:                # (.reloc's ADD / SUB / SET: relocate_section
+                n = _STANDALONE[t]              # on S, then perform_relocation adds A)
+                old = get(o, n)
+                v = self.value(r) - r.addend
+                if t.startswith("ADD"):
+                    v += old
+                elif t.startswith("SUB"):
+                    v = old - v
+                elif t == "32_PCREL":
+                    v -= p
+                v += r.addend
+                if t in ("SUB6", "SET6"):
+                    v = (old & ~0x3F) | v & 0x3F
+                put(o, n, v)
+                continue
             if t.startswith("DATA"):
                 n = int(t[4:])
                 if r.sub is None and n in (1, 2):
@@ -689,6 +898,27 @@ class Linker:
 
 #: gas's BFD codes -> the R_RISCV_ names
 _RNAME = {"12_PCREL": "BRANCH", "JMP": "JAL", "DATA4": "32", "DATA8": "64"}
+
+
+#: the data relocations a .reloc can name: their sizes
+_STANDALONE = {"ADD8": 1, "ADD16": 2, "ADD32": 4, "ADD64": 8, "SUB6": 1, "SUB8": 1, "SUB16": 2,
+               "SUB32": 4, "SUB64": 8, "SET6": 1, "SET8": 1, "SET16": 2, "SET32": 4,
+               "32_PCREL": 4}
+#: bfd/hash.c: DEFAULT_SIZE (ld's link hash table)
+BFD_HASH_SIZE = 4051
+
+
+def _bfd_hash(name: str) -> int:
+    """bfd_hash_hash (an unsigned long: 64 bits on the oracle's host)."""
+    h = 0
+    data = name.encode("latin-1")
+    for c in data:
+        h = (h + c + (c << 17)) & M64
+        h ^= h >> 2
+    n = len(data)
+    h = (h + n + (n << 17)) & M64
+    h ^= h >> 2
+    return h
 
 
 def link(obj, bases: dict | None = None, relax: bool = True) -> Linked:

@@ -42,8 +42,13 @@ numbers): x0-x31 (0-31), pc (32), f0-f31 (33-64, FLEN bits — NaN-boxed
 singles of a D hart as the 64-bit register), every CSR the hart has at 65 +
 its number in ``org.gnu.gdb.riscv.csr`` (fcsr in the fpu feature, as GDB's
 XML), and ``priv`` (4161, ``org.gnu.gdb.riscv.virtual``: the privilege
-mode); the g packet holds x0-x31, pc and the FPRs, the CSRs come with p.
-Registers and memory are little-endian.
+mode, with the hypervisor extension V in bit 2 — the Debug spec's virtual
+register, 4.10.1; the CSRs are read and written by their own numbers,
+whatever V); the g packet holds x0-x31, pc and the FPRs, the CSRs come with p.
+Registers and memory are little-endian.  A hart with a vector unit (LF6)
+adds ``org.gnu.gdb.riscv.vector``: v0-v31 (4162-4193, ``riscv-tdep.h``'s
+RISCV_V0_REGNUM; VLEN bits, a union of b / s / w / l / q views as QEMU
+describes it); the vector CSRs are in the csr feature.
 """
 
 from __future__ import annotations
@@ -78,6 +83,8 @@ NANO_DSP_REGS = {36: 34, 37: 33, 38: 72, 39: 73, 40: 74, 41: 75, 42: 76, 43: 77,
 PC_REG, NANO_PC_REG, SP_REG = 37, 32, 29
 #: RISC-V (riscv-tdep.c): pc, the first FPR, CSR 0, the virtual priv
 RV_PC, RV_FPR, RV_CSR, RV_PRIV, RV_SP = 32, 33, 65, 65 + 4096, 2
+#: v0 (GDB's RISCV_V0_REGNUM: after priv)
+RV_V0 = RV_PRIV + 1
 #: steps between looks at the socket while continuing
 SLICE = 2000
 #: pipeline mode: the most cycles a step (or a stop) waits for an instruction
@@ -280,6 +287,8 @@ class GdbStub:
             for num, csr in sorted(m.csrs.table.items()):
                 regs[RV_CSR + num] = (csr.name, m.xlen)
             regs[RV_PRIV] = ("priv", m.xlen)
+            if m.vector is not None:
+                regs.update({RV_V0 + i: (f"v{i}", m.vector.vlen) for i in range(32)})
             self._rv_regs_, self._rv_key = regs, key
         return self._rv_regs_
 
@@ -295,10 +304,12 @@ class GdbStub:
             return m.pc & m.amask
         if RV_FPR <= n < RV_FPR + 32 and m.flen:
             return m.fpr[n - RV_FPR] & ((1 << m.flen) - 1)
-        if n == RV_PRIV:
-            return m.priv
+        if n == RV_PRIV:                        # (Debug spec 4.10.1: v in bit 2)
+            return m.priv | m.v << 2
         if RV_CSR <= n < RV_PRIV and n - RV_CSR in m.csrs.table:
-            return m.csrs.read(n - RV_CSR)
+            return m.csrs.peek(n - RV_CSR)      # (the CSR itself, whatever V)
+        if RV_V0 <= n < RV_V0 + 32 and m.vector is not None:
+            return m.vector.register(n - RV_V0)
         raise KeyError(n)
 
     def _rv_set(self, n: int, value: int) -> None:
@@ -310,11 +321,16 @@ class GdbStub:
         elif RV_FPR <= n < RV_FPR + 32 and m.flen:
             m.fpr[n - RV_FPR] = value & ((1 << m.flen) - 1)
         elif n == RV_PRIV:
-            if value not in m.modes:
+            prv, v = value & 3, value >> 2 & 1
+            if prv not in m.modes or value >> 3 or (v and (prv == 3 or not m.csrs.has_h)):
                 raise KeyError(n)
-            m.priv = value
+            m.priv, m.v = prv, v
         elif RV_CSR <= n < RV_PRIV and n - RV_CSR in m.csrs.table:
-            m.csrs.write(n - RV_CSR, value)     # (a read-only one: unchanged)
+            w = m.csrs.table[n - RV_CSR].write  # (the CSR itself; a read-only one: unchanged)
+            if w is not None:
+                w(m.csrs, value & m.amask)
+        elif RV_V0 <= n < RV_V0 + 32 and m.vector is not None:
+            m.vector.set_register(n - RV_V0, value)
         else:
             raise KeyError(n)
 
@@ -332,6 +348,11 @@ class GdbStub:
                 ftype = "riscv_double"
                 fpu = ('<union id="riscv_double"><field name="float" type="ieee_single"/>'
                        '<field name="double" type="ieee_double"/></union>')
+            elif m.flen == 128:                 # (Q: GDB has no quad type — the bits too)
+                ftype = "riscv_quad"
+                fpu = ('<union id="riscv_quad"><field name="float" type="ieee_single"/>'
+                       '<field name="double" type="ieee_double"/>'
+                       '<field name="quad" type="uint128"/></union>')
             else:
                 ftype = "ieee_single"
             fpu += "".join(f'<reg name="{regs[RV_FPR + i][0]}" bitsize="{m.flen}" '
@@ -341,14 +362,34 @@ class GdbStub:
         csr = "".join(f'<reg name="{name}" bitsize="{b}" regnum="{n}" save-restore="no" '
                       'type="int" group="csr"/>'
                       for n, (name, b) in regs.items() if RV_CSR <= n < RV_PRIV
-                      and n != RV_CSR + 3)
+                      and (n != RV_CSR + 3 or not m.flen))     # (fcsr: the fpu feature's)
         return ('<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd">'
                 f'<target version="1.0"><architecture>riscv:rv{bits}</architecture>'
                 f'<feature name="org.gnu.gdb.riscv.cpu">{cpu}</feature>{fpu}'
                 f'<feature name="org.gnu.gdb.riscv.csr">{csr}</feature>'
                 '<feature name="org.gnu.gdb.riscv.virtual">'
                 f'<reg name="priv" bitsize="{bits}" regnum="{RV_PRIV}" save-restore="no" '
-                'type="int" group="general"/></feature></target>')
+                f'type="int" group="general"/></feature>{self._rv_vector_xml()}</target>')
+
+    def _rv_vector_xml(self) -> str:
+        """``org.gnu.gdb.riscv.vector`` (QEMU's dynamic description: one
+        union of byte / short / word / long / quad vectors of VLEN bits)."""
+        vu = self.m.vector
+        if vu is None:
+            return ""
+        vlen = vu.vlen
+        types = "".join(f'<vector id="{name}" type="{t}" count="{vlen // w}"/>'
+                        for name, t, w in (("bytes", "uint8", 8), ("shorts", "uint16", 16),
+                                           ("words", "uint32", 32), ("longs", "uint64", 64),
+                                           ("quads", "uint128", 128)) if vlen >= w)
+        union = "".join(f'<field name="{f}" type="{t}"/>'
+                        for f, t, w in (("b", "bytes", 8), ("s", "shorts", 16),
+                                        ("w", "words", 32), ("l", "longs", 64),
+                                        ("q", "quads", 128)) if vlen >= w)
+        regs = "".join(f'<reg name="v{i}" bitsize="{vlen}" regnum="{RV_V0 + i}" '
+                       'type="riscv_vector" group="vector"/>' for i in range(32))
+        return (f'<feature name="org.gnu.gdb.riscv.vector">{types}'
+                f'<union id="riscv_vector">{union}</union>{regs}</feature>')
 
     def _mips_number(self, n: int) -> int:
         """GDB's register number as the MIPS one the stub reads (nanoMIPS:

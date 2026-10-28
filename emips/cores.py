@@ -41,7 +41,8 @@ FIELDS = ("release", "compressed", "fpu", "dsp", "msa", "mt", "mmu", "icache", "
           "l3", "cores", "vps", "shadow_sets", "model")
 #: the settings a RISC-V core preset decides (PLAN M25 phase 5: the MIPS
 #: settings do not apply to a RISC-V hart, emips.compat)
-RV_FIELDS = ("rv_extensions", "rv_modes", "icache", "dcache", "l2", "l3", "cores", "vps")
+RV_FIELDS = ("rv_extensions", "rv_modes", "icache", "dcache", "l2", "l3", "cores", "vps",
+             "model")
 
 
 def _pow2(n: int) -> bool:
@@ -606,9 +607,10 @@ CORES: dict[str, Core] = {c.name: c for c in (
          ("fixed",), _L1_P8700, _L1_P8700,
          CacheChoice(sizes=(256, 512, 1024, 2048, 4096, 8192), ways=(16,), lines=(64,),
                      ways_kb=((256, 8),)),
-         (1, 2, 3, 4, 5, 6), (4,), ("5-stage",),
+         (1, 2, 3, 4, 5, 6), (4,), ("p8700", "5-stage"),
          build=dict(rv_extensions=_P8700_EXTENSIONS, rv_modes="msu", cores=1, vps=1,
-                    icache="64K:4:64", dcache="64K:4:64", l2="1M:16:64", l3="none"),
+                    icache="64K:4:64", dcache="64K:4:64", l2="1M:16:64", l3="none",
+                    model="p8700"),
          source="MD01502 (the P8700 / P8700-F Multiprocessing System Programmer's Guide "
                 "1.80: RV64GC Zba Zbb, 1.2; the custom instructions, Appendix B; the CSRs "
                 "and causes, ch. 7; the counters, 11.1; rev. 1.84: the MMU, ch. 2, the "
@@ -616,13 +618,7 @@ CORES: dict[str, Core] = {c.name: c for c in (
                 "QEMU's mips-p8700 (marchid "
                 "0x8000000000000201, Sv48), OpenSBI's P8700 platform code, Linux's "
                 "\"Zalrsc only\" patch (no AMOs)",
-         missing=("the P8700's out-of-order multithreaded pipeline (eMIPS: the textbook "
-                  "5-stage)",
-                  "load / store bonding (3.3.6: invisible but for speed), the L2's "
-                  "prefetcher, its RAM wait states",
-                  "MIPS Hybrid Debug (eMIPS: the RISC-V Debug specification's)",
-                  "the DSPRAM, L1 prefetching (the trackers' registers are stored), "
-                  "MDIAGR / MDIAGW (undocumented)"),
+         missing=("MDIAGR / MDIAGW (undocumented)",),
          notes=("no AMO instructions: an AMO traps for M-mode emulation (mipsconfig6)",
                 "the time CSR traps (Read Time, cause 26, or an illegal instruction)"),
          arch="rv64", rv_extensions=(_P8700_EXTENSIONS,), rv_modes=("msu",), vps=(1, 2)),

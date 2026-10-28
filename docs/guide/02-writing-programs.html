@@ -60,6 +60,13 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#225-msa-128-bit-vectors">2.25 MSA: 128-bit vectors</a></li>
 <li><a href="#226-risc-v-rv32-and-rv64">2.26 RISC-V: RV32 and RV64</a></li>
 <li><a href="#227-the-mips-p8700-a-risc-v-core">2.27 The MIPS P8700: a RISC-V core</a></li>
+<li><a href="#228-risc-v-vectors-the-v-extension">2.28 RISC-V vectors: the V extension</a></li>
+<li><a href="#229-risc-v-a-hypervisor-and-its-guest">2.29 RISC-V: a hypervisor and its guest</a></li>
+<li><a href="#230-risc-v-privileged-additions-counters-cache-blocks-rnmis">2.30 RISC-V privileged additions: counters, cache blocks, RNMIs</a></li>
+<li><a href="#231-risc-v-interrupts-as-memory-writes-the-aia">2.31 RISC-V interrupts as memory writes: the AIA</a></li>
+<li><a href="#232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">2.32 RISC-V control-flow integrity: landing pads and a shadow stack</a></li>
+<li><a href="#233-macros-repetition-and-conditional-assembly">2.33 Macros, repetition and conditional assembly</a></li>
+<li><a href="#234-risc-v-more-directives-thread-local-storage-and-the-got">2.34 RISC-V: more directives, thread-local storage and the GOT</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -298,9 +305,16 @@ terminal debugger).</p>
 </tr>
 </tbody>
 </table>
-<p>Wherever a number goes you can write an <strong>expression</strong>: <code>+ - * /</code>,
-<code>&lt;&lt; &gt;&gt;</code>, <code>&amp; |</code>, unary <code>-</code> and <code>~</code>, parentheses, labels and constants:
-<code>buffer+4</code>, <code>(SIZE-1)*4</code>, <code>'a'-'A'</code>.</p>
+<p>Wherever a number goes you can write an <strong>expression</strong>: <code>+ - * / %</code>,
+<code>&lt;&lt; &gt;&gt;</code>, <code>&amp; | ^</code>, unary <code>-</code>, <code>~</code> and <code>!</code>, the
+comparisons <code>== != &lt; &lt;= &gt; &gt;=</code> (true is −1), <code>&amp;&amp; ||</code>,
+parentheses, labels and constants:
+<code>buffer+4</code>, <code>(SIZE-1)*4</code>, <code>'a'-'A'</code>.  The priorities are
+GNU <code>as</code>'s, not C's: <code>* / % &lt;&lt; &gt;&gt;</code> first, then
+<code>| ^ &amp;</code>, then <code>+ -</code> — <code>8 &amp; 3 + 1</code> is 1, not 0;
+when in doubt, write the parentheses.  A character (<code>'A'</code>) is its
+number however it is written, <code>'\0'</code> included — that is 48
+(the character 0), as in GNU <code>as</code>; a NUL byte is <code>0</code>.</p>
 <p><strong>Named constants</strong>: <code>.eqv NAME, value</code> (also <code>.equ</code>, <code>.set NAME, value</code>):</p>
 <pre><code class="language-asm"># output: 40
         .eqv  COUNT, 10
@@ -1096,6 +1110,14 @@ differences you may meet:</p>
 <tr>
 <td><code>div $t0, $t1, $t2</code> (three operands)</td>
 <td><code>div $t1, $t2</code> + <code>mflo $t0</code> (<code>div $zero, $t1, $t2</code> is the GNU form of the 2-operand instruction)</td>
+</tr>
+<tr>
+<td><code>'\0'</code> is the NUL byte</td>
+<td><code>'\0'</code> is 48, the character 0 (GNU <code>as</code>: only <code>\b \f \n \r \t \' \"</code> are escapes); write <code>0</code> — in a string <code>"\0"</code> is still a NUL byte</td>
+</tr>
+<tr>
+<td>no macros</td>
+<td>GNU's <code>.macro</code>, <code>.rept</code>, <code>.irp</code>, <code>.if</code>, <code>.include</code> (<a href="#233-macros-repetition-and-conditional-assembly">2.33</a>) — MARS's own <code>.macro</code> syntax (<code>%arg</code> parameters) is not GNU's</td>
 </tr>
 <tr>
 <td>exceptions with no handler continue</td>
@@ -2236,7 +2258,33 @@ counters and Zba / Zbb (address generation and basic bit manipulation:
 <code>sh1add</code>, <code>andn</code>, <code>clz</code>, <code>rev8</code> ...).  <code>--rv-ext</code> (Settings →
 Processor) chooses others, as an ISA string; an instruction of an extension the
 hart lacks is an illegal instruction.  Without C, every instruction is 32 bits
-and must be 4-byte aligned.</p>
+and must be 4-byte aligned.  An ISA string may also name Zbs (single bits:
+<code>bset</code>, <code>bclr</code>, <code>binv</code>, <code>bext</code>), Zbc (carry-less
+multiplication: <code>clmul</code>), Zbkb / Zbkc / Zbkx (the bit manipulations of
+cryptography: <code>pack</code>, <code>brev8</code>, <code>xperm8</code> ...), Zicond
+(<code>czero.eqz</code> / <code>czero.nez</code>: a branch-free conditional), Zawrs
+(<code>wrs.nto</code> / <code>wrs.sto</code>: wait until the reservation of an
+<code>lr</code> is lost), Zimop / Zcmop (the may-be-operations <code>mop.r.N</code>,
+<code>mop.rr.N</code>, <code>c.mop.N</code>) and the hints of Zihintntl / Zihintpause
+(<code>ntl.p1</code> ..., <code>pause</code>).  For floating point beyond F and D:
+Q (quad precision: 128-bit f registers, <code>flq</code>, <code>fadd.q</code> ...), Zfh /
+Zfhmin (half precision: <code>flh</code>, <code>fadd.h</code>, <code>fcvt.s.h</code>), Zfa
+(<code>fli.d fa0, 0.25</code> loads one of 32 constants, <code>fround</code>,
+<code>fminm</code>, <code>fleq</code> ...) and Zfinx / Zdinx / Zhinx (no f registers: the
+floating-point instructions work on the x registers — on RV32 a double is an even /
+odd register pair).  Code size: Zca / Zcf / Zcd are C's parts by name, Zcb adds 16-bit
+<code>lbu</code>, <code>lh</code>, <code>sb</code>, <code>mul</code>, <code>not</code> ... (the assembler
+picks them on its own), Zcmp saves and restores a function's registers in one
+instruction (<code>cm.push {ra, s0-s2}, -32</code> / <code>cm.popret {ra, s0-s2}, 32</code>)
+and Zcmt calls through a table of addresses (<code>cm.jalt 40</code>, the
+<code>jvt</code> CSR).  Atomics: A is Zaamo (the AMOs) and Zalrsc (<code>lr</code> /
+<code>sc</code>); Zacas adds compare-and-swap (<code>amocas.w</code>, <code>.d</code>, and on RV64
+<code>.q</code> on a register pair), Zabha the AMOs on bytes and halfwords
+(<code>amoadd.b</code> ...), and Ztso names the stronger memory order eMIPS's harts already
+keep.  Scalar cryptography (Zkn / Zks / Zk): AES rounds and key schedule
+(<code>aes64esm</code>, <code>aes64ks1i</code>, RV32's <code>aes32esmi</code> ...),
+SHA-256 / SHA-512 sigma functions, SM4 and SM3, and Zkr's <code>seed</code> CSR (16 bits of
+entropy a poll: <code>csrrw a0, seed, zero</code>).</p>
 <p><strong>Privilege modes and traps.</strong>  A hart runs in Machine (M),
 Supervisor (S) or User (U) mode (<code>--rv-modes msu</code>, <code>mu</code> or
 <code>m</code>); a program starts in M-mode (<code>--boot user</code>: U-mode).  An exception
@@ -2404,6 +2452,638 @@ boot code does.  Its MMU (a VTLB, an FTLB and micro-TLBs, filled by a hardware
 walker or by a software handler with <code>mips.mtlbwr</code>),
 interrupt controller and caches are those of its manual: the debugger's
 <code>p8700</code>, <code>cpu</code> and <code>cm</code>, and the window's panes, show them.</p>
+<h2 id="228-risc-v-vectors-the-v-extension">2.28 RISC-V vectors: the V extension</h2>
+<p>A hart with <strong>V</strong> (<code>--rv-ext imafdcv_zicsr</code>, or the
+Machine toolbar's RISC-V items with Settings → Processor → extensions) has 32
+vector registers <code>v0</code>-<code>v31</code> of <strong>VLEN</strong> bits (128 with
+V; <code>zvl256b</code> ... <code>zvl65536b</code> make them longer) holding elements of 8,
+16, 32 or 64 bits.  Unlike MSA's fixed 128 bits
+(<a href="#225-msa-128-bit-vectors">2.25</a>), a V program does not know VLEN:
+it asks.</p>
+<ul>
+<li><strong><code>vsetvli rd, rs1, e32, m4, ta, ma</code></strong> sets the
+<strong>vtype</strong> — the element width SEW (<code>e8</code> ... <code>e64</code>), the
+register group LMUL (<code>mf8</code> ... <code>m8</code>: with <code>m4</code> every operand is
+four registers, <code>v4</code>-<code>v7</code>), and what happens to the elements an
+instruction does not compute (<code>ta</code> / <code>tu</code> for the tail, <code>ma</code> /
+<code>mu</code> for masked-off ones; eMIPS always leaves them unchanged, which
+both settings allow) — and returns <strong>vl</strong>, how many of the
+<code>rs1</code> elements asked for this hart does at once.  A loop that subtracts
+vl and goes on until nothing is left (<em>strip mining</em>) runs on any VLEN.</li>
+<li>Loads and stores: unit-stride (<code>vle32.v v4, (a1)</code>), strided
+(<code>vlse32.v v4, (a1), t2</code>: every t2 bytes), indexed
+(<code>vluxei32.v v4, (a1), v8</code>: a1 + each offset in v8), segments
+(<code>vlseg3e8.v v4, (a0)</code>: RGB triples into v4, v5, v6), whole registers
+(<code>vl8re8.v</code>) and fault-only-first (<code>vle8ff.v</code>: a fault past element 0
+only shortens vl — <code>strlen</code> without reading past the end).</li>
+<li>Arithmetic on elements: <code>.vv</code> (two vectors), <code>.vx</code> (a vector and
+x[rs1]), <code>.vi</code> (a 5-bit immediate); widening (<code>vwmul.vv</code>: results of
+2 × SEW in a group twice as large) and narrowing (<code>vnsrl.wi</code>); fixed point
+with rounding and saturation (<code>vsadd</code>, <code>vsmul</code>, <code>vnclip</code>: the
+<code>vxrm</code> / <code>vxsat</code> CSRs); floating point at 16 (with Zvfh), 32 and 64 bits;
+reductions to element 0 (<code>vredsum.vs</code>); masks (compares write one bit an
+element, and <code>v0.t</code> makes an instruction act only where <code>v0</code>'s bit is
+set); permutations (slides, <code>vrgather</code>, <code>vcompress</code>).</li>
+<li>Smaller harts: Zve32x / Zve32f / Zve64x / Zve64f / Zve64d are V's embedded
+subsets (32-bit elements at most with Zve32*, VLEN from 32 bits); the
+vector cryptography (Zvbb, Zvbc, Zvkg, Zvkned, Zvknha / Zvknhb, Zvksed, Zvksh
+and their groups Zvkn, Zvks ...) adds AES, SHA-2, SM3, SM4 and GHASH rounds on
+element groups of 128 or 256 bits.</li>
+</ul>
+<pre><code class="language-asm"># output: sum 5050, dot 338350\n
+# arch: rv64
+# rv-ext: imafdcv_zicsr_zicntr
+        .data
+n:      .dword 100
+a:      .space 400                  # 100 words: 1, 2, ... 100
+        .text
+main:   la      t0, a
+        li      t1, 1
+        li      t2, 101
+fill:   sw      t1, 0(t0)           # a[i] = i + 1 (scalar)
+        addi    t0, t0, 4
+        addi    t1, t1, 1
+        bne     t1, t2, fill
+        la      a1, a
+        ld      a2, n               # elements left
+        vsetvli t0, zero, e32, m1, ta, ma
+        vmv.v.i v8, 0               # the running sums, element by element
+        vmv.v.i v12, 0
+loop:   vsetvli t0, a2, e32, m4, tu, ma   # t0 = vl: as many as fit (VLEN x 4 / 32)
+        vle32.v v4, (a1)            # v4-v7: a group of LMUL = 4 registers
+        vredsum.vs v8, v4, v8       # v8[0] += the sum of the vl elements
+        vwmul.vv v16, v4, v4        # squares, 64 bits each (EEW 2 x SEW)
+        vsetvli zero, t0, e64, m8, tu, ma
+        vredsum.vs v12, v16, v12    # v12[0] += the sum of squares
+        slli    t1, t0, 2
+        add     a1, a1, t1          # bump the pointer by vl words
+        sub     a2, a2, t0          # and the count by vl
+        bnez    a2, loop
+        la      a0, s1
+        li      a7, 4
+        ecall
+        vsetivli zero, 1, e32, m1, ta, ma
+        vmv.x.s a0, v8
+        li      a7, 1
+        ecall
+        la      a0, s2
+        li      a7, 4
+        ecall
+        vsetivli zero, 1, e64, m1, ta, ma
+        vmv.x.s a0, v12
+        li      a7, 1
+        ecall
+        li      a0, '\n'
+        li      a7, 11
+        ecall
+        li      a7, 10
+        ecall
+        .data
+s1:     .asciz "sum "
+s2:     .asciz ", dot "
+</code></pre>
+<p>The vector unit is off after reset (<code>mstatus.VS</code> = 0: every vector
+instruction is illegal); the kernel and user boots turn it on.  The debugger's
+<code>vec</code> (<a href="04-command-line.html#48-debugger-commands">4.8</a>)
+and the register pane's Vector tab show the registers element by element and
+vtype / vl / vstart; a check can name an element, <code>$v12.e64[0]</code>
+(<a href="04-command-line.html#414-check--does-the-program-do-what-it-should">4.14</a>).
+C reaches V through the RVV intrinsics of <code>&lt;riscv_vector.h&gt;</code>
+(<code>__riscv_vle32_v_i32m4</code> ...), and clang auto-vectorizes loops
+(<code>cc --compiler clang -O3</code>,
+<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  How an instruction finds its
+register groups, what a mask does and how a vector instruction moves through
+the pipeline: <a href="05-understanding.html#513-inside-a-risc-v-hart">5.13</a>,
+Labs 78-80.</p>
+<h2 id="229-risc-v-a-hypervisor-and-its-guest">2.29 RISC-V: a hypervisor and its guest</h2>
+<p>A hart with the hypervisor extension <strong>H</strong> (<code>--rv-ext
+imafdch_zicsr</code>; it needs M-, S- and U-mode) can run a whole operating system
+as a <em>guest</em>.  A new bit, the virtualization mode <strong>V</strong>, splits
+S- and U-mode in two: with V = 0 the hart is in <strong>HS-mode</strong> (the
+hypervisor, or an ordinary OS) or U-mode; with V = 1 in <strong>VS-mode</strong>
+(the guest's kernel) or <strong>VU-mode</strong> (its programs).  M-mode stays
+above both.</p>
+<ul>
+<li><strong>The guest sees ordinary S-mode CSRs.</strong>  With V = 1, an
+instruction naming <code>sstatus</code>, <code>stvec</code>, <code>sepc</code>,
+<code>scause</code>, <code>stval</code>, <code>sscratch</code>, <code>sip</code> /
+<code>sie</code> or <code>satp</code> reaches its <em>VS twin</em> (<code>vsstatus</code> ...
+<code>vsatp</code>), so a kernel written for S-mode runs unchanged; the
+hypervisor's own <code>sstatus</code> is untouched.</li>
+<li><strong>The hypervisor's registers</strong>: <code>hstatus</code> (where a trap
+came from: SPV = the V it had, SPVP its mode; VTSR / VTW / VTVM trap the guest's
+<code>sret</code> / <code>wfi</code> / <code>satp</code>), <code>hedeleg</code> /
+<code>hideleg</code> (traps handed on to the guest), <code>hgatp</code> (the second
+page table), <code>htval</code> / <code>htinst</code> (the guest physical address and
+instruction of a fault), <code>hvip</code> (interrupts the hypervisor gives the
+guest), <code>hcounteren</code>, <code>htimedelta</code>.</li>
+<li><strong>Two translations</strong>: the guest's page table (vsatp) turns a
+guest virtual address into a <em>guest physical</em> one, then the hypervisor's
+(hgatp: Sv32x4 / Sv39x4 / Sv48x4 / Sv57x4, two bits wider) turns that into a
+real physical address.  A fault in the first is the guest's page fault; in the
+second a <strong>guest-page fault</strong> (causes 20, 21, 23) for the hypervisor.</li>
+<li><strong>Who handles a trap</strong>: M-mode, unless <code>medeleg</code> /
+<code>mideleg</code> give it to HS-mode — and from a guest, unless
+<code>hedeleg</code> / <code>hideleg</code> pass it on to VS-mode.  A guest touching
+what only the hypervisor may (an H-level CSR, <code>hfence</code>, a counter
+<code>hcounteren</code> hides ...) gets the <strong>virtual-instruction
+exception</strong> (22), which no guest can be given.</li>
+<li><strong>The hypervisor reaches the guest's memory</strong> with
+<code>hlv.w</code> / <code>hsv.w</code> ... (loads and stores as VS- or VU-mode would
+make them, both translations included) and flushes its translations with
+<code>hfence.vvma</code> / <code>hfence.gvma</code>.</li>
+</ul>
+<p>The smallest hypervisor: M-mode enters VS-mode by <code>mret</code> with MPV = 1
+(<code>mstatus</code> bit 39), both translations Bare, and the guest's first
+hypervisor CSR comes back to M-mode:</p>
+<pre><code class="language-asm"># output: hello from VS-mode\nmcause 22, MPV 1, GVA 0\n
+# arch: rv64
+# rv-ext: imafdch_zicsr_zifencei_zicntr
+        .data
+hello:  .asciz "hello from VS-mode\n"
+cause:  .asciz "mcause "
+mpv:    .asciz ", MPV "
+gva:    .asciz ", GVA "
+        .text
+main:   la      t0, hyp
+        csrw    mtvec, t0           # every trap of the guest comes here
+        li      t0, 3 &lt;&lt; 11
+        csrc    mstatus, t0
+        li      t0, 1 &lt;&lt; 11 | 1 &lt;&lt; 39
+        csrs    mstatus, t0         # MPP = S, MPV = 1: mret enters VS-mode
+        la      t0, guest
+        csrw    mepc, t0
+        mret                        # (hgatp and vsatp are Bare: GVA = GPA = PA)
+guest:  la      a0, hello
+        li      a7, 4
+        ecall                       # (a RARS service: answered in every mode)
+        csrr    t0, hstatus         # a hypervisor CSR in VS-mode: a virtual
+        li      a7, 10              # instruction exception
+        ecall
+        .align 2
+hyp:    la      a0, cause
+        li      a7, 4
+        ecall
+        csrr    a0, mcause
+        li      a7, 1
+        ecall
+        la      a0, mpv
+        li      a7, 4
+        ecall
+        csrr    t1, mstatus
+        srli    a0, t1, 39          # MPV: the trap came from V = 1
+        andi    a0, a0, 1
+        li      a7, 1
+        ecall
+        la      a0, gva
+        li      a7, 4
+        ecall
+        srli    a0, t1, 38          # GVA: mtval is not a guest address (it is the
+        andi    a0, a0, 1           # instruction)
+        li      a7, 1
+        ecall
+        li      a0, '\n'
+        li      a7, 11
+        ecall
+        li      a7, 10
+        ecall
+</code></pre>
+<p>The <em>guest</em> boot (<code>--boot guest</code>, Settings → Boot) does that
+for any program: it starts in VS-mode with hgatp and vsatp Bare, so programs
+written for S-mode run as a guest unchanged; the position line, the register
+pane and the trace name the mode (M, HS, U, VS, VU) and show V.  How the two
+translations work, what the TLB keeps and what each trap looks like:
+<a href="05-understanding.html#the-hypervisor-two-translations-and-v">5.13</a>,
+Lab 81; the debugger's <code>hyp</code> (<a href="04-command-line.html#48-debugger-commands">4.8</a>)
+shows the hypervisor's state and how a guest address translates.</p>
+<h2 id="230-risc-v-privileged-additions-counters-cache-blocks-rnmis">2.30 RISC-V privileged additions: counters, cache blocks, RNMIs</h2>
+<p>Real RISC-V cores add small extensions to the privileged architecture.  eMIPS
+has these (name them in <code>--rv-ext</code>, Settings → Processor → RISC-V
+extensions; most need S-mode):</p>
+<ul>
+<li><strong>Counters</strong>: with <strong>Zihpm</strong> the 29 counters
+<code>mhpmcounter3</code>-<code>31</code> count what their <code>mhpmevent</code>
+selects — eMIPS takes the SBI's event numbers: 1 cycles, 2 instructions, 3 / 4
+cache references / misses, 5 / 6 branches / branch misses, 8 / 9 stalled cycles
+of the 5-stage pipeline, and 0x10000 + cache × 8 + operation × 2 + result for
+one cache (L1D, L1I, the last level, the DTLB, the ITLB, the branch predictor),
+reads / writes / prefetches, accesses / misses (<code>perf events</code> in the
+debugger lists them).  <strong>Sscofpmf</strong> adds the mode filters (MINH,
+SINH, UINH, VSINH, VUINH: bits 62-58) and an <em>overflow interrupt</em> (13,
+LCOFI) when a counter wraps; <strong>Smcntrpmf</strong> the same filters for
+<code>mcycle</code> / <code>minstret</code> (<code>mcyclecfg</code>,
+<code>minstretcfg</code>); <strong>Smcdeleg</strong> lets S-mode program the
+counters M-mode hands over, through <code>siselect</code> / <code>sireg</code>
+(<strong>Smcsrind</strong>'s indirect CSRs).</li>
+<li><strong>Cache blocks</strong> (<strong>Zicbom / Zicboz / Zicbop</strong>):
+<code>cbo.clean</code> writes a 64-byte block back to memory,
+<code>cbo.flush</code> writes it back and drops it, <code>cbo.inval</code> drops it
+(dirty data is lost), <code>cbo.zero</code> sets it to zero;
+<code>prefetch.r</code> / <code>.w</code> / <code>.i</code> bring a block into a cache
+and never trap.  Below M-mode <code>menvcfg</code> / <code>senvcfg</code> /
+<code>henvcfg</code> (CBIE, CBCFE, CBZE) allow them.</li>
+<li><strong>Timers</strong> (<strong>Sstc</strong>): S-mode sets its own timer,
+<code>stimecmp</code> (a guest <code>vstimecmp</code>), without asking M-mode.</li>
+<li><strong>Pages</strong>: <strong>Svadu</strong> sets a PTE's A / D bits in
+hardware (<code>menvcfg.ADUE</code>), <strong>Svpbmt</strong> gives a page a memory
+type (non-cacheable or I/O), <strong>Svnapot</strong> 64 KB pages,
+<strong>Svinval</strong> finer-grained TLB fences.</li>
+<li><strong>Protection</strong>: <strong>Smstateen</strong> hides state from lower
+modes (<code>mstateen0</code> ...), <strong>Smepmp</strong> lets PMP rules bind
+M-mode itself (<code>mseccfg</code>).</li>
+<li><strong>Resumable NMIs</strong> (<strong>Smrnmi</strong>): an RNMI saves the PC
+and mode in <code>mnepc</code> / <code>mnstatus</code> — not in <code>mepc</code>, so
+it can interrupt even an M-mode trap handler — and <code>mnret</code> returns.
+Request one with the debugger's <code>rnmi</code> or the Interrupts tab's button;
+<code>--rv-rnmi INT[,EXC]</code> says where its handlers are.</li>
+</ul>
+<p>Counting instructions and branches of a loop, then zeroing a cache block:</p>
+<pre><code class="language-asm"># output: instructions 22, branches 10\nsum after cbo.zero 0
+# arch: rv64
+# rv-ext: imafdc_zicsr_zifencei_zicntr_zihpm_sscofpmf_zicboz
+# caches: 4K
+        .data
+        .align 6
+block:  .dword 1, 2, 3, 4, 5, 6, 7, 8   # one 64-byte cache block
+insns:  .asciz "instructions "
+brs:    .asciz ", branches "
+sum:    .asciz "\nsum after cbo.zero "
+        .text
+main:   li      t0, 2               # SBI event 2: instructions retired
+        csrw    mhpmevent3, t0
+        li      t0, 5               # SBI event 5: branch instructions
+        csrw    mhpmevent4, t0
+        csrw    mhpmcounter3, zero  # (a counter write takes effect after
+        csrw    mhpmcounter4, zero  # the instruction: it does not count itself)
+        li      t1, 10
+1:      addi    t1, t1, -1          # 10 x 2 instructions, 10 branches
+        bnez    t1, 1b
+        csrr    s1, mhpmcounter3
+        csrr    s2, mhpmcounter4
+        la      a0, insns
+        li      a7, 4
+        ecall
+        mv      a0, s1
+        li      a7, 1
+        ecall
+        la      a0, brs
+        li      a7, 4
+        ecall
+        mv      a0, s2
+        li      a7, 1
+        ecall
+        la      t0, block
+        cbo.zero (t0)               # the whole block: 0 (in the D-cache)
+        li      t1, 8
+        li      a0, 0
+2:      ld      t2, 0(t0)
+        add     a0, a0, t2
+        addi    t0, t0, 8
+        addi    t1, t1, -1
+        bnez    t1, 2b
+        mv      s3, a0
+        la      a0, sum
+        li      a7, 4
+        ecall
+        mv      a0, s3
+        li      a7, 1
+        ecall
+        li      a7, 10
+        ecall
+</code></pre>
+<p>22 = the second <code>csrw</code> (a write to a counter takes effect after the
+writing instruction, so the first one does not count itself), <code>li</code> and the
+loop's 20 instructions; <code>csrr</code> reads before it retires.  How each
+extension works inside the hart, and what Spike says:
+<a href="05-understanding.html#privileged-additions-counters-cache-blocks-page-types-and-rnmis">5.13</a>,
+Lab 82.</p>
+<h2 id="231-risc-v-interrupts-as-memory-writes-the-aia">2.31 RISC-V interrupts as memory writes: the AIA</h2>
+<p>A RISC-V hart has one external-interrupt line per mode (<code>mip.MEIP</code>,
+<code>SEIP</code>); an interrupt controller decides what drives it.  eMIPS has four
+choices (<code>--rv-intc</code>, Settings → Processor → RISC-V interrupt
+controller): <code>none</code>, the <strong>PLIC</strong>, the <strong>APLIC</strong>
+wired to the harts, and <strong>IMSICs</strong> — the Advanced Interrupt
+Architecture's message-signalled interrupts.  With <code>--rv-intc
+imsic</code> every hart gets an <em>interrupt file</em> per mode: 2047 identities,
+each with a pending bit (<code>eip</code>) and an enable bit (<code>eie</code>).  A
+device — or another hart — sends identity <em>n</em> by <strong>storing</strong>
+<em>n</em> to the file's page (<code>seteipnum_le</code>): an interrupt is just a
+write to memory, so it can go to any hart without wires.  The pages: hart
+<em>h</em>'s M file at 0x24000000 + 0x1000 × <em>h</em>, its S file at 0x28000000 +
+0x40000 × <em>h</em>.  The APLIC then forwards wired sources (the console's lines)
+as such writes.  <code>--cores N</code> (up to 6) gives a platform N harts.</p>
+<p>The file's registers are reached through <code>miselect</code> /
+<code>mireg</code> (Smaia's indirect CSRs; <code>siselect</code> / <code>sireg</code> for
+S-mode): 0x70 <code>eidelivery</code> (1 = deliver), 0x72 <code>eithreshold</code>
+(only identities below it interrupt; 0 = all), 0x80-0xBF <code>eip0</code> ...,
+0xC0-0xFF <code>eie0</code> ....  <code>mtopei</code> shows the pending-and-enabled
+identity with the highest priority — the <em>smallest</em> number —, and writing
+it <strong>claims</strong> that identity (clears its pending bit).  The same
+interface sets the priorities of the hart's own interrupts: the
+<code>iprio</code> arrays (selects 0x30-0x3F), read back as <code>mtopi</code> /
+<code>stopi</code>.</p>
+<pre><code class="language-asm"># output: 4 9 | 4 | eip0 0x00000200
+# arch: rv64
+# rv-intc: imsic
+        .data
+bar:    .asciz "| "
+eip:    .asciz "| eip0 "
+        .text
+main:   li      t0, 0x70            # miselect 0x70: eidelivery
+        csrw    miselect, t0
+        li      t0, 1               # 1: the file delivers to mip.MEIP
+        csrw    mireg, t0
+        li      t0, 0xc0            # 0xc0: eie0, identities 0-63
+        csrw    miselect, t0
+        li      t0, 0x210           # enable identities 4 and 9
+        csrw    mireg, t0
+        la      t0, handler
+        csrw    mtvec, t0
+        li      t0, 0x800           # mie.MEIE
+        csrs    mie, t0
+        li      s0, 0x24000000      # this hart's M file: seteipnum_le
+        li      t0, 9
+        sw      t0, 0(s0)           # an MSI: identity 9 pending
+        li      t0, 4
+        sw      t0, 0(s0)           # identity 4 pending
+        csrsi   mstatus, 8          # MIE: 4 is taken first, then 9
+        csrci   mstatus, 8
+        la      a0, bar
+        li      a7, 4
+        ecall
+        li      t0, 0x72            # 0x72: eithreshold
+        csrw    miselect, t0
+        li      t0, 8               # only identities 1-7 interrupt now
+        csrw    mireg, t0
+        li      t0, 9
+        sw      t0, 0(s0)
+        li      t0, 4
+        sw      t0, 0(s0)
+        csrsi   mstatus, 8          # 4 is taken; 9 stays pending
+        csrci   mstatus, 8
+        la      a0, eip
+        li      a7, 4
+        ecall
+        li      t0, 0x80            # 0x80: eip0, the pending identities
+        csrw    miselect, t0
+        csrr    a0, mireg
+        li      a7, 34              # print in hexadecimal
+        ecall
+        li      a7, 10
+        ecall
+        .align  2                   # (mtvec: a 4-byte aligned handler)
+handler:
+        csrrw   a0, mtopei, zero    # claim the top identity (bits 26:16)
+        srli    a0, a0, 16
+        li      a7, 1
+        ecall
+        li      a0, ' '
+        li      a7, 11
+        ecall
+        mret
+</code></pre>
+<p>Both identities are pending before MIE opens the gate; the handler claims
+4 first (the smaller number), returns, and is entered again for 9.  With
+<code>eithreshold</code> 8, 9 still becomes pending (bit 9 of <code>eip0</code>) but
+no longer interrupts.  How the hart orders its interrupts, the guest files of
+a hypervisor and the APLIC's MSIs:
+<a href="05-understanding.html#the-aia-priorities-interrupt-files-and-msis">5.13</a>,
+Lab 83.</p>
+<h2 id="232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">2.32 RISC-V control-flow integrity: landing pads and a shadow stack</h2>
+<p>An attacker who can overwrite a return address on the stack, or a function
+pointer in memory, can send the program into code it never meant to run —
+<em>return-oriented</em> (ROP) and <em>jump-oriented</em> (JOP) programming.
+Two extensions stop that in hardware (<code>--rv-ext ..._zicfilp_zicfiss</code>):</p>
+<ul>
+<li><strong>Zicfilp — landing pads</strong> (forward edges).  An indirect call or
+jump — <code>jalr</code>, <code>c.jr</code>, <code>c.jalr</code> through any register
+but <code>ra</code> / <code>t0</code> (returns) and <code>t2</code> (a
+"software-guarded" jump) — sets the hart's <strong>ELP</strong> state: the next
+instruction must be an <code>lpad</code>, 4-byte aligned, else a
+<em>software-check exception</em> (cause 18, <code>mtval</code> 2).
+<code>lpad L</code> with a non-zero label also checks <code>t2</code>[31:12] = L.
+Each mode turns it on separately: <code>mseccfg.MLPE</code> for M-mode,
+<code>menvcfg.LPE</code> for S, <code>senvcfg.LPE</code> for U
+(<code>henvcfg.LPE</code> for a guest).  Off, <code>lpad</code> is a no-op
+(it is <code>auipc zero, L</code>).</li>
+<li><strong>Zicfiss — a shadow stack</strong> (backward edges).  A function that
+saves <code>ra</code> also <code>sspush ra</code>es it onto a second stack, at
+<code>ssp</code>, in memory only shadow-stack instructions may write; before
+returning, <code>sspopchk ra</code> compares the copy with <code>ra</code> — unequal
+is a software check, <code>mtval</code> 3.  It works below M-mode only, on
+pages whose PTE says xwr = 010 (a <em>shadow-stack page</em>), with
+<code>menvcfg.SSE</code> (and <code>senvcfg.SSE</code> for U-mode); while inactive
+<code>sspush</code> / <code>sspopchk</code> / <code>ssrdp</code> do nothing (they are
+may-be-operations), so the same code runs everywhere.</li>
+</ul>
+<p>Landing pads in M-mode — <code>good</code> starts with one, <code>bad</code>
+does not:</p>
+<pre><code class="language-asm"># output: good: 7\nsoftware check, mtval 2
+# arch: rv64
+# rv-ext: imafdc_zicsr_zifencei_zicntr_zicfilp
+        .data
+msg1:   .asciz "good: "
+msg2:   .asciz "\nsoftware check, mtval "
+        .text
+main:   la      t0, trap
+        csrw    mtvec, t0
+        li      t0, 0x400           # mseccfg.MLPE: landing pads in M-mode
+        csrs    mseccfg, t0
+        la      t1, good
+        jalr    t1                  # an indirect call: ELP = LP_EXPECTED
+        la      t1, bad
+        jalr    t1                  # bad has no landing pad
+        li      a7, 10
+        ecall
+        .balign 4
+good:   lpad    0                   # the landing pad: ELP = NO_LP_EXPECTED
+        la      a0, msg1
+        li      a7, 4
+        ecall
+        li      a0, 7
+        li      a7, 1
+        ecall
+        ret                         # a return (rs1 = ra): no landing pad
+        .balign 4
+bad:    addi    a0, a0, 1
+        ret
+        .balign 4
+trap:   la      a0, msg2
+        li      a7, 4
+        ecall
+        csrr    a0, mtval           # 2: a landing-pad fault
+        li      a7, 1
+        ecall
+        li      a7, 10
+        ecall
+</code></pre>
+<p>A shadow stack needs S-mode, a page table and a shadow-stack page: Lab 84
+builds them and lets a "buffer overflow" try a ROP return.  How the hart
+tracks ELP across traps and what a shadow-stack page allows:
+<a href="05-understanding.html#control-flow-integrity-landing-pads-and-the-shadow-stack">5.13</a>,
+Lab 84; the debugger's <code>cfi</code> (<a href="04-command-line.html#48-debugger-commands">4.8</a>).</p>
+<h2 id="233-macros-repetition-and-conditional-assembly">2.33 Macros, repetition and conditional assembly</h2>
+<p>GNU <code>as</code> reads a program through a layer that writes code for you,
+and all of eMIPS's assemblers (MIPS32 / MIPS64, nanoMIPS, RISC-V) have it, as
+GNU's do:</p>
+<ul>
+  <li><strong><code>.macro NAME PARAMS</code> … <code>.endm</code></strong> defines a
+  macro; using its name expands the body, <code>\PARAM</code> replaced by the
+  argument.  A parameter can have a default (<code>off=0</code>), be required
+  (<code>reg:req</code>) or take the rest of the line (<code>rest:vararg</code>);
+  arguments go by position or by name (<code>push reg=$s0</code>).  In the body
+  <code>\@</code> is how many macros have been expanded (a unique number for a
+  label), <code>\()</code> separates a parameter from what follows
+  (<code>lab\n\():</code>), <code>.exitm</code> leaves the expansion early,
+  <code>.purgem NAME</code> forgets a macro.  A macro may use itself
+  (recursion) or define other macros.</li>
+  <li><strong><code>.rept N</code> … <code>.endr</code></strong> repeats a block N
+  times; <strong><code>.irp SYM, A, B, C</code></strong> repeats it with
+  <code>\SYM</code> each value, <strong><code>.irpc SYM, TEXT</code></strong> each
+  character.</li>
+  <li><strong>Conditional assembly</strong>: <code>.if EXPR</code> (and
+  <code>.ifeq</code>, <code>.ifne</code>, <code>.iflt</code>, <code>.ifle</code>,
+  <code>.ifgt</code>, <code>.ifge</code>), <code>.ifdef</code> /
+  <code>.ifndef SYMBOL</code>, <code>.ifb</code> / <code>.ifnb TEXT</code> (blank
+  or not: a macro argument given?), <code>.ifc</code> / <code>.ifnc A, B</code>
+  (the same text?), <code>.ifeqs</code> / <code>.ifnes "A", "B"</code>, with
+  <code>.elseif</code>, <code>.else</code> and <code>.endif</code>.  The
+  expression is evaluated where it stands, with the symbols defined so far.</li>
+  <li><strong><code>.include "FILE"</code></strong> reads another source file
+  there — looked up in the program's folder, then in the folders given with
+  <code>-I DIR</code> (<a href="04-command-line.html#42-options-shared-by-several-commands">4.2</a>);
+  <strong><code>.err</code></strong>, <code>.error "TEXT"</code> and
+  <code>.warning "TEXT"</code> stop the assembly or warn (a check inside a
+  macro), <code>.print "TEXT"</code> prints while assembling.</li>
+  <li><strong><code>.altmacro</code></strong> switches to the alternate macro
+  syntax: parameters without <code>\</code>, <code>LOCAL name</code> for a label
+  unique to each expansion, <code>%EXPR</code> passing an expression's value,
+  <code>&lt;text&gt;</code> a quoted argument.</li>
+</ul>
+<p>A <code>.set</code> constant has, in each statement, the value it has there — so
+a <code>.rept</code> can count:</p>
+<pre><code class="language-asm"># output: 1 4 9 16 25 sum 55
+        .macro  print_int reg       # a macro with one parameter
+        move    $a0, \reg
+        li      $v0, 1
+        syscall
+        .endm
+        .macro  print_str label
+        la      $a0, \label
+        li      $v0, 4
+        syscall
+        .endm
+        .data
+squares:
+        .set    n, 1
+        .rept   5                   # five words: 1, 4, 9, 16, 25
+        .word   n * n
+        .set    n, n + 1
+        .endr
+space:  .asciiz " "
+sum:    .asciiz "sum "
+        .text
+main:   la      $s0, squares
+        li      $s1, 0
+        .irp    k, 0, 4, 8, 12, 16  # once for each offset
+        lw      $t0, \k($s0)
+        addu    $s1, $s1, $t0
+        print_int $t0
+        print_str space
+        .endr
+        print_str sum
+        print_int $s1
+        li      $v0, 10
+        syscall
+</code></pre>
+<p>The listing (<code>python3 -m emips asm</code>, the Disassembly pane) shows
+what the expansion assembled, each instruction on its line of the macro's or
+block's body.  Numeric local labels (<code>1:</code> … <code>1b</code> /
+<code>1f</code>) are new in every copy of a block, so a loop in a
+<code>.rept</code> body works.  The other GNU directives — <code>.org</code>,
+<code>.comm</code>, <code>.incbin</code>, <code>.uleb128</code>, <code>.octa</code>,
+<code>.pushsection</code> … — are the RISC-V assembler's (<a href="#234-risc-v-more-directives-thread-local-storage-and-the-got">2.34</a>);
+Lab 86 writes a table and an unrolled loop with them
+(<a href="05-understanding.html#lab-86--code-that-writes-code">5.15</a>).</p>
+<h2 id="234-risc-v-more-directives-thread-local-storage-and-the-got">2.34 RISC-V: more directives, thread-local storage and the GOT</h2>
+<p>The RISC-V assembler takes the rest of GNU's directives, with the bytes
+GNU <code>as</code> and <code>ld</code> give:</p>
+<ul>
+  <li><strong>Sections</strong>: <code>.pushsection NAME[, N]</code> /
+  <code>.popsection</code> (put something elsewhere and come back),
+  <code>.subsection N</code>, <code>.section NAME, "flags", @type</code>
+  (<code>x</code> = code, <code>@nobits</code> = like <code>.bss</code>);
+  <code>.org OFFSET[, FILL]</code> moves on to an offset in the section;
+  <code>.struct</code> / <code>.offset</code> define offsets (field labels as
+  constants).</li>
+  <li><strong>Data</strong>: <code>.uleb128</code> / <code>.sleb128</code> (one
+  value; <code>end - start</code> is computed after the code is laid out — and
+  again by the linker), <code>.octa</code> (16 bytes), <code>.float16</code>,
+  <code>.string16</code> / <code>32</code> / <code>64</code>, <code>.dc.*</code> /
+  <code>.dcb.*</code> / <code>.ds.*</code>, <code>.balignw</code> /
+  <code>.p2alignl</code> (with a 2- / 4-byte fill), <code>.incbin "FILE"[, SKIP[,
+  COUNT]]</code> (a file's bytes), <code>.space end - start</code>.</li>
+  <li><strong>Symbols</strong>: <code>.comm NAME, SIZE[, ALIGN]</code> (a common
+  symbol: the linker puts it at the end of <code>.bss</code>), <code>.lcomm</code>
+  and <code>.local</code> (a local one in <code>.bss</code>), <code>.weakref</code>,
+  <code>.lsym</code>, <code>.symver</code>; <code>.reloc OFFSET, R_RISCV_…, EXPR</code>
+  asks the linker for a relocation of your own.</li>
+  <li><strong><code>.attribute</code></strong>: <code>arch</code> changes the
+  extensions the assembler accepts (before the first instruction:
+  <code>.attribute arch, "rv32i2p1_m2p0"</code> forbids C there);
+  <code>priv_spec</code> picks the CSR names' privileged specification; all of
+  them go into the <code>.riscv.attributes</code> section of the ELF GDB is
+  given.</li>
+</ul>
+<p><strong>Thread-local storage</strong> (<code>__thread</code> in C): each thread
+has its own copy of the variables in <code>.tdata</code> (initialized) and
+<code>.tbss</code> (zero); the <code>tp</code> register points at the current
+thread's copy.  eMIPS runs no thread library, so the program's own image is
+thread 0's copy: the boot points <code>tp</code> at <code>.tdata</code>.  Code reaches
+a variable by its offset from <code>tp</code> (local-exec:
+<code>%tprel_hi</code> / <code>%tprel_add</code> / <code>%tprel_lo</code>, which
+the linker shortens to one <code>tp</code>-relative access when the offset fits
+in 12 bits), through a GOT slot holding that offset (initial-exec:
+<code>la.tls.ie</code>), or through a pair of slots for
+<code>__tls_get_addr</code> (general-dynamic: <code>la.tls.gd</code>).
+<strong>Position-independent code</strong> (<code>.option pic</code>, or
+<code>lga</code>) loads an address from the <strong>GOT</strong> (global offset
+table) the linker builds — in a static program it holds the addresses
+themselves:</p>
+<pre><code class="language-asm"># output: 42
+# arch: rv32
+        .text
+main:   lui     t0, %tprel_hi(count)        # count's offset from tp ...
+        add     t0, t0, tp, %tprel_add(count)
+        lw      a0, %tprel_lo(count)(t0)     # ... (ld: lw a0, 0(tp))
+        addi    a0, a0, 1
+        sw      a0, %tprel_lo(count)(t0)
+        la.tls.ie t1, scratch               # its offset from a GOT slot
+        add     t1, t1, tp
+        li      t2, 40
+        sw      t2, 0(t1)
+        .option pic
+        la      t3, total                   # total's address from the GOT
+        .option nopic
+        lw      a1, 0(t1)
+        add     a0, a0, a1
+        sw      a0, 0(t3)
+        li      a7, 1
+        ecall
+        li      a7, 10
+        ecall
+        .data
+total:  .word 0
+        .section .tdata,"awT",@progbits
+count:  .word 1
+        .section .tbss,"awT",@nobits
+scratch: .space 4
+</code></pre>
+<p><code>python3 -m emips asm</code> on it shows the linker's work: the
+<code>lui</code> and <code>add</code> are gone (the offset is 0), and the
+<code>auipc</code> / <code>lw</code> pairs read slots of the <code>.got</code> after
+<code>.data</code> (eMIPS keeps <code>.data</code> at RARS's 0x10010000 and puts
+<code>.tdata</code>, <code>.tbss</code> and the GOT after it).</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

@@ -127,6 +127,18 @@ class CacheView(QtWidgets.QWidget):
         text = cv.stats_lines(c)
         if c.kind == "D" and s.machine.caches.wbb is not None:
             text += cv.wbb_lines(s.machine.caches.wbb)
+        cl = s.rvcps                                # (the P8700's prefetchers, DSPRAM, DMA)
+        if cl is not None:
+            core = s.machine.p8700.core
+            if c.kind == "D":
+                text += [""] + cl.l1pf[core].lines()
+                if cl.dspram[core] is not None:
+                    text += cl.dspram[core].lines()
+            elif c.kind == "S" and cl.cm.l2pf is not None:
+                text += [""] + cl.cm.l2pf.lines()
+                text += [ln for ln in cl.cm.describe() if ln.startswith(("MMIO", "IOCU",
+                                                                         "shared"))]
+            text += cl.cdma.lines() if c.kind == "S" else []
         self.stats.setPlainText("\n".join(text))
 
     @staticmethod

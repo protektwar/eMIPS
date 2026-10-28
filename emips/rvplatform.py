@@ -24,12 +24,22 @@ written for those run unchanged:
   SEIP.
 - **APLIC** (``controller="aplic"``): a machine-level root domain at
   0x0C000000 and its supervisor-level child at 0x0D000000 (Spike's),
-  direct delivery only (DM, BE read-only 0: no IMSIC), 31 sources with
+  direct delivery (DM, BE read-only 0: no IMSIC), 31 sources with
   the source modes of Table 4.2, delegation to the child (D), setip /
   in_clrip / setie / clrie (and by number), the pending rules of 4.7,
   target (hart index, IPRIO of 8 bits: smaller = higher, 0 written as 1),
   IDC structures per hart (idelivery, iforce, ithreshold, topi, claimi).
-  Outputs: MEIP from the root, SEIP from the child.
+  Outputs: MEIP from the root, SEIP from the child; the top's priority to
+  the hart (``m.ext_priority``: the AIA's Tables 5.3 / 5.5).
+- **IMSICs** (``controller="imsic"``, LF9; AIA chs. 3 / 4.9): an IMSIC per
+  hart (emips.rvaia) and the APLIC in **MSI delivery mode** (DM read-only
+  1, as Spike: the harts' files have no eidelivery 0x40000000): an active
+  source pending and enabled with the domain's IE is forwarded as an MSI —
+  a 32-bit little-endian store of target.EIID to the address of 4.9.1
+  (mmsiaddrcfg / mmsiaddrcfgh / smsiaddrcfg / smsiaddrcfgh: the IMSIC
+  layout at reset, writable until L) — and its pending bit cleared;
+  genmsi sends one at once (Busy never seen); 4.7's MSI-mode pending
+  rules for level-sensitive sources.
 
 All registers are 32-bit (mtime / mtimecmp: 64-bit, accessible as two
 words); accesses of other sizes to the PLIC / APLIC are ignored (AIA 4.5:
@@ -295,9 +305,11 @@ class PLIC(Device):
 # ---------------------------------------------------------------- the APLIC
 
 class Domain(Device):
-    """One APLIC interrupt domain in direct delivery mode (AIA 4.5-4.8)."""
+    """One APLIC interrupt domain (AIA 4.5-4.9): direct delivery mode, or
+    MSI delivery mode when its APLIC forwards by MSIs (``APLIC.msi``)."""
 
     IPRIOLEN = 8
+    genmsi = 0
 
     def __init__(self, aplic: "APLIC", base: int, level: int, child: "Domain | None") -> None:
         self.a = aplic
@@ -343,6 +355,11 @@ class Domain(Device):
         new = self.rectified(s)
         if sm in (4, 5) and new and not old_rect:
             self.pending[s] = True              # 4.7: an edge
+        elif sm in (6, 7) and self.a.msi:       # 4.7, MSI mode: set on the rising edge,
+            if new and not old_rect:            # cleared while low
+                self.pending[s] = True
+            elif not new:
+                self.pending[s] = False
         elif sm in (6, 7):
             self.pending[s] = new               # 4.7: level, direct mode: a copy
 
@@ -350,6 +367,8 @@ class Domain(Device):
         """A write that sets / clears a pending bit, "if possible" (4.7)."""
         sm = self.mode(s)
         if sm in (6, 7):
+            if self.a.msi and (not v or self.rectified(s)):
+                self.pending[s] = v             # (MSI mode: set only while high)
             return                              # level, direct: only the wire decides
         if sm:
             self.pending[s] = v
@@ -371,14 +390,32 @@ class Domain(Device):
         return best << 16 | prio if best else 0
 
     def signal(self, h: int) -> bool:
+        if self.a.msi:
+            return False                        # (MSI mode: no wire to the harts)
         return self.ie and bool(self.idelivery[h]) and bool(self.iforce[h] or self.topi(h))
+
+    def forward(self) -> None:
+        """MSI delivery mode (4.9): each active source pending and enabled
+        with IE goes as an MSI to its target, its pending bit cleared."""
+        if not self.ie:
+            return
+        for s in range(1, self.a.n + 1):
+            if self.pending[s] and self.enabled[s] and self.active(s):
+                self.pending[s] = False
+                t = self.target[s]
+                self.a.send_msi(self, t >> 18, (t >> 12) & 0x3F, t & 0x7FF)
 
     # -- registers ---------------------------------------------------------------------
 
     def reg_read(self, m, off: int, side_effects: bool = True) -> int:
         n = self.a.n
         if off == 0:
-            return 0x80000000 | (0x100 if self.ie else 0)
+            return 0x80000000 | (0x100 if self.ie else 0) | (4 if self.a.msi else 0)
+        if 0x1BC0 <= off < 0x1BD0:              # (4.5.3 / 4.5.4: the root's only)
+            return self.a.msiaddrcfg[(off - 0x1BC0) // 4] \
+                if self.a.msi and self.level == 3 else 0
+        if off == 0x3000:                       # genmsi (4.5.15; Busy never seen)
+            return self.genmsi if self.a.msi else 0
         if off < 0x1000:
             s = off // 4
             return self.sourcecfg[s] if 0 < s <= n and self.visible(s) else 0
@@ -393,7 +430,7 @@ class Domain(Device):
             return self.target[s] if s <= n and self.active(s) else 0
         if off >= 0x4000:
             h, reg = divmod(off - 0x4000, 32)
-            if h >= len(self.idelivery):
+            if h >= len(self.idelivery) or self.a.msi:
                 return 0
             if reg == 0:
                 return self.idelivery[h]
@@ -423,7 +460,14 @@ class Domain(Device):
             return                              # (4.5: other sizes are ignored)
         n = self.a.n
         if off == 0:
-            self.ie = bool(value & 0x100)       # (DM, BE read-only 0)
+            self.ie = bool(value & 0x100)       # (DM read-only: 0, or 1 with IMSICs; BE 0)
+        elif 0x1BC0 <= off < 0x1BD0:
+            if self.a.msi and self.level == 3:
+                self.a.write_msiaddrcfg((off - 0x1BC0) // 4, value)
+        elif off == 0x3000:
+            if self.a.msi:                      # (an extempore MSI: not IE-gated)
+                self.genmsi = value & (0x3FFF << 18 | 0x7FF)
+                self.a.send_msi(self, self.genmsi >> 18, 0, self.genmsi & 0x7FF)
         elif off < 0x1000:
             s = off // 4
             if 0 < s <= n and self.visible(s):
@@ -469,9 +513,13 @@ class Domain(Device):
             s = (off - 0x3000) // 4
             if s <= n and self.active(s):
                 hart = (value >> 18) & 0x3FFF
-                prio = value & ((1 << self.IPRIOLEN) - 1) or 1
-                self.target[s] = hart << 18 | prio
-        elif off >= 0x4000:
+                if self.a.msi:                  # (4.5.16: Hart, Guest, EIID)
+                    guest = (value >> 12) & 0x3F if self.level == 1 and self.a.guests else 0
+                    self.target[s] = hart << 18 | guest << 12 | value & 0x7FF
+                else:
+                    prio = value & ((1 << self.IPRIOLEN) - 1) or 1
+                    self.target[s] = hart << 18 | prio
+        elif off >= 0x4000 and not self.a.msi:
             h, reg = divmod(off - 0x4000, 32)
             if h < len(self.idelivery):
                 if reg == 0:
@@ -502,12 +550,52 @@ class APLIC:
     """The APLIC: a machine-level root domain with one supervisor-level child
     (see the module docstring)."""
 
-    def __init__(self, platform: "Platform", sources: int = SOURCES) -> None:
+    #: MSI delivery mode (the harts have IMSICs); the guest index field exists
+    msi = False
+    guests = False
+
+    def __init__(self, platform: "Platform", sources: int = SOURCES, msi: bool = False) -> None:
         self.p = platform
         self.n = sources
         self.wire = [False] * (sources + 1)
         self.s = Domain(self, MAP["aplic_s"], 1, None)
         self.m = Domain(self, MAP["aplic_m"], 3, self.s)
+        self.msi = msi
+        if msi:                                 # (4.5.3 / 4.5.4: the IMSIC layout at reset)
+            from .rvaia import IMSIC_M_BASE, IMSIC_S_BASE, S_STRIDE, PAGE
+            n = len(platform.harts)
+            lhxw = max(0, (n - 1).bit_length())
+            self.msiaddrcfg = [IMSIC_M_BASE >> 12, lhxw << 12,
+                               IMSIC_S_BASE >> 12, ((S_STRIDE // PAGE).bit_length() - 1) << 20]
+            self.guests = any(h.csrs.has_h for h in platform.harts)
+
+    #: mmsiaddrcfgh's and smsiaddrcfgh's writable fields (4.5.3 / 4.5.4)
+    _CFG_MASKS = (M32, 1 << 31 | 0x1F << 24 | 7 << 20 | 7 << 16 | 0xF << 12 | 0xFFF,
+                  M32, 7 << 20 | 0xFFF)
+
+    def write_msiaddrcfg(self, k: int, value: int) -> None:
+        """A root-domain write of mmsiaddrcfg(h) / smsiaddrcfg(h): ignored
+        once mmsiaddrcfgh.L is set (4.5.3)."""
+        if self.msiaddrcfg[1] >> 31:
+            return
+        self.msiaddrcfg[k] = value & self._CFG_MASKS[k]
+
+    def msi_address(self, dom: Domain, hart: int, guest: int) -> int:
+        """4.9.1: the target address of an MSI from ``dom`` to hart index
+        ``hart`` (and guest file ``guest`` from a supervisor domain)."""
+        mcfg, mcfgh, scfg, scfgh = self.msiaddrcfg
+        hhxs, lhxw, hhxw = mcfgh >> 24 & 0x1F, mcfgh >> 12 & 0xF, mcfgh >> 16 & 7
+        g = (hart >> lhxw) & ((1 << hhxw) - 1)
+        h = hart & ((1 << lhxw) - 1)
+        if dom.level == 3:
+            ppn, lhxs = (mcfgh & 0xFFF) << 32 | mcfg, mcfgh >> 20 & 7
+            return (ppn | g << (hhxs + 12) | h << lhxs) << 12
+        ppn, lhxs = (scfgh & 0xFFF) << 32 | scfg, scfgh >> 20 & 7
+        return (ppn | g << (hhxs + 12) | h << lhxs | guest) << 12
+
+    def send_msi(self, dom: Domain, hart: int, guest: int, eiid: int) -> None:
+        """An MSI: the store of ``eiid`` (4.9.1: little-endian, 32 bits)."""
+        self.p.msi_write(self.msi_address(dom, hart, guest), eiid)
 
     def owner(self, s: int) -> Domain:
         """The domain source ``s`` belongs to (the child when delegated)."""
@@ -523,10 +611,21 @@ class APLIC:
         self.update()
 
     def update(self) -> None:
+        if self.msi:
+            self.m.forward()
+            self.s.forward()
+            return
         for h, hart in enumerate(self.p.harts):
             hart.set_interrupt(MEI, self.m.signal(h))
             if 1 in hart.modes:
                 hart.set_interrupt(SEI, self.s.signal(h))
+
+    def priority(self, h: int, level: str) -> int:
+        """Direct mode: the priority of hart ``h``'s top interrupt at
+        ``level`` (the AIA's external interrupt priority: Tables 5.3 / 5.5)."""
+        d = self.m if level == "m" else self.s
+        t = d.topi(h)
+        return t & 0xFF if t and d.signal(h) else 0
 
 
 # ---------------------------------------------------------------- the platform
@@ -538,27 +637,54 @@ class Platform:
 
     def __init__(self, harts: Iterable, *, controller: str = "plic", sources: int = SOURCES,
                  timer_div: int = 2) -> None:
-        if controller not in ("plic", "aplic"):
-            raise ValueError(f"controller must be 'plic' or 'aplic', not {controller!r}")
+        if controller not in ("plic", "aplic", "imsic"):
+            raise ValueError(f"controller must be 'plic', 'aplic' or 'imsic', not {controller!r}")
         self.harts = list(harts)
         self.timer_div = timer_div
         self.clint = CLINT(self)
         self.sswi = SSWI(self)
         self.controller = controller
+        self.imsics = []
+        self.pages = None
         if controller == "plic":
             self.plic = PLIC(self, sources)
             self.aplic = None
             devices = [self.clint, self.sswi, self.plic]
-        else:
+        elif controller == "aplic":
             self.plic = None
             self.aplic = APLIC(self, sources)
             devices = [self.clint, self.sswi, self.aplic.m, self.aplic.s]
+            for h, m in enumerate(self.harts):
+                m.ext_priority = (lambda h: lambda level: self.aplic.priority(h, level))(h)
+        else:
+            from .rvaia import IMSIC, IMSICPages
+            self.plic = None
+            self.imsics = [IMSIC(m, h) for h, m in enumerate(self.harts)]
+            self.pages = IMSICPages(self.imsics)
+            self.aplic = APLIC(self, sources, msi=True)
+            devices = [self.clint, self.sswi, self.aplic.m, self.aplic.s, self.pages]
         self.devices = devices
-        for m in self.harts:
+        for k, m in enumerate(self.harts):
             m.devices[:0] = devices
-            m.io_regions = [(d.base, d.base + d.size) for d in devices]
+            m.io_regions = [(d.base, d.base + d.size) for d in devices
+                            if d is not self.pages] + (self.pages.regions if self.pages else [])
             m.timer = self.clint
+            if self.imsics:
+                m.imsic = self.imsics[k]
+                m.imsic_regions = self.pages.regions
+                m.csrs.rebuild()                # (mtopei / stopei / vstopei exist now)
         self.clint.update()
+
+    def msi_write(self, pa: int, value: int) -> None:
+        """A 32-bit little-endian store to physical ``pa`` by a bus master
+        (an APLIC's MSI): a device's register, else memory (not through the
+        harts' caches: as a device's DMA)."""
+        for d in self.devices:
+            if d.covers(pa):
+                d.store(self.harts[0], pa, value & M32, 4)
+                return
+        for k in range(4):
+            self.harts[0].phys_write_byte(pa + k, value >> (8 * k) & 0xFF)
 
     def set_input(self, src: int, level: bool) -> None:
         """Interrupt source ``src``'s wire (a device's interrupt output)."""

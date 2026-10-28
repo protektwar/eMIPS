@@ -131,12 +131,22 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--rv-ext EXTS</code></td>
 <td>all</td>
-<td>RISC-V: the hart's extensions as an ISA string (default <code>imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb</code>; <code>i</code> is needed, <code>g</code> = <code>imafd_zicsr_zifencei</code>): an instruction of a missing extension is an illegal instruction, the program is assembled for these (<code>--rv-ext imac</code>: no FPU; without <code>c</code> every instruction is 32 bits)</td>
+<td>RISC-V: the hart's extensions as an ISA string (default <code>imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb</code>; <code>i</code> is needed, <code>g</code> = <code>imafd_zicsr_zifencei</code>): an instruction of a missing extension is an illegal instruction, the program is assembled for these (<code>--rv-ext imac</code>: no FPU; without <code>c</code> every instruction is 32 bits; the others eMIPS has: <code>zba</code>, <code>zbb</code>, <code>zbs</code>, <code>zbc</code>, <code>zbkb</code>, <code>zbkc</code>, <code>zbkx</code>, <code>zicond</code>, <code>zawrs</code>, <code>zimop</code>, <code>zcmop</code> (with <code>c</code>), <code>zihintntl</code>, <code>zihintpause</code>, <code>zicntr</code>, <code>zihpm</code>, <code>q</code>, <code>zfh</code>, <code>zfhmin</code>, <code>zfa</code>, <code>zfinx</code>, <code>zdinx</code>, <code>zhinx</code>, <code>zhinxmin</code> (the last four instead of F / D), <code>zca</code>, <code>zcf</code>, <code>zcd</code>, <code>zcb</code>, <code>zcmp</code>, <code>zcmt</code> (the last two not with C and D together), <code>zaamo</code>, <code>zalrsc</code>, <code>zacas</code>, <code>zabha</code>, <code>ztso</code>, <code>zknd</code>, <code>zkne</code>, <code>zknh</code>, <code>zksed</code>, <code>zksh</code>, <code>zkr</code>, <code>zkt</code> and the groups <code>zkn</code>, <code>zks</code>, <code>zk</code>; the vectors <code>v</code> (VLEN 128) or <code>zve32x</code>, <code>zve32f</code>, <code>zve64x</code>, <code>zve64f</code>, <code>zve64d</code>, with <code>zvl64b</code> ... <code>zvl65536b</code> (a longer VLEN), <code>zvfh</code>, <code>zvfhmin</code>, <code>zvbb</code>, <code>zvkb</code>, <code>zvbc</code>, <code>zvkg</code>, <code>zvkned</code>, <code>zvknha</code>, <code>zvknhb</code>, <code>zvksed</code>, <code>zvksh</code> and the groups <code>zvkn</code>, <code>zvknc</code>, <code>zvkng</code>, <code>zvks</code>, <code>zvksc</code>, <code>zvksg</code>; the hypervisor <code>h</code>; the privileged additions of <a href="02-writing-programs.html#230-risc-v-privileged-additions-counters-cache-blocks-rnmis">2.30</a> — <code>sscofpmf</code>, <code>smcntrpmf</code>, <code>smcdeleg</code> / <code>ssccfg</code>, <code>smcsrind</code> / <code>sscsrind</code>, <code>sstc</code>, <code>smstateen</code> / <code>ssstateen</code>, <code>smrnmi</code>, <code>smepmp</code>, <code>svadu</code>, <code>svpbmt</code> and <code>svnapot</code> (RV64), <code>svinval</code>, <code>svvptc</code>, <code>zicbom</code>, <code>zicboz</code>, <code>zicbop</code>; the <code>s</code> ones need S-mode)</td>
 </tr>
 <tr>
 <td><code>--rv-modes msu|mu|m</code></td>
 <td>all</td>
 <td>RISC-V: the privilege modes the hart has (default <code>msu</code>: Machine, Supervisor, User — paging needs S; <code>m</code>: only Machine mode)</td>
+</tr>
+<tr>
+<td><code>--rv-rnmi INT[,EXC]</code></td>
+<td>all</td>
+<td>RISC-V with Smrnmi: where the resumable NMI's handler and the RNMI exception handler are — numbers or the program's labels (<code>--rv-rnmi rnmi_handler</code>; EXC defaults to INT); without it both are 0, as on QEMU and Spike</td>
+</tr>
+<tr>
+<td><code>--rv-intc none|plic|aplic|imsic</code></td>
+<td>all</td>
+<td>RISC-V: the platform's interrupt controller (<a href="02-writing-programs.html#231-risc-v-interrupts-as-memory-writes-the-aia">Phase 2, 2.31</a>; default <code>none</code>: the console's wire) — the PLIC, the APLIC in direct mode, or an IMSIC per hart with the APLIC sending MSIs (adds Smaia, and Ssaia with S-mode); with one, <code>--cores N</code> gives the platform N harts (up to 6)</td>
 </tr>
 <tr>
 <td><code>--no-relax</code></td>
@@ -169,9 +179,14 @@ output — the test suite re-runs them.</p>
 <td>start in <code>.set noreorder</code> (no automatic delay-slot <code>nop</code>)</td>
 </tr>
 <tr>
-<td><code>--boot kernel|user|reset</code></td>
+<td><code>-I DIR</code></td>
+<td>asm, run, pipe, debug, gdb, check</td>
+<td>look here too for <code>.include</code> / <code>.incbin</code> files, after the program's own folder; may be given more than once (<a href="02-writing-programs.html#233-macros-repetition-and-conditional-assembly">Phase 2, 2.33</a>)</td>
+</tr>
+<tr>
+<td><code>--boot kernel|user|reset|guest</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the start state (default kernel, like MARS); on the Malta <code>reset</code> runs the boot monitor from the reset vector first (unless the program has code at <code>0xbfc00000</code>), and <code>user</code> needs <code>--mmu tlb</code> (<a href="05-understanding.html#the-boot-monitor-yamon">Phase 5, The boot monitor</a>)</td>
+<td>the start state (default kernel, like MARS); on the Malta <code>reset</code> runs the boot monitor from the reset vector first (unless the program has code at <code>0xbfc00000</code>), and <code>user</code> needs <code>--mmu tlb</code> (<a href="05-understanding.html#the-boot-monitor-yamon">Phase 5, The boot monitor</a>); <code>guest</code>: a RISC-V hart with the hypervisor extension (<code>--rv-ext ...h</code>) starts the program in VS-mode, hgatp and vsatp Bare (<a href="02-writing-programs.html#229-risc-v-a-hypervisor-and-its-guest">Phase 2, 2.29</a>)</td>
 </tr>
 <tr>
 <td><code>--exceptions cp0|stop</code></td>
@@ -244,9 +259,9 @@ output — the test suite re-runs them.</p>
 <td>pipeline: loads miss in the background (hit under miss)</td>
 </tr>
 <tr>
-<td><code>--model 5-stage|24k</code></td>
+<td><code>--model 5-stage|24k|p8700</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>the pipeline model: the textbook 5-stage pipeline (default) or the MIPS 24K's 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>)</td>
+<td>the pipeline model: the textbook 5-stage pipeline (default), the MIPS 24K's 8 stages with branch prediction (<a href="05-understanding.html#a-real-pipeline-the-mips-24k">Phase 5</a>) or the P8700's out-of-order one (<code>--core p8700</code> only, its default there: <a href="05-understanding.html#the-p8700s-own-pipeline">5.14</a>)</td>
 </tr>
 <tr>
 <td><code>--cores N</code></td>
@@ -256,7 +271,17 @@ output — the test suite re-runs them.</p>
 <tr>
 <td><code>--iocu</code></td>
 <td>run, pipe, debug, gdb</td>
-<td>with <code>--board malta --cores N</code>: an I/O Coherence Unit — the PCI DMA is coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>)</td>
+<td>with <code>--board malta --cores N</code>: an I/O Coherence Unit — the PCI DMA is coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>); with <code>--core p8700</code>: the CM3.7's IOCU, the AXI CDMA's coherent port (<a href="05-understanding.html#the-rest-of-the-memory-system">5.14</a>)</td>
+</tr>
+<tr>
+<td><code>--l2-waits T:W:D</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the P8700's L2 RAM wait states — tag, way select, data, 0–3 each (GCR_L2_RAM_CONFIG; default <code>0:0:0</code>)</td>
+</tr>
+<tr>
+<td><code>--dspram KB</code></td>
+<td>run, pipe, debug, gdb</td>
+<td>the P8700's data scratch-pad RAM a core (4–256 KB; <code>mipsdsprambase</code> places it; default none)</td>
 </tr>
 <tr>
 <td><code>--shadow-sets N</code></td>
@@ -352,8 +377,13 @@ output — the test suite re-runs them.</p>
 </code></pre>
 <p>Each line: address, machine word, the instruction as the processor sees
 it, and the source line it came from — so you see what every
-pseudo-instruction became.  An error stops with the line number:
-<code>prog.asm: line 2: unknown instruction 'lii'</code>.</p>
+pseudo-instruction became (and each line a macro or <code>.rept</code> wrote, with
+the line of its body).  An error stops with the line number:
+<code>prog.asm: line 2: unknown instruction 'lii'</code>.  As GNU <code>as</code>
+does, <code>.print</code> prints its text while assembling and warnings
+(<code>.warning</code>, a repeat count of 0 ...) go to the error output as
+<code>prog.asm:7: Warning: ...</code> — also for <code>run</code>, <code>pipe</code>
+and <code>debug</code>; the window writes them in its log.</p>
 <p><code>--hex FILE.hex</code> also writes the program as Intel HEX.</p>
 <h2 id="44-dis--disassemble-intel-hex">4.4 dis — disassemble Intel HEX</h2>
 <pre><code class="language-console">$ python3 -m emips asm emips/gui/examples/sum_array.asm --hex sum.hex
@@ -663,8 +693,32 @@ condition and increment) gets a breakpoint on each.</p>
 <td>RISC-V: the trap and status CSRs (<code>mstatus</code>, <code>mtvec</code>, <code>mepc</code>, <code>mcause</code>, <code>mtval</code>, <code>mie</code>, <code>mip</code>, <code>satp</code> ... and the privilege mode) / those CSRs (<code>csr medeleg 0x300</code>).  The MIPS-only commands (<code>cp0</code>, <code>tlb</code>, <code>cps</code>, <code>gic</code> ...) say so on a hart</td>
 </tr>
 <tr>
+<td><code>vec</code> / <code>vec vN ... [e8|e16|e32|e64][.x|.s|.u|.f]</code></td>
+<td>RISC-V: the vector unit (V / Zve*, <a href="02-writing-programs.html#228-risc-v-vectors-the-v-extension">Phase 2, 2.28</a>) — VLEN, ELEN, <code>mstatus.VS</code>, vtype decoded (SEW, LMUL, <code>ta</code> / <code>ma</code>, vill), vl of VLMAX, vstart, vxrm, vxsat — and the registers (every non-zero one, or those named) as VLEN-bit values, or element by element (element 0 first): hex, signed, unsigned or floating point (<code>vec v3 e32.s</code>)</td>
+</tr>
+<tr>
 <td><code>p8700</code></td>
 <td>the MIPS P8700's own registers (<code>--core p8700</code>): the hart ID, <code>mipstvec</code>, <code>mipsintctl</code>'s routing, <code>mipsconfig5</code>–<code>7</code>, <code>mipserrctl</code> / <code>mipscacheerr</code>, the PMAs, its four counters, its TLBs, the cluster (GCR and CPC: each core's power state, each hart's reset address) and the interrupt controller (ACLINT, APLIC)</td>
+</tr>
+<tr>
+<td><code>dbu</code> / <code>dbu probe [notrap]</code> / <code>dbu halt [N|all]</code> / <code>dbu resume|step|regs [N]</code> / <code>dbu read N LOC</code> / <code>dbu write N LOC VALUE</code> / <code>dbu set N REG VALUE</code> / <code>dbu pc N LOC</code> / <code>dbu ib K LOC|off [hart H]</code> / <code>dbu db K LOC|off [load|store] [value V] [hart H]</code> / <code>dbu fdc [send CH VALUE | take]</code> / <code>dbu detach</code></td>
+<td>the MIPS P8700's Debug Unit as a JTAG probe uses it (<a href="05-understanding.html#hybrid-debug">Phase 5, 5.14</a>): load the debug monitor into its RAM and set ProbEn / ProbTrap, send a debug interrupt (one hart: the CPC's <code>DBG_DBRK_REG</code>; all: EjtagBrk), the monitor's commands to a halted hart (resume, single step, read / write a doubleword, a register, the PC), the 8 + 8 shared hardware breakpoints, the Fast Debug Channel — TAP scans only, replayed by <code>back</code>.  Without arguments: the DBU, the FDC, the Trace Funnel, the CM's counters and the selected hart's mailbox (N: a hart, default the selected one).  The P8700's RISC-V trace: <code>trace on</code> (its encoders feed the Trace Funnel)</td>
+</tr>
+<tr>
+<td><code>rnmi</code> / <code>rnmi CAUSE</code></td>
+<td>RISC-V with Smrnmi (<a href="02-writing-programs.html#230-risc-v-privileged-additions-counters-cache-blocks-rnmis">Phase 2, 2.30</a>): the hart's interrupt state — the enables, <code>mip</code> / <code>mie</code>, the delegations, <code>mnstatus.NMIE</code>, a pending RNMI, the handlers' addresses, the counters' OF bits, what is taken next / request a resumable NMI with CAUSE (it becomes <code>mncause</code> with the interrupt bit; taken once NMIE = 1; <code>back</code> replays it)</td>
+</tr>
+<tr>
+<td><code>cfi</code></td>
+<td>RISC-V with Zicfilp / Zicfiss (<a href="02-writing-programs.html#232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">Phase 2, 2.32</a>): ELP (is a landing pad expected next?), the modes that enforce landing pads, the xPELP bits set, <code>ssp</code> and the modes whose shadow stack is active</td>
+</tr>
+<tr>
+<td><code>aia</code></td>
+<td>RISC-V with the AIA (<a href="02-writing-programs.html#231-risc-v-interrupts-as-memory-writes-the-aia">Phase 2, 2.31</a>): <code>mtopi</code> / <code>stopi</code> / <code>vstopi</code> (the interrupt each level would take and its IPRIO), <code>mvien</code> / <code>mvip</code>, <code>hvien</code> / <code>hvictl</code> / <code>hviprio</code>, the iprio arrays' non-zero numbers, the hart's IMSIC — each interrupt file's <code>eidelivery</code>, <code>eithreshold</code>, <code>topei</code>, pending and enabled identities — and the APLIC's delivery mode</td>
+</tr>
+<tr>
+<td><code>hyp</code> / <code>hyp LOC</code></td>
+<td>RISC-V with the hypervisor extension (<a href="02-writing-programs.html#229-risc-v-a-hypervisor-and-its-guest">Phase 2, 2.29</a>): the mode and V, <code>hstatus</code>'s fields, <code>hgatp</code> and <code>vsatp</code> (scheme, VMID / ASID, root), the delegations, <code>htval</code> / <code>htinst</code>, the guest entries of the TLB (both stages' PTE flags); with LOC how a guest access (VS- or VU-mode by <code>hstatus.SPVP</code>, as <code>hlv</code> makes it) translates it — the guest physical address, the physical one, or which stage faults and why</td>
 </tr>
 <tr>
 <td><code>srs</code> / <code>srs N</code></td>
@@ -687,8 +741,8 @@ condition and increment) gets a breakpoint on each.</p>
 <td>the IDE disks: each one's state, registers and last commands / a hex dump of N sectors / write the disk as the program left it (default: its image file) (<a href="05-understanding.html#an-ide-disk">Phase 5</a>)</td>
 </tr>
 <tr>
-<td><code>trace</code> / <code>trace on [OPTIONS]</code> / <code>trace off</code> / <code>trace show [N]</code> / <code>trace words [N]</code> / <code>trace formats [N]</code> / <code>trace trigger N dm|probe start|end|about|info [tf6 INFO] [once] [out]</code> / <code>trace trigger N off</code> / <code>trace in</code></td>
-<td>MIPS Trace through the TCB: the settings and the TCB / trace on (modes <code>u k s e d</code>, <code>asid N</code>, <code>la sa ld sd addresses data all</code>, <code>ca</code>, <code>from</code>, <code>tb</code>, <code>io</code>, <code>sync N</code>, <code>tlsif</code>, <code>keep</code>, <code>wait</code>) / off / the regenerated flow / the trace words / the trace formats / a trigger / the probe's trigger input (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>)</td>
+<td><code>trace</code> / <code>trace on [OPTIONS]</code> / <code>trace off</code> / <code>trace show [N]</code> / <code>trace words [N]</code> / <code>trace formats [N]</code> / <code>trace trigger N dm|probe start|end|about|info [tf6 INFO] [once] [out]</code> / <code>trace trigger N off</code> / <code>trace in</code>; on a RISC-V hart <code>trace on [etrace|ntrace] [OPTIONS]</code> / <code>trace packets [N]</code> / <code>trace bytes [N]</code> / <code>trace read OFF</code> / <code>trace write OFF VALUE</code></td>
+<td>MIPS Trace through the TCB: the settings and the TCB / trace on (modes <code>u k s e d</code>, <code>asid N</code>, <code>la sa ld sd addresses data all</code>, <code>ca</code>, <code>from</code>, <code>tb</code>, <code>io</code>, <code>sync N</code>, <code>tlsif</code>, <code>keep</code>, <code>wait</code>) / off / the regenerated flow / the trace words / the trace formats / a trigger / the probe's trigger input (<a href="05-understanding.html#mips-trace-pdtrace-and-the-tcb">Phase 5</a>).  On a RISC-V hart the Trace Control Interface's encoders and RAM sink: <code>etrace</code> (default) or <code>ntrace</code> with <code>btm</code> / <code>htm</code>, <code>return [count|partial|full]</code>, <code>predict</code>, <code>cache</code>, <code>repeat</code>, <code>sijump</code>, <code>sync packets|cycles|halfwords|off [N]</code>, <code>time</code>, <code>stall</code>, <code>smem ADDRESS BYTES</code>, <code>stoponwrap</code>, <code>async N</code>, <code>context</code>, <code>wait</code> (instruction trace off until a trigger turns it on), <code>notrig</code> / the packets or messages with why / the sink's bytes / one register (offsets from the hart's encoder; 0x9000 and above: the funnel and the sink) (<a href="05-understanding.html#instruction-trace-e-trace-and-n-trace">Phase 5, 5.13</a>)</td>
 </tr>
 <tr>
 <td><code>tap ir CODE</code> / <code>tap dr VALUE [BITS]</code> / <code>tap reset</code></td>
@@ -800,7 +854,7 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>perf</code></td>
-<td>the performance counters: count, event, modes, the overflow interrupt (a counter set with <code>perf N ...</code> is kept across <code>reset</code> and <code>back</code>)</td>
+<td>the performance counters: count, event, modes, the overflow interrupt (a counter set with <code>perf N ...</code> is kept across <code>reset</code> and <code>back</code>).  RISC-V: the P8700's <code>mhpmcounter3</code>-<code>6</code> (N = 3-6), or with Zihpm a hart's <code>mhpmcounter3</code>-<code>31</code> (N = 3-31) counting the SBI PMU events (<code>perf events</code> lists them; MODES letters of <code>u</code>, <code>s</code>, <code>m</code>, with Sscofpmf)</td>
 </tr>
 <tr>
 <td><code>perf events [N]</code></td>
@@ -816,7 +870,7 @@ condition and increment) gets a breakpoint on each.</p>
 </tr>
 <tr>
 <td><code>core</code></td>
-<td>inside the MIPS 24K model (<code>set model 24k</code>, <code>mode pipeline</code>): the fetch unit, its instruction buffer, branch prediction, the units, the CP0 hazards</td>
+<td>inside the MIPS 24K model (<code>set model 24k</code>, <code>mode pipeline</code>): the fetch unit, its instruction buffer, branch prediction, the units, the CP0 hazards; on the P8700's pipeline (<code>--core p8700</code>): <code>core [window|queues|predict]</code> — each hart's window and front end, the issue queues and busy units, the predictors (TAGE, BTB, JRC, RPS), replays, bonds and wrong-path instructions</td>
 </tr>
 <tr>
 <td><code>core buffer</code> / <code>core predict</code> / <code>core units</code></td>
@@ -1030,8 +1084,8 @@ the program exited
 <td>the architecture (like <code>--arch</code>): the program is assembled again for it</td>
 </tr>
 <tr>
-<td><code>set rv-ext EXTS</code> / <code>set rv-modes msu|mu|m</code> / <code>set relax on|off</code></td>
-<td>a RISC-V hart's extensions and privilege modes, the linker's relaxation (like <code>--rv-ext</code>, <code>--rv-modes</code>, <code>--no-relax</code>)</td>
+<td><code>set rv-ext EXTS</code> / <code>set rv-modes msu|mu|m</code> / <code>set relax on|off</code> / <code>set rv-rnmi INT[,EXC]|none</code> / <code>set rv-intc none|plic|aplic|imsic</code></td>
+<td>a RISC-V hart's extensions and privilege modes, the linker's relaxation, the RNMI handlers, the interrupt controller (like <code>--rv-ext</code>, <code>--rv-modes</code>, <code>--no-relax</code>, <code>--rv-rnmi</code>, <code>--rv-intc</code>)</td>
 </tr>
 <tr>
 <td><code>set nms on|off</code> / <code>set crc auto|none|crc</code> / <code>set ginv auto|none|ginvi|ginvt</code></td>
@@ -1154,7 +1208,8 @@ instruction instead of reporting an error.</p>
 nor PySide6 is installed it says so and how to install one.</p>
 <h2 id="411-cc--build-a-c-program">4.11 cc — build a C program</h2>
 <pre><code class="language-text">python3 -m emips cc prog.c [more.c lib.S] [-o prog.elf] [--release R1|R2|R3|R5|R6]
-                    [--arch mips32|mips64|nanomips|rv32|rv64] [--rv-ext EXTS] [--nms] [--little]
+                    [--arch mips32|mips64|nanomips|rv32|rv64] [--rv-ext EXTS]
+                    [--compiler auto|gcc|clang] [--nms] [--little]
                     [-O 0|1|2|3|s]
                     [--mips16 | --micromips] [--no-fpu] [--dsp | --dspr2] [--msa] [--core NAME] [-v]
 </code></pre>
@@ -1184,7 +1239,11 @@ RISC-V GCC (<code>riscv64-unknown-elf-gcc</code>, <code>riscv64-linux-gnu-gcc</c
 clang: <code>-march</code> / <code>-mabi</code> from <code>--rv-ext</code> (ilp32d / lp64d with D,
 soft float without F), RARS's memory map and system calls (<code>emips.h</code>'s
 wrappers use <code>ecall</code>), libgcc for what the extensions lack (a multiply
-without M).
+without M).  With <code>v</code> (or a Zve*) in <code>--rv-ext</code> the C may use the RVV
+intrinsics of <code>&lt;riscv_vector.h&gt;</code> (<code>__riscv_vle32_v_i32m4</code>,
+<code>__riscv_vsetvl_e32m4</code> ...); <code>--compiler clang</code> (clang 18) also
+auto-vectorizes loops at <code>-O2</code> / <code>-O3</code> — GCC 13 does not for RISC-V
+(<code>--compiler gcc</code> / <code>auto</code>: a RISC-V GCC first).
 <code>--no-fpu</code> builds for a core without an FPU (<code>-msoft-float</code>):
 integer code needs nothing more, float arithmetic calls the soft-float
 routines (<code>__addsf3</code> ...) of a MIPS GCC's soft-float libgcc — a
@@ -1428,11 +1487,18 @@ features — <code>zero</code> ... <code>t6</code> and <code>pc</code> (<code>or
 the 32 FPRs by their ABI names (<code>ft0</code>, <code>fa0</code>, <code>fs0</code> ...) and
 <code>fcsr</code> with F / D (a D register shows its <code>float</code> and <code>double</code>
 views), every CSR the hart has (<code>p $mcause</code>,
-<code>info registers csr</code>) and the privilege mode (<code>$priv</code>); the
+<code>info registers csr</code>, each by its own number — with V = 1 <code>$sstatus</code> is
+still sstatus, not the guest's) and the privilege mode (<code>$priv</code>: with the
+hypervisor extension V is its bit 2, so 5 is VS-mode, as the Debug spec's
+virtual register has it); the
 architecture is <code>riscv:rv32</code> / <code>riscv:rv64</code>, and the ELF eMIPS
 writes for an assembly program is a RISC-V one with its extensions in
 <code>.riscv.attributes</code>, so GDB disassembles the compressed instructions.  The
-P8700's harts are GDB's threads.</p>
+P8700's harts are GDB's threads.  A hart with a vector unit adds
+<code>org.gnu.gdb.riscv.vector</code>: <code>$v0</code>–<code>$v31</code> of VLEN bits as unions of
+their element views (<code>p $v3.w</code>, <code>set var $v4.w[2] = 99</code>; <code>.b</code>,
+<code>.s</code>, <code>.w</code>, <code>.l</code>, <code>.q</code>), and <code>$vl</code>, <code>$vtype</code>,
+<code>$vstart</code>, <code>$vlenb</code> ... among the CSRs.</p>
 <h2 id="413-cores--real-mips-cores">4.13 cores — real MIPS cores</h2>
 <pre><code class="language-text">python3 -m emips cores [NAME]
 </code></pre>
@@ -1539,6 +1605,10 @@ be read: a script can check a folder of programs,
 <tr>
 <td><code>$w3 == 0x...</code>, <code>$w3.w[2] == 12</code>, <code>$w3.h[7] &lt; 0</code>, <code>$w1.d[1].f == 2.5</code>, <code>msacsr == 0</code></td>
 <td>(MSA) a vector register's 128 bits, one element of it (<code>.b</code> / <code>.h</code> / <code>.w</code> / <code>.d</code>, element 0 = the lowest bits; <code>.f</code>: a word / doubleword as a float), or MSACSR</td>
+</tr>
+<tr>
+<td><code>$v3 == 0x...</code>, <code>$v3.e32[2] == 12</code>, <code>$v4.e64[1].f == 2.5</code>, <code>vl == 4</code>, <code>vtype == 0xd0</code></td>
+<td>(RISC-V V) a vector register's VLEN bits, one element of it (<code>.e8</code> / <code>.e16</code> / <code>.e32</code> / <code>.e64</code> and the index; <code>.f</code>: as a half / single / double), or <code>vl</code>, <code>vtype</code>, <code>vstart</code>, <code>vxrm</code>, <code>vxsat</code>, <code>vlenb</code> (on MIPS, <code>$v0</code> / <code>$v1</code> are the GPRs)</td>
 </tr>
 <tr>
 <td><code>cycles &lt;= 53</code></td>

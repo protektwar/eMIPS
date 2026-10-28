@@ -15,6 +15,7 @@ register's value, ``pc`` the current instruction.
 from __future__ import annotations
 
 import cmd
+import re
 import shlex
 import struct
 import sys
@@ -27,7 +28,7 @@ from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
 from . import tools
-from .options import (ARCHES, RV_EXTENSIONS, RV_MODES, BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
+from .options import (ARCHES, RV_EXTENSIONS, RV_INTC, RV_MODES, BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
                       NANO_GINV, Options)
 from .session import Session, StepResult
 from .timing import MEMORY_TIMING
@@ -77,13 +78,14 @@ class Debugger(cmd.Cmd):
 
     #: commands of MIPS hardware (CP0, EJTAG, the CPS, the 24K ...): on a
     #: RISC-V hart they say what to use instead
-    MIPS_ONLY = frozenset(("srs", "ejtag", "probe", "board", "disk", "trace", "tap", "cp0",
+    MIPS_ONLY = frozenset(("srs", "ejtag", "probe", "board", "disk", "tap", "cp0",
                            "dsp", "msa", "mt", "vp", "tc", "translate", "cps", "gic",
                            "tlb", "mpu", "core"))
 
     def onecmd(self, line: str) -> bool:
         word = line.split()[0] if line.split() else ""
-        if word in self.MIPS_ONLY and self.s.rv:
+        if word in self.MIPS_ONLY and self.s.rv and not (
+                word == "core" and getattr(self.s.pipeline, "core", None) is not None):
             self.say(f"error: {word} is a MIPS command; this is a RISC-V hart — "
                      "regs, csr, fpu, mem, dis show its state")
             return False
@@ -497,7 +499,7 @@ class Debugger(cmd.Cmd):
                                for n, v, ch in rows[i:i + 4]))
         m = s.machine
         if m.rv:                                # (no HI / LO, no shadow sets)
-            self.say(f"   pc  0x{m.pc:0{w}x}    {_RV_MODE[m.priv]}-mode")
+            self.say(f"   pc  0x{m.pc:0{w}x}    {m.mode_name}-mode")
             return
         hilo = "" if m.nano else f"    hi  0x{m.hi:0{w}x}    lo  0x{m.lo:0{w}x}"   # (none)
         self.say(f"   pc  0x{m.pc:0{w}x}{hilo}"
@@ -741,9 +743,29 @@ class Debugger(cmd.Cmd):
                                    time, out: strobe the probe's TR_TRIGOUT
           trace trigger N off      clear it
           trace in                 the probe drives TR_TRIGIN (a trigger input)
-        Without arguments: the settings, the TCB and its triggers."""
+        Without arguments: the settings, the TCB and its triggers.
+        On a RISC-V hart (help trace: the RISC-V forms) — E-Trace / N-Trace
+        through the RISC-V Trace Control Interface:
+          trace on [etrace|ntrace] [OPTIONS]   every hart's encoder into the RAM sink;
+                                   OPTIONS: btm | htm (N-Trace, default htm), full,
+                                   notrapaddr, sijump, return [count|partial|full],
+                                   predict, cache, repeat, alljumps, msb, context,
+                                   sync packets|cycles|halfwords|off [N] (2^(N+4)),
+                                   time (timestamps), stall, smem ADDR SIZE,
+                                   stoponwrap, async N, wait (tracing off: a
+                                   trace-on trigger starts it), notrig
+          trace off                disable and flush
+          trace show [N]           the regenerated instructions of the selected hart
+          trace packets [N]        its encoder's packets / messages and why
+          trace bytes [N]          the sink's bytes
+          trace read OFF | write OFF VALUE   a register of the selected hart's
+                                   encoder (OFF from 0x000; 0x9000+ the sink)
+          trace in                 the probe's external trigger (encoder input 3)"""
         self._need_program()
         s = self.s
+        if s.rv:
+            self._rv_trace(arg)
+            return
         words = arg.split()
         if not words:
             for line in s.trace_state():
@@ -852,6 +874,118 @@ class Debugger(cmd.Cmd):
         else:
             raise CliError("trace [on [OPTIONS] | off | show [N] | words [N] | formats [N] | "
                            "trigger N ... | in] (help trace)")
+
+    def _rv_trace(self, arg: str) -> None:
+        """``trace`` on a RISC-V hart (LF11; see do_trace)."""
+        from . import sessionrv as RV
+        from .rvtrace import MAP
+        s = self.s
+        words = arg.split()
+        if s.rvtrace is None:
+            raise CliError("no RISC-V trace here: the P8700's is its Hybrid Debug (LF16)")
+        if not words:
+            for line in s.trace_state():
+                self.say(line)
+            return
+        cmd, rest = words[0], words[1:]
+        if cmd == "on":
+            kw: dict = {"protocol": "e", "options": ()}
+            opts = []
+            words = list(rest)
+
+            def take() -> str | None:
+                return words.pop(0) if words else None
+
+            def peek() -> str | None:
+                return words[0].lower() if words else None
+
+            while words:
+                w = words.pop(0)
+                lw = w.lower()
+                if lw in ("etrace", "e-trace", "e"):
+                    kw["protocol"] = "e"
+                elif lw in ("ntrace", "n-trace", "n"):
+                    kw["protocol"] = "n"
+                elif lw in ("btm", "htm"):
+                    kw["htm"] = lw == "htm"
+                elif lw == "return":
+                    opts.append("return")
+                    if peek() in ("count", "partial", "full"):
+                        kw["ir_mode"] = ("count", "partial", "full").index(take().lower()) + 1
+                elif lw in RV.TRACE_FEATURES:
+                    opts.append(lw)
+                elif lw == "sync":
+                    how = (take() or "").lower()
+                    if how not in RV.SYNC_MODES:
+                        raise CliError("trace on sync packets|cycles|halfwords|off [N]")
+                    kw["sync"] = how
+                    if peek() is not None and peek().isdigit():
+                        kw["sync_max"] = int(take(), 0) & 15
+                elif lw == "time":
+                    kw["timestamps"] = True
+                elif lw == "stall":
+                    kw["stall"] = True
+                elif lw == "stoponwrap":
+                    kw["stop_on_wrap"] = True
+                elif lw == "context":
+                    kw["context"] = True
+                elif lw == "wait":
+                    kw["tracing"] = False
+                elif lw == "notrig":
+                    kw["triggers"] = False
+                elif lw in ("smem", "async"):
+                    try:
+                        if lw == "smem":
+                            kw["smem"] = (int(take(), 0), int(take(), 0))
+                        else:
+                            kw["async_freq"] = int(take(), 0) & 7
+                    except (TypeError, ValueError):
+                        raise CliError(f"trace on {lw} N ...") from None
+                else:
+                    raise CliError(f"trace on: unknown option {w} (help trace)")
+            kw["options"] = tuple(opts)
+            try:
+                s.rv_trace_start(**kw)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            for line in s.trace_state():
+                self.say(line)
+        elif cmd == "off" and not rest:
+            s.trace_stop()
+            for line in s.trace_state():
+                self.say(line)
+        elif cmd in ("show", "packets", "bytes") and len(rest) <= 1:
+            try:
+                n = int(rest[0], 0) if rest else 20
+            except ValueError:
+                raise CliError(f"trace {cmd} [N]") from None
+            if cmd == "show":
+                lines = s.trace_lines(n)
+            elif cmd == "packets":
+                lines = RV.trace_packet_lines(s, n)
+            else:
+                data = RV.trace_bytes(s)[-n:] if n else RV.trace_bytes(s)
+                lines = [f"   {data[k:k + 16].hex(' ')}" for k in range(0, len(data), 16)]
+            for line in lines or ["   nothing traced (trace on, then run)"]:
+                self.say(line)
+        elif cmd == "in" and not rest:
+            s.rv_trace_in()
+            self.say("the probe's external trigger: every encoder's input 3")
+        elif cmd in ("read", "write"):
+            try:
+                off = int(rest[0], 0)
+                v = int(rest[1], 0) if cmd == "write" else None
+            except (IndexError, ValueError):
+                raise CliError("trace read OFF | trace write OFF VALUE") from None
+            pa = MAP["encoder"] + 0x1000 * s.cpu + off if off < 0x9000 else \
+                MAP["encoder"] + off
+            if cmd == "write":
+                s.rv_trace_write(pa, v)
+            m = s.machine
+            self.say(f"   0x{pa:08x}: 0x{m.trace_encoder.sys.bus.load(m, pa, 4):08x}")
+        else:
+            raise CliError("trace [on ... | off | show [N] | packets [N] | bytes [N] | "
+                           "read OFF | write OFF V | in] (help trace)")
 
     def do_tap(self, arg: str) -> None:
         """tap ir CODE | tap dr VALUE [BITS] | tap reset   scan the selected core's
@@ -976,6 +1110,67 @@ class Debugger(cmd.Cmd):
         for name, value in self.s.special_registers():
             self.say(f"{name:>9} = 0x{value:0{self.s.hex_digits(name)}x}")
 
+    def do_rnmi(self, arg: str) -> None:
+        """rnmi [CAUSE]   RISC-V Smrnmi (priv. ch. 8): request a resumable NMI
+        with CAUSE (default 0; mncause gets it with the interrupt bit) — taken
+        before an instruction once mnstatus.NMIE = 1, at the RNMI handler
+        (--rv-rnmi / set rv-rnmi; 0 without) —, then show the hart's
+        interrupt state.  A step back replays the request."""
+        self._need_program()
+        s, m = self.s, self.s.machine
+        if not m.rv:
+            raise CliError("rnmi is a RISC-V command (Smrnmi)")
+        if arg.strip():
+            try:
+                cause = int(arg.strip(), 0)
+            except ValueError:
+                raise CliError("rnmi [CAUSE] (a number)") from None
+            try:
+                s.rnmi(cause)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+        for line in s.interrupt_lines():
+            self.say(line)
+
+    def do_cfi(self, arg: str) -> None:
+        """cfi   RISC-V with Zicfilp / Zicfiss (control-flow integrity): ELP
+        and the modes that enforce landing pads, ssp and the modes whose
+        shadow stack is active"""
+        self._need_program()
+        m = self.s.machine
+        if not m.rv:
+            raise CliError("cfi is a RISC-V command (control-flow integrity)")
+        from . import sessionrv
+        lines = sessionrv.cfi_lines(m)
+        if not lines:
+            raise CliError("this hart has neither Zicfilp nor Zicfiss (--rv-ext ..._zicfilp_"
+                           "zicfiss)")
+        for line in lines:
+            self.say(line)
+
+    def do_aia(self, arg: str) -> None:
+        """aia   RISC-V with Smaia / Ssaia (the AIA): mtopi / stopi / vstopi
+        (which interrupt each level would take and its IPRIO), mvien / mvip,
+        hvien / hvictl / hviprio, the iprio arrays' non-zero numbers and the
+        hart's IMSIC — every interrupt file's eidelivery, eithreshold, topei,
+        pending and enabled identities — and, on a platform (--rv-intc),
+        the APLIC's delivery mode"""
+        self._need_program()
+        s, m = self.s, self.s.machine
+        if not m.rv:
+            raise CliError("aia is a RISC-V command (the Advanced Interrupt Architecture)")
+        if m.csrs.aia is None:
+            raise CliError("this hart has no AIA CSRs (--rv-ext ..._smaia, or --rv-intc imsic)")
+        for line in m.csrs.aia.lines():
+            self.say(line)
+        p = s.rvplat
+        if p is not None and p.aplic is not None:
+            self.say("APLIC: " + ("MSI delivery mode (DM = 1): MSIs to the IMSICs, "
+                                  f"mmsiaddrcfg 0x{p.aplic.msiaddrcfg[0]:x} / "
+                                  f"0x{p.aplic.msiaddrcfg[1]:x}, smsiaddrcfg "
+                                  f"0x{p.aplic.msiaddrcfg[2]:x} / 0x{p.aplic.msiaddrcfg[3]:x}"
+                                  if p.aplic.msi else "direct delivery mode (DM = 0)"))
+
     def do_csr(self, arg: str) -> None:
         """csr [NAME|NUMBER ...]   RISC-V: the hart's CSRs (default: the trap
         and status ones — mstatus, mtvec, mepc, mcause ...)"""
@@ -997,7 +1192,7 @@ class Debugger(cmd.Cmd):
                 except ValueError:
                     raise CliError(f"no CSR {tok!r}") from None
             try:
-                value = m.csrs.read(num)
+                value = m.csrs.peek(num)
             except Exception as exc:                        # noqa: BLE001
                 raise CliError(f"CSR 0x{num:03x}: {exc}") from None
             name = table[num].name if num in table else f"0x{num:03x}"
@@ -1009,19 +1204,21 @@ class Debugger(cmd.Cmd):
         self._need_program()
         m = self.s.machine
         if m.rv:
+            fcsr = (f"  fcsr 0x{m.fcsr:08x}  frm {m.fcsr >> 5 & 7}  fflags "
+                    f"0b{m.fcsr & 31:05b} (NV DZ OF UF NX)")
+            if m.inx:
+                self.say("  Zfinx: no f registers — the floating-point values are in the x "
+                         "registers (`regs`)")
+                self.say(fcsr)
+                return
             if not m.flen:
                 self.say("  this hart has no F / D extension")
                 return
             from .riscv import FPR_NAMES
+            from .rvfpu import show
             for i, raw in enumerate(m.fpr):
-                single = struct.unpack("<f", (raw & M32).to_bytes(4, "little"))[0]
-                boxed = m.flen == 32 or raw >> 32 == M32
-                dbl = struct.unpack("<d", raw.to_bytes(8, "little"))[0] if m.flen == 64 else None
-                self.say(f"  {FPR_NAMES[i]:<4} 0x{raw:0{m.flen // 4}x}  "
-                         + (f"{single:<14.7g}" if boxed else " " * 14)
-                         + (f" {dbl:.15g}" if dbl is not None else ""))
-            self.say(f"  fcsr 0x{m.fcsr:08x}  frm {m.fcsr >> 5 & 7}  fflags "
-                     f"0b{m.fcsr & 31:05b} (NV DZ OF UF NX)")
+                self.say(f"  {FPR_NAMES[i]:<4} 0x{raw:0{m.flen // 4}x}  {show(raw, m.flen)}")
+            self.say(fcsr)
             return
         if not m.has_fpu:
             self.say("  this core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every "
@@ -1061,6 +1258,31 @@ class Debugger(cmd.Cmd):
                 raise CliError(f"msa: $w0 ... $w31 or a format (b h w d w.f d.f), not {tok}")
             regs.append(int(n))
         for line in self.s.msa_lines(regs or None, fmt):
+            self.say(f"  {line}")
+
+    def do_vec(self, arg: str) -> None:
+        """vec [vN ...] [e8|e16|e32|e64][.x|.s|.u|.f]   the RISC-V vector unit
+        (V / Zve*): VLEN / ELEN, mstatus.VS, vtype (SEW, LMUL, ta / ma,
+        vill), vl / VLMAX, vstart, vxrm, vxsat, and the vector registers
+        (every non-zero one, or those named) as VLEN-bit values or element by
+        element (element 0 first): hex, signed, unsigned or floating point"""
+        self._need_program()
+        if not self.s.rv:
+            raise CliError("vec is the RISC-V vector unit's; msa shows MIPS's vectors")
+        from .sessionrv import VECTOR_VIEWS, vector_lines
+        regs, view = [], ""
+        for tok in arg.split():
+            t = tok.lower()
+            if re.fullmatch(r"e(8|16|32|64)(\.[xsuf])?", t):
+                view = t if "." in t else t + ".x"
+                if view not in VECTOR_VIEWS:
+                    raise CliError(f"vec: {tok} has no floating-point view (e16 / e32 / e64)")
+                continue
+            if not re.fullmatch(r"v([0-9]|[12][0-9]|3[01])", t):
+                raise CliError(f"vec: v0 ... v31 or a view (e8 / e16 / e32 / e64 with .x / .s"
+                               f" / .u / .f), not {tok}")
+            regs.append(int(t[1:]))
+        for line in vector_lines(self.s.machine, regs or None, view):
             self.say(f"  {line}")
 
     def do_mt(self, arg: str) -> None:
@@ -1381,7 +1603,9 @@ class Debugger(cmd.Cmd):
           perf N = VALUE            write counter N
         Software does the same with mtc0 to $25 (select 0-3).  RISC-V: the
         MIPS P8700's mhpmcounter3-6 (N = 3-6, MODES letters of u, s, m —
-        default all; perf events: Table 11.4); csrw mhpmeventN does the same."""
+        default all; perf events: Table 11.4), a generic hart's (Zihpm)
+        mhpmcounter3-31 counting the SBI PMU events (perf events; MODES with
+        Sscofpmf); csrw mhpmeventN does the same."""
         from . import perf
         self._need_program()
         m = self.s.machine
@@ -1425,21 +1649,23 @@ class Debugger(cmd.Cmd):
         self.say(perf.format_counters(m).splitlines()[i])
 
     def _perf_rv(self, m, parts: list[str]) -> None:
-        """perf on a RISC-V hart: the P8700's mhpmcounter3-6 (N = 3-6;
-        modes: letters of u, s, m)."""
+        """perf on a RISC-V hart: the P8700's mhpmcounter3-6 (N = 3-6), or
+        with Zihpm the generic hart's mhpmcounter3-31 (the SBI events);
+        modes: letters of u, s, m."""
         from . import sessionrv as RV
         p = m.p8700
-        if p is None:
-            raise CliError("this hart's mhpmcounter3-31 count no event (Zihpm: read 0); the "
-                           "P8700 has four counters: --core p8700")
+        hpm = m.csrs.hpm
+        if p is None and hpm is None:
+            raise CliError("this hart has no hpm counters (Zihpm: --rv-ext ..._zihpm)")
+        last = 6 if p is not None else 31
         if not parts:
-            self.say("\n".join(p.counters.lines()))
+            self.say("\n".join(p.counters.lines() if p is not None else hpm.lines()))
             return
         if parts[0] == "events":
-            self.say("\n".join(RV.event_lines()))
+            self.say("\n".join(RV.event_lines(m)))
             return
-        if parts[0] not in ("3", "4", "5", "6") or len(parts) < 2:
-            raise CliError("perf N EVENT [MODES] with N = 3-6 (mhpmcounterN; help perf)")
+        if not parts[0].isdigit() or not 3 <= int(parts[0]) <= last or len(parts) < 2:
+            raise CliError(f"perf N EVENT [MODES] with N = 3-{last} (mhpmcounterN; help perf)")
         i = int(parts[0]) - 3
         if parts[1] == "off":
             self.s.configure_counter(i, None)
@@ -1452,14 +1678,19 @@ class Debugger(cmd.Cmd):
                 value = self.resolve(parts[2])
             m.csrs.write(0xB03 + i, value)
         else:
-            event = RV.find_event(parts[1])
+            event = RV.find_event(parts[1], m)
             if event is None:
-                raise CliError(f"no P8700 event {parts[1]!r} (perf events)")
+                raise CliError(f"no {'P8700 ' if p is not None else ''}event {parts[1]!r} "
+                               "(perf events)")
             modes = parts[2].lower() if len(parts) > 2 else "msu"
             if set(modes) - set("usmk"):
                 raise CliError("modes are letters of u, s, m (e.g. us)")
             self.s.configure_counter(i, event, modes)
-        self.say(p.counters.lines()[i])
+        if p is not None:
+            self.say(p.counters.lines()[i])
+        else:
+            line = next((x for x in hpm.lines() if x.startswith(f"mhpmcounter{i + 3} ")), None)
+            self.say(line or f"mhpmcounter{i + 3}: no event")
 
     def do_p8700(self, arg: str) -> None:
         """p8700   RISC-V: the MIPS P8700's own registers — the hart ID, mipstvec,
@@ -1473,6 +1704,130 @@ class Debugger(cmd.Cmd):
         from . import sessionrv as RV
         self.say("\n".join(RV.p8700_lines(m)))
 
+    def do_dbu(self, arg: str) -> None:
+        """dbu [probe [notrap] | detach | halt [N|all] | resume [N] | step [N] |
+        regs [N] | read N LOC | write N LOC VALUE | set N REG VALUE | pc N LOC |
+        ib K LOC|off [hart H] | db K LOC|off [load|store] [value V] [hart H] |
+        fdc [send CH VALUE | take]]
+        RISC-V, the MIPS P8700: its Debug Unit (MD01502 ch. 13) as a JTAG probe
+        uses it — every action is TAP scans: load the debug monitor into the
+        DBU's RAM and set ProbEn / ProbTrap (probe), a DINT (halt: CPC
+        DBG_DBRK_REG; all: the TAP's EjtagBrk), the monitor's commands (resume,
+        step, read, write, a register, the PC), the shared hardware breakpoints
+        (ib / db: drseg), the Fast Debug Channel.  N: a hart (default: the
+        selected one).  Without arguments: the DBU, the FDC, the Trace Funnel,
+        the CM's counters and the selected hart's monitor mailbox."""
+        self._need_program()
+        s = self.s
+        cl = s.rvcps
+        if cl is None:
+            raise CliError("dbu is the MIPS P8700's Debug Unit (--core p8700)")
+        from . import sessionrv as RV
+        words = arg.split()
+        if not words:
+            self.say("\n".join(RV.dbu_lines(cl) + RV.dbu_hart_lines(cl, s.cpu)))
+            return
+        op, rest = words[0].lower(), words[1:]
+
+        def hart(k: int) -> int:
+            if len(rest) <= k:
+                return s.cpu
+            n = int(rest[k], 0)
+            if not 0 <= n < len(cl.machines):
+                raise CliError(f"no hart {n} (0-{len(cl.machines) - 1})")
+            return n
+
+        def opt(word: str) -> str | None:
+            if word in rest:
+                k = rest.index(word)
+                if k + 1 < len(rest):
+                    return rest[k + 1]
+            return None
+
+        try:
+            if op == "probe":
+                s.dbu("probe", "notrap" not in rest)
+                self.say("the debug monitor is in the DBU's RAM; ProbEn"
+                         + ("" if "notrap" in rest else " and ProbTrap: Debug Mode starts "
+                            "at dmseg + 0x200"))
+            elif op == "detach":
+                s.dbu("detach")
+                self.say("ProbEn / ProbTrap cleared")
+            elif op == "halt":
+                if rest and rest[0] == "all":
+                    s.dbu("dint-all")
+                    self.say("EjtagBrk: a DINT to every running hart")
+                else:
+                    n = hart(0)
+                    s.dbu("halt", n)
+                    self.say(f"DBG_DBRK_REG: a DINT to hart {n} (it enters Debug Mode before "
+                             "its next instruction)")
+            elif op in ("resume", "step"):
+                n = hart(0)
+                s.dbu(op, n)
+                self.say(f"the monitor of hart {n}: {op}")
+            elif op == "regs":
+                self.say("\n".join(RV.dbu_hart_lines(cl, hart(0))))
+            elif op == "read":
+                s.dbu("read", hart(0), self.resolve(rest[1]))
+                self.say("the monitor reads it when the hart steps (dbu regs: data)")
+            elif op == "write":
+                s.dbu("write", hart(0), self.resolve(rest[1]), self.resolve(rest[2]))
+                self.say("the monitor writes it when the hart steps")
+            elif op == "set":
+                from .riscv import GPR_NAMES
+                reg = rest[1].lstrip("x")
+                num = GPR_NAMES.index(rest[1]) if rest[1] in GPR_NAMES else int(reg, 0)
+                s.dbu("reg", hart(0), num, self.resolve(rest[2]))
+                self.say(f"x{num} of hart {hart(0)}: restored from the mailbox on resume")
+            elif op == "pc":
+                s.dbu("pc", hart(0), self.resolve(rest[1]))
+                self.say("the monitor's DRET returns there")
+            elif op in ("ib", "db"):
+                k = int(rest[0], 0)
+                if not 0 <= k < cl.bp.ib_count:
+                    raise CliError(f"breakpoints 0-{cl.bp.ib_count - 1}")
+                addr = None if rest[1] == "off" else self.resolve(rest[1])
+                h = opt("hart")
+                hn = int(h, 0) if h is not None else None
+                if op == "ib":
+                    s.dbu("ib", k, addr, hn)
+                else:
+                    kind = "load" if "load" in rest else "store" if "store" in rest else "any"
+                    v = opt("value")
+                    s.dbu("db", k, addr, kind, self.resolve(v) if v is not None else None, hn)
+                self.say("\n".join(s.machine.hybrid.lines()[2:]) or "breakpoints: none")
+            elif op == "fdc":
+                if rest and rest[0] == "send":
+                    s.dbu("fdc-send", int(rest[1], 0), self.resolve(rest[2]))
+                    self.say(f"sent channel {int(rest[1], 0)}: the receive FIFO now holds "
+                             f"{len(cl.fdc.rx)}")
+                elif rest and rest[0] == "take":
+                    v = s.dbu("fdc-take")
+                    self.say(f"channel {v >> 32 & 0xF}: 0x{v & 0xFFFFFFFF:08x}" if v >> 37 & 1
+                             else "the transmit FIFO is empty")
+                else:
+                    self.say("\n".join(cl.fdc.lines()))
+            else:
+                raise CliError(f"dbu: unknown action {op!r} (help dbu)")
+        except (IndexError, ValueError) as exc:
+            raise CliError(f"dbu {op}: {exc or 'missing arguments'} (help dbu)") from None
+
+    def do_hyp(self, arg: str) -> None:
+        """hyp [LOC]   RISC-V with the hypervisor extension (priv. ch. 21): the
+        mode and V, hstatus, hgatp, vsatp, the delegations, htval / htinst, the
+        guest entries of the TLB (both stages in one entry, by VMID); with LOC,
+        how a guest access (VS- or VU-mode by hstatus.SPVP, as HLV makes it)
+        translates LOC: the VS-stage, the guest physical address, the G-stage
+        — or which stage faults.  Nothing here touches the TLB."""
+        self._need_program()
+        m = self.s.machine
+        if not m.rv:
+            raise CliError("hyp is a RISC-V command (the hypervisor extension: --rv-ext ...h)")
+        va = self.resolve(arg.strip()) if arg.strip() else None
+        from .rvmmu import guest_lines
+        self.say("\n".join(guest_lines(m, va)))
+
     def do_core(self, arg: str) -> None:
         """core [buffer|predict|units]   inside the MIPS 24K pipeline model
         (set model 24k, mode pipeline):
@@ -1481,12 +1836,22 @@ class Debugger(cmd.Cmd):
           core predict    the branch history table, the return stack, the
                           last prediction and resolution
           core units      multiply / divide, FPU, load / store unit, and the
-                          CP0 writes still on their way (hazards)"""
+                          CP0 writes still on their way (hazards)
+        core [window|queues|predict]   inside the P8700's pipeline (--core
+        p8700, mode pipeline): each hart's window and front end, the issue
+        queues and busy units, the predictors (TAGE, BTB, JRC, RPS)"""
         from . import coreview as cv
         self._need_program()
         p = self.s.pipeline
+        if getattr(p, "core", None) is not None:        # (the P8700's: emips.pipe8700)
+            what = arg.strip().lower()
+            if what not in ("", "window", "queues", "predict"):
+                raise CliError("core [window|queues|predict]")
+            self.say("\n".join(p.core.lines(what)))
+            return
         if not cv.is_24k(p):
-            raise CliError("not the 24K pipeline: set model 24k, then mode pipeline")
+            raise CliError("not the 24K pipeline: set model 24k, then mode pipeline "
+                           "(or the P8700's: --core p8700)")
         what = arg.strip().lower()
         text = {"": cv.format_core, "buffer": cv.format_buffer,
                 "predict": cv.format_predictors, "units": cv.format_units}.get(what)
@@ -1752,6 +2117,7 @@ class Debugger(cmd.Cmd):
         self._printed = 0
         model = self.s.options.model
         self.say(f"mode {m}" + ((", the 24K pipeline" if model == "24k" else
+                                 ", the P8700 pipeline" if model == "p8700" else
                                  ", forwarding " + ("on" if self.s.forwarding else "off"))
                                 if m == "pipeline" else ""))
 
@@ -1777,7 +2143,9 @@ class Debugger(cmd.Cmd):
         core: the nanoMIPS subset, CRC32, global invalidate) | relax on|off
         (nanoMIPS: the linker's relaxations, ld --relax; RISC-V: as -mrelax and
         ld's relaxation, on by default) | rv-ext EXTS | rv-modes msu|mu|m (a
-        RISC-V hart's extensions and privilege modes)
+        RISC-V hart's extensions and privilege modes) | rv-rnmi INT[,EXC]|none
+        (Smrnmi: the RNMI handlers' addresses or labels) | rv-intc
+        none|plic|aplic|imsic (the platform's interrupt controller)
         (changes reassemble or restart the program; a setting the chosen core
         is not built with makes it the generic core)"""
         parts = arg.split()
@@ -1820,11 +2188,12 @@ class Debugger(cmd.Cmd):
             setattr(o, key, value)
         elif key == "write-buffer":
             o.write_buffer = on
-        elif key == "model" and value.lower() in ("5-stage", "24k"):
+        elif key == "model" and value.lower() in ("5-stage", "24k", "p8700"):
             o.model = value.lower()
         elif key == "iocu":
-            if on and (o.cores < 2 or o.board.split(":")[0] != "malta"):
-                raise CliError("an IOCU needs a multi-core Malta: set board malta, set cores 2")
+            if on and o.core != "p8700" and (o.cores < 2 or o.board.split(":")[0] != "malta"):
+                raise CliError("an IOCU needs a multi-core Malta (set board malta, set "
+                               "cores 2) or the P8700 (--core p8700)")
             o.iocu = on
         elif key == "cores" and value.isdigit() and 1 <= int(value) <= MAX_CORES:
             o.cores = int(value)
@@ -1931,16 +2300,36 @@ class Debugger(cmd.Cmd):
             else:
                 o.relax = on
         elif key == "rv-ext":
-            from .riscv import RVISA, parse_extensions
+            from .riscv import check_extensions
             try:
-                if "i" not in parse_extensions(value):
-                    raise ValueError("an RV32I / RV64I base (i) is needed")
-                RVISA.for_core(64, value)
+                check_extensions(value)
             except (ValueError, KeyError) as exc:
                 raise CliError(f"rv-ext {value}: {exc}") from None
             o.rv_extensions = value.lower()
         elif key == "rv-modes" and value.lower() in RV_MODES:
             o.rv_modes = value.lower()
+        elif key == "rv-intc" and value.lower() in RV_INTC:
+            o.rv_intc = value.lower()
+        elif key == "l2-waits":
+            from .options import parse_waits
+            if parse_waits(value) is None:
+                raise CliError("set l2-waits TAG:WAYSELECT:DATA (0-3 each)")
+            o.l2_waits = value
+        elif key == "dspram":
+            from .options import DSPRAM_KB
+            try:
+                kb = int(value)
+            except ValueError:
+                kb = -1
+            if kb not in DSPRAM_KB:
+                raise CliError("set dspram KB (0, 4, 8 ... 256)")
+            o.dspram = kb
+        elif key == "rv-rnmi":
+            from .options import parse_rnmi
+            value = "" if value.lower() == "none" else value
+            if parse_rnmi(value) is None:
+                raise CliError("set rv-rnmi INT[,EXC] (addresses or labels; none: 0)")
+            o.rv_rnmi = value
         elif key == "crc" and value.lower() in NANO_CRC:
             o.crc = value.lower()
         elif key == "ginv" and value.lower() in NANO_GINV:
@@ -1972,7 +2361,8 @@ class Debugger(cmd.Cmd):
         ok = (s.load_hex(s.source) if s.kind == "hex" else
               s.load_c(s.c_text, Path(s.c_file).name, optimize=f"-O{s.options.c_optimize}")
               if s.c_file is not None else
-              s.load_elf(s.elf_data, s.source) if s.kind == "elf" else s.load_source(s.source))
+              s.load_elf(s.elf_data, s.source) if s.kind == "elf" else
+              s.load_source(s.source, getattr(s, "source_path", None)))
         self._printed = 0
         if not ok:
             self.say("error: " + s.errors[0])
@@ -2035,7 +2425,6 @@ class Debugger(cmd.Cmd):
         return v - (1 << bits) if v >> (bits - 1) else v
 
 
-_RV_MODE = {3: "M", 1: "S", 0: "U"}
 
 HELP = """\
 running      step [N] (s)   next [N] (n, over calls)   back [N]   continue [N] (c, run)
@@ -2093,7 +2482,7 @@ def load_file(s: Session, path: str, say) -> bool:
         ok = s.load_elf(raw, path)
     else:
         ok = s.load_hex(text) if path.lower().endswith((".hex", ".ihex")) else \
-            s.load_source(text)
+            s.load_source(text, path)
     if not ok:
         say(f"error: {path}: {s.errors[0]}")
     return ok
@@ -2142,7 +2531,11 @@ def options_from_args(args) -> Options:
                    ginv=getattr(args, "ginv", None) or "auto",
                    rv_extensions=getattr(args, "rv_extensions", None) or RV_EXTENSIONS,
                    rv_modes=getattr(args, "rv_modes", None) or "msu",
-                   rv_relax=not getattr(args, "no_relax", False))
+                   rv_relax=not getattr(args, "no_relax", False),
+                   rv_rnmi=getattr(args, "rv_rnmi", None) or "",
+                   rv_intc=getattr(args, "rv_intc", None) or "none",
+                   l2_waits=getattr(args, "l2_waits", None) or "0:0:0",
+                   dspram=getattr(args, "dspram", None) or 0)
 
 
 def explicit_fields(args) -> set[str]:
@@ -2151,7 +2544,7 @@ def explicit_fields(args) -> set[str]:
     out = {"icache", "dcache"} if getattr(args, "caches", False) else set()
     for name in ("icache", "dcache", "l2", "l3", "mmu", "model", "cores", "shadow_sets",
                  "compressed", "dsp", "msa", "msa_wrp", "mt", "mt_pm", "itc", "vps", "itu",
-                 "arch", "crc", "ginv", "rv_extensions", "rv_modes"):
+                 "arch", "crc", "ginv", "rv_extensions", "rv_modes", "rv_intc"):
         if getattr(args, name, None) is not None:
             out.add(name)
     for name, flag in (("fpu", "no_fpu"), ("write_buffer", "write_buffer"), ("nms", "nms")):
@@ -2191,10 +2584,22 @@ def apply_header(args) -> str | None:
     return prof.describe()
 
 
+def check_rv_ext(args) -> None:
+    """Refuse an explicit ``--rv-ext`` no hart can have (the reason)."""
+    value = getattr(args, "rv_extensions", None)
+    if value:
+        from .riscv import check_extensions
+        try:
+            check_extensions(value)
+        except (ValueError, KeyError) as exc:
+            sys.exit(f"--rv-ext {value}: {exc}")
+
+
 def session_from_args(args) -> Session:
     from . import cores
     from .compat import adjust, explain, problems
     apply_header(args)
+    check_rv_ext(args)
     options = options_from_args(args)
     release = args.release
     core = getattr(args, "core", None)
@@ -2220,4 +2625,5 @@ def session_from_args(args) -> Session:
                 options=options)
     # pipe --events / --views print every cycle: keep them all
     s.full_history = bool(getattr(args, "events", False) or getattr(args, "views", False))
+    s.include_dirs = tuple(getattr(args, "include", None) or ())
     return s

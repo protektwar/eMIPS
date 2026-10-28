@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 
 from .cache import ecc_check, ecc_encode
 from .mmu import Translation
-from .rvmmu import (ACCESS_FAULT, FAULT, PA_BITS, PAGE, SCHEMES, A, D, G, PageFault, R,
+from .rvmmu import (ACCESS_FAULT, FAULT, PAGE, SCHEMES, A, D, G, PageFault, R,
                     RVMMU, Scheme, U, V, W, X)
 
 #: Svnapot (priv. 15): the N bit, the 64 KB encoding
@@ -438,6 +438,10 @@ class P8700MMU(RVMMU):
             return 1
         return RVMMU.effective_priv(m, kind)
 
+    def effective(self, m, kind: str) -> tuple[int, int]:   # type: ignore[override]
+        """(privilege, V): the P8700 has no hypervisor extension (V = 0)."""
+        return self.effective_priv(m, kind), 0
+
     @staticmethod
     def _mtw(m, kind: str) -> bool:
         p = m.p8700
@@ -448,7 +452,7 @@ class P8700MMU(RVMMU):
         kind = "store" if kind == "store" else "fetch" if kind == "fetch" else "load"
         if self._mtw(m, kind):                          # (the walker's mapping: physical)
             pa = va & m.amask
-            if pa >> PA_BITS:
+            if pa >> m.pabits:
                 from .simrv import RVTrap
                 raise RVTrap(ACCESS_FAULT[kind], va)
             return pa, self._cca(m, pa)
@@ -537,7 +541,7 @@ class P8700MMU(RVMMU):
         for level in range(sch.levels - 1, -1, -1):
             idx = (va >> (PAGE + level * sch.idx_bits)) & ((1 << sch.idx_bits) - 1)
             addr = base + idx * sch.pte_size
-            if addr >> PA_BITS:
+            if addr >> m.pabits:
                 raise PageFault(ACCESS_FAULT[kind], "a PTE beyond physical memory")
             pte = m.load_pte(addr, sch.pte_size, view)
             if pte is None:

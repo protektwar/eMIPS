@@ -46,7 +46,11 @@ choice open, it says which one it made.
   monitor; in the window, with its datapath, panes and tools.
 - **RISC-V** — RV32 and RV64 harts as the ratified specifications define
   them, next to MIPS: the base ISAs with M, A, F, D, C, the CSRs, Zba /
-  Zbb (any ISA string); Machine, Supervisor and User mode, traps and
+  Zbb, Zbs, Zbc, Zbkb / Zbkc / Zbkx, Zicond, Zawrs, the
+  may-be-operations, Q, Zfh, Zfa, Zfinx, Zcb, Zcmp, Zcmt, Zacas, Zabha
+  and scalar cryptography, V (vectors, with the vector cryptography) (any
+  ISA string); Machine, Supervisor and User mode and the hypervisor
+  extension (HS / VS / VU, two-stage translation), traps and
   delegation, Sv32-Sv57 paging and PMP, the Debug specification's triggers
   and Debug Mode; RARS's system calls and memory map; an assembler and
   linker that give GNU `as` and `ld`'s bytes; Patterson & Hennessy's
@@ -203,7 +207,7 @@ print(m.read_reg(8))         # 14
 [**docs/guide/index.html**](docs/guide/index.html) — open it in a web
 browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 77 labs
+computer architecture behind every number on the screen (with 89 labs
 you check with eMIPS itself), and a reference.
 
 ## Author

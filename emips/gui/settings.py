@@ -67,6 +67,10 @@ BOOT_TEXT = {
              N_("As above, but the program runs in user mode: privileged instructions "
                 "(mfc0, mtc0, eret ...) and kernel addresses (MMIO at 0xffff0000) raise "
                 "exceptions — the operating-system view.")),
+    "guest": (N_("Guest (RISC-V with H: VS-mode)"),
+              N_("RISC-V with the hypervisor extension: the program runs as a guest — "
+                 "VS-mode (V = 1) with hgatp and vsatp Bare, so guest physical = "
+                 "physical; its traps go to M-mode unless it delegates them.")),
     "reset": (N_("Hardware reset state"),
               N_("Status after a real reset: BEV = ERL = 1 (exceptions go to "
                  "0xbfc00380), interrupts and the FPU disabled. For boot code. The PC "
@@ -189,10 +193,26 @@ class SettingsDialog(QtWidgets.QDialog):
             self.rv_modes.addItem(text, key)
         self.rv_modes.setToolTip(tr("RISC-V: the privilege modes the hart has (priv. 1.2)"))
         form.addRow(tr("RISC-V privilege modes"), self.rv_modes)
+        self.rv_intc = QtWidgets.QComboBox()
+        for key, text in (("none", tr("None (RARS's console wired to MEIP)")),
+                          ("plic", tr("PLIC")), ("aplic", tr("APLIC, direct delivery")),
+                          ("imsic", tr("IMSICs, the APLIC sending MSIs (Smaia)"))):
+            self.rv_intc.addItem(text, key)
+        self.rv_intc.setToolTip(tr(
+            "RISC-V: the platform's interrupt controller (Spike's map: the CLINT at "
+            "0x02000000 and the PLIC / APLIC at 0x0C000000, IMSIC files at 0x24000000 / "
+            "0x28000000); with one, Cores gives several harts on it"))
+        form.addRow(tr("RISC-V interrupt controller"), self.rv_intc)
         self.rv_relax = QtWidgets.QCheckBox(tr("Linker relaxation (GNU's default)"))
         self.rv_relax.setToolTip(tr("RISC-V: GNU ld's relaxation — calls, gp-relative "
                                     "accesses, alignment (as -mrelax / ld --relax)"))
         form.addRow("", self.rv_relax)
+        self.rv_rnmi = QtWidgets.QLineEdit()
+        self.rv_rnmi.setPlaceholderText(tr("0 (QEMU's and Spike's)"))
+        self.rv_rnmi.setToolTip(tr(
+            "RISC-V Smrnmi (priv. 8.5): the RNMI handler's address and the RNMI exception "
+            "handler's, INT[,EXC] — numbers or the program's labels; EXC defaults to INT"))
+        form.addRow(tr("RISC-V RNMI handlers"), self.rv_rnmi)
         # the nanoMIPS core's options (MD01251: Config5.NMS / CRCP / GI)
         self.nms = QtWidgets.QCheckBox(tr("nanoMIPS subset only (NMS)"))
         self.nms.setToolTip(tr("A core with the nanoMIPS subset (Config5.NMS = 1): the "
@@ -401,7 +421,25 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow(tr("Virtual processors a core"), self.vps)
         self.iocu = QtWidgets.QCheckBox(tr("I/O Coherence Unit (IOCU): the Malta's DMA is "
                                            "coherent with the data caches"))
+        self.iocu.setToolTip(tr("The Malta's PCI DMA, or the P8700's AXI CDMA (--core "
+                                "p8700), through the Coherence Manager: the cores' data "
+                                "caches are snooped"))
         form.addRow("", self.iocu)
+        self.l2_waits = QtWidgets.QComboBox()
+        for waits in ("0:0:0", "1:1:1", "1:1:2", "2:2:2", "3:3:3"):
+            self.l2_waits.addItem(waits, waits)
+        self.l2_waits.setEditable(True)
+        self.l2_waits.setToolTip(tr("The P8700's L2 RAM wait states — tag, way select, data "
+                                    "(GCR_L2_RAM_CONFIG, 0-3 each): cycles added to every "
+                                    "L2 access"))
+        form.addRow(tr("P8700 L2 wait states"), self.l2_waits)
+        self.dspram = QtWidgets.QComboBox()
+        from ..options import DSPRAM_KB
+        for kb in DSPRAM_KB:
+            self.dspram.addItem(tr("none") if not kb else f"{kb} KB", kb)
+        self.dspram.setToolTip(tr("The P8700's data scratch-pad RAM a core, placed by "
+                                  "mipsdsprambase: never cached, not coherent"))
+        form.addRow(tr("P8700 DSPRAM"), self.dspram)
         form.addRow("", _note(tr("More than one core: a Coherent Processing System (the "
                                  "Coherence Manager's GCRs and the Cluster Power "
                                  "Controller) on one memory. Kernel / user boot starts "
@@ -655,6 +693,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.rv_extensions.setText(o.rv_extensions)
         self.rv_modes.setCurrentIndex(max(0, self.rv_modes.findData(o.rv_modes)))
         self.rv_relax.setChecked(o.rv_relax)
+        self.rv_rnmi.setText(o.rv_rnmi)
+        self.rv_intc.setCurrentIndex(max(0, self.rv_intc.findData(o.rv_intc)))
+        i = self.l2_waits.findData(o.l2_waits)
+        if i < 0:
+            self.l2_waits.addItem(o.l2_waits, o.l2_waits)
+            i = self.l2_waits.count() - 1
+        self.l2_waits.setCurrentIndex(i)
+        self.dspram.setCurrentIndex(max(0, self.dspram.findData(o.dspram)))
         self.nms.setChecked(o.nms)
         self.crc.setCurrentIndex(max(0, self.crc.findData(o.crc)))
         self.ginv.setCurrentIndex(max(0, self.ginv.findData(o.ginv)))
@@ -764,7 +810,9 @@ class SettingsDialog(QtWidgets.QDialog):
             core=self.core.currentData(), arch=self.arch.currentData(),
             nms=self.nms.isChecked(), crc=self.crc.currentData(),
             ginv=self.ginv.currentData(), rv_extensions=self._rv_extensions(),
-            rv_modes=self.rv_modes.currentData(), rv_relax=self.rv_relax.isChecked())
+            rv_modes=self.rv_modes.currentData(), rv_relax=self.rv_relax.isChecked(),
+            rv_rnmi=self.rv_rnmi.text().strip(), rv_intc=self.rv_intc.currentData(),
+            l2_waits=self.l2_waits.currentText().strip(), dspram=self.dspram.currentData())
         return (self.release.currentData(), self.endian.currentData(),
                 self.forwarding.isChecked(), o.validated())
 
@@ -893,7 +941,8 @@ class SettingsDialog(QtWidgets.QDialog):
             for w in (self.nms, self.crc, self.ginv):
                 w.setEnabled(nano)
             rv = fixed.arch in ("rv32", "rv64")
-            for w in (self.rv_extensions, self.rv_modes, self.rv_relax):
+            for w in (self.rv_extensions, self.rv_modes, self.rv_relax, self.rv_rnmi,
+                      self.rv_intc):
                 w.setEnabled(rv)
             self.release.setEnabled(not rv)     # (RISC-V: no releases, little-endian)
             self.endian.setEnabled(not rv)
@@ -901,6 +950,9 @@ class SettingsDialog(QtWidgets.QDialog):
             why = forbidden("iocu", True, fixed, release)
             self.iocu.setEnabled(why is None)
             self.iocu.setToolTip(why or "")
+            p8700 = fixed.core == "p8700"
+            for w in (self.l2_waits, self.dspram):
+                w.setEnabled(p8700)
             for b in self.boot.buttons():
                 why = forbidden("boot", b.property("key"), fixed, release)
                 b.setEnabled(why is None)

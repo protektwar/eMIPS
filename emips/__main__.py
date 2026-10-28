@@ -16,7 +16,7 @@
 
 Shared options: ``--release R1|R2|R3|R5|R6``, ``--little``, ``--strict``
 (no pseudo-instructions), ``--noreorder`` (no automatic delay-slot nops),
-``--boot kernel|user|reset``, ``--exceptions cp0|stop``, ``--no-syscalls``,
+``--boot kernel|user|reset|guest``, ``--exceptions cp0|stop``, ``--no-syscalls``,
 ``--keys TEXT`` (MMIO keyboard), ``--no-forwarding`` (pipeline),
 ``--caches`` (the 24K's L1 caches) or ``--icache`` / ``--dcache
 SIZE[:WAYS[:LINE]]``, ``--cache-parity``, ``--cache-init random|hardware``,
@@ -24,7 +24,8 @@ SIZE[:WAYS[:LINE]]``, ``--cache-parity``, ``--cache-init random|hardware``,
 ``--mem-timing KEY=N,...`` and ``--nonblocking`` (memory timing of the
 pipeline with caches), ``--mmu fixed|bat|tlb[:N]|ftlb[...][+sc][+pw]``
 (nanoMIPS also ``mpu[:N]`` / ``fixed+mpu[:N]``: the I7200's MPU),
-``--model 5-stage|24k`` (the pipeline model: textbook or the MIPS 24K),
+``--model 5-stage|24k|p8700`` (the pipeline model: textbook, the MIPS 24K or the
+P8700's out-of-order one),
 ``--cores N`` (a multi-core system of N cores, emips.cps), ``--board
 flat|malta[:RAM_MB[:SWITCHES]]`` (the MIPS Malta board, emips.malta),
 ``--disk [SLOT=]IMAGE`` (an IDE disk on the Malta, emips.ata).
@@ -64,7 +65,7 @@ from .cache import Geometry
 from .cores import CORES, describe as describe_core, get as get_core
 from .timing import MEMORY_TIMING
 from .options import (ARCHES, BOOT_MODES, CACHE_INIT_MODES, MAX_CORES, NANO_CRC, NANO_GINV,
-                      RV_EXTENSIONS, RV_MODES, Options, arch_title, gdb_program)
+                      RV_EXTENSIONS, RV_INTC, RV_MODES, Options, arch_title, gdb_program)
 from .session import Session, StepResult
 from .sim import Machine
 from .trace import format_view
@@ -79,6 +80,8 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
     arch = getattr(args, "arch", None) or "mips32"
     nano = rv = None
     if arch in ("rv32", "rv64"):
+        from .cli import check_rv_ext
+        check_rv_ext(args)
         rv = {"extensions": getattr(args, "rv_extensions", None) or RV_EXTENSIONS,
               "relax": not getattr(args, "no_relax", False)}
     if arch == "nanomips":              # (as the session assembles: every ASE on)
@@ -88,12 +91,23 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
         nano = {"nms": getattr(args, "nms", False), "crc": True, "ginv": True, "eva": True,
                 "tlb": True, "link": {"relax": getattr(args, "relax", False)}}
     try:
-        return assemble(Path(path).read_text(), endian=endian, release=release,
+        prog = assemble(Path(path).read_text(), endian=endian, release=release,
                         pseudo=pseudo, reorder=reorder,
                         bases=Options(board=board).segment_bases(), arch=arch, nano=nano,
-                        rv=rv)
+                        rv=rv, path=path, include_dirs=tuple(getattr(args, "include", None) or ()))
     except AsmError as exc:
         sys.exit(f"{path}: {exc}")
+    _messages(path, prog)
+    return prog
+
+
+def _messages(path: str, prog) -> None:
+    """GNU as's output while it assembles: ``.print`` on stdout, warnings on
+    stderr (``file:line: Warning: ...``)."""
+    for text in getattr(prog, "printed", ()):
+        print(text)
+    for n, msg in getattr(prog, "warnings", ()):
+        print(f"{path}:{n}: Warning: {msg}", file=sys.stderr)
 
 
 def _cmd_asm(args) -> None:
@@ -125,7 +139,11 @@ def _cmd_cc(args) -> None:
         rv = arch in ("rv32", "rv64")
         if args.rv_extensions and not rv:
             sys.exit("--rv-ext is a RISC-V option (--arch rv32 / rv64)")
+        if args.compiler != "auto" and not rv:
+            sys.exit("--compiler is a RISC-V option (--arch rv32 / rv64)")
         if rv:
+            from .cli import check_rv_ext
+            check_rv_ext(args)
             mips = [f for f, on in (("--release", args.release), ("--mips16", args.mips16),
                                     ("--micromips", args.micromips), ("--dsp", args.dsp),
                                     ("--msa", args.msa), ("--no-fpu", args.no_fpu),
@@ -138,7 +156,8 @@ def _cmd_cc(args) -> None:
                 sys.exit(f"the {core.title} is built with {core.choices('rv_extensions')}")
             log = build(args.sources, out, arch=arch, optimize=f"-O{args.opt}",
                         extensions=args.rv_extensions or (
-                            core.build["rv_extensions"] if core is not None else RV_EXTENSIONS))
+                            core.build["rv_extensions"] if core is not None else RV_EXTENSIONS),
+                        compiler=args.compiler)
             if args.verbose:
                 print(log)
             print(f"wrote {out}: run it with  python3 -m emips run {out}")
@@ -211,6 +230,8 @@ def _session(args):
     errors: list[str] = []
     if not load_file(s, args.file, errors.append):
         sys.exit(errors[0] if errors else f"cannot load {args.file}")
+    if s.kind == "asm":
+        _messages(args.file, s.program)
     for note in s.program_notes:                # what the program's code made change
         print(f"note: {note}", file=sys.stderr)
     s.type_keys(_keys(args))
@@ -422,6 +443,9 @@ def _print_pipeline(s, args) -> None:
     print(f"\n{p.cycles} cycles, {p.retired} instructions retired, CPI {cpi:.2f}")
     if p.stalls:
         print("stall cycles:", ", ".join(f"{k} {v}" for k, v in sorted(p.stalls.items())))
+    core = getattr(p, "core", None)             # (a P8700 core: its harts share it)
+    if core is not None and len(core.harts) > 1:
+        print("harts: " + ", ".join(f"hart {h.k} {h.retired} graduated" for h in core.harts))
     if s.cps is not None:                       # the other cores (the chart: core s.cpu)
         for i, q in enumerate(s.pipelines):
             if i != s.cpu and q is not None:
@@ -580,6 +604,21 @@ def build_parser() -> argparse.ArgumentParser:
                        help=f"RISC-V: the hart's extensions (default {RV_EXTENSIONS})")
         p.add_argument("--rv-modes", dest="rv_modes", choices=RV_MODES, default=None,
                        help="RISC-V: the privilege modes (default msu)")
+        p.add_argument("--rv-intc", dest="rv_intc", choices=RV_INTC, default=None,
+                       help="RISC-V: the platform's interrupt controller — none (RARS's "
+                            "console wired to MEIP, the default), plic, aplic (direct "
+                            "delivery) or imsic (an IMSIC per hart, the APLIC sending "
+                            "MSIs: needs Smaia); with one, --cores N gives N harts")
+        p.add_argument("--l2-waits", dest="l2_waits", default=None, metavar="T:W:D",
+                       help="the P8700's L2 RAM wait states — tag, way select, data RAMs, "
+                            "0-3 each (GCR_L2_RAM_CONFIG; default 0:0:0)")
+        p.add_argument("--dspram", type=int, default=None, metavar="KB",
+                       help="the P8700's data scratch-pad RAM a core, 4-256 KB "
+                            "(mipsdsprambase places it; default 0: none)")
+        p.add_argument("--rv-rnmi", dest="rv_rnmi", default=None, metavar="INT[,EXC]",
+                       help="RISC-V Smrnmi: the RNMI handler's address and the RNMI "
+                            "exception handler's (numbers or labels; EXC defaults to "
+                            "INT; both 0 without it, as QEMU and Spike)")
         p.add_argument("--no-relax", dest="no_relax", action="store_true",
                        help="RISC-V: no linker relaxation (as -mno-relax, ld --no-relax; "
                             "GNU relaxes by default)")
@@ -596,6 +635,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name != "dis":
             p.add_argument("--strict", action="store_true",
                            help="strict mode: no pseudo-instructions")
+            p.add_argument("-I", dest="include", action="append", default=None,
+                           metavar="DIR",
+                           help="look here too for .include / .incbin files (after the "
+                                "program's folder; as GNU as -I)")
             p.add_argument("--noreorder", action="store_true",
                            help="start in .set noreorder (fill delay slots yourself)")
         if name == "asm":
@@ -667,7 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 "blank:SIZE (e.g. blank:1M); repeatable; every run "
                                 "starts from the image (the debugger's disk save keeps "
                                 "what it wrote)")
-            p.add_argument("--model", choices=("5-stage", "24k"), default=None,
+            p.add_argument("--model", choices=("5-stage", "24k", "p8700"), default=None,
                            help="pipeline model: 5-stage (the textbook pipeline, "
                                 "default) or 24k (the MIPS 24K's 8 stages, branch "
                                 "prediction, skewed ALU)")
@@ -816,6 +859,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "-march / -mabi from --rv-ext); --core: the core's")
     c.add_argument("--rv-ext", dest="rv_extensions", default=None, metavar="EXTS",
                    help=f"RISC-V: the hart's extensions (default {RV_EXTENSIONS})")
+    c.add_argument("--compiler", choices=("auto", "gcc", "clang"), default="auto",
+                   help="RISC-V: the compiler (default: a RISC-V GCC, else clang; clang 18 "
+                        "auto-vectorizes loops for V at -O2 / -O3, GCC 13 has only the RVV "
+                        "intrinsics)")
     c.add_argument("--nms", action="store_true",
                    help="nanoMIPS: for a core with the nanoMIPS subset only "
                         "(-march=32r6s)")

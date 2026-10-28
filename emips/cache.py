@@ -558,6 +558,8 @@ class Cache:
     #: the bytes one check covers when a partial store must read them first
     #: (0: per-byte parity; the P8700's ECC: 4, emips.p8700err)
     WORD = 0
+    #: the physical address space (LF13: the machine's PABITS; MIPS 32)
+    pamask = M32
 
     def __init__(self, kind: str, geometry: Geometry, *, parity: bool = False) -> None:
         self.kind = kind
@@ -599,13 +601,13 @@ class Cache:
         return (va >> self.line_shift) & (self.sets - 1)
 
     def tag_of(self, pa: int) -> int:
-        return (pa & M32) >> self.tag_shift
+        return (pa & self.pamask) >> self.tag_shift
 
     def line_pa(self, tag: int, s: int) -> int:
         """Physical address of a line from its tag and set (the
         write-back address)."""
         low = (s << self.line_shift) & ((1 << self.tag_shift) - 1)
-        return ((tag << self.tag_shift) | low) & M32
+        return ((tag << self.tag_shift) | low) & self.pamask
 
     def alias_sets(self, pa: int) -> list[int]:
         """Every set a physical address can sit in: the index bits above
@@ -780,13 +782,13 @@ class Cache:
         if self.check and self.parity:
             self._check_tags(s)
         w = self.find(s, tag)
-        line = pa & ~self.line_mask & M32
+        line = pa & ~self.line_mask & self.pamask
         if w is not None:
             self.hits += 1
             self.touch(s, w)
             self.stats.reference(kind, line, True, False)
             if self.log is not None:
-                self.log.append(CacheAccess(self.kind, kind, va & M32, pa & M32, s, w,
+                self.log.append(CacheAccess(self.kind, kind, va & M32, pa & self.pamask, s, w,
                                             tag, True, offset=pa & self.line_mask))
             return s, w
         self.misses += 1
@@ -795,7 +797,7 @@ class Cache:
         cls = self.stats.reference(kind, line, False, allocate)
         rec = None
         if self.log is not None:
-            rec = CacheAccess(self.kind, kind, va & M32, pa & M32, s, None, tag, False,
+            rec = CacheAccess(self.kind, kind, va & M32, pa & self.pamask, s, None, tag, False,
                               cls, offset=pa & self.line_mask)
             self.log.append(rec)
         if not allocate:
@@ -812,9 +814,9 @@ class Cache:
 
     def note_hit(self, kind: str, va: int, pa: int, s: int, w: int) -> None:
         """Count (and record) a hit found without :meth:`lookup`."""
-        self.stats.reference(kind, pa & ~self.line_mask & M32, True, False)
+        self.stats.reference(kind, pa & ~self.line_mask & self.pamask, True, False)
         if self.log is not None:
-            self.log.append(CacheAccess(self.kind, kind, va & M32, pa & M32, s, w,
+            self.log.append(CacheAccess(self.kind, kind, va & M32, pa & self.pamask, s, w,
                                         self.tag_of(pa), True, offset=pa & self.line_mask))
 
     def replace(self, s: int, w: int, tag: int, bus, *, zero: bool = False) -> None:
@@ -981,6 +983,12 @@ class SecondaryCache(Cache):
         #: a write miss allocates the line (the P8700's L2, MD01502 3.3.8: the
         #: rest of the line read from below unless the write covers it)
         self.write_allocate = False
+        #: ``observer(pa, miss)`` after every line a read looks up (the
+        #: P8700's L2 prefetcher, emips.p8700mem)
+        self.observer = None
+        #: ``perf(kind, hit, full, allocated)`` after every line looked up (the
+        #: P8700 CM's performance counters, emips.p8700oci), or None
+        self.perf = None
 
     def set_of(self, va: int) -> int:
         return (va >> self.line_shift) & (self.sets - 1)
@@ -1065,13 +1073,17 @@ class SecondaryCache(Cache):
         known = 0
         i = 0
         while i < n:
-            a = (pa + i) & M32
+            a = (pa + i) & self.pamask
             off = a & self.line_mask
             k = min(n - i, self.line - off)
             before = self.misses
             s, w = self.lookup(a, a, self.below, kind="read")
             if self.misses == before and self.timing is not None:
                 self.timing.served("L2" if self.kind == "S" else "L3")
+            if self.observer is not None:
+                self.observer(a, self.misses != before)
+            if self.perf is not None:
+                self.perf("read", self.misses == before, True, True)
             ln = self.lines[s][w]
             g = self.group
             for d in range(off // g, (off + k + g - 1) // g):
@@ -1097,14 +1109,17 @@ class SecondaryCache(Cache):
         n = len(data)
         i = 0
         while i < n:
-            a = (pa + i) & M32
+            a = (pa + i) & self.pamask
             off = a & self.line_mask
             k = min(n - i, self.line - off)
             part = (known >> i) & ((1 << k) - 1)
             if part:
                 whole = k == self.line and part == (1 << k) - 1    # (nothing to read)
+                before = self.misses
                 s, w = self.lookup(a, a, self.below, kind="write",
                                    allocate=self.write_allocate and not through, zero=whole)
+                if self.perf is not None:
+                    self.perf("write", self.misses == before, whole, w is not None)
                 if w is not None:
                     self._merge(s, w, off, data[i:i + k], part)
                     if not through:
@@ -1163,7 +1178,7 @@ class Memory:
         known = 0
         devices = m.devices
         for i in range(n):
-            a = (pa + i) & M32
+            a = (pa + i) & self.c.pamask
             dev = next((d for d in devices if d.covers(a)), None) if devices else None
             if dev is not None:
                 data[i] = dev.load(m, a, 1) & 0xFF
@@ -1179,7 +1194,7 @@ class Memory:
         m = self.c.m
         for i, byte in enumerate(data):
             if known >> i & 1:
-                a = (pa + i) & M32
+                a = (pa + i) & self.c.pamask
                 dev = next((d for d in m.devices if d.covers(a)), None) if m.devices else None
                 if dev is not None:
                     dev.store(m, a, byte, 1)
@@ -1189,9 +1204,9 @@ class Memory:
     def peek(self, pa: int) -> int | None:
         m = self.c.m
         board = m.board
-        if board is not None and board.bus.covers(pa & M32):
-            return board.bus.peek(m, pa & M32, 1)        # None: nothing there
-        raw = m.mem.get_memory().get(format(pa & M32, "x"))
+        if board is not None and board.bus.covers(pa & self.c.pamask):
+            return board.bus.peek(m, pa & self.c.pamask, 1)        # None: nothing there
+        raw = m.mem.get_memory().get(format(pa & self.c.pamask, "x"))
         return None if raw is None else int(raw, 16)
 
 
@@ -1212,7 +1227,7 @@ class _Entry:
         self.mask |= ((1 << len(data)) - 1) << off
 
     def byte(self, pa: int) -> int | None:
-        off = (pa & M32) - self.base
+        off = pa - self.base
         if 0 <= off < WBB_LINE and self.mask >> off & 1:
             return self.data[off]
         return None
@@ -1291,7 +1306,7 @@ class WriteBuffer:
             return
         i = 0
         while i < len(data):
-            a = (pa + i) & M32
+            a = (pa + i) & self.c.pamask
             base, off = a & ~(WBB_LINE - 1), a & (WBB_LINE - 1)
             k = min(len(data) - i, WBB_LINE - off)
             if self.wt is not None and self.wt.base != base:
@@ -1348,7 +1363,7 @@ class WriteBuffer:
         """A read is about to leave the core: an open entry of its block
         goes out first (write-through: "the write command will be ordered
         ahead of the read command"; UCA: a load matching bits 31:5)."""
-        lo, hi = pa & M32, (pa + n - 1) & M32
+        lo, hi = pa & self.c.pamask, (pa + n - 1) & self.c.pamask
         for e in (self.wt, self.uca):
             if e is not None and e.base <= hi and lo < e.base + WBB_LINE:
                 if e is self.wt:
@@ -1397,7 +1412,7 @@ class WriteBuffer:
     def backdoor_write(self, pa: int, value: int) -> None:
         for e in (self.wt, self.uca):
             if e is not None and e.byte(pa) is not None:
-                e.data[(pa & M32) - e.base] = value & 0xFF
+                e.data[(pa & self.c.pamask) - e.base] = value & 0xFF
 
 
 def _dword_byte(k: int, big_endian: bool) -> int:
@@ -1464,6 +1479,8 @@ class Caches:
         self.hardware_init = hardware_init
         self.seed = seed
         self.m = None
+        #: the machine's physical address space (set_pamask)
+        self.pamask = M32
         self.memory = Memory(self)
         self.wbb = WriteBuffer(self) if write_buffer else None
         #: memory timing (emips.timing), switched on by the pipeline
@@ -1472,6 +1489,9 @@ class Caches:
         self.pending: CacheError | None = None
         #: Config2.L2B: the L2 is bypassed
         self.l2_bypass = False
+        #: the P8700's L1 data prefetcher (emips.p8700mem) and what asks now
+        self.l1pf = None
+        self.req_kind = "load"
         #: the D-cache corrects virtual aliases (:meth:`_unalias`; the P8700)
         self.alias_free = False
         #: while watched: every access (CacheAccess), in the order made
@@ -1506,6 +1526,14 @@ class Caches:
                 c.randomize(rng)
             else:
                 c.invalidate_all()
+
+    def set_pamask(self, mask: int) -> None:
+        """The machine's physical address width (LF13): every level's tags
+        and the lines below cover it."""
+        self.pamask = mask
+        for c in (self.i, self.d, self.l2, self.l3):
+            if c is not None:
+                c.pamask = mask
 
     @property
     def all(self) -> list[Cache]:
@@ -1626,7 +1654,7 @@ class Caches:
 
     def _uncached(self, kind: str, pa: int, no_cache: bool = False) -> None:
         if self.log is not None:
-            self.log.append(CacheAccess("U", kind, pa & M32, pa & M32,
+            self.log.append(CacheAccess("U", kind, pa & self.pamask, pa & self.pamask,
                                         miss="no cache" if no_cache else None))
 
     def initialize(self) -> None:
@@ -1762,6 +1790,7 @@ class Caches:
     def read(self, va: int, pas: list[int], size: int, cca: int = CCA_WB) -> bytes:
         """Load bytes through the data cache (cacheable attribute ``cca``;
         coherent: a miss asks for the line Shared, 5, or Exclusive, 4)."""
+        self.req_kind = "load"
         if self.cm is not None:
             self.cm.claim(self)
         d = self.d
@@ -1790,13 +1819,17 @@ class Caches:
             # (P5600 SUM: "so that an LL itself does not clear the LL bit in
             # another CPU")
             linked = self.m is not None and getattr(self.m, "_linked", False)
+            before = d.misses
             s, w = self._lookup(d, va, pas[0], "load", cca,
                                 "own" if cca == CCA_CWBE and not linked else "share")
             if t.active:
                 t.line_access(pas[0] & ~d.line_mask)
             if d.check and d.parity:
                 d._check_data(s, w, off, size)
-            return bytes(d.lines[s][w].data[off:off + size])
+            out = bytes(d.lines[s][w].data[off:off + size])
+            if self.l1pf is not None:                    # (the P8700's L1 prefetcher)
+                self.l1pf.observe(self, va, pas[0], cca, d.misses != before)
+            return out
         return bytes(self.read((va + i) & M32, [pas[i]], 1, cca)[0] for i in range(size))
 
     def write(self, va: int, pas: list[int], data: bytes, cca: int,
@@ -1807,6 +1840,7 @@ class Caches:
         allocate (0), 24K 8.5.2."""
         #: an SC's store (the CM's intervention-error info, bit 8)
         self._atomic = atomic
+        self.req_kind = "store"
         if self.cm is not None:
             self.cm.claim(self)
         d = self.d
@@ -1841,6 +1875,7 @@ class Caches:
             for i in range(size):
                 self.write((va + i) & M32, [pas[i]], data[i:i + 1], cca)
             return
+        before = d.misses
         s, w = self._lookup(d, va, pas[0], "store", cca, "own",
                             allocate=cca in WRITE_BACK_CCA)
         if t.active:
@@ -1859,6 +1894,8 @@ class Caches:
             if cca in WRITE_BACK_CCA:
                 ln.dirty = True
                 d._seal(ln)
+            if self.l1pf is not None:                    # (the P8700's L1 prefetcher)
+                self.l1pf.observe(self, va, pas[0], cca, d.misses != before)
         if cca == CCA_WT:
             if self.wbb is not None:
                 self.wbb.write_through(pas[0], bytes(data))
@@ -1871,6 +1908,7 @@ class Caches:
         mask)``; a coherent refill reads the newest copy without taking it
         (Coherent Read Discard).  An L2 / L3 error found by the refill is
         taken at once (the instruction cannot run on bad bits)."""
+        self.req_kind = "fetch"
         if self.cm is not None:
             self.cm.claim(self)
         c = self.i
@@ -1903,7 +1941,7 @@ class Caches:
     # -- the fill-store buffer: coherent stores in flight (M11 phase 3) ----------
 
     def _fsb_entry(self, pa: int) -> PendingStore | None:
-        line = pa & ~(self.d.line_mask) & M32
+        line = pa & ~(self.d.line_mask) & self.pamask
         return next((e for e in self.fsb if e.line == line), None)
 
     def _fsb_store(self, va: int, pa: int, data: bytes, cca: int) -> bool:
@@ -1917,7 +1955,7 @@ class Caches:
             ln = d.probe(va, pa)
             if ln is not None and not ln.shared:
                 return False
-            line = pa & ~d.line_mask & M32
+            line = pa & ~d.line_mask & self.pamask
             why = "upgrade" if ln is not None else "miss"
             t._fsb()                                       # a free FSB line
             while len(self.fsb) >= 8:                      # the FSB: 8 lines
@@ -1938,7 +1976,7 @@ class Caches:
         for i, byte in enumerate(data):
             e.data[off + i] = byte
         if self.log is not None:
-            self.log.append(CacheAccess("D", "store", va & M32, pa & M32, d.set_of(va), None,
+            self.log.append(CacheAccess("D", "store", va & M32, pa & self.pamask, d.set_of(va), None,
                                         d.tag_of(pa), False, offset=off, coherence=note))
         return True
 
@@ -2147,6 +2185,7 @@ class Caches:
         d = self.d
         if d is None:
             return
+        self.req_kind = "pref"
         if self.cm is not None:
             self.cm.claim(self)
         self.timing.begin("pref")
@@ -2171,6 +2210,78 @@ class Caches:
             if self.coherent(cca):                       # the line becomes ours
                 self.cm.claim_line(self, pa)
             d.replace(s, d.victim(s), tag, self, zero=True)
+
+    # -- RISC-V's cache-block operations (unpriv. ch. 19, LF8) ----------------------
+
+    def cbo(self, op: str, va: int, pa: int, size: int, cca: int) -> str:
+        """CBO.CLEAN / CBO.FLUSH / CBO.INVAL (19.6.1) on the ``size``-byte
+        block at ``va`` / ``pa``: each D-cache, L2 and L3 line the block
+        covers — clean writes a dirty line back, flush writes back and
+        invalidates, inval invalidates (a dirty line's data is lost) — and
+        with a Coherence Manager every core's D-cache (the coherent caches:
+        the instruction caches are not coherent in eMIPS, FENCE.I's job);
+        clean / flush drain the write buffer: the block reaches memory, "a
+        point common to all agents".  Hit-type CACHE operations' costs
+        (MD00355 Table 3.5).  Returns what was done."""
+        code = {"clean": 6, "flush": 5, "inval": 4}[op]
+        name = {"clean": "clean", "flush": "flush", "inval": "invalidate"}[op]
+        if self.cm is not None:
+            self.cm.claim(self)
+        t = self.timing
+        t.begin("cacheop")
+        done = []
+        for c in (self.d, self.l2, self.l3):
+            if c is None:
+                continue
+            bus = self if c.level == 1 else c.below
+            for off in range(0, max(size, c.line), c.line):
+                a, lpa = (va if c.level == 1 else pa) + off, pa + off
+                s_, tag = c.set_of(a), c.tag_of(lpa)
+                w = c.find(s_, tag)
+                if w is None:
+                    continue
+                dirty = c.writable and c._dirty(s_, w)
+                if c.level == 1 and t.active:
+                    t.fixed(CACHEOP_COST["hit-inv" if code == 4 else
+                                         ("hit-wb-dirty" if dirty else "hit-wb-clean")
+                                         if code == 6 else
+                                         ("hit-wbi-dirty" if dirty else "hit-wbi-clean")],
+                            f"cbo.{op}: {c.name} line")
+                done.append(self._hit_op(c, code, a, lpa, f"cbo.{op}", bus, cca))
+        if self.cm is not None and self.coherent(cca):
+            for off in range(0, size, self.d.line if self.d is not None else size):
+                more = self.cm.global_op(self, "D", code, pa + off)
+                if more:
+                    done.append(f"globalized: {more}")
+        if op != "inval":
+            self.sync(0)                        # (down to memory)
+        return f"cbo.{op}: " + ("; ".join(done) if done else f"no cached copy to {name}")
+
+    def cbo_zero(self, va: int, pa: int, size: int, cca: int) -> bool:
+        """CBO.ZERO (19.6.2) in a write-back D-cache whose lines the block
+        holds whole: each line allocated zeroed and dirty without reading
+        memory (as PREF 30 PrepareForStore) or zeroed where it is.  False:
+        not done here (no D-cache, not write-back, lines larger than the
+        block) — the caller stores the zeros."""
+        d = self.d
+        if d is None or cca not in WRITE_BACK_CCA or d.line > size:
+            return False
+        if self.cm is not None:
+            self.cm.claim(self)
+        self.timing.begin("store")
+        for off in range(0, size, d.line):
+            lva, lpa = va + off, pa + off
+            s_, tag = d.set_of(lva), d.tag_of(lpa)
+            w = d.find(s_, tag)
+            if w is None:
+                if d.check and d.parity:
+                    d._check_tags(s_)
+                if self.coherent(cca):          # the line becomes ours
+                    self.cm.claim_line(self, lpa)
+                d.replace(s_, d.victim(s_), tag, self, zero=True)
+            else:
+                self.write(lva & M32, [lpa + k for k in range(d.line)], bytes(d.line), cca)
+        return True
 
     @staticmethod
     def _invalidate(c: Cache, s: int, w: int) -> None:

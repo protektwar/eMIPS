@@ -6,7 +6,15 @@ flow regenerated from the trace words (:meth:`Session.trace_lines`).
 
 The settings are TAP scans (:meth:`Session.trace_start`), recorded like
 the probe's other events: kept across Reset and Step Back.  A program
-that takes over with TraceControl.TS = 1 overrides them."""
+that takes over with TraceControl.TS = 1 overrides them.
+
+On a RISC-V hart (LF11) the same pane drives the RISC-V Trace Control
+Interface (emips.rvtrace) as a debugger does through System Bus Access:
+the protocol (E-Trace / N-Trace), the optimizations a user picks most
+(implicit return, branch prediction and the jump target cache for
+E-Trace, HTM and repeated history for N-Trace, sequential jumps,
+timestamps), the components' state, and the regenerated flow — or the
+packets / messages the encoder sent, with why."""
 
 from __future__ import annotations
 
@@ -47,6 +55,39 @@ class TraceView(QtWidgets.QWidget):
         row.addWidget(self.on)
         for cb in self.options.values():
             row.addWidget(cb)
+        # the RISC-V controls (LF11)
+        self.protocol = QtWidgets.QComboBox()
+        self.protocol.addItem(tr("E-Trace"), "e")
+        self.protocol.addItem(tr("N-Trace"), "n")
+        self.protocol.setToolTip(tr("trTeFormat: Efficient Trace for RISC-V 2.0 or the "
+                                    "Nexus-based N-Trace 1.0"))
+        self.protocol.currentIndexChanged.connect(self._apply)
+        row.addWidget(self.protocol)
+        self.rv_options: dict[str, QtWidgets.QCheckBox] = {}
+        for key, text, tip in (
+                ("return", tr("Implicit return"), tr("trTeInstEnImplicitReturn: a return "
+                                                     "to the predicted address sends nothing")),
+                ("predict", tr("Branch prediction"), tr("E-Trace: correctly predicted "
+                                                        "branches as a count")),
+                ("cache", tr("Jump cache"), tr("E-Trace: uninferable targets as a jump "
+                                               "target cache index")),
+                ("htm", tr("HTM"), tr("N-Trace: branch history (one bit a branch; "
+                                      "off: BTM, a message a taken branch)")),
+                ("repeat", tr("Repeated history"), tr("N-Trace: repeated HIST records and "
+                                                      "branch messages counted")),
+                ("sijump", tr("Sequential jumps"), tr("LUI / AUIPC + JALR: inferable")),
+                ("time", tr("Timestamps"), tr("trTsEnable: the hart's cycles"))):
+            cb = QtWidgets.QCheckBox(text)
+            cb.setToolTip(tip)
+            cb.toggled.connect(self._apply)
+            self.rv_options[key] = cb
+            row.addWidget(cb)
+        self.rv_options["htm"].setChecked(True)
+        self.packets = QtWidgets.QCheckBox(tr("Packets"))
+        self.packets.setToolTip(tr("show the packets / messages the encoder sent instead "
+                                   "of the regenerated flow"))
+        self.packets.toggled.connect(lambda _c: self._session and self._show(self._session))
+        row.addWidget(self.packets)
         row.addStretch(1)
         lay.addLayout(row)
         self.state = QtWidgets.QLabel()
@@ -58,9 +99,16 @@ class TraceView(QtWidgets.QWidget):
         self.text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
         lay.addWidget(self.text, 1)
 
+    def _rv(self) -> bool:
+        s = self._session
+        return s is not None and s.machine is not None and s.machine.rv
+
     def _apply(self, _checked: bool = False) -> None:
         s = self._session
         if self._loading or s is None or s.machine is None:
+            return
+        if self._rv():
+            self._apply_rv(s)
             return
         o = {k: cb.isChecked() for k, cb in self.options.items()}
         if self.on.isChecked():
@@ -72,20 +120,64 @@ class TraceView(QtWidgets.QWidget):
             s.trace_stop()
         self.refresh(s)
 
+    def _apply_rv(self, s: Session) -> None:
+        if s.rvtrace is None:
+            return
+        o = {k: cb.isChecked() for k, cb in self.rv_options.items()}
+        proto = self.protocol.currentData()
+        if self.on.isChecked():
+            opts = tuple(k for k in ("return", "sijump") if o[k])
+            if proto == "e":
+                opts += tuple(k for k in ("predict", "cache") if o[k])
+            elif o["repeat"]:
+                opts += ("repeat",)
+            s.rv_trace_start(protocol=proto, options=opts, htm=o["htm"],
+                             timestamps=o["time"])
+        elif any(e.enabled for e in s.rvtrace.encoders):
+            s.trace_stop()
+        self.refresh(s)
+
     def refresh(self, s: Session) -> None:
         self._session = s
         m = s.machine
         self._loading = True
+        rv = m is not None and m.rv
         try:
-            for cb in [self.on, *self.options.values()]:
+            for cb in self.options.values():
+                cb.setVisible(not rv)
+            for w in [self.protocol, self.packets, *self.rv_options.values()]:
+                w.setVisible(rv)
+            for cb in [self.on, *self.options.values(), *self.rv_options.values()]:
                 cb.setEnabled(m is not None)
-            if m is None or m.rv:               # (MIPS Trace: a MIPS core's)
-                for cb in [self.on, *self.options.values()]:
-                    cb.setEnabled(False)
-                self.state.setText("" if m is None else tr(
-                    "MIPS Trace (PDtrace and the TCB, MD00439) belongs to MIPS cores: a "
-                    "RISC-V hart has none"))
+            if m is None:
+                self.state.setText("")
                 self.text.setPlainText("")
+                return
+            if rv:
+                ts = s.rvtrace
+                if ts is None:
+                    self.on.setEnabled(False)
+                    self.state.setText(tr("The P8700 traces through its Hybrid Debug "
+                                          "(not modelled here)"))
+                    self.text.setPlainText("")
+                    return
+                e = ts.encoders[s.cpu]
+                self.on.setChecked(e.enabled)
+                if e.enabled:
+                    self.protocol.setCurrentIndex(e.format)
+                    f = e.features
+                    self.rv_options["return"].setChecked(bool(f & 8))
+                    self.rv_options["predict"].setChecked(bool(f & 0x10))
+                    self.rv_options["cache"].setChecked(bool(f & 0x20))
+                    self.rv_options["repeat"].setChecked(bool(f & 0x100))
+                    self.rv_options["sijump"].setChecked(bool(f & 4))
+                    self.rv_options["htm"].setChecked((e.control >> 4 & 7) != 3)
+                    self.rv_options["time"].setChecked(e.ts.enabled)
+                n = self.protocol.currentData() == "n"
+                for k in ("predict", "cache"):
+                    self.rv_options[k].setEnabled(not n)
+                for k in ("htm", "repeat"):
+                    self.rv_options[k].setEnabled(n)
                 return
             tcb = m.ejtag.tap.tcb
             st = m.pdt.settings()
@@ -104,12 +196,16 @@ class TraceView(QtWidgets.QWidget):
             self._show(s)
 
     def _show(self, s: Session) -> None:
-        if s.machine is None or s.machine.rv:
+        if s.machine is None or (s.machine.rv and s.rvtrace is None):
             return
-        self.state.setText("\n".join(s.trace_state()[:2]))
+        self.state.setText("\n".join(s.trace_state()[:3 if s.machine.rv else 2]))
         if not self.isVisible():
             return                              # regeneration only for a shown pane
-        lines = s.trace_lines(200)
+        if s.machine.rv and self.packets.isChecked():
+            from ..sessionrv import trace_packet_lines
+            lines = trace_packet_lines(s, 200)
+        else:
+            lines = s.trace_lines(200)
         self.text.setPlainText("\n".join(line.strip() for line in lines)
                                if lines else tr("Nothing traced yet: tick Trace, then run."))
         bar = self.text.verticalScrollBar()

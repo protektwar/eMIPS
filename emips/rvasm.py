@@ -59,9 +59,10 @@ import re
 import struct
 from dataclasses import dataclass, field
 
-from .assembler import AsmError, _local_labels
-from .nanoasm import _c_comments, _statements, _unescape_gas, _LABEL_DEF, _ASSIGN
-from .riscv import _DATA, closure, parse_extensions
+from . import gasread
+from .assembler import AsmError
+from .nanoasm import _unescape_gas, _LABEL_DEF, _ASSIGN
+from .riscv import _DATA, closure, parse_extensions, sp_base
 
 M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 
@@ -81,6 +82,7 @@ class Opcode:
     func: str | None
     macro: str | None = None
     cname: str = "I"                            # binutils' INSN_CLASS_ name
+    eew64: bool = False                         # INSN_V_EEW64: no zve32x-only form
 
     @property
     def length(self) -> int:
@@ -106,7 +108,8 @@ def _opcodes() -> dict[str, list[Opcode]]:
     b = _DATA["binutils"]
     rows = [Opcode(e["i"], e["name"], e["xlen"], tuple(tuple(c) for c in e["class"]),
                    e["args"], e["match"], e["mask"],
-                   None if e["func"] in (None, "NULL") else e["func"], None, e["cname"])
+                   None if e["func"] in (None, "NULL") else e["func"], None, e["cname"],
+                   e.get("eew64", False))
             for e in b["entries"]]
     rows += [Opcode(e["i"], e["name"], e["xlen"], tuple(tuple(c) for c in e["class"]),
                     e["args"], e["match"], 0,
@@ -154,6 +157,12 @@ FPR_ABI = ["ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1",
 GPRS = {**{f"x{n}": n for n in range(32)}, **{n: k for k, n in enumerate(GPR_ABI)}, "fp": 8}
 FPRS = {**{f"f{n}": n for n in range(32)}, **{n: k for k, n in enumerate(FPR_ABI)}}
 #: riscv_rm / riscv_pred_succ (opcodes/riscv-opc.c)
+VECR = {f"v{n}": n for n in range(32)}
+VECM = {"v0.t": 0}
+VSEW = ["e8", "e16", "e32", "e64", None, None, None, None]
+VLMUL = ["m1", "m2", "m4", "m8", None, "mf8", "mf4", "mf2"]
+VTA = ["tu", "ta"]
+VMA = ["mu", "ma"]
 RM = ["rne", "rtz", "rdn", "rup", "rmm", None, None, "dyn"]
 PRED_SUCC = [None, "w", "r", "rw", "o", "ow", "or", "orw", "i", "iw", "ir", "irw", "io",
              "iow", "ior", "iorw"]
@@ -163,14 +172,19 @@ PRIV_1P11 = 3
 ASM_CSRS = _DATA["binutils"]["asm_csrs"]
 
 
-def csr_address(name: str) -> int | None:
+#: bfd/cpu-riscv.c riscv_priv_specs (the classes: 1 1.9.1 ... 4 1.12)
+PRIV_SPECS = {"1.9.1": 1, "1.10": 2, "1.11": 3, "1.12": 4}
+
+
+def csr_address(name: str, priv: int = PRIV_1P11) -> int | None:
     """reg_csr_lookup_internal / riscv_csr_address: the CSR named ``name``
-    for the default privileged spec, else its first definition."""
+    for the privileged spec ``priv`` (gas's default 1.11; the .attribute
+    priv_spec tags choose another), else its first definition."""
     entries = ASM_CSRS.get(name)
     if not entries:
         return None
     for num, check, define, abort in entries:
-        if not check or (PRIV_1P11 >= define and PRIV_1P11 < abort):
+        if not check or (priv >= define and priv < abort):
             return num
     return entries[0][0]
 
@@ -270,6 +284,93 @@ _MIPS_FIELDS = {"@": ((0x1F, 7, 0),), "#": ((0x1FF, 20, 0),), "$": ((0xF, 23, 3)
                 "&": ((0x7, 9, 2), (0x3, 25, 5)), "*": ((0x7, 20, 0),)}
 
 
+#: FLI.[HSDQ]'s constants (opcodes/riscv-opc.c riscv_fli_symval /
+#: riscv_fli_numval: floats; 0.0 for the symbolic ones)
+FLI_SYMVAL = [None, "min"] + [None] * 28 + ["inf", "nan"]
+FLI_NUMVAL = [-1.0, 0.0, 2.0 ** -16, 2.0 ** -15, 2.0 ** -8, 2.0 ** -7, 0.0625, 0.125, 0.25,
+              0.3125, 0.375, 0.4375, 0.5, 0.625, 0.75, 0.875, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5,
+              3.0, 4.0, 8.0, 16.0, 128.0, 256.0, 2.0 ** 15, 2.0 ** 16, 0.0, 0.0]
+_STRTOF = re.compile(r"\s*([+-]?(?:0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)"
+                     r"(?:[pP][+-]?\d+)?|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|"
+                     r"inf(?:inity)?|nan(?:\([0-9A-Za-z_]*\))?))", re.I)
+
+
+def _regno_to_reg_list(regno: int) -> int:
+    """tc-riscv.c (2.45) regno_to_reg_list: ra 4, s0 5, s1 6, s2-s9 7-14,
+    s11 15, else 0."""
+    if regno == 1:
+        return 4
+    if regno in (8, 9):
+        return 5 + regno - 8
+    if 18 <= regno < 26:
+        return 7 + regno - 18
+    return 15 if regno == 27 else 0
+
+
+def _reglist(text: str) -> int:
+    """tc-riscv.c (2.45) reglist_lookup_internal: "{ra}", "{ra, s0}",
+    "{ra, s0-sN}" or numeric "{x1, x8-x9, x18-xN}" -> the rlist (0:
+    invalid)."""
+    names = [[sub for sub in tok.split("-") if sub][:2]
+             for tok in text.split(",") if tok][:3]     # (strtok: empty tokens skipped)
+
+    def look(name: str) -> tuple[int | None, int]:
+        m = re.match(r"[A-Za-z_.$][A-Za-z0-9_.$]*", name)
+        r = GPRS.get(m.group(0)) if m else None
+        return r, _regno_to_reg_list(r) if r is not None else 0
+    reg_list = 0
+    numeric = False
+    for i, pair in enumerate(names):
+        first = pair[0]
+        if i == 0:
+            numeric = first[0] == "x"
+            r, reg_list = look(first)
+            if not reg_list or r != 1:
+                return 0
+        elif i == 1:
+            r, reg_list = look(first)
+            if (first[0] == "x") != numeric or not reg_list or r != 8:
+                return 0
+            if len(pair) == 1:
+                return reg_list
+            second = pair[1]
+            r, reg_list = look(second)
+            if (second[0] == "x") != numeric or not reg_list or r <= 8 or (numeric and r != 9):
+                return 0
+        else:
+            if not numeric or first[0] != "x":
+                return 0
+            r, reg_list = look(first)
+            if not reg_list or r != 18:
+                return 0
+            if len(pair) == 1:
+                return reg_list
+            second = pair[1]
+            r, reg_list = look(second)
+            if second[0] != "x" or not reg_list or r <= 18:
+                return 0
+    return reg_list
+
+
+def _strtof(s: str, a: int) -> tuple[float | None, int]:
+    """C's strtof at ``s[a:]``: (the float's value, where it ends); None
+    when nothing converts or it overflows (errno)."""
+    m = _STRTOF.match(s, a)
+    if not m:
+        return None, a
+    text = m.group(1)
+    try:
+        if text.lstrip("+-")[:2].lower() == "0x":
+            mant = text if "p" in text.lower() else text + "p0"
+            v = float.fromhex(mant)
+        else:
+            v = float(text)
+        v = struct.unpack("<f", struct.pack("<f", v))[0]
+    except (OverflowError, ValueError):
+        return None, m.end()
+    return v, m.end()
+
+
 def _match_func(op: Opcode, insn: int) -> bool:
     """opcodes/riscv-opc.c's match functions."""
     fn = op.func
@@ -316,6 +417,24 @@ def _match_func(op: Opcode, insn: int) -> bool:
         return opcode() and ci == 0
     if fn == "match_srxi_as_c_srxi":
         return opcode() and ci != 0
+    if fn == "match_sreg1_not_eq_sreg2":                # (2.45: Zcmp / Zcmt)
+        return opcode() and (insn >> 7 & 7) != (insn >> 2 & 7)
+    if fn == "match_cm_jt":
+        return opcode() and (insn >> 2 & 0xFF) < 32
+    if fn == "match_cm_jalt":
+        return opcode() and 32 <= (insn >> 2 & 0xFF) < 256
+    if fn == "match_vs1_eq_vs2":
+        return opcode() and (insn >> 15 & 31) == (insn >> 20 & 31)
+    if fn == "match_vd_eq_vs1_eq_vs2":
+        return opcode() and (insn >> 7 & 31) == (insn >> 15 & 31) == (insn >> 20 & 31)
+    if fn == "match_rs2_rd_even":                       # (2.45: AMOCAS.D on RV32, .Q)
+        return opcode() and not ((insn >> 20 | insn >> 7) & 1)
+    if fn == "match_rd_x1x5_opcode":                    # (2.45: Zicfiss)
+        return opcode() and rd in (1, 5)
+    if fn == "match_rs1_x1x5_opcode":
+        return opcode() and rs1 in (1, 5)
+    if fn == "match_rs2_x1x5_opcode":
+        return opcode() and rs2 in (1, 5)
     raise AssertionError(fn)
 
 
@@ -337,13 +456,18 @@ class Sym:
     line: int = 0
     size: "Expr | None" = None                  # .size (st_size, evaluated at the end)
     type: str = ""                              # .type: "function" / "object" / ...
+    common: int | None = None                   # .comm: SHN_COMMON's size (ld allocates it)
+    common_align: int = 0                       # its alignment (a power of 2, in bytes)
+    local: bool = False                         # .local (obj_elf_local)
+    tls: bool = False                           # STT_TLS (.tls_common, .type @tls_object)
+    weakref: bool = False                       # .weakref's alias
 
     @property
     def defined(self) -> bool:
         if self.equated is not None:
             e = self.equated[0]
             return e.op == "constant" or (e.sym is not None and e.sym.defined)
-        return self.absolute is not None or self.frag is not None
+        return self.absolute is not None or self.frag is not None or self.common is not None
 
     def segment(self):
         if self.equated is not None:
@@ -530,7 +654,9 @@ class Section:
         self.sub = 0
         self.align = 0
         self.code = name == ".text" or name.startswith(".text.")
-        self.bss = name in (".bss", ".sbss") or name.startswith((".bss.", ".sbss."))
+        self.bss = name in (".bss", ".sbss", ".tbss") or name.startswith((".bss.", ".sbss.",
+                                                                           ".tbss."))
+        self.tls = name in (".tdata", ".tbss") or name.startswith((".tdata.", ".tbss."))
 
     def __repr__(self) -> str:
         return f"<{self.name}>"
@@ -540,7 +666,9 @@ class Frag:
     """A gas frag: ``fix`` the fixed bytes, then the variable part:
     ``kind`` "fill" (``repeat`` x ``pattern``), "align" / "align_code"
     (padding to 1 << ``power``, at most ``max_skip``), "branch" (a
-    relaxable branch: ``var`` bytes, ``subtype``)."""
+    relaxable branch: ``var`` bytes, ``subtype``), "org" (rs_org: up to
+    ``symbol`` + ``offset`` with ``fill``), "leb128" (rs_leb128: ``expr``,
+    ``subtype`` 1 = signed)."""
 
     def __init__(self, section: Section) -> None:
         self.section = section
@@ -558,6 +686,7 @@ class Frag:
         self.address = 0
         self.line = 0
         self.pad = b""                          # the converted variable part
+        self.expr: "Expr | None" = None         # rs_leb128's value
 
     @property
     def size(self) -> int:
@@ -626,7 +755,8 @@ class Assembler:
 
     # -- the source ---------------------------------------------------------
 
-    def assemble(self, source: str) -> "AsmObject":
+    def assemble(self, source: str, path: str | None = None,
+                 include_dirs: tuple[str, ...] = ()) -> "AsmObject":
         self.opts = Options(rvc=bool({"c", "zca"} & self.exts), relax=self.default_relax,
                             exts=self.exts)
         self.rvc_flag = self.opts.rvc            # EF_RISCV_RVC (riscv_set_rvc never clears it)
@@ -639,21 +769,28 @@ class Assembler:
         self.warnings: list[tuple[int, str]] = []
         self.fake = 0
         self.prev_section: tuple[Section, int] | None = None
+        self.section_stack: list[tuple[Section, int, tuple | None]] = []   # .pushsection
+        self.abs_offset: int | None = None      # in the absolute section (.struct)
+        self.attributes: dict[int, int | str] = {}                       # .attribute
+        self.reloc_list: list = []              # .reloc: (section, offset, type, expr, line)
+        self.started = False                     # an instruction assembled (start_assemble)
+        self.priv_spec = PRIV_1P11               # default_priv_spec
+        self.priv_checked = False
         self.section = self._section(".text")
         self.record_alignment(self.section, 1 if self.opts.rvc else 2)
         self.frag = self.section.frags[-1]
         lines = source.splitlines()
         self.lines = lines
-        texts = _local_labels([_strip_comment(t) for t in _c_comments(source).split("\n")])
-        for n, raw in enumerate(lines, start=1):
-            self.line, self.raw = n, raw
+        self.reader = gasread.Reader(source, _Hooks(self), path=path, include_dirs=include_dirs,
+                                     warn=lambda n, msg: self.warnings.append((n, msg)))
+        for st in self.reader:
+            self.line, self.raw = st.line, st.raw
             try:
-                for stmt in _statements(texts[n - 1]):
-                    self._statement(stmt)
+                self._statement(st.text)
             except AsmError:
                 raise
             except (ValueError, KeyError, _NoMatch) as exc:
-                raise AsmError(n, str(exc), raw) from None
+                raise AsmError(st.line, str(exc), st.raw) from None
         self.line, self.raw = len(lines), ""
         self._relax_all()
         return self._object()
@@ -716,7 +853,10 @@ class Assembler:
         return s
 
     def dot(self) -> Sym:
-        s = Sym(".", self.section, self.frag, len(self.frag.fix))
+        if self.abs_offset is not None:
+            s = Sym(".", absolute=self.abs_offset)
+        else:
+            s = Sym(".", self.section, self.frag, len(self.frag.fix))
         s.refs = True
         return s
 
@@ -724,6 +864,9 @@ class Assembler:
         s = self.symbol(name)
         if s.defined:
             self.error(f"symbol `{name}' is already defined")
+        if self.abs_offset is not None:         # (.struct: an offset)
+            s.absolute, s.line = self.abs_offset, self.line
+            return
         s.section, s.frag, s.where, s.line = self.section, self.frag, len(self.frag.fix), self.line
 
     def difference(self, a: Expr, b: Expr) -> Expr:
@@ -753,9 +896,14 @@ class Assembler:
         return sec
 
     def switch_section(self, name: str, sub: int = 0) -> None:
-        """subseg_set."""
+        """obj_elf_section_change_hook + subseg_set."""
         self.prev_section = (self.section, self.section.sub)
-        sec = self.section = self._section(name)
+        self._subseg_set(self._section(name), sub)
+
+    def _subseg_set(self, sec: Section, sub: int) -> None:
+        """subseg_set (``.previous`` untouched); leaves the absolute section."""
+        self.abs_offset = None
+        self.section = sec
         if sub not in sec.chains:
             sec.chains[sub] = [Frag(sec)]
         sec.sub, sec.frags = sub, sec.chains[sub]
@@ -769,6 +917,11 @@ class Assembler:
         return f
 
     def frag_more(self, data: bytes) -> int:
+        if self.abs_offset is not None:         # (emit_expr in absolute_section)
+            if any(data):
+                self.error("attempt to store value in absolute section")
+            self.abs_offset += len(data)
+            return 0
         where = len(self.frag.fix)
         self.frag.fix += data
         return where
@@ -779,6 +932,15 @@ class Assembler:
     # -- instructions -------------------------------------------------------------
 
     def md_assemble(self, text: str, source: bool = False) -> None:
+        if not self.priv_checked:               # (start_assemble: riscv_set_default_priv_spec)
+            self.priv_checked = True
+            major, minor, rev = (int(self.attributes.get(t, 0)) for t in (8, 10, 12))
+            if (major, minor, rev) != (0, 0, 0):
+                name = f"{major}.{minor}.{rev}" if rev else f"{major}.{minor}"
+                if name not in PRIV_SPECS:
+                    self.error(f"unknown default privileged spec `{major}.{minor}.{rev}' set "
+                               "by privileged elf attributes")
+                self.priv_spec = PRIV_SPECS[name]
         insn, imm, reloc = self.riscv_ip(text)
         if source and self.strict and insn.mo.macro is not None:
             self.error(f"`{insn.mo.name}' is a pseudo-instruction (strict mode): "
@@ -803,9 +965,36 @@ class Assembler:
             if not has(fd):
                 return f"{fd}' and `c', or `{fd}' and `{z}" if not (has("c") or has(z)) else fd
             return f"c' or `{z}"
-        return {"ZMMUL": "m' or `zmmul", "C": "c' or `zca", "F_INX": "f' or `zfinx",
-                "D_INX": "d' or `zdinx", "ZBB_OR_ZBKB": "zbb' or `zbkb"}.get(cname,
-                                                                            cname.lower())
+        if cname == "ZIHINTNTL_AND_C":
+            if not has("zihintntl"):
+                return ("zihintntl' and `c', or `zihintntl' and `zca"
+                        if not (has("c") or has("zca")) else "zihintntl")
+            return "c' or `zca"
+        for both, (x, y, z, w) in (("ZFHMIN_AND_D_INX", ("zfhmin", "d", "zhinxmin", "zdinx")),
+                                   ("ZFHMIN_AND_Q_INX", ("zfhmin", "q", "zhinxmin", "zqinx"))):
+            if cname == both:
+                for have, need in ((x, y), (y, x), (z, w), (w, z)):
+                    if has(have):
+                        return need
+                return f"{x}' and `{y}', or `{z}' and `{w}"
+        for both, (x, y) in (("D_AND_ZFA", ("d", "zfa")), ("Q_AND_ZFA", ("q", "zfa")),
+                             ("ZFH_AND_ZFA", ("zfh", "zfa"))):
+            if cname == both:
+                if not has(x) and not has(y):
+                    return f"{x}' and `{y}"
+                return x if not has(x) else y
+        if cname == "ZFH_OR_ZVFH_AND_ZFA":
+            if not has("zfa"):
+                return ("zfh' and `zfa', or `zvfh' and `zfa"
+                        if not (has("zfh") or has("zvfh")) else "zfa")
+            return "zfh' or `zvfh"
+        return {"ZMMUL": "m' or `zmmul", "C": "c' or `zca",
+                "V": "v' or `zve64x' or `zve32x", "ZVEF": "v' or `zve64d' or `zve64f' or `zve32f",
+                "ZVKNHA_OR_ZVKNHB": "zvknha' or `zvknhb", "F_INX": "f' or `zfinx",
+                "D_INX": "d' or `zdinx", "ZBB_OR_ZBKB": "zbb' or `zbkb",
+                "ZBC_OR_ZBKC": "zbc' or `zbkc", "Q_INX": "q' or `zqinx",
+                "ZFH_INX": "zfh' or `zhinx", "ZFHMIN_INX": "zfhmin' or `zhinxmin"}.get(
+                    cname, cname.lower())
 
     def riscv_ip(self, text: str, table: dict | None = None) -> tuple[Insn, Expr, str | None]:
         """gas's riscv_ip: the first entry of the mnemonic whose operands
@@ -827,9 +1016,12 @@ class Assembler:
                 error = f"illegal operands `{text}'"
                 missing = None
                 self.used_deferred: set[str] = set()
+                self.ip_error = None
                 try:
                     ip, imm, reloc = self._match(mo, args)
                 except _NoMatch:
+                    if self.ip_error:
+                        error = f"{self.ip_error} `{text}'"
                     continue
                 for n in self.used_deferred:            # commit deferred symbols
                     if n in self.deferred and n not in self.symbols:
@@ -905,8 +1097,8 @@ class Assembler:
         def fail():
             raise _NoMatch
 
-        def ins(v: int, mask: int, sh: int) -> None:
-            ip.opcode |= (v & mask) << sh
+        def ins(v: int, mask: int, sh: int) -> None:   # (INSERT_OPERAND: replaces the field)
+            ip.opcode = (ip.opcode & ~(mask << sh)) | (v & mask) << sh
 
         def gpr() -> int:
             nonlocal a
@@ -916,9 +1108,9 @@ class Assembler:
             a = r[1]
             return r[0]
 
-        def fpr() -> int:
+        def fpr() -> int:                       # (Zfinx: the x registers' names)
             nonlocal a
-            r = self._reg(s, a, FPRS)
+            r = self._reg(s, a, GPRS if "zfinx" in self.opts.exts else FPRS)
             if r is None:
                 fail()
             a = r[1]
@@ -951,6 +1143,9 @@ class Assembler:
                     if not _match_func(mo, ip.opcode):
                         fail()
                     if ip.length == 2 and not self.opts.rvc:
+                        fail()
+                    if mo.eew64 and "zve32x" in self.opts.exts and "zve64x" not in self.opts.exts:
+                        self.ip_error = "illegal opcode for zve32x"
                         fail()
                 elif mo.func is not None and not _match_func(mo, ip.opcode):
                     fail()
@@ -1051,6 +1246,68 @@ class Assembler:
                 field(_INSN_FIELDS["F" + args[k]])
                 k += 1
                 continue
+            if ch == "V":                               # RVV (30)
+                c = args[k]
+                k += 1
+                if c in "dstuv0T":
+                    r = self._reg(s, a, VECR)
+                    if r is None:
+                        fail()
+                    regno, a = r
+                    if c == "0":                        # v[m]adc / v[m]sbc / v[f]merge
+                        if regno:
+                            fail()
+                    elif c == "T":                      # vmsge's temporary: in VFUNCT6
+                        if not regno:
+                            fail()
+                        ins(regno, 0x3F, 26)
+                    else:
+                        for sh in {"d": (7,), "s": (15,), "t": (20,), "u": (15, 20),
+                                   "v": (7, 15, 20)}[c]:
+                            ins(regno, 31, sh)
+                    continue
+                if c in "bc":                           # vtypei (my_getVsetvliExpression)
+                    e, a = self._vtype(s, a)
+                    self._absolute(mo, e)
+                    top = 1023 if c == "b" else 2047
+                    if not 0 <= e.num <= top:
+                        self.error(f"bad value for {'vsetivli' if c == 'b' else 'vsetvli'} "
+                                   f"immediate field, value must be 0..{top}")
+                    ins(e.num, top, 20)
+                    imm = Expr("absent")
+                    continue
+                if c in "ijkl":                         # vector immediates
+                    e, a = self.expr.parse(s, a)
+                    self._absolute(mo, e)
+                    v = e.num
+                    lo, hi = {"i": (-16, 15), "j": (0, 31), "k": (-15, 16), "l": (0, 63)}[c]
+                    if not lo <= v <= hi:
+                        self.error(f"bad value for vector immediate field, value must be "
+                                   f"{lo}...{hi}")
+                    if c == "l":                        # ENCODE_RVV_VI_UIMM6
+                        ins(v, 31, 15)
+                        ins(v >> 5, 1, 26)
+                    else:
+                        ins(v - 1 if c == "k" else v, 31, 15)
+                    imm = Expr("absent")
+                    continue
+                if c == "m":                            # optional vector mask
+                    if a == len(s):
+                        ins(1, 1, 25)
+                        continue
+                    if s[a] == ",":
+                        r = self._reg(s, a + 1, VECM)
+                        if r is not None:
+                            a = r[1]
+                            continue
+                    fail()
+                if c == "M":                            # required vector mask
+                    r = self._reg(s, a, VECM)
+                    if r is None:
+                        fail()
+                    a = r[1]
+                    continue
+                raise AssertionError(f"operand V{c} of {mo.name}")
             if ch == "O":
                 bits = 127 if args[k] == "4" else 3
                 m = _NAME.match(s, a)
@@ -1074,11 +1331,99 @@ class Assembler:
                     a += 1
                     continue
                 fail()
-            if ch in "()":
+            if ch in "(){}":
                 if a < len(s) and s[a] == ch:
                     a += 1
                     continue
                 fail()
+            if ch == "W" and args[k:k + 1] == "c":      # Zcb / Zcmp / Zcmt (2.42 / 2.45)
+                c = args[k + 1]
+                k += 2
+                if c in "bh":                           # c.lbu / c.sb, c.lh / c.lhu / c.sh
+                    if implicit_zero():                 # riscv_handle_implicit_zero_offset
+                        imm = Expr("constant", 0)
+                        continue
+                    e, r, n, end = small(percent)
+                    if n or e.op != "constant" or not (
+                            0 <= e.num <= 3 if c == "b" else e.num in (0, 2)):
+                        fail()
+                    v = e.num
+                    ip.opcode |= (v & 1) << 6 | (v >> 1 & 1) << 5 if c == "b" else (v >> 1) << 5
+                    a = end
+                    imm = Expr("absent")
+                    continue
+                if c == "f":                            # (andi's 255: matched, not encoded)
+                    e, r, n, end = small(percent)
+                    if n or e.op != "constant" or e.num != 255:
+                        fail()
+                    a = end
+                    imm = Expr("absent")
+                    continue
+                if c == "r":                            # PUSH / POP's register list
+                    end = s.find("}", a)
+                    if end < 0:
+                        self.error("cannot find `}' for cm.push/cm.pop")
+                    rl = _reglist(s[a:end])
+                    if not rl:
+                        fail()
+                    a = end
+                    ins(rl, 0xF, 4)
+                    continue
+                if c == "p":                            # the stack adjustment -> spimm
+                    e, r, n, end = small(percent)
+                    if n or e.op != "constant":
+                        fail()
+                    v = e.num
+                    if mo.match == 0xB802:              # (cm.push: a negative adjustment)
+                        v = -v
+                    v -= sp_base(ip.opcode >> 4 & 0xF, self.xlen)
+                    if v not in (0, 16, 32, 48):
+                        fail()
+                    ip.opcode |= (v >> 4) << 2
+                    a = end
+                    imm = Expr("absent")
+                    continue
+                if c in "12":                           # an s0-s7 register
+                    r = gpr()
+                    if not (r in (8, 9) or 18 <= r <= 23):
+                        fail()
+                    ins(r % 8, 7, 7 if c == "1" else 2)
+                    continue
+                if c in "Ii":                           # cm.jt / cm.jalt's index
+                    e, r, n, end = small(percent)
+                    lo, hi = (0, 31) if c == "I" else (32, 255)
+                    if e.op != "constant" or not lo <= e.num <= hi:
+                        self.error(f"bad index value for cm.{'jt' if c == 'I' else 'jalt'}, "
+                                   f"range: [{lo}, {hi}]")
+                    ins(e.num, 0xFF, 2)
+                    a = end
+                    imm = Expr("absent")
+                    continue
+                raise AssertionError(f"operand Wc{c} of {mo.name}")
+            if ch == "W" and args[k:k + 2] == "if":     # Zicbop's prefetch offset (19.6.3)
+                k += 2
+                if implicit_zero():
+                    imm = Expr("constant", 0)
+                    continue
+                e, a = self.expr.parse(s, a)            # my_getExpression
+                self._absolute(mo, e)                   # check_absolute_expr
+                if e.num & 0x1F or not -2048 <= e.num < 2048:
+                    self.error(f"improper prefetch offset ({e.num})")
+                ins((e.num & ~0x1F) >> 5, 0x7F, 25)     # ENCODE_STYPE_IMM (imm[4:0] = 0)
+                imm = Expr("absent")
+                continue
+            if ch == "W" and args[k:k + 2] == "fv":     # Zfa: FLI's constant (25.1)
+                k += 2
+                r = self._arg_lookup(s, a, FLI_SYMVAL)
+                if r is None:
+                    v, end = _strtof(s, a)
+                    if v is None or v == 0.0 or v not in FLI_NUMVAL:
+                        self.error("bad fli constant operand, supported constants must be "
+                                   "in decimal or hexadecimal floating-point literal form")
+                    r = FLI_NUMVAL.index(v), end
+                regno, a = r
+                ins(regno, 31, 15)                      # INSERT_OPERAND (RS1)
+                continue
             if ch == "X" and args[k:k + 1] == "m":      # (2.45: the MIPS vendor operands)
                 c = args[k + 1]
                 k += 2
@@ -1090,6 +1435,15 @@ class Assembler:
                     self.error(f"Improper {what} amount ({v})")
                 for mask, sh, shift in _MIPS_FIELDS[c]:  # INSERT_OPERAND
                     ins(v >> shift, mask, sh)
+                imm = Expr("absent")
+                continue
+            if ch in "yY":                               # scalar crypto: bs, rnum
+                e, a = self.expr.parse(s, a)
+                self._absolute(mo, e)
+                v, top = e.num & M64, 3 if ch == "y" else 10
+                if v > top:
+                    self.error(f"Improper {'bs' if ch == 'y' else 'rnum'} immediate ({v})")
+                ins(v, 3, 30) if ch == "y" else ins(v, 0xF, 20)
                 imm = Expr("absent")
                 continue
             if ch in "<>Z":
@@ -1109,7 +1463,7 @@ class Assembler:
                 continue
             if ch == "E":
                 m = _NAME.match(s, a)
-                num = csr_address(m.group(0)) if m else None
+                num = csr_address(m.group(0), self.priv_spec) if m else None
                 if num is not None:
                     ins(num, 0xFFF, 20)
                     a = m.end()
@@ -1239,6 +1593,23 @@ class Assembler:
                 return i, a + len(text)
         return None
 
+    def _vtype(self, s: str, a: int) -> tuple[Expr, int]:
+        """my_getVsetvliExpression: e8 / m1 / ta / ma names (each optional,
+        in that order, each followed by an optional comma), else an
+        expression."""
+        v, found = 0, False
+        for names, sh in ((VSEW, 3), (VLMUL, 0), (VTA, 6), (VMA, 7)):
+            r = self._arg_lookup(s, a, names)
+            if r is not None:
+                a = r[1]
+                if a < len(s) and s[a] == ",":
+                    a += 1
+                v |= r[0] << sh
+                found = True
+        if found:
+            return Expr("constant", v), a
+        return self.expr.parse(s, a)
+
     def _absolute(self, mo: Opcode, e: Expr) -> None:
         """check_absolute_expr."""
         if e.op == "big":
@@ -1256,6 +1627,7 @@ class Assembler:
         return where
 
     def append_insn(self, ip: Insn, ep: Expr, reloc: str | None) -> None:
+        self.started = True                     # (start_assemble: .attribute arch is too late)
         if reloc is not None:
             if reloc in ("12_PCREL", "JMP"):
                 best = ip.length
@@ -1304,16 +1676,56 @@ class Assembler:
         ip = Insn(mo, mo.match)
         r = None
         it = iter(args)
-        for c in fmt.split(","):
-            if c == "d":
-                ip.opcode = ip.opcode & ~(31 << 7) | (next(it) & 31) << 7
+
+        def put(sh: int, mask: int, v: int) -> None:
+            ip.opcode = ip.opcode & ~(mask << sh) | (v & mask) << sh
+
+        i = 0
+        while i < len(fmt):
+            c = fmt[i]
+            i += 1
+            if c == "V":                        # RVV: Vd, Vs, Vt, Vm (-1 = unmasked)
+                c = fmt[i]
+                i += 1
+                if c == "m":
+                    reg = next(it)
+                    put(25, 1, 1 if reg == -1 else 0)
+                else:
+                    put({"d": 7, "s": 15, "t": 20}[c], 31, next(it))
+            elif c == "d":
+                put(7, 31, next(it))
             elif c == "s":
-                ip.opcode = ip.opcode & ~(31 << 15) | (next(it) & 31) << 15
+                put(15, 31, next(it))
             elif c == "t":
-                ip.opcode = ip.opcode & ~(31 << 20) | (next(it) & 31) << 20
+                put(20, 31, next(it))
             elif c in "juq":
                 r = next(it)
         self.append_insn(ip, ep, r)
+
+    def vector_macro(self, ip: Insn) -> None:
+        """vector_macro: vmsge[u].vx (30.13.8: there is no vmsge{u}.vx)."""
+        o = ip.opcode
+        vd, vs1, vs2 = o >> 7 & 31, o >> 15 & 31, o >> 20 & 31
+        vm, vtemp = o >> 25 & 1, o >> 26 & 0x3F
+        vmslt = "vmsltu.vx" if ip.mo.match else "vmslt.vx"
+        b = self.macro_build
+        if vm:                                  # unmasked
+            b(None, vmslt, "Vd,Vt,sVm", vd, vs2, vs1, -1)
+            b(None, "vmnand.mm", "Vd,Vt,Vs", vd, vd, vd)
+        elif vtemp != 0:                        # masked, with a temporary
+            if vd == vm:
+                b(None, vmslt, "Vd,Vt,sVm", vtemp, vs2, vs1, -1)
+                b(None, "vmandnot.mm", "Vd,Vt,Vs", vd, vm, vtemp)
+            else:
+                b(None, vmslt, "Vd,Vt,sVm", vtemp, vs2, vs1, -1)
+                b(None, "vmandnot.mm", "Vd,Vt,Vs", vtemp, vm, vtemp)
+                b(None, "vmandnot.mm", "Vd,Vt,Vs", vd, vd, vm)
+                b(None, "vmor.mm", "Vd,Vt,Vs", vd, vtemp, vd)
+        elif vd != vm:                          # masked: vd may overlap vs2
+            b(None, vmslt, "Vd,Vt,sVm", vd, vs2, vs1, vm)
+            b(None, "vmxor.mm", "Vd,Vt,Vs", vd, vd, vm)
+        else:
+            self.error("must provide temp if destination overlaps mask")
 
     def make_internal_label(self) -> Sym:
         self.fake += 1
@@ -1377,6 +1789,11 @@ class Assembler:
                                   "GOT_HI20", "PCREL_LO12_I")
             else:
                 self.pcrel_access(rd, rd, ep, "addi", "d,s,j", "PCREL_HI20", "PCREL_LO12_I")
+        elif m == "M_LA_TLS_GD":
+            self.pcrel_access(rd, rd, ep, "addi", "d,s,j", "TLS_GD_HI20", "PCREL_LO12_I")
+        elif m == "M_LA_TLS_IE":
+            self.pcrel_access(rd, rd, ep, "lw" if self.xlen == 32 else "ld", "d,s,j",
+                              "TLS_GOT_HI20", "PCREL_LO12_I")
         elif m == "M_Lx":
             self.pcrel_access(rd, rd, ep, ip.mo.name, "d,s,j", "PCREL_HI20", "PCREL_LO12_I")
         elif m == "M_FLx":
@@ -1391,6 +1808,8 @@ class Assembler:
             self.riscv_ext(rd, rs1, self.xlen - 32, False)
         elif m == "M_SEXTB":
             self.riscv_ext(rd, rs1, self.xlen - 8, True)
+        elif m == "M_VMSGE":
+            self.vector_macro(ip)
         else:
             self.error(f"internal: macro {ip.mo.name} not implemented")
 
@@ -1413,9 +1832,12 @@ class Assembler:
         return e.num
 
     def d_section(self, d: str, rest: str) -> None:
-        if d == ".section":
-            name = rest.split(",")[0].strip().strip('"')
-        elif d == ".previous":
+        if d in (".section", ".sect", ".sect.s", ".section.s"):
+            name, more = self._section_name(rest)
+            self.switch_section(name)
+            self._section_flags(self.section, more)
+            return
+        if d == ".previous":
             if self.prev_section is not None:
                 p, sub = self.prev_section
                 self.switch_section(p.name, sub)
@@ -1425,7 +1847,6 @@ class Assembler:
             sub = self._absolute_value(rest) if rest.strip() else 0
             self.switch_section(name, sub)
             return
-        self.switch_section(name)
 
     def d_globl(self, d: str, rest: str) -> None:
         for n in (x.strip() for x in rest.split(",")):
@@ -1522,6 +1943,8 @@ class Assembler:
             self.emit_value(e, size)
 
     def emit_value(self, e: Expr, size: int) -> None:
+        if (e.op != "constant" or e.num) and self.section.bss and self.abs_offset is None:
+            self.error(f"attempt to store non-zero value in section `{self.section.name}'")
         if e.op == "big":
             self.frag_more((e.num & ((1 << (8 * size)) - 1)).to_bytes(size, "little"))
             return
@@ -1552,11 +1975,53 @@ class Assembler:
             self.frag_more(data + (b"\0" if d in (".asciz", ".string") else b""))
 
     def d_space(self, d: str, rest: str) -> None:
+        """s_space (``.space`` / ``.skip`` / ``.zero``; ``.ds.*`` and
+        ``.dcb.*`` with their element size): a constant count, a fill byte —
+        or each element emitted when the fill is wider; a count the
+        assembler learns later (``.space end - start``) is an rs_space frag."""
+        mult = _SPACE_MULT.get(d, 0)
         parts = _split_args(rest)
-        n = self._absolute_value(parts[0])
-        fill = self._absolute_value(parts[1]) & 0xFF if len(parts) > 1 else 0
-        if n > 0:
-            self.frag_more(bytes([fill]) * n)
+        if not parts:
+            self.error("missing expression")
+        e = self._expr(parts[0])
+        val = self._expr(parts[1]) if len(parts) > 1 else Expr("constant", 0)
+        bss = self.section.bss and self.abs_offset is None
+        if (val.op != "constant" or not -0x80 <= val.num <= 0xFF
+                or (mult not in (0, 1) and val.num)) and self.abs_offset is None and not bss:
+            if e.op != "constant":
+                self.error("unsupported variable size or fill value")
+            if not 0 <= e.num <= 1 << 10:
+                self.error(f"size value for space directive too large: {e.num & M64:x}")
+            for _ in range(e.num):
+                self.emit_value(val, mult or 1)
+            return
+        if e.op == "constant":
+            if e.num < 0:
+                self.warn(".space repeat count is negative, ignored")
+                return
+            if e.num == 0:
+                self.warn(".space repeat count is zero, ignored")
+                return
+            total = e.num * max(mult, 1)
+            if self.abs_offset is not None:
+                if val.op != "constant" or val.num:
+                    self.warn("ignoring fill value in absolute section")
+                self.abs_offset += total
+                return
+            fill = 0
+            if val.op != "constant" or val.num:
+                if bss:
+                    self.warn(f"ignoring fill value in section `{self.section.name}'")
+                else:
+                    fill = val.num & 0xFF
+            self.frag_more(bytes([fill]) * total)
+            return
+        if self.abs_offset is not None:
+            self.error("space allocation too complex in absolute section")
+        f = self.frag                           # (rs_space: the size known later)
+        f.kind, f.expr, f.line = "space", e, self.line
+        f.fill = bytes([val.num & 0xFF]) if val.op == "constant" and not bss else b"\0"
+        self.frag_new()
 
     def d_insn(self, d: str, rest: str) -> None:
         """s_riscv_insn: ``.insn TYPE OPERANDS`` (riscv_insn_types), else
@@ -1643,6 +2108,477 @@ class Assembler:
             self.frag_new()
         self.record_alignment(self.section, power)
 
+    # -- LF12: the rest of GNU as's directives (read.c, obj-elf.c, tc-riscv.c) ----------
+
+    def _section_name(self, rest: str) -> tuple[str, str]:
+        """obj_elf_section_name: a quoted name or the characters up to a
+        comma / blank; and what follows."""
+        rest = rest.strip()
+        if rest.startswith('"'):
+            j = rest.find('"', 1)
+            if j < 0:
+                self.error("missing close quote")
+            return rest[1:j], rest[j + 1:]
+        m = re.match(r"[^\s,]*", rest)
+        if not m.group(0):
+            self.error("missing name")
+        return m.group(0), rest[m.end():]
+
+    def _section_flags(self, sec: Section, rest: str) -> None:
+        """The flags string and @type of .section / .pushsection: "x" makes
+        code, @nobits a bss section (obj_elf_parse_section_letters)."""
+        m = re.match(r'\s*,\s*"([^"]*)"\s*(?:,\s*[@%]?(\w+))?', rest)
+        if not m:
+            return
+        flags, kind = m.group(1), (m.group(2) or "").lower()
+        if "x" in flags:
+            sec.code = True
+        if "T" in flags:
+            sec.tls = True
+        if kind == "nobits":
+            sec.bss = True
+        elif kind == "progbits":
+            sec.bss = False
+
+    def d_pushsection(self, d: str, rest: str) -> None:
+        """obj_elf_section (push = 1): the section stack keeps the current
+        and previous section; an optional subsection number first."""
+        name, more = self._section_name(rest)
+        sub = 0
+        m = re.match(r"\s*,\s*(\d[^,]*)", more)
+        if m:
+            sub = self._absolute_value(m.group(1))
+            more = more[m.end():]
+        self.section_stack.append((self.section, self.section.sub, self.prev_section,
+                                   self.abs_offset))
+        self.switch_section(name, sub)
+        self._section_flags(self.section, more)
+
+    def d_popsection(self, d: str, rest: str) -> None:
+        if not self.section_stack:
+            self.warn(".popsection without corresponding .pushsection; ignored")
+            return
+        sec, sub, prev, abs_ = self.section_stack.pop()
+        self.prev_section = prev
+        self._subseg_set(sec, sub)
+        self.abs_offset = abs_
+
+    def d_subsection(self, d: str, rest: str) -> None:
+        """obj_elf_subsection: the current section, subsection N."""
+        sub = self._absolute_value(rest)
+        self.prev_section = (self.section, self.section.sub)
+        self._subseg_set(self.section, sub)
+
+    def d_struct(self, d: str, rest: str) -> None:
+        """s_struct (.struct / .offset): the absolute section from an offset —
+        labels become constants, data only advances the offset."""
+        self.prev_section = (self.section, self.section.sub)
+        self.abs_offset = self._absolute_value(rest) if rest.strip() else 0
+
+    def d_org(self, d: str, rest: str) -> None:
+        """do_org: an rs_org frag up to SYMBOL + OFFSET (this section or
+        absolute) with the fill byte."""
+        parts = _split_args(rest)
+        if not parts:
+            self.error("missing expression")
+        e = self._expr(parts[0])
+        fill = self._absolute_value(parts[1]) & 0xFF if len(parts) > 1 else 0
+        if self.abs_offset is not None:
+            if e.op != "constant":
+                self.error("invalid segment")
+            self.abs_offset = e.num
+            return
+        if e.op == "constant":
+            sym, off = None, e.num
+        elif e.op == "symbol" and not e.sym.defined:
+            # get_known_segmented_expression: "zero assumed" — but do_org keeps
+            # the symbol, so the frag reaches its value after all
+            self.warn(f"symbol \"{e.sym.name}\" undefined; zero assumed")
+            sym, off = e.sym, 0
+        elif e.op == "symbol" and e.sym.segment() in (self.section, "abs"):
+            sym, off = e.sym, e.num
+        else:
+            seg = e.sym.segment() if e.op == "symbol" and e.sym.defined else None
+            self.error(f"invalid segment \"{seg.name if isinstance(seg, Section) else '*UND*'}\"")
+        f = self.frag
+        f.kind, f.symbol, f.offset, f.fill, f.line = "org", sym, off, bytes([fill]), self.line
+        self.frag_new()
+
+    def _comm_name_size(self, rest: str) -> tuple[Sym, int, str]:
+        """s_comm_internal: NAME[,] SIZE and what follows."""
+        m = re.match(r"\s*(\"[^\"]*\"|[A-Za-z_.$][\w.$]*)\s*,?", rest)
+        if not m:
+            self.error("expected symbol name")
+        name = m.group(1).strip('"')
+        args = _split_args(rest[m.end():])
+        if not args or not args[0]:
+            self.error("missing size expression")
+        e = self._expr(args[0])
+        if e.op != "constant":
+            self.error("bad or irreducible absolute expression")
+        size = e.num
+        if size < 0 or size >> self.xlen:
+            self.warn(f"size ({size}) out of range, ignored")
+            return None, 0, ""
+        sym = self.symbol(name)
+        if (sym.defined or sym.equated is not None) and sym.common is None:
+            self.error(f"symbol `{name}' is already defined")
+        if sym.common is not None and sym.common != size:
+            self.warn(f"size of \"{name}\" is already {sym.common}; not changing to {size}")
+            size = sym.common
+        return sym, size, ",".join(args[1:])
+
+    def _parse_align(self, text: str, bytes_: bool) -> int:
+        """parse_align: the alignment after the size (bytes, made a power
+        of two, for ``bytes_``)."""
+        if not text.strip():
+            self.error("expected alignment after size")
+        a = self._absolute_value(text)
+        if a < 0:
+            self.warn("alignment negative; 0 assumed")
+            a = 0
+        if bytes_ and a:
+            if a & (a - 1):
+                self.error("alignment not a power of 2")
+            a = a.bit_length() - 1
+        return a
+
+    def _bss_alloc(self, sym: Sym, size: int, power: int) -> None:
+        """bss_alloc: .bss subsection 1, aligned, the symbol there."""
+        cur, sub, abs_ = self.section, self.section.sub, self.abs_offset
+        self._subseg_set(self._section(".bss"), 1)
+        if power:
+            self.record_alignment(self.section, power)
+            f = self.frag
+            f.kind, f.power, f.fill = "align", power, b"\0"
+            self.frag_new()
+        sym.section, sym.frag, sym.where, sym.line = self.section, self.frag, len(self.frag.fix), \
+            self.line
+        sym.common = None
+        self.frag_more(bytes(size))
+        sym.size = Expr("constant", size)
+        self._subseg_set(cur, sub)
+        self.abs_offset = abs_
+
+    def d_comm(self, d: str, rest: str) -> None:
+        """obj_elf_common / elf_common_parse (.comm, .common, .tls_common;
+        .xcom: read.c's s_comm, no alignment): a common symbol for ld to
+        allocate in .bss — or, after .local, a .bss object here."""
+        sym, size, more = self._comm_name_size(rest)
+        if sym is None:
+            return
+        power = 0
+        if d != ".xcom" and more.strip():
+            if more.strip().startswith('"'):    # (.common sym, size, "bss")
+                if more.strip().strip('"').lstrip(".") not in ("bss", "data"):
+                    self.error(f"bad .common segment {more.strip()}")
+                sym.local = False
+            else:
+                power = self._parse_align(more, sym.local)
+        elif more.strip():
+            self.error(f"junk at end of line, first unrecognized character is `{more.strip()[0]}'")
+        if d == ".tls_common":
+            sym.tls = True
+        if sym.local:
+            self._bss_alloc(sym, size, power)
+            sym.external = False
+            return
+        if not power:                           # (bfd: st_value of an unaligned common =
+            power = 1                           # its size up to a power of 2, at most 16)
+            while power < size and power < 16:
+                power <<= 1
+        sym.common, sym.common_align = size, power      # (st_value: ld uses its log2)
+        sym.external = True
+
+    def d_lcomm(self, d: str, rest: str) -> None:
+        """obj_elf_lcomm: a local .bss object, aligned by its size
+        (TC_IMPLICIT_LCOMM_ALIGNMENT)."""
+        sym, size, more = self._comm_name_size(rest)
+        if sym is None:
+            return
+        if more.strip():
+            self.error(f"junk at end of line, first unrecognized character is `{more.strip()[0]}'")
+        power = 3 if size >= 8 else 2 if size >= 4 else 1 if size >= 2 else 0
+        self._bss_alloc(sym, size, power)
+
+    def d_local(self, d: str, rest: str) -> None:
+        """obj_elf_local: not external; a later .comm is a local object."""
+        for n in (x.strip() for x in _split_args(rest)):
+            if n:
+                s = self.symbol(n)
+                s.external = False
+                s.local = True
+
+    def d_leb128(self, d: str, rest: str) -> None:
+        """s_riscv_leb128 -> s_leb128 / emit_leb128_expr: a constant now; a
+        label difference an rs_leb128 frag (and, with -mrelax, ld's
+        R_RISCV_SET_ULEB128 / SUB_ULEB128 pair: riscv_insert_uleb128_fixes)."""
+        sign = d == ".sleb128"
+        parts = _split_args(rest) or [""]
+        if len(parts) > 1:                      # (s_riscv_leb128: one expression, then
+            self.error("junk at end of line, first unrecognized character is `,'")
+        for part in parts:                      # demand_empty_rest_of_line)
+            e = self._expr(part) if part else Expr("absent")
+            if sign and e.op != "constant":
+                self.error("non-constant .sleb128 is not supported")
+            if not sign and e.op not in ("constant", "subtract", "big"):
+                self.error(".uleb128 only supports constant or subtract expressions")
+            if e.op in ("constant", "big"):
+                v = e.num if (e.op == "big" or sign) else e.num & M64
+                if self.section.bss and v:
+                    self.error(f"attempt to store non-zero value in section `{self.section.name}'")
+                self.frag_more(_leb128(v, sign))
+                continue
+            f = self.frag
+            f.kind, f.expr, f.subtype, f.line = "leb128", e, int(sign), self.line
+            self.frag_new()
+
+    def d_octa(self, d: str, rest: str) -> None:
+        """cons (16): 128-bit values (a negative one sign-extended)."""
+        for part in _split_args(rest):
+            if not part:
+                continue
+            e = self._expr(part)
+            if e.op not in ("constant", "big"):
+                self.error("bad expression")
+            self.frag_more((e.num & ((1 << 128) - 1)).to_bytes(16, "little"))
+
+    def d_incbin(self, d: str, rest: str) -> None:
+        """s_incbin: a file's bytes (``skip``, ``count``), looked up as
+        .include does (emips.gasread)."""
+        m = re.match(r'\s*"((?:\\.|[^"\\])*)"', rest)
+        if not m:
+            self.error("expected string")
+        name = _unescape_gas(m.group(1)).decode("latin-1")
+        args = _split_args(rest[m.end():].lstrip().lstrip(","))
+        skip = self._absolute_value(args[0]) if args and args[0] else 0
+        count = self._absolute_value(args[1]) if len(args) > 1 and args[1] else 0
+        if len(args) > 1 and args[1] and count == 0:
+            self.warn(f".incbin count zero, ignoring `{name}'")
+        path = self.reader.find(name)
+        if path is None:
+            self.error(f"file not found: {name}")
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if not count:
+            count = len(data) - skip
+        if skip < 0 or count < 0 or skip + count > len(data):
+            self.error(f"skip ({skip}) or count ({count}) invalid for file size ({len(data)})")
+        self.frag_more(data[skip:skip + count])
+
+    def d_float16(self, d: str, rest: str) -> None:
+        """float_cons ('h'): IEEE binary16."""
+        for part in _split_args(rest):
+            text = part.strip()
+            if re.match(r"0[fFdDrRhH]", text):
+                text = text[2:]
+            self.frag_more(struct.pack("<e", float(text)))
+
+    def d_strings(self, d: str, rest: str) -> None:
+        """stringer (.string8 / 16 / 32 / 64): each character a little-endian
+        unit of that width, then a zero unit."""
+        width = {".string8": 1, ".string16": 2, ".string32": 4, ".string64": 8}[d]
+        for part in _split_args(rest):
+            part = part.strip()
+            if not (part.startswith('"') and part.endswith('"')):
+                self.error("expected string")
+            out = b"".join(b.to_bytes(width, "little")
+                           for b in _unescape_gas(part[1:-1]) + b"\0")
+            self.frag_more(out)
+
+    def d_dc(self, d: str, rest: str) -> None:
+        """cons / float_cons for .dc, .dc.b / .w / .l / .a / .s / .d."""
+        if d in (".dc.s", ".dc.d"):
+            self.d_float(".float" if d == ".dc.s" else ".double", rest)
+            return
+        size = {".dc": 2, ".dc.b": 1, ".dc.w": 2, ".dc.l": 4, ".dc.a": self.xlen // 8}[d]
+        self.d_data(f".{size}byte" if size > 1 else ".byte", rest)
+
+    def d_align_fill(self, d: str, rest: str) -> None:
+        """s_align with a 2- / 4-byte fill pattern (.balignw / .balignl /
+        .p2alignw / .p2alignl)."""
+        parts = _split_args(rest) if rest else []
+        n = self._absolute_value(parts[0]) if parts and parts[0] else 0
+        if d.startswith(".balign"):
+            if n and n & (n - 1):
+                self.error("alignment not a power of 2")
+            power = n.bit_length() - 1 if n else 0
+        else:
+            power = n
+        width = 2 if d.endswith("w") else 4
+        fill = self._absolute_value(parts[1]) if len(parts) > 1 and parts[1].strip() else None
+        max_skip = self._absolute_value(parts[2]) if len(parts) > 2 and parts[2].strip() else 0
+        if fill is None:
+            self.do_align(power, None, max_skip)
+            return
+        if power:
+            f = self.frag
+            f.kind, f.power, f.max_skip = "align", power, max_skip
+            f.fill = (fill & ((1 << (8 * width)) - 1)).to_bytes(width, "little")
+            self.frag_new()
+        self.record_alignment(self.section, power)
+
+    def d_attribute(self, d: str, rest: str) -> None:
+        """s_riscv_attribute / obj_elf_vendor_attribute: Tag_RISCV_arch sets
+        the ISA (riscv_set_arch; not after an instruction), the others are
+        kept for the ELF's .riscv.attributes."""
+        parts = _split_args(rest)
+        if len(parts) != 2:
+            self.error("expected comma")
+        tag_text, value = parts[0].strip(), parts[1].strip()
+        tag = _ATTRIBUTE_TAGS.get(tag_text)
+        if tag is None:
+            try:
+                tag = self._absolute_value(tag_text)
+            except AsmError:
+                self.error(f"attribute name not recognised: {tag_text}")
+        string = bool(tag & 1)                  # (riscv_elf_obj_attrs_arg_type: odd = a string)
+        if string:
+            if not (value.startswith('"') and value.endswith('"')):
+                self.error("bad string constant")
+            v: int | str = _unescape_gas(value[1:-1]).decode("latin-1")
+        else:
+            v = self._absolute_value(value)
+        self.attributes[tag] = v
+        if tag == 5:                            # Tag_RISCV_arch
+            if self.started:
+                self.error("architecture elf attributes must set before any instructions")
+            m = re.match(r"rv(32|64)", v.lower())
+            if not m:
+                self.error(f"{v}: ISA string must begin with rv32 or rv64")
+            if int(m.group(1)) != self.xlen:
+                self.error(f"{v}: the architecture is rv{self.xlen} (eMIPS assembles for "
+                           "the core's XLEN)")
+            try:
+                exts = closure(parse_extensions(_arch_extensions(v)) | {"i"})
+            except ValueError as exc:
+                self.error(str(exc))
+            self.exts = exts
+            self.opts.exts = exts
+            self.opts.rvc = bool({"c", "zca"} & exts)
+            if self.opts.rvc:
+                self.rvc_flag = True
+        elif tag in (6, 8, 10) and self.started:
+            self.error("privileged elf attributes must set before any instructions")
+
+    def d_reloc(self, d: str, rest: str) -> None:
+        """s_reloc: ``.reloc OFFSET, TYPE[, EXPRESSION]`` — a relocation ld
+        applies (TYPE an R_RISCV_ name, or BFD_RELOC_NONE / 32 / 64); a
+        constant offset is in the current section."""
+        parts = _split_args(rest)
+        off = self._expr(parts[0]) if parts and parts[0] else Expr("absent")
+        if off.op in ("absent", "illegal", "big"):
+            self.error("missing or bad offset expression")
+        if len(parts) < 2 or not parts[1]:
+            self.error("missing reloc type")
+        name = parts[1].strip()
+        if name.upper().startswith("BFD_RELOC_"):
+            kind = {"NONE": "NONE", "32": "DATA4", "64": "DATA8"}.get(name[10:].upper())
+        else:
+            kind = _ELF_RELOCS.get(name.upper())
+        if kind is None:
+            self.error("unrecognized reloc type")
+        e = self._expr(parts[2]) if len(parts) > 2 and parts[2] else Expr("absent")
+        if e.op in ("illegal", "big"):
+            self.error("bad reloc expression")
+        if off.op == "constant":
+            where = (self.section, off.num, None)
+        elif off.op == "symbol":
+            where = (None, off.num, off.sym)
+        else:
+            self.error("missing or bad offset expression")
+        self.reloc_list.append((where, kind, e, self.line))
+
+    def d_dtprel(self, d: str, rest: str) -> None:
+        """s_dtprel: a TLS symbol's offset from the DTV pointer (ld:
+        address - the TLS segment - 0x800)."""
+        e = self._expr(rest)
+        if e.op != "symbol":
+            self.error(f"unsupported use of {d}")
+        size = 8 if d == ".dtpreldword" else 4
+        where = self.frag_more(bytes(size))
+        self.fixes.append(Fix(self.frag, where, size, e.copy(), f"TLS_DTPREL{8 * size}", self.line))
+
+    def d_lsym(self, d: str, rest: str) -> None:
+        """s_lsym: NAME, EXPRESSION (a local symbol: never global)."""
+        name, _, value = rest.partition(",")
+        name = name.strip()
+        if not value.strip():
+            self.error("expected comma after name")
+        if name in self.symbols and self.symbols[name].defined:
+            self.error(f"symbol `{name}' is already defined")
+        self._equate(name, value.strip())
+
+    def d_weakref(self, d: str, rest: str) -> None:
+        """s_weakref: ALIAS, TARGET — the alias stands for the target, which a
+        reference through the alias makes a weak one."""
+        alias, _, target = rest.partition(",")
+        alias, target = alias.strip(), target.strip()
+        if not alias or not target:
+            self.error("expected comma after name")
+        a = self.symbol(alias)
+        if a.defined:
+            self.error(f"symbol `{alias}' is already defined")
+        t = self.symbol(target)
+        if t is a:
+            self.error(f"recursive use of weakref `{alias}'")
+        a.equated, a.weakref = (Expr("symbol", 0, t),), True
+
+    def d_symver(self, d: str, rest: str) -> None:
+        """obj_elf_symver: NAME, NAME2@[@]NODE — the versioned name an alias
+        of NAME (a static link has no version scripts)."""
+        name, _, versioned = rest.partition(",")
+        name, versioned = name.strip(), versioned.strip().split(",")[0].strip()
+        if "@" not in versioned:
+            self.error(f"missing version name in `{versioned}' for symbol `{name}'")
+        alias = self.symbol(versioned)
+        alias.equated = (Expr("symbol", 0, self.symbol(name)),)
+
+    def d_abort(self, d: str, rest: str) -> None:
+        self.error(".abort detected.  Abandoning ship.")
+
+    def d_nop(self, d: str, rest: str) -> None:
+        """s_nop: ``nop`` instructions (at least one) until N bytes; .nops is
+        rs_space_nop, which RISC-V's gas does not implement."""
+        if d == ".nops":
+            self.error("unimplemented .nops directive")
+        n = self._absolute_value(rest) if rest.strip() else 0
+        start = self._here()
+        while True:
+            self.md_assemble("nop")
+            if self._here() - start >= n:
+                break
+
+    def _here(self) -> int:
+        """Bytes emitted in this frag chain so far (frag_offset_ignore_align_p)."""
+        return sum(len(f.fix) for f in self.section.frags)
+
+    def d_float_x(self, d: str, rest: str) -> None:
+        """float_cons ('x') / s_float_space: the 80-bit extended format, 10
+        bytes (.ds.x reserves 12); .dcb.s / .dcb.d / .dcb.x COUNT, VALUE
+        repeat a float."""
+        if d.startswith(".dcb."):
+            parts = _split_args(rest)
+            count = self._absolute_value(parts[0])
+            value = parts[1] if len(parts) > 1 else "0"
+            kind = d[-1]
+            for _ in range(max(count, 0)):
+                self._float_bytes(kind, value)
+            return
+        for part in _split_args(rest):
+            self._float_bytes("x", part)
+
+    def _float_bytes(self, kind: str, text: str) -> None:
+        text = text.strip()
+        if re.match(r"0[fFdDrRxX]", text):
+            text = text[2:]
+        if kind == "s":
+            self.frag_more(struct.pack("<f", float(text)))
+        elif kind == "d":
+            self.frag_more(struct.pack("<d", float(text)))
+        else:
+            self.frag_more(_extended(text))
+
     def riscv_frag_align_code(self, n: int) -> bool:
         bytes_ = 1 << n
         insn_align = 2 if self.opts.rvc else 4
@@ -1686,11 +2622,30 @@ class Assembler:
                 f.kind, f.power, f.max_skip, f.line = "align_code", sec.align, 0, self.line
                 self.section, self.frag = sec, f
                 self.frag_new()
+        pass_ = 0
+        while True:                             # (relax_and_size_all_segments)
+            changed = False
+            for sec in self.sections.values():
+                changed |= self._relax_segment(sec, pass_)
+            pass_ += 1
+            if not changed or pass_ > 64:
+                break
+        if self.opts.relax:                     # (riscv_md_finish: riscv_insert_uleb128_fixes)
+            for sec in self.sections.values():
+                for f in sec.frags:
+                    if f.kind == "leb128" and f.expr.op == "subtract":
+                        self.fixes.append(Fix(f, len(f.fix), 0, Expr("symbol", f.expr.num,
+                                                                     f.expr.sym),
+                                              "SET_ULEB128", f.line))
+                        self.fixes.append(Fix(f, len(f.fix), 0, Expr("symbol", 0, f.expr.sub),
+                                              "SUB_ULEB128", f.line))
         for sec in self.sections.values():
-            self._relax_segment(sec)
             self._convert(sec)
 
-    def _relax_segment(self, sec: Section) -> None:
+    def _relax_segment(self, sec: Section, pass_: int) -> bool:
+        """write.c relax_segment: a first guess of every frag's address, then
+        passes until nothing grows; returns whether an address moved since
+        the last call (the caller repeats over the sections while one did)."""
         frags = sec.frags
         address = 0
         for f in frags:
@@ -1700,15 +2655,24 @@ class Assembler:
                 off = _relax_align(address, f.power)
                 if f.max_skip and off > f.max_skip:
                     off = 0
+                if f.kind == "align" and len(f.fill) > 1 and off % len(f.fill):
+                    raise AsmError(f.line, f"alignment padding ({off} bytes) not a multiple of "
+                                   f"{len(f.fill)}", self._source_line(f.line))
                 address += off
             elif f.kind == "branch":
                 f.var = self.relaxed_branch_length(f, False)
                 address += f.var
+            elif f.kind == "leb128":
+                f.var = 1                       # (initial guess: 1, write.c)
+                address += 1
+            elif f.kind in ("org", "space"):
+                f.var = 0
+        ret = False
         iterations = max(len(frags) * len(frags), len(frags))
         while True:
             stretch = 0
             stretched = False
-            for f in frags:
+            for k, f in enumerate(frags):
                 was = f.address
                 f.address += stretch
                 growth = 0
@@ -1723,12 +2687,75 @@ class Assembler:
                     old = f.var
                     f.var = self.relaxed_branch_length(f, True)
                     growth = f.var - old
+                elif f.kind == "org":
+                    target = f.offset + (f.symbol.value() if f.symbol is not None else 0)
+                    after = frags[k + 1].address + stretch
+                    growth = target - after
+                    if f.address + len(f.fix) > target:
+                        growth = 0
+                        if pass_ < 2:
+                            ret = True
+                        else:
+                            raise AsmError(f.line, "attempt to move .org backwards",
+                                           self._source_line(f.line))
+                    else:
+                        f.var = target - (f.address + len(f.fix))
+                elif f.kind == "space":
+                    amount, ok = self._space_amount(f.expr)
+                    if not ok:
+                        raise AsmError(f.line, ".space, .nops or .fill specifies non-absolute "
+                                       "value", self._source_line(f.line))
+                    if amount < 0:
+                        if pass_ < 2:
+                            ret = True
+                        else:
+                            self.warnings.append((f.line, ".space, .nops or .fill with "
+                                                  "negative value, ignored"))
+                            f.kind, f.var = "fill", 0
+                    else:
+                        growth = was + len(f.fix) + amount - frags[k + 1].address
+                        f.var = amount
+                elif f.kind == "leb128":
+                    size = len(_leb128(self._leb_value(f), bool(f.subtype)))
+                    growth = size - f.var
+                    f.var = size
                 if growth:
                     stretch += growth
                     stretched = True
             iterations -= 1
             if not stretched or iterations <= 0:
                 break
+        for f in frags:
+            if getattr(f, "last_address", None) != f.address:
+                f.last_address = f.address
+                ret = True
+        return ret
+
+    def _source_line(self, n: int) -> str:
+        return self.lines[n - 1] if 0 < n <= len(self.lines) else ""
+
+    def _space_amount(self, e: Expr) -> tuple[int, bool]:
+        """An rs_space frag's size: an absolute value (a difference of two
+        symbols of one section)."""
+        if e.op == "constant":
+            return e.num, True
+        if e.op == "subtract" and e.sym.defined and e.sub.defined \
+                and e.sym.segment() is e.sub.segment():
+            return e.num + e.sym.value() - e.sub.value(), True
+        return 0, False
+
+    def _leb_value(self, f: Frag) -> int:
+        """resolve_symbol_value of an rs_leb128 frag's expression."""
+        e = f.expr
+        if e.op == "subtract":
+            if not (e.sym.defined and e.sub.defined):
+                undef = e.sym if not e.sym.defined else e.sub
+                raise AsmError(f.line, f"leb128 operand is an undefined symbol: {undef.name}",
+                               self._source_line(f.line))
+            v = e.num + e.sym.value() - e.sub.value()
+        else:
+            v = e.num + (e.sym.value() if e.sym is not None else 0)
+        return v if f.subtype else v & M64
 
     def _convert(self, sec: Section) -> None:
         """md_convert_frag_branch and the alignment fills (riscv_handle_align)."""
@@ -1746,7 +2773,11 @@ class Assembler:
                 n = _relax_align(f.address + len(f.fix), f.power)
                 if f.max_skip and n > f.max_skip:
                     n = 0
-                f.pad = f.fill * n
+                f.pad = (f.fill * n)[:n] if len(f.fill) > 1 else f.fill * n
+            elif f.kind in ("org", "space"):
+                f.pad = f.fill[:1] * f.var
+            elif f.kind == "leb128":
+                f.pad = _leb128(self._leb_value(f), bool(f.subtype))
 
     def _convert_branch(self, f: Frag) -> None:
         length = f.subtype >> 2 & 0xF
@@ -1814,6 +2845,7 @@ class Assembler:
         obj = AsmObject(self.xlen, self)
         for name, sec in self.sections.items():
             o = ObjSection(name, sec.align, sec.code, sec.bss)
+            o.tls = sec.tls
             data = bytearray()
             for f in sec.frags:
                 f.address = len(data)
@@ -1839,6 +2871,16 @@ class Assembler:
             o.relocs.append(Reloc(at, fx.reloc, sym, addend, fx.size, fx.line, sub))
             if fx.reloc in _RELAXABLE and fx.relax and sym is not None:
                 o.relocs.append(Reloc(at, "RELAX", None, 0, 0, fx.line))
+        for (sec, off, sym), kind, e, line in self.reloc_list:     # (write_relocs: .reloc's,
+            if sym is not None:                 # after the fixups at their address)
+                if not sym.defined or not isinstance(sym.segment(), Section):
+                    raise AsmError(line, "bad offset expression", self._source_line(line))
+                sec, off = sym.segment(), off + sym.value()
+            target = e.sym if e.op in ("symbol", "subtract") else None
+            size = _DATA_RELOC_SIZE.get(kind, 0)
+            obj.sections[sec.name].relocs.append(
+                Reloc(off, kind, target, e.num if e.op != "absent" else 0, size, line,
+                      e.sub if e.op == "subtract" else None))
         for o in obj.sections.values():         # GAS_SORT_RELOCS: by address, stable
             o.relocs.sort(key=lambda r: r.offset)
         for frag, where, size, line in self.insns:
@@ -1889,6 +2931,7 @@ _STRICT_HINTS = {
     "M_EXTH": "slli and srli / srai",
     "M_ZEXTW": "slli and srli",
     "M_SEXTB": "slli and srai",
+    "M_VMSGE": "vmslt.vx / vmsltu.vx and vmnand.mm, or with a mask vmxor.mm / vmandn.mm / vmor.mm",
     "M_LA_TLS_GD": "auipc rd, %tls_gd_pcrel_hi(sym) and addi (%pcrel_lo)",
     "M_LA_TLS_IE": "auipc rd, %tls_ie_pcrel_hi(sym) and a load (%pcrel_lo)",
 }
@@ -1931,6 +2974,30 @@ def _nops_norelax(n: int) -> bytes:
         return b""
     excess = n % 4
     return _nops(excess) + NOP32.to_bytes(4, "little") * ((n - excess) // 4)
+
+
+class _Hooks:
+    """What emips.gasread asks the assembler (``.if``, ``.ifdef``, a macro's
+    name, comments)."""
+
+    onechar = True
+
+    def __init__(self, asm: Assembler) -> None:
+        self.asm = asm
+
+    def absolute(self, text: str) -> int:
+        return self.asm._absolute_value(text)
+
+    def defined(self, name: str) -> bool:
+        """cond.c: defined, or equated (a referenced, unset symbol is not)."""
+        s = self.asm.symbols.get(name)
+        return s is not None and (s.defined or s.equated is not None or s.absolute is not None)
+
+    def known(self, directive: str) -> bool:
+        return directive in _DIRECTIVES or directive in _UNSUPPORTED
+
+    def strip(self, line: str) -> str:
+        return _strip_comment(line)
 
 
 def _strip_comment(line: str) -> str:
@@ -2032,26 +3099,118 @@ def _scrub(text: str) -> str:
     return name + " " + "".join(out)
 
 
+def _leb128(v: int, sign: bool) -> bytes:
+    """output_leb128: ``v`` unsigned (a 64-bit value) or signed."""
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        done = (v == 0 and not b & 0x40) or (v == -1 and b & 0x40) if sign else v == 0
+        out.append(b | (0 if done else 0x80))
+        if done:
+            return bytes(out)
+
+
+def _extended(text: str) -> bytes:
+    """atof_ieee's 'x': the 80-bit extended format (1 sign, 15 exponent,
+    64 significand bits with the integer bit), rounded to nearest even."""
+    from decimal import Decimal, InvalidOperation
+    from fractions import Fraction
+    t = text.strip().lower()
+    neg = t.startswith("-")
+    t = t.lstrip("+-")
+    if t in ("inf", "infinity"):
+        return (1 << 63).to_bytes(8, "little") + (0x7FFF | neg << 15).to_bytes(2, "little")
+    if t == "nan":
+        return (0xC000000000000000).to_bytes(8, "little") + (0x7FFF).to_bytes(2, "little")
+    try:
+        f = Fraction(Decimal(t))
+    except InvalidOperation:
+        raise ValueError(f"bad floating literal: {text}") from None
+    if f == 0:
+        return bytes(8) + (neg << 15).to_bytes(2, "little")
+    e = f.numerator.bit_length() - f.denominator.bit_length()
+    if Fraction(2) ** e > f:
+        e -= 1
+    while Fraction(2) ** (e + 1) <= f:
+        e += 1
+    exp = e + 16383
+    if exp <= 0:                                # (denormal: exponent 0, no integer bit)
+        scaled = f * 2 ** (63 + 16382)
+        exp = 0
+    else:
+        scaled = f * Fraction(2) ** (63 - e)
+    q, r = divmod(scaled.numerator, scaled.denominator)
+    if 2 * r > scaled.denominator or (2 * r == scaled.denominator and q & 1):
+        q += 1
+    if q >> 64:
+        q >>= 1
+        exp += 1
+    if exp >= 0x7FFF:
+        q, exp = 1 << 63, 0x7FFF
+    return q.to_bytes(8, "little") + (exp | neg << 15).to_bytes(2, "little")
+
+
+def _arch_extensions(arch: str) -> str:
+    """An ISA string with versions (``rv64i2p1_m2p0_zicsr2p0``) as
+    parse_extensions reads it (``im_zicsr``)."""
+    t = arch.lower()[4:]
+    parts = t.split("_")
+    out = ["".join(re.findall(r"([a-z])(?:\d+(?:p\d+)?)?", parts[0]))]
+    for p in parts[1:]:
+        if p:
+            out.append(re.sub(r"(?<=[a-z])\d+(?:p\d+)?$", "", p))
+    return "_".join(out)
+
+
+#: R_RISCV_ names (bfd's howto table) -> the linker's reloc names
+_ELF_RELOCS = {**{n: n for n in (
+    "NONE", "CALL", "CALL_PLT", "PCREL_HI20", "PCREL_LO12_I", "PCREL_LO12_S", "HI20",
+    "LO12_I", "LO12_S", "ADD8", "ADD16", "ADD32", "ADD64", "SUB6", "SUB8", "SUB16", "SUB32",
+    "SUB64", "SET6", "SET8", "SET16", "SET32", "32_PCREL", "RVC_BRANCH", "RVC_JUMP",
+    "RVC_LUI", "RELAX", "ALIGN", "GPREL_I", "GPREL_S", "SET_ULEB128", "SUB_ULEB128",
+    "GOT_HI20", "TLS_GOT_HI20", "TLS_GD_HI20", "TPREL_HI20", "TPREL_LO12_I", "TPREL_LO12_S",
+    "TPREL_ADD", "TPREL_I", "TPREL_S", "TLS_DTPMOD32", "TLS_DTPMOD64", "TLS_DTPREL32",
+    "TLS_DTPREL64", "TLS_TPREL32", "TLS_TPREL64", "COPY", "JUMP_SLOT", "RELATIVE",
+    "IRELATIVE")},
+    "BRANCH": "12_PCREL", "JAL": "JMP", "32": "DATA4", "64": "DATA8"}
+_ELF_RELOCS = {"R_RISCV_" + k: v for k, v in _ELF_RELOCS.items()}
+_DATA_RELOC_SIZE = {"DATA4": 4, "DATA8": 8, "ADD8": 1, "ADD16": 2, "ADD32": 4, "ADD64": 8,
+                    "SUB6": 1, "SUB8": 1, "SUB16": 2, "SUB32": 4, "SUB64": 8, "SET6": 1,
+                    "SET8": 1, "SET16": 2, "SET32": 4, "32_PCREL": 4}
+#: s_space's element sizes (.ds.x / .ds.p: 12 bytes)
+_SPACE_MULT = {".dcb": 2, ".dcb.b": 1, ".dcb.l": 4, ".dcb.w": 2, ".ds": 2, ".ds.b": 1,
+               ".ds.d": 8, ".ds.l": 4, ".ds.p": 12, ".ds.s": 4, ".ds.w": 2, ".ds.x": 12}
+#: riscv_convert_symbolic_attribute (and the Tag_RISCV_ forms)
+_ATTRIBUTE_TAGS = {**{n: t for n, t in (("arch", 5), ("priv_spec", 8), ("priv_spec_minor", 10),
+                                        ("priv_spec_revision", 12), ("unaligned_access", 6),
+                                        ("stack_align", 4))},
+                   **{"Tag_RISCV_" + n: t for n, t in (("arch", 5), ("priv_spec", 8),
+                                                       ("priv_spec_minor", 10),
+                                                       ("priv_spec_revision", 12),
+                                                       ("unaligned_access", 6),
+                                                       ("stack_align", 4))}}
+#: listing and debug directives: nothing in a static program's bytes
+_NO_EFFECT = (".eject", ".list", ".nolist", ".llen", ".lflags", ".page", ".plen", ".psize",
+              ".sbttl", ".title", ".ttl", ".nopage", ".format", ".noformat", ".spc", ".name",
+              ".debug", ".xref", ".stabs", ".stabn", ".stabd", ".xstabs", ".desc", ".line",
+              ".loc_mark_labels", ".version", ".gnu_attribute", ".attach_to_group",
+              ".linkonce", ".vtable_entry", ".vtable_inherit", ".internal",
+              ".this_gcc_requires_the_gnu_assembler")
 _DATA_SIZES = {".byte": 1, ".half": 2, ".hword": 2, ".short": 2, ".2byte": 2, ".word": 4, ".long": 4,
                ".4byte": 4, ".int": 4, ".dword": 8, ".quad": 8, ".8byte": 8}
 #: GNU as's directives eMIPS leaves out (an error naming them)
-_UNSUPPORTED = frozenset((".org", ".comm", ".lcomm", ".rept", ".endr", ".irp", ".irpc",
-                          ".macro", ".endm", ".if", ".ifdef", ".ifndef", ".else", ".elseif",
-                          ".endif", ".include", ".incbin", ".sleb128", ".uleb128", ".octa",
-                          ".err", ".pushsection", ".popsection", ".subsection", ".reloc",
-                          ".dtprelword", ".dtpreldword", ".tls_common", ".float16",
-                          ".bfloat16", ".symver"))
+_UNSUPPORTED = frozenset((".mri", "..mri", ".rva"))
 _DIRECTIVES = {
     **{d: Assembler.d_section for d in (".text", ".data", ".bss", ".section", ".previous")},
     **{d: Assembler.d_globl for d in (".globl", ".global", ".weak")},
     ".type": Assembler.d_type,
     ".size": Assembler.d_size,
-    **{d: Assembler.d_ignore for d in (".file", ".ident", ".attribute",
-                                        ".local", ".hidden", ".protected", ".extern",
+    **{d: Assembler.d_ignore for d in (".file", ".ident", ".hidden", ".protected", ".extern",
                                         ".cfi_startproc", ".cfi_endproc", ".loc",
                                         ".cfi_def_cfa_offset", ".cfi_offset",
                                         ".cfi_def_cfa", ".cfi_def_cfa_register",
-                                        ".cfi_restore", ".cfi_sections", ".end",
+                                        ".cfi_restore", ".cfi_sections",
                                         ".variant_cc", ".func", ".endfunc")},
     **{d: Assembler.d_equ for d in (".equ", ".set", ".equiv", ".eqv")},
     ".option": Assembler.d_option,
@@ -2062,6 +3221,35 @@ _DIRECTIVES = {
     ".fill": Assembler.d_fill,
     ".insn": Assembler.d_insn,
     **{d: Assembler.d_align for d in (".align", ".p2align", ".balign")},
+    # LF12
+    **{d: Assembler.d_section for d in (".sect", ".sect.s", ".section.s")},
+    ".pushsection": Assembler.d_pushsection,
+    ".popsection": Assembler.d_popsection,
+    ".subsection": Assembler.d_subsection,
+    **{d: Assembler.d_struct for d in (".struct", ".offset")},
+    ".org": Assembler.d_org,
+    **{d: Assembler.d_comm for d in (".comm", ".common", ".common.s", ".xcom", ".tls_common")},
+    ".lcomm": Assembler.d_lcomm,
+    ".local": Assembler.d_local,
+    ".xdef": Assembler.d_globl,
+    **{d: Assembler.d_leb128 for d in (".uleb128", ".sleb128")},
+    ".octa": Assembler.d_octa,
+    ".incbin": Assembler.d_incbin,
+    ".float16": Assembler.d_float16,
+    **{d: Assembler.d_strings for d in (".string8", ".string16", ".string32", ".string64")},
+    **{d: Assembler.d_dc for d in (".dc", ".dc.b", ".dc.w", ".dc.l", ".dc.a", ".dc.s", ".dc.d")},
+    **{d: Assembler.d_float_x for d in (".dc.x", ".dcb.s", ".dcb.d", ".dcb.x")},
+    **{d: Assembler.d_space for d in _SPACE_MULT},
+    **{d: Assembler.d_align_fill for d in (".balignw", ".balignl", ".p2alignw", ".p2alignl")},
+    ".attribute": Assembler.d_attribute,
+    ".lsym": Assembler.d_lsym,
+    **{d: Assembler.d_dtprel for d in (".dtprelword", ".dtpreldword")},
+    ".reloc": Assembler.d_reloc,
+    ".weakref": Assembler.d_weakref,
+    ".symver": Assembler.d_symver,
+    ".abort": Assembler.d_abort,
+    **{d: Assembler.d_nop for d in (".nop", ".nops")},
+    **{d: Assembler.d_ignore for d in _NO_EFFECT},
 }
 
 
@@ -2073,7 +3261,7 @@ BOOT_SP = 0x7FFFEFFC
 
 def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTENSIONS,
              relax: bool = True, link_relax: bool = True, bases: dict | None = None,
-             strict: bool = False):
+             strict: bool = False, path: str | None = None, include_dirs: tuple[str, ...] = ()):
     """Assemble and link a RISC-V ``source`` (``arch`` "rv32" / "rv64")
     into a :class:`emips.assembler.Program` (``arch`` set, ``rv`` = the
     instructions' sizes).  ``relax``: gas's -mrelax (its default) /
@@ -2083,7 +3271,7 @@ def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTEN
     if arch not in ("rv32", "rv64"):
         raise ValueError(f"arch must be rv32 or rv64, not {arch!r}")
     asm = Assembler(32 if arch == "rv32" else 64, extensions, relax, strict)
-    obj = asm.assemble(source)
+    obj = asm.assemble(source, path, include_dirs)
     try:
         linked = rvld.link(obj, bases, link_relax)
     except rvld.LinkError as exc:
@@ -2104,4 +3292,7 @@ def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTEN
     else:
         prog.entry = obj.sections[".text"].address
     prog.warnings = list(asm.warnings)
+    prog.printed = list(asm.reader.printed)
+    prog.tls = linked.tls
+    prog.rv_attributes = dict(asm.attributes)
     return prog

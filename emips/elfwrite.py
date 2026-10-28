@@ -25,7 +25,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from .elf import (E_NANOMIPS_ABI_P32, EF_RISCV_RVC, EM_MIPS, EM_NANOMIPS, EM_RISCV, ET_EXEC,
+from .elf import (E_NANOMIPS_ABI_P32, EF_RISCV_RVC, EF_RISCV_TSO, EM_MIPS, EM_NANOMIPS, EM_RISCV, ET_EXEC,
                   SHT_RISCV_ATTRIBUTES, TAG_RISCV_ARCH)
 
 #: EF_MIPS_ARCH by release (32 / 32R2 / 32R6) and EF_MIPS_NOREORDER-free o32
@@ -151,19 +151,35 @@ def debug_info(source: Path, low: int, high: int, order: str,
 #: the versions Tag_RISCV_arch names (GNU as 2.42's defaults for them)
 RV_VERSIONS = {"i": "2p1", "m": "2p0", "a": "2p1", "f": "2p2", "d": "2p2", "c": "2p0",
                "zicsr": "2p0", "zifencei": "2p0", "zicntr": "2p0", "zihpm": "2p0",
-               "zmmul": "1p0", "zba": "1p0", "zbb": "1p0"}
+               "zmmul": "1p0", "zba": "1p0", "zbb": "1p0", "zihintpause": "2p0", "q": "2p2",
+               "v": "1p0"}
 #: EF_RISCV_FLOAT_ABI: single / double (psABI: 0x2 / 0x4)
 RV_FLOAT_SINGLE, RV_FLOAT_DOUBLE = 0x2, 0x4
 
 
-def riscv_attributes(arch: str, extensions: str) -> bytes:
+def riscv_attributes(arch: str, extensions: str, extra: dict | None = None) -> bytes:
     """A .riscv.attributes section (psABI 8.6) with Tag_RISCV_arch: the
     ISA string (``rv64i2p1_m2p0_..._zicsr2p0``) of ``extensions`` and what
-    they imply, as GNU as writes it."""
+    they imply, as GNU as writes it; ``extra``: the program's ``.attribute``
+    tags (LF12; written in tag order, as gas's obj_attr output: numbers as
+    ULEB128, strings NUL-terminated; its arch replaces ``extensions``)."""
+    extra = dict(extra or {})
+    if 5 in extra:
+        from .rvasm import _arch_extensions
+        extensions = _arch_extensions(str(extra.pop(5)))
     from .cc import rv_march
-    from .riscv import closure, parse_extensions
-    implied = "_".join(sorted(closure(parse_extensions(extensions) | {"i"})))
-    march = rv_march(arch, implied)[0][4:]
+    from .riscv import IMPLIED, parse_extensions
+    # (GNU as 2.42's riscv_implicit_subsets: C's parts imply nothing there)
+    gas = {k: tuple(e for e in v if e not in ("zca", "zaamo", "zalrsc"))
+           for k, v in IMPLIED.items()}
+    have, todo = set(parse_extensions(extensions) | {"i"}), list(parse_extensions(extensions))
+    while todo:
+        for e in gas.get(todo.pop(), ()):
+            if e not in have:
+                have.add(e)
+                todo.append(e)
+    implied = "_".join(sorted(have))
+    march = rv_march(arch, implied, gcc=False)[0][4:]
     parts = []
     for k, p in enumerate(march.split("_")):
         if k == 0:
@@ -171,7 +187,12 @@ def riscv_attributes(arch: str, extensions: str) -> bytes:
         else:
             parts.append(p + RV_VERSIONS.get(p, "1p0"))
     text = f"rv{arch[2:]}" + "_".join(parts)
-    attrs = _uleb(TAG_RISCV_ARCH) + text.encode() + b"\0"
+    tags = {TAG_RISCV_ARCH: text, **extra}
+    attrs = b""
+    for tag in sorted(tags):
+        v = tags[tag]
+        attrs += _uleb(tag) + (v.encode("latin-1") + b"\0" if isinstance(v, str)
+                               else _uleb(int(v)))
     sub = _uleb(1) + struct.pack("<I", 5 + len(attrs)) + attrs          # Tag_File
     vendor = b"riscv\0" + sub
     return b"A" + struct.pack("<I", 4 + len(vendor)) + vendor
@@ -237,7 +258,8 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     last = max(lines) if lines else 0
     end = last + (sizes.get(last, 2) if sizes is not None else 4)
     info, abbrev = (debug_info(src, min(lines), end, order, size) if lines else (b"", b""))
-    attributes = riscv_attributes(arch, program.rv_extensions or "i") if rv else b""
+    attributes = riscv_attributes(arch, program.rv_extensions or "i",
+                                  getattr(program, "rv_attributes", None)) if rv else b""
     # layout: header, program headers, section data, section headers
     ehsize, phsize, shsize = (64, 56, 64) if wide else (52, 32, 40)
     off = ehsize + phsize * len(secs)
@@ -261,8 +283,9 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
     if rv:                                       # the psABI's e_flags
         from .riscv import closure, parse_extensions
         exts = closure(parse_extensions(program.rv_extensions or "i"))
-        flags = ((EF_RISCV_RVC if "c" in exts else 0)
-                 | (RV_FLOAT_DOUBLE if "d" in exts else RV_FLOAT_SINGLE if "f" in exts else 0))
+        flags = ((EF_RISCV_RVC if "zca" in exts else 0)           # (C or Zca: 16-bit code)
+                 | (RV_FLOAT_DOUBLE if "d" in exts else RV_FLOAT_SINGLE if "f" in exts else 0)
+                 | (EF_RISCV_TSO if "ztso" in exts else 0))       # (psABI 8.1: Ztso)
     elif nano:                                     # E_NANOMIPS_ARCH_32R6 = 0
         flags = E_NANOMIPS_ABI_P32
     elif wide:                                   # n64: EF_MIPS_ARCH alone

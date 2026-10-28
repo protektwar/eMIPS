@@ -60,6 +60,7 @@ NANOMIPS_ASE_DSPR3, NANOMIPS_ASE_MT = 0x2000, 0x40
 NANOMIPS_ASES_MISSING = {0x8: "the MCU ASE", 0x100: "the Virtualization ASE", 0x200: "MSA"}
 ET_EXEC = 2
 PT_LOAD = 1
+PT_TLS = 7
 SHT_SYMTAB = 2
 #: the MIPS ABI flags section (Elf_MIPS_ABIFlags_v0) and its DSP ASE bits
 SHT_MIPS_ABIFLAGS = 0x7000002A
@@ -163,6 +164,8 @@ class ElfImage:
     #: "ginvt", "xnms" = the full ISA, not the nanoMIPS subset) — the names
     #: of emips.assembler.Program.needs
     needs: frozenset = frozenset()
+    #: RISC-V: PT_TLS (address, p_filesz, p_memsz): the TLS template
+    tls: tuple | None = None
     #: RISC-V ("rv32" / "rv64", EM_RISCV): the extensions the code was built
     #: for (Tag_RISCV_arch as eMIPS's extension string: "imafdc_zicsr ...")
     rv_extensions: str = ""
@@ -450,6 +453,8 @@ def _parse_rv(data: bytes, path: str, end: str, endian: str, wide: bool, e_entry
         else:
             (p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags,
              _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
+        if p_type == PT_TLS and p_memsz:        # (the TLS template: thread 0's tp)
+            img.tls = (p_vaddr, p_filesz, p_memsz)
         if p_type != PT_LOAD or not p_memsz:
             continue
         chunk = data[p_offset:p_offset + p_filesz]
@@ -459,6 +464,12 @@ def _parse_rv(data: bytes, path: str, end: str, endian: str, wide: bool, e_entry
         img.segments.append((p_vaddr, p_memsz, rwx))
     if not img.segments:
         raise ElfError("no loadable segment (PT_LOAD)")
+    if img.tls is not None:                     # (.tbss has no room of its own in ld's
+        base, filesz, memsz = img.tls           # layout: eMIPS uses the block in place)
+        if any(base + k in img.image for k in range(filesz, memsz)):
+            img.notes.append("the TLS block's .tbss overlaps what the linker put after "
+                             ".tdata: tp points at the image, so those variables share "
+                             "memory (eMIPS's emips_rv.ld reserves the room)")
     sections = _sections(data, end, e_shoff, e_shentsize, e_shnum, e_shstrndx, wide)
     _read_sections(img, data, end, sections, wide)
     attrs = next((s for s in sections if s[1] == SHT_RISCV_ATTRIBUTES), None)

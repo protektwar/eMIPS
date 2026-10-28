@@ -55,6 +55,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .coherence import CoherenceManager
+from .p8700oci import DEBUG_BASE, DEBUG_END, FDC_BASE, OCI_END, TRF_BASE
 
 M32 = 0xFFFFFFFF
 M64 = 0xFFFFFFFFFFFFFFFF
@@ -83,6 +84,12 @@ COP_FLUSH, COP_INIT_TAG, COP_INIT, COP_HIT_INV, COP_HIT_WB_INV, COP_HIT_WB, COP_
     0, 1, 2, 4, 5, 6, 7)
 COP_DONE, COP_DONE_ERR = 1, 2
 L2_PFT_CONTROL, L2_PFT_CONTROL_B = 0x0300, 0x0308
+IOCU_REV = 0x0200
+DBU_REV = 0x0208
+IOCU_REVISION = 0x0100                  # (5.14.1.17: "from configuration"; 0 = none)
+#: GCR_CONTROL (5.9): IOCU requests counted toward the MMIO limit / kept out
+#: of the MMIO regions
+CONTROL_IOCU_LIMIT, CONTROL_IOCU_NO_MMIO = 1 << 12, 1 << 13
 TIMEOUT_LIMIT, MMIO_REQ_LIMIT = 0x0650, 0x06F8
 MMIO = tuple(0x0700 + 0x10 * k + h for k in range(8) for h in (0, 8))
 STORED = (CONTROL, SCRATCH0, SCRATCH1, L2_PFT_CONTROL, L2_PFT_CONTROL_B, TIMEOUT_LIMIT,
@@ -100,6 +107,7 @@ SEQDEL, RAIL, RESETLEN, CPC_REV, CC_CTL, PWRUP_CTL, RES_REL, ROCC_CTL, PRESCALE 
 MTIME, TIMECTL, CLK_GATE_DIS, HRTIME, CPC_CONFIG = 0x8050, 0x8058, 0x8060, 0x8090, 0x8138
 CPC_STORED = (SEQDEL, RAIL, RESETLEN, CC_CTL, PWRUP_CTL, RES_REL, PRESCALE, CLK_GATE_DIS)
 CPC_CORE, CMD, STAT_CONF, VP_STOP, VP_RUN, VP_RUNNING = 0xA000, 0x00, 0x08, 0x20, 0x28, 0x30
+DBG_DBRK = 0x40                         # (5.14.5.7: DINT 15:0, DEBUGM 31:16, Lock 63)
 #: CPC commands and sequencer states (Table 5.108 / 5.109)
 CLOCK_OFF, PWR_DOWN, PWR_UP, RESET = 1, 2, 3, 4
 D0, U2, U5, U6 = 0, 3, 6, 7
@@ -133,6 +141,8 @@ class GCR:
 
     def load(self, m, pa: int, size: int) -> int:
         off = pa - self.cl.base
+        if FDC_BASE <= off < OCI_END:            # (the FDC / TRF: reads with effects)
+            return self._oci(off, size, read=True)
         ic = self.cl.ic
         if ic is not None and ic.covers(off):    # (the interrupt controller: 32-bit)
             return ic.load(m, off, size)
@@ -141,6 +151,17 @@ class GCR:
 
     def store(self, m, pa: int, value: int, size: int) -> None:
         off = pa - self.cl.base
+        if FDC_BASE <= off < OCI_END:
+            word, shift = off & ~7, 8 * (off & 7)
+            v = (self._oci(word, 8) & ~(((1 << 8 * size) - 1) << shift)) | (
+                (value & ((1 << 8 * size) - 1)) << shift)
+            dev = self.cl.fdc if off < TRF_BASE else self.cl.trf
+            base = FDC_BASE if off < TRF_BASE else TRF_BASE
+            if dev is self.cl.trf:
+                dev.put(word - base, v, 1 if getattr(m, "is_dbu", False) else 0)
+            else:
+                dev.put(word - base, v)
+            return
         ic = self.cl.ic
         if ic is not None and ic.covers(off):    # (ch. 8: writable by every requester)
             ic.store(m, off, value, size)
@@ -154,16 +175,40 @@ class GCR:
     def _may_write(self, m, off: int) -> bool:
         """5.14.1.14: ACCESS gates the GCR and CPC (not the interrupt
         controller) by requesting core."""
-        if off >= 0x10000:
+        if off >= 0x10000 or getattr(m, "is_dbu", False):    # (the DBU's master: LF16)
             return True
+        if m is None or getattr(m, "p8700", None) is None:    # (an IOCU: bits 23:16)
+            return bool(self.access >> 16 & 1)
         return bool(self.access >> self.cl.core_of(m) & 1)
 
     # -- the registers ---------------------------------------------------------------
 
+    def _oci(self, off: int, size: int, read: bool = False) -> int:
+        """The FDC (0x3F000) and the Trace Funnel (0x3F100): 64-bit registers
+        (FDC: 32 bits in a doubleword slot); ``read``: with the side effects."""
+        cl = self.cl
+        dev, base = (cl.fdc, FDC_BASE) if off < TRF_BASE else (cl.trf, TRF_BASE)
+        if dev is None:
+            return 0
+        word = off & ~7
+        v = (dev.read if read else dev.get)(word - base)
+        return (v >> 8 * (off & 7)) & ((1 << 8 * size) - 1)
+
     def get(self, m, off: int) -> int:
         cl = self.cl
+        if FDC_BASE <= off < OCI_END:
+            return self._oci(off, 8)
+        if DEBUG_BASE <= off < DEBUG_END:        # (GCR.Debug: the CM3's counters)
+            return cl.cmpc.get(off) if cl.cmpc is not None else 0
         if off == CONFIG:
-            return (cl.cores - 1) | 8 << 16 | 1 << 23 | 1 << 40
+            return (cl.cores - 1) | cl.iocu << 8 | 8 << 16 | 1 << 23 | 1 << 40
+        if off == DBU_REV:                  # (5.14.1.18: LF16)
+            from .p8700dbu import DBU_REVISION
+            return DBU_REVISION
+        if off == IOCU_REV:                 # (5.14.1.17: 0 = no IOCU attached)
+            return IOCU_REVISION if cl.iocu else 0
+        if off in (L2_PFT_CONTROL, L2_PFT_CONTROL_B) and cl.cm.l2pf is not None:
+            return cl.cm.l2pf.get(off == L2_PFT_CONTROL_B)
         if off == BASE:
             return cl.base
         if off == REVR:
@@ -185,8 +230,9 @@ class GCR:
             return CACHE_REVISION
         if off == L2_CONFIG:
             return 1 << 31 | self.l2_config | cm.l2_config() & ~L2_BYPASS
-        if off == L2_RAM_CONFIG:            # (PRESENT, HCI_DONE: 5.14.1.20 / 3.5)
-            return 1 << 31 | 1 << 30
+        if off == L2_RAM_CONFIG:            # (PRESENT, HCI_DONE, the wait states: 5.14.1.20)
+            t, w, d = cm.l2_waits
+            return 1 << 31 | 1 << 30 | t << 8 | w << 4 | d
         if off in L2_STORED:
             return self.l2_regs[off]
         if off == L2SM_COP:
@@ -210,6 +256,10 @@ class GCR:
 
     def put(self, m, off: int, value: int, mask: int) -> None:
         cl = self.cl
+        if DEBUG_BASE <= off < DEBUG_END:
+            if cl.cmpc is not None:
+                cl.cmpc.put(off, value, mask)
+            return
         if off == BASE:                     # (5.14.1.2: 47:19; the upper half shadowed)
             if mask == M32 << 32:
                 self._base_hi = value >> 32
@@ -248,6 +298,9 @@ class GCR:
             return
         if off == L2SM_TAG_ADDR_COP:        # (written only while the state machine idles)
             self.cop_range = ((self.cop_range & ~mask) | value) & (M64 & ~0x3F)
+            return
+        if off in (L2_PFT_CONTROL, L2_PFT_CONTROL_B) and cm.l2pf is not None:
+            cm.l2pf.put(off == L2_PFT_CONTROL_B, value, mask)
             return
         if off in self.regs:
             self.regs[off] = (self.regs[off] & ~mask) | value
@@ -323,9 +376,36 @@ class P8700CM(CoherenceManager):
         self.error_mask = 0                 # (5.14.1.6: reset 0)
         #: GCR_L2_CONFIG.L2_BYPASS: every request goes to memory
         self.bypass = False
+        self._waits = (0, 0, 0)
+        #: the L2 prefetcher (5.6; emips.p8700mem)
+        self.l2pf = None
+        self._coh_depth = 0                 # (inside a coherent request: LF16's counters)
         if self.l2 is not None:
+            self.l2.perf = self.l2_perf
+            from .p8700mem import L2Prefetcher
             self.l2.write_allocate = True
             self.l2.on_corrected = self._l2_corrected
+            self.l2pf = L2Prefetcher(self)
+            self.l2.observer = self.l2pf.observe
+
+    @property
+    def l2_waits(self) -> tuple[int, int, int]:
+        """GCR_L2_RAM_CONFIG's wait states (tag, way select, data RAMs:
+        5.14.1.20, "from configuration"): a refill the L2 serves waits all
+        three, one that misses it the tag lookup (emips.timing)."""
+        return self._waits
+
+    @l2_waits.setter
+    def l2_waits(self, waits) -> None:
+        t, w, d = (max(0, min(3, int(x))) for x in waits)
+        self._waits = (t, w, d)
+        for caches in self.cores.values():
+            caches.timing.l2_waits = (t + w + d, t) if self.l2 is not None else (0, 0)
+
+    def attach(self, core: int, caches) -> None:
+        super().attach(core, caches)
+        t, w, d = self._waits
+        caches.timing.l2_waits = (t + w + d, t) if self.l2 is not None else (0, 0)
 
     def _l2_corrected(self, cache, s: int, w: int, k: int, bit: int) -> None:
         """A corrected L2 error: recorded in the requesting core's
@@ -339,7 +419,144 @@ class P8700CM(CoherenceManager):
     fence_i_global = True
 
     def l2_policy(self, pa: int) -> str:
-        return "bypass" if self.bypass else "wb"
+        """L2_BYPASS, or an MMIO region (5.10.2: its requests go to its
+        port, not through the L2; a region qualified by CCA matches only
+        uncached requests, which bypass the L2 anyway)."""
+        if self.bypass:
+            return "bypass"
+        return "bypass" if self.mmio(pa) is not None else "wb"
+
+    def mmio(self, pa: int, uncached: bool | None = None) -> dict | None:
+        """The MMIO region ``pa`` falls in (emips.p8700mem.mmio_region)."""
+        from .p8700mem import mmio_region
+        regs = self.cps.gcr.regs
+        if not regs.get(0x0700, 0) & 1 and not any(regs.get(0x0700 + 0x10 * k, 0) & 1
+                                                  for k in range(1, 8)):
+            return None
+        return mmio_region(regs, pa, uncached)
+
+    # -- the IOCU (5.9): an I/O master's coherent port ---------------------------------
+
+    def _iocu_holders(self, pa: int):
+        """The copies an IOCU request snoops: the coherent cores' data
+        caches (COH_EN; a powered core)."""
+        from .coherence import _Holder
+        out = []
+        cl = self.cps
+        for j in sorted(self.cores):
+            if not cl.coh_en[j] or cl.state[j] == D0:
+                continue
+            caches = self.cores[j]
+            c = caches.d
+            if c is None:
+                continue
+            tag = c.tag_of(pa)
+            for s_ in c.alias_sets(pa):
+                w = c.find(s_, tag)
+                if w is not None and not c.lines[s_][w].lock:
+                    out.append(_Holder(j, caches, c, s_, w))
+        return out
+
+    def _iocu_claim(self) -> None:
+        from .coherence import _IOCURequester
+        if self._iocu_req is None:
+            self._iocu_req = _IOCURequester(self)
+            self._iocu_req.core = None
+            self._iocu_req.req_kind = "load"
+        req = self._iocu_req
+        req.m = next((m for m in self.cps.machines if m is not None), None)
+        for caches in self.cores.values():
+            if caches.wbb is not None:
+                caches.wbb.sync()
+        self.claim(req)
+
+    # -- the CM3's performance counters (LF16: emips.p8700oci.CMCounters) ------------------
+
+    def _pc(self):
+        pc = getattr(self.cps, "cmpc", None)
+        return pc if pc is not None and pc.armed else None
+
+    def _port(self, req) -> int:
+        core = getattr(req, "core", None)
+        return core if core is not None else self.cps.cores     # (the IOCU: after the cores)
+
+    def _count(self, req, cmd: str, coherent: bool = True) -> None:
+        pc = self._pc()
+        if pc is not None:
+            pc.request(self._port(req), cmd, coherent)
+
+    def l2_perf(self, kind: str, hit: bool, full: bool, allocated: bool) -> None:
+        """An L2 lookup (cache.SecondaryCache.perf): events 8 / 9, and the
+        requests that reach the CM only as L2 traffic (Legacy RD / WR, a
+        CohWriteBack)."""
+        pc = self._pc()
+        if pc is None:
+            return
+        req = self.current
+        port = self._port(req) if req is not None else 0
+        pc.l2(port, kind, hit, full, allocated)
+        if self._coh_depth:
+            return
+        coherent = req is not None and getattr(req, "core", None) is not None \
+            and self.cps.coh_en[req.core]
+        pc.request(port, ("writeback" if coherent else "legacy_wr") if kind == "write"
+                   else "legacy_rd", coherent)
+
+    def coherent_read(self, req, pa: int, n: int, intent: str):
+        self._count(req, {"share": "read_share", "own": "read_own"}.get(intent, "read_discard"))
+        self._coh_depth += 1
+        try:
+            return super().coherent_read(req, pa, n, intent)
+        finally:
+            self._coh_depth -= 1
+
+    def upgrade(self, req, va: int, pa: int, s: int, w: int) -> None:
+        self._count(req, "upgrade")
+        super().upgrade(req, va, pa, s, w)
+
+    def claim_line(self, req, pa: int, write_back: bool = True) -> None:
+        self._count(req, "invalidate")
+        super().claim_line(req, pa, write_back)
+
+    def global_op(self, req, kind: str, code: int, pa: int) -> str:
+        self._count(req, "invalidate" if kind != "D" or code == 4 else
+                    "copyback_inv" if code == 5 else "copyback")
+        self._coh_depth += 1
+        try:
+            return super().global_op(req, kind, code, pa)
+        finally:
+            self._coh_depth -= 1
+
+    def iocu_read(self, pa: int, n: int) -> bytes:
+        pc = self._pc()
+        if pc is not None:
+            pc.request(self.cps.cores, "read_discard", True)
+        self._coh_depth += 1
+        try:
+            return super().iocu_read(pa, n)
+        finally:
+            self._coh_depth -= 1
+
+    def iocu_write(self, pa: int, data: bytes) -> None:
+        """A coherent write (write-invalidate); its whole lines train the L2
+        prefetcher as WRI_MODE says (5.14.1.24)."""
+        pc = self._pc()
+        if pc is not None:
+            pc.request(self.cps.cores, "write_inval", True)
+        self._coh_depth += 1
+        try:
+            self._iocu_write(pa, data)
+        finally:
+            self._coh_depth -= 1
+
+    def _iocu_write(self, pa: int, data: bytes) -> None:
+        super().iocu_write(pa, data)
+        pf, line = self.l2pf, self._line_size()
+        if pf is not None:
+            a = -(-pa // line) * line
+            while a + line <= pa + len(data):
+                pf.write_invalidate(a)
+                a += line
 
     def _region_attr(self, pa: int) -> tuple[int, bool]:
         return 0, True
@@ -365,8 +582,22 @@ class P8700CM(CoherenceManager):
                        + (f", interventions from core(s) {', '.join(frm)}" if frm else ""))
         out.append(", ".join(f"{k} {v}" for k, v in self.counts.items()))
         if self.l2 is not None:
+            t, w, d = self._waits
             out.append(f"shared {self.l2.name}: {self.l2.geometry.describe()}, write-back "
-                       "write-allocate" + (" (L2_BYPASS: bypassed)" if self.bypass else ""))
+                       "write-allocate" + (" (L2_BYPASS: bypassed)" if self.bypass else "")
+                       + (f", wait states tag {t} / way select {w} / data {d}"
+                          if any(self._waits) else ""))
+        if self.l2pf is not None:
+            out += self.l2pf.lines()
+        from .p8700mem import CCA_MATCH, PORTS, mmio_regions
+        for r in mmio_regions(cl.gcr.regs):
+            out.append(f"MMIO region {r['n']}: 0x{r['bottom']:x}-0x{r['top']:x}, CCA "
+                       f"{CCA_MATCH[r['cca']]}, port {PORTS.get(r['port'], r['port'])}"
+                       + (", forced non-coherent" if r["noncoh"] else "")
+                       + (", no request limit" if r["no_limit"] else ""))
+        if cl.iocu:
+            out.append("IOCU 0: coherent DMA"
+                       + (f"; last: {'; '.join(self.iocu_log[-3:])}" if self.iocu_log else ""))
         out.append(self.describe_error())
         return out
 
@@ -402,7 +633,7 @@ class P8700CM(CoherenceManager):
             return True
         if typ in (COP_HIT_INV, COP_HIT_WB_INV, COP_HIT_WB, COP_FETCH_LOCK) and req is not None:
             for k in range(min(lines, 1 << 16)):
-                pa = (start + k * c.line) & M32
+                pa = (start + k * c.line) & c.pamask
                 req._cache_op(typ << 2 | 3, pa, pa, 5)
         return True
 
@@ -413,15 +644,22 @@ class Cluster:
     hart made afresh (VP_RUN, a core reset)."""
 
     #: what the Coherence Manager asks of its system (emips.coherence)
-    cm3, iocu = True, False
+    cm3 = True
 
     def __init__(self, cores: int, harts: int, factory: Callable[..., Any], reset_pc: int,
                  *, timer_div: int = 2, on_start: Callable[[int, Any], None] | None = None,
-                 caches: Callable[[int], Any] | None = None, l2=None) -> None:
+                 caches: Callable[[int], Any] | None = None, l2=None, iocu: int = 0,
+                 l2_waits: tuple[int, int, int] = (0, 0, 0), dspram: int = 0) -> None:
         if not 1 <= cores <= MAX_CORES or not 1 <= harts <= MAX_HARTS:
             raise ValueError(f"the P8700 has 1-{MAX_CORES} cores of 1-{MAX_HARTS} harts "
                              "(MD01502 1.1)")
+        if not 0 <= iocu <= 8 - cores:
+            raise ValueError("the P8700 has up to 8 cores and IOCUs together (MD01502 1.5)")
         self.cores, self.harts = cores, harts
+        #: the IOCUs (5.9: NUMIOCU; eMIPS: 0 or 1) — an I/O master's coherent port
+        self.iocu = iocu
+        #: each core's DSPRAM size (7.3.7; 0: none)
+        self.dspram_size = dspram
         self.factory, self.on_start = factory, on_start
         self.timer_div = timer_div
         #: GCR_BASE (5.14.1.2: the 512 KB block below the reset PC)
@@ -445,25 +683,52 @@ class Cluster:
         self.timer = _Timer(self)
         #: the CM3.7: coherence, the L2, the error registers
         self.cm = P8700CM(self, l2)
+        self.cm.l2_waits = tuple(l2_waits)
         #: each core's L1s, shared by its harts (3.3: "The L1 instruction and
         #: data caches are shared by all Harts in the same core")
         self._caches = [caches(c) if caches is not None else None for c in range(cores)]
         from .p8700err import CoreErrors, equip
         #: each core's mipscacheerr / mipserrctl (emips.p8700err)
         self.errors = [CoreErrors() for _ in range(cores)]
+        from .p8700mem import Dspram, L1Prefetcher
+        #: each core's L1 data prefetcher and DSPRAM (emips.p8700mem)
+        self.l1pf = [L1Prefetcher() for _ in range(cores)]
+        self.dspram = [Dspram(dspram, (1 << 48) - 1) if dspram else None for _ in range(cores)]
         for c, ch in enumerate(self._caches):
             if ch is not None:
                 equip(ch, self.errors[c])   # (the ECC L1s)
                 self.cm.attach(c, ch)
                 ch.alias_free = True        # (3.3.2: "logic to correct virtual aliasing")
+                if ch.d is not None:
+                    ch.l1pf = self.l1pf[c]
         self.cm.ecc_checking(True)          # (GCR_ERR_CONTROL.L2_ECC_EN resets to 1)
         self.ftlbs: list[Any] = [None] * cores
+        from .p8700dbg import Breakpoints
+        #: the breakpoint controller's 8 + 8 breakpoints (13.1.3; emips.p8700dbg)
+        self.bp = Breakpoints()
+        from .p8700dbu import DBU
+        #: the Debug Unit (13.1.1; emips.p8700dbu)
+        self.dbu = DBU(self)
+        #: the FDC, the CM3's counters and the trace (emips.p8700oci), made below
+        self.fdc = self.cmpc = self.trace = self.trf = None
+        #: CPC DBG_DBRK_REG.Lock per core (5.14.5.7)
+        self.dbrk_lock = [False] * cores
+        from .axicdma import AxiCdma
+        #: the system's DMA engine (Xilinx AXI CDMA, emips.axicdma)
+        self.cdma = AxiCdma(self)
         self.machines: list[Any] = [None] * n
         for i in range(n):
             self.machines[i] = self._make(i, reset_pc)
         from .p8700ic import Controller
         #: the ACLINT / APLIC (ch. 8; emips.p8700ic)
         self.ic = Controller(self)
+        from .p8700oci import CMCounters, FDC, P8700Trace
+        #: the FDC, the CM3's performance counters, the harts' trace encoders
+        #: and the Trace Funnel (LF16: emips.p8700oci)
+        self.fdc = FDC(self)
+        self.cmpc = CMCounters(self)
+        self.trace = P8700Trace(self)
+        self.trf = self.trace.trf
 
     @property
     def clock(self) -> int:
@@ -493,7 +758,19 @@ class Cluster:
         m.hartid = p.hartid
         m.cluster = self
         m.devices.insert(0, self.gcr)
+        m.devices.insert(1, self.cdma)
         m.timer = self.timer
+        m.spram = self.dspram[c]
+        hy = m.hybrid                       # (the breakpoint controller, the DBU: LF16)
+        if hy is not None:
+            if hy in hy.bp.harts:
+                hy.bp.harts.remove(hy)
+            self.bp.harts = [o for o in self.bp.harts if o.index != i]
+            hy.bp, hy.index, hy.dbu = self.bp, i, self.dbu
+            self.bp.harts.append(hy)
+            self.bp.s_mode = "s" in m.modes
+        if self.trace is not None:          # (a hart made afresh: a new encoder)
+            self.trace.rehart(i, m)
         self._io(m)
         mmu = m.mmu
         if hasattr(mmu, "ecc_check"):       # (2.2: the FTLB's ECC reports to the core)
@@ -577,6 +854,9 @@ class Cluster:
         self._mtime, self._since = v & M64, self.clock
 
     def cpc_get(self, off: int) -> int:
+        v = self.dbu.cpc_get(off)               # (the DBU's power domain: LF16)
+        if v is not None:
+            return v
         if off == CPC_REV:
             return CPC_REVISION
         if off == ROCC_CTL:
@@ -599,7 +879,21 @@ class Cluster:
                 return self.stat_conf(c)
             if r == VP_RUNNING:
                 return self.running_mask[c]
+            if r == DBG_DBRK:
+                return int(self.dbrk_lock[c]) << 63 | self.debugm(c) << 16
         return 0
+
+    def debugm(self, c: int) -> int:
+        """DBG_DBRK_REG.DEBUGM: the core's harts in Debug Mode."""
+        return sum(1 << h for h in range(self.harts)
+                   if self.machines[self.index(c, h)].debug_mode)
+
+    def debug_interrupt(self, i: int) -> None:
+        """A DINT to hart ``i`` (DBG_DBRK_REG, the probe's EjtagBrk): a halt
+        request — ignored in Debug Mode (MD00047 2.3.6: no DINT there)."""
+        m = self.machines[i]
+        if not m.debug_mode:
+            m.halt_request = True
 
     def stat_conf(self, c: int) -> int:
         """Table 5.109: SEQ_STATE, COH_EN, PWUP_POLICY (core 0: 2, power up;
@@ -608,6 +902,8 @@ class Cluster:
                 | 1 << 13 | 1 << 12 | self.cmd[c])
 
     def cpc_put(self, off: int, value: int, mask: int) -> None:
+        if self.dbu.cpc_put(off, value, mask):
+            return
         if off == ROCC_CTL:
             self.rocc &= ~(value & mask)
             return
@@ -636,6 +932,12 @@ class Cluster:
                 self.vp_stop(c, v & ((1 << self.harts) - 1))
             elif r == VP_RUN and mask & 0xF:
                 self.vp_run(c, v & ((1 << self.harts) - 1))
+            elif r == DBG_DBRK and not self.dbrk_lock[c]:
+                if v >> 63:                     # (Lock: RW1, until the CPC resets)
+                    self.dbrk_lock[c] = True
+                for h in range(self.harts):
+                    if v >> h & 1:
+                        self.debug_interrupt(self.index(c, h))
 
     def command(self, c: int, cmd: int) -> None:
         """Table 5.108; reserved codes are not loaded.  ClockOff / PwrDown /

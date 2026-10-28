@@ -20,6 +20,13 @@ SECTIONS
     __DATA_BEGIN__ = .;
     *(.data .data.* .gnu.linkonce.d.*)
   }
+  /* thread-local storage (__thread): the boot points tp at .tdata — thread
+     0 runs in the image, so .tbss gets room of its own here */
+  .tdata : { *(.tdata .tdata.* .gnu.linkonce.td.*) }
+  .tbss : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) }
+  . = ADDR(.tbss) + SIZEOF(.tbss);
+  .got : { *(.got) *(.igot) }
+  .got.plt : { *(.got.plt) *(.igot.plt) }
   .sdata : {
     __SDATA_BEGIN__ = .;
     *(.srodata.cst16) *(.srodata.cst8) *(.srodata.cst4) *(.srodata.cst2)

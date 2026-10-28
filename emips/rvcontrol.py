@@ -56,7 +56,8 @@ from .logic import PLA, Term, build, build_cubes, sharp
 SIGNALS = ["ALUSrc", "MemtoReg", "RegWrite", "MemRead", "MemWrite", "Branch", "Jump",
            "ALUOp2", "ALUOp1", "ALUOp0"]
 #: ALUOp code -> what the main control asks for
-ALUOP_WHY = {0b000: "add: a load / store address (rs1 + offset), an AMO's (rs1), lui "
+ALUOP_WHY = {0b000: "add: a load / store address (rs1 + offset), an AMO's or an HLV / "
+                    "HSV's (rs1), lui "
                     "(0 + the immediate), auipc (the pc + the immediate)",
              0b001: "branch: the comparator in ID decides (the ALU subtracts, as the "
                     "textbook's beq)",
@@ -95,10 +96,13 @@ _INVERTED = {"andn": "and", "orn": "or", "xnor": "xor"}
 _PATTERNS = (0x0A5294A5, 0x10842108, 0x07FFFFFF, 0x3C3C3C3C, 0x5A5A5A5A)
 
 
-def word32(i) -> int:
+def word32(i) -> int | None:
     """The 32-bit instruction the control decodes: a C instruction's
-    expansion (unpriv. ch. 28), else the instruction."""
-    return i.raw if i.size == 4 else R.encode(i.base, i.f)
+    expansion (unpriv. ch. 27), else the instruction; None for Zcmp /
+    Zcmt's, which have no 32-bit equivalent (28.13 / 28.14)."""
+    if i.size == 4:
+        return i.raw
+    return None if i.base.compressed else R.encode(i.base, i.f)
 
 
 def opcode(word: int) -> int:
@@ -127,7 +131,8 @@ def probe(isa: R.RVISA, row: R.Row) -> R.RV:
 def aluop(name: str, op: int) -> int:
     """The ALUOp code of a row (its name, its opcode bits 6..0)."""
     major = op >> 2
-    if name in _LOADS or major == 0b01011 or name in ("lui", "auipc"):
+    if name in _LOADS or major == 0b01011 or name in ("lui", "auipc") \
+            or name.startswith(("hlv", "hsv")):     # (priv. 21.3.1: an address, rs1 + 0)
         return 0b000
     if major == 0b11000:
         return 0b001
@@ -295,7 +300,8 @@ def alu_function(name: str) -> str:
     f = _FUNCTION.get(name)
     if f is not None:
         return f
-    if name in _LOADS or name.startswith(("amo", "lr.", "sc.")) or name in ("lui", "auipc"):
+    if name in _LOADS or name.startswith(("amo", "lr.", "sc.", "hlv", "hsv")) \
+            or name in ("lui", "auipc"):
         return "add"
     return "other"
 

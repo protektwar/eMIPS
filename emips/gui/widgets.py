@@ -437,12 +437,25 @@ MSA_VIEW_TEXTS = (("b.x", N_("16 bytes, hex")), ("b.s", N_("16 bytes, signed")),
                   ("d.u", N_("2 doublewords, unsigned")), ("d.f", N_("2 doubles")))
 
 
+#: the RISC-V V tab's element views (emips.sessionrv.VECTOR_VIEWS)
+VECTOR_VIEW_TEXTS = (("e8.x", N_("e8, hex")), ("e8.s", N_("e8, signed")),
+                     ("e8.u", N_("e8, unsigned")), ("e16.x", N_("e16, hex")),
+                     ("e16.s", N_("e16, signed")), ("e16.u", N_("e16, unsigned")),
+                     ("e16.f", N_("e16, half (float)")), ("e32.x", N_("e32, hex")),
+                     ("e32.s", N_("e32, signed")), ("e32.u", N_("e32, unsigned")),
+                     ("e32.f", N_("e32, single (float)")), ("e64.x", N_("e64, hex")),
+                     ("e64.s", N_("e64, signed")), ("e64.u", N_("e64, unsigned")),
+                     ("e64.f", N_("e64, double")))
+
+
 class RegisterView(QtWidgets.QTabWidget):
     """GPRs (changed ones highlighted), PC/HI/LO/CP0/FCSR, the FPRs, the
     interrupt system and shadow sets, and EJTAG (Debug Mode)."""
 
     #: the Debug tab's button: a debug interrupt (the DINT input)
     dint_requested = Signal()
+    #: the Interrupts tab's button (RISC-V Smrnmi): a resumable NMI
+    rnmi_requested = Signal()
     #: the Debug tab's probe boxes: (connected, ProbTrap)
     probe_changed = Signal(bool, bool)
 
@@ -492,6 +505,37 @@ class RegisterView(QtWidgets.QTabWidget):
         self._msa_old: list[int] = []
         self._msa_key: tuple | None = None
         self.msa_view.currentIndexChanged.connect(self._msa_view_changed)
+        # the RISC-V vector unit (LF6; emips.sessionrv.vector_rows): v0-v31
+        # element by element, vtype / vl / vstart above; changed elements
+        # highlighted
+        self.vec = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(self.vec)
+        lay.setContentsMargins(2, 2, 2, 2)
+        self.vec_text = QtWidgets.QLabel()
+        self.vec_text.setWordWrap(True)
+        self.vec_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(self.vec_text)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel(tr("Elements")))
+        self.vec_view = QtWidgets.QComboBox()
+        for key, text in VECTOR_VIEW_TEXTS:
+            self.vec_view.addItem(tr(text), key)
+        self.vec_view.setCurrentIndex(self.vec_view.findData("e32.x"))
+        self.vec_view.setToolTip(tr("How VLEN bits are cut into elements (element 0 first: "
+                                    "the lowest bits) and shown"))
+        row.addWidget(self.vec_view, 1)
+        lay.addLayout(row)
+        self.vec_table = _table([tr("reg")])
+        self.vec_table.setRowCount(32)
+        lay.addWidget(self.vec_table, 1)
+        self.vec_tab = self.addTab(self.vec, tr("Vector"))
+        self.setTabToolTip(self.vec_tab, tr("The vector unit (V / Zve*): v0-v31 of VLEN bits, "
+                                            "vtype, vl, vstart, vxrm, vxsat (mstatus.VS "
+                                            "enables it)"))
+        self._vec_prev: list[int] = []
+        self._vec_old: list[int] = []
+        self._vec_key: tuple | None = None
+        self.vec_view.currentIndexChanged.connect(self._vec_view_changed)
         # the interrupt system (mode, request, next vector: Session.
         # interrupt_lines) and the GPR shadow sets (Release 2+, SRSCtl / SRSMap)
         self.sets = QtWidgets.QWidget()
@@ -501,6 +545,12 @@ class RegisterView(QtWidgets.QTabWidget):
         self.int_text.setWordWrap(True)
         self.int_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(self.int_text)
+        self.rnmi = QtWidgets.QPushButton(tr("Resumable NMI (RNMI)"))
+        self.rnmi.setToolTip(tr("RISC-V Smrnmi: request a resumable non-maskable interrupt — "
+                                "taken before an instruction once mnstatus.NMIE = 1, at the "
+                                "RNMI handler (Settings: RNMI handlers)"))
+        self.rnmi.clicked.connect(self.rnmi_requested.emit)
+        lay.addWidget(self.rnmi, 0, Qt.AlignmentFlag.AlignLeft)
         self.set_box = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(self.set_box)
         box.setContentsMargins(0, 0, 0, 0)
@@ -555,12 +605,14 @@ class RegisterView(QtWidgets.QTabWidget):
             self.setTabVisible(self.sets_tab, False)
             self.setTabVisible(self.dsp_tab, False)
             self.setTabVisible(self.msa_tab, False)
+            self.setTabVisible(self.vec_tab, False)
             self.setTabVisible(self.debug_tab, False)
             return
         self._session = s
         self._refresh_sets(s)
         self._refresh_dsp(s)
         self._refresh_msa(s)
+        self._refresh_vector(s)
         rv = s.rv
         self.setTabText(self.indexOf(self.special), tr("PC / CSRs") if rv else tr("PC / CP0"))
         self.setTabVisible(self.debug_tab, True)
@@ -615,32 +667,24 @@ class RegisterView(QtWidgets.QTabWidget):
 
 
     def _refresh_rv_fpu(self, s: Session) -> None:
-        """A hart's F / D registers (FLEN bits; a NaN-boxed single shown
-        as the single, unpriv. 22.2)."""
-        import struct
+        """A hart's f registers (FLEN bits; a NaN-boxed value shown in its
+        format, unpriv. 21.2; Zfinx: none)."""
         from ..riscv import FPR_NAMES
+        from ..rvfpu import show
         m = s.machine
         on = m.flen > 0
         self.fpr.setEnabled(on)
         self.setTabToolTip(self.indexOf(self.fpr), "" if on else tr(
+            "Zfinx: the floating-point values are in the x registers") if m.inx else tr(
             "This hart has no F / D extension: no f registers"))
-        digits = 16 if m.flen == 64 else 8
         for i, raw in enumerate(m.fpr):
             _set(self.fpr, i, 0, f"f{i} ({FPR_NAMES[i]})")
             if not on:
                 _set(self.fpr, i, 1, tr("no F"))
                 _set(self.fpr, i, 2, "")
                 continue
-            lo = raw & 0xFFFFFFFF
-            single = struct.unpack("<f", lo.to_bytes(4, "little"))[0]
-            _set(self.fpr, i, 1, f"0x{raw:0{digits}x}")
-            if m.flen == 64 and raw >> 32 == 0xFFFFFFFF:
-                _set(self.fpr, i, 2, f"{single:.7g} (single, NaN-boxed)")
-            elif m.flen == 64:
-                dbl = struct.unpack("<d", raw.to_bytes(8, "little"))[0]
-                _set(self.fpr, i, 2, f"{dbl:.15g}")
-            else:
-                _set(self.fpr, i, 2, f"{single:.7g}")
+            _set(self.fpr, i, 1, f"0x{raw:0{m.flen // 4}x}")
+            _set(self.fpr, i, 2, show(raw, m.flen))
 
     def _refresh_dsp(self, s: Session) -> None:
         """The DSP tab, when the core has the DSP Module; a value that
@@ -696,6 +740,44 @@ class RegisterView(QtWidgets.QTabWidget):
                 _set(t, r, i + 1, text, T().current_line if hot else None, hot)
         t.resizeColumnsToContents()
 
+    def _refresh_vector(self, s: Session) -> None:
+        """The Vector tab, when the hart has a vector unit (as the MSA tab:
+        an element the last step changed is highlighted)."""
+        from ..sessionrv import VECTOR_VIEWS, vector_rows, vector_state_lines
+        m = s.machine
+        on = bool(s.rv and getattr(m, "vector", None) is not None)
+        self.setTabVisible(self.vec_tab, on)
+        if not on:
+            return
+        self.vec_text.setText("\n".join(vector_state_lines(m)))
+        view = self.vec_view.currentData()
+        bits = VECTOR_VIEWS[view][0]
+        rows = vector_rows(m, view)
+        values = [v for _, v, _ in rows]
+        key = (id(m), s.steps)
+        if key != self._vec_key:
+            same = self._vec_key is not None and self._vec_key[0] == key[0]
+            self._vec_old = self._vec_prev if same and len(self._vec_prev) == 32 else values
+            self._vec_prev, self._vec_key = values, key
+        lanes = m.vector.vlen // bits
+        t = self.vec_table
+        if t.columnCount() != lanes + 1:
+            t.setColumnCount(lanes + 1)
+            t.setHorizontalHeaderLabels([tr("reg")] + [f"[{i}]" for i in range(lanes)])
+        mask = (1 << bits) - 1
+        for r, (name, value, texts) in enumerate(rows):
+            old = self._vec_old[r]
+            hot_row = old != value
+            _set(t, r, 0, name, T().current_line if hot_row else None, hot_row)
+            for i, text in enumerate(texts):
+                hot = (old >> (i * bits) & mask) != (value >> (i * bits) & mask)
+                _set(t, r, i + 1, text, T().current_line if hot else None, hot)
+        t.resizeColumnsToContents()
+
+    def _vec_view_changed(self, *_args) -> None:
+        if self._session is not None and self._session.machine is not None:
+            self._refresh_vector(self._session)
+
     def _msa_view_changed(self, *_args) -> None:
         if self._session is not None and self._session.machine is not None:
             self._refresh_msa(self._session)
@@ -709,7 +791,11 @@ class RegisterView(QtWidgets.QTabWidget):
             self.setTabVisible(self.sets_tab, True)
             self.int_text.setText("\n".join(s.interrupt_lines()))
             self.set_box.setVisible(False)
+            m = s.machine
+            self.rnmi.setVisible(bool(m.csrs.smrnmi))
+            self.rnmi.setEnabled(m.rnmi_pending is None and not s.halted)
             return
+        self.rnmi.setVisible(False)
         st = s.interrupt_state()
         n = st["sets"]
         self.setTabVisible(self.sets_tab, True)
@@ -941,7 +1027,7 @@ class DisassemblyView(QtWidgets.QTableWidget):
         for r, a in enumerate(self._rows):
             bg = None
             if a in stage_of:
-                bg = T().stage[stage_of[a]][0]
+                bg = (theme.stage_colours(stage_of[a]) or (T().current_line,))[0]
             elif a == cur:
                 bg = T().current_line
             for c in range(4):
@@ -994,7 +1080,8 @@ class PipelineChart(QtWidgets.QTableWidget):
         for r, q in enumerate(seqs):
             for c, cyc in enumerate(cycles):
                 cell = rows[q][2].get(cyc, "")
-                bg = T().error_line if cell in ("--", "xx") else T().stage.get(cell, (None,))[0]
+                bg = T().error_line if cell in ("--", "xx") else \
+                    (theme.stage_colours(cell) or (None,))[0]
                 _set(self, r, c, cell, bg)
         if cycles:
             self.scrollToItem(self.item(max(len(seqs) - 1, 0), len(cycles) - 1))
@@ -1067,11 +1154,18 @@ class InstrPanel(QtWidgets.QTextBrowser):
         eff += [f"memory write <tt>0x{a:08x}</tt>: <tt>0x{o:0{2 * n}x}</tt> → <tt>0x{nw:0{2 * n}x}</tt>"
                 for a, n, o, nw in v.mem_writes]
         eff += [f"{e(name)}: <tt>0x{o:0{d}x}</tt> → <tt>0x{nw:0{d}x}</tt>"
-                for name, o, nw in v.reg_writes for d in (digits_of(name, w),)]
+                for name, o, nw in v.reg_writes
+                for d in (v.vdigits if getattr(v, "rv", False) and name[0] == "v"
+                          and name[1:].isdigit() else digits_of(name, w),)]
         if eff:
             parts.append("<h4>Effects</h4><p>" + "<br>".join(eff) + "</p>")
         lanes = getattr(v, "lanes", None)
-        if lanes is not None:                   # MSA: element by element (trace.LaneView)
+        if lanes is not None and hasattr(lanes, "sew"):     # RISC-V V (tracerv.VectorLanes)
+            parts.append(f"<h4>{e(tr('Elements'))} (e{lanes.sew}, "
+                         f"{e(tr('element 0 first'))})</h4><p>"
+                         + "<br>".join(f"<tt>{e(line)}</tt>" for line in lanes.lines())
+                         + "</p>")
+        elif lanes is not None:                 # MSA: element by element (trace.LaneView)
             n = max(len(es) for _, _, _, es in lanes.rows)
             head = "".join(f"<th>[{i}]</th>" for i in range(n))
             body = "".join(

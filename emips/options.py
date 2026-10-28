@@ -9,6 +9,7 @@ malformed values fall back to the defaults.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, fields
 
 from .cache import Caches, Geometry
@@ -17,12 +18,12 @@ from .mmu import make_mmu
 from .pipeline import LATENCY
 from .timing import MEMORY_TIMING
 
-BOOT_MODES = ("kernel", "user", "reset")
+BOOT_MODES = ("kernel", "user", "reset", "guest")   # (guest: a RISC-V hart with H, LF7)
 #: the C compiler's optimisation levels (-O...)
 C_OPTIMIZE = ("0", "1", "2", "3", "s")
 EXCEPTION_MODES = ("cp0", "stop")
 #: Pipeline models (pipeline mode): the textbook 5-stage pipeline, the MIPS 24K's
-PIPELINE_MODELS = ("5-stage", "24k")
+PIPELINE_MODELS = ("5-stage", "24k", "p8700")
 #: Cache contents after reset: "random" (undefined, as on silicon) or
 #: "hardware" (invalid: the 24K's Config7.HCI, simulation models)
 CACHE_INIT_MODES = ("random", "hardware")
@@ -49,6 +50,10 @@ ARCH_TITLES = {"mips32": "MIPS32", "mips64": "MIPS64", "nanomips": "nanoMIPS",
 #: RV64GC with Zba / Zbb, the P8700's set) and its privilege modes
 RV_EXTENSIONS = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb"
 RV_MODES = ("msu", "mu", "m")
+#: a generic RISC-V hart's platform (LF9): RARS's console wired to MEIP, or
+#: Spike's CLINT with a PLIC, an APLIC (direct delivery) or IMSICs (the
+#: APLIC forwarding by MSIs)
+RV_INTC = ("none", "plic", "aplic", "imsic")
 
 
 def is_rv(arch: str) -> bool:
@@ -74,6 +79,34 @@ NANO_GINV = ("auto", "none", "ginvi", "ginvt")
 #: the instruction set C programs are compiled to (emips.cc)
 C_ISAS = ("mips32", "mips16e", "micromips")
 
+
+
+_RNMI_PART = re.compile(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+|[A-Za-z_.$][\w.$]*)$")
+
+
+#: the DSPRAM sizes (KB) a P8700 core may have (eMIPS: a power of two)
+DSPRAM_KB = (0, 4, 8, 16, 32, 64, 128, 256)
+
+
+def parse_waits(text: str) -> tuple[int, int, int] | None:
+    """``--l2-waits T:W:D`` (each 0-3) -> (tag, way select, data), None when
+    it is not that."""
+    try:
+        parts = tuple(int(x) for x in str(text).split(":"))
+    except ValueError:
+        return None
+    return parts if len(parts) == 3 and all(0 <= x <= 3 for x in parts) else None
+
+
+def parse_rnmi(text: str) -> list[str] | None:
+    """``--rv-rnmi INT[,EXC]``'s parts (numbers or labels); [] for "", None
+    when it is not that."""
+    if not text:
+        return []
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) > 2 or not all(_RNMI_PART.match(p) for p in parts):
+        return None
+    return parts
 
 @dataclass
 class Options:
@@ -176,6 +209,18 @@ class Options:
     rv_extensions: str = RV_EXTENSIONS
     rv_modes: str = "msu"
     rv_relax: bool = True
+    #: Smrnmi's handler addresses (priv. 8.5: implementation-defined; 0 as
+    #: QEMU and Spike): "INT[,EXC]" — the RNMI handler and the RNMI
+    #: exception handler (default: INT), numbers or the program's labels
+    rv_rnmi: str = ""
+    #: the platform's interrupt controller (RV_INTC; LF9): with one, --cores
+    #: gives several harts on it
+    rv_intc: str = "none"
+    #: the P8700's L2 RAM wait states "TAG:WAYSELECT:DATA", 0-3 each (MD01502
+    #: 5.14.1.20, "from configuration"; LF15)
+    l2_waits: str = "0:0:0"
+    #: the P8700's DSPRAM a core, KB (0: none; MD01502 7.3.7, LF15)
+    dspram: int = 0
     # memory / boot
     #: "kernel" (MARS-like: kernel mode, FPU on, $sp/$gp set, handler at
     #: 0x80000180), "user" (the same in user mode), "reset" (the hardware
@@ -301,6 +346,14 @@ class Options:
             self.ginv = d.ginv
         if self.rv_modes not in RV_MODES:
             self.rv_modes = d.rv_modes
+        if not isinstance(self.rv_rnmi, str) or parse_rnmi(self.rv_rnmi) is None:
+            self.rv_rnmi = d.rv_rnmi
+        if self.rv_intc not in RV_INTC:
+            self.rv_intc = d.rv_intc
+        if parse_waits(self.l2_waits) is None:
+            self.l2_waits = d.l2_waits
+        if not isinstance(self.dspram, int) or self.dspram not in DSPRAM_KB:
+            self.dspram = d.dspram
         try:
             from .riscv import RVISA, parse_extensions
             if "i" not in parse_extensions(self.rv_extensions):

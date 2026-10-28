@@ -131,6 +131,7 @@ class _IOCURequester:
         self.m = None
         self.timing = Timing(self)
         self.errors: list = []
+        self.pamask = 0xFFFFFFFF
 
     def record(self, err) -> None:
         self.errors.append(err)

@@ -992,7 +992,8 @@ def format_view(v: InstrView) -> str:
     for acc in v.cache:
         lines.append(f"  cache: {acc.describe()}")
     for name, old, new in v.reg_writes:
-        d = digits_of(name, w)
+        d = v.vdigits if getattr(v, "rv", False) and name[0] == "v" and name[1:].isdigit() \
+            else digits_of(name, w)
         lines.append(f"  {name}: 0x{old:0{d}x} -> 0x{new:0{d}x}")
     if v.lanes is not None:
         lines.extend(f"  {line}" for line in v.lanes.lines())

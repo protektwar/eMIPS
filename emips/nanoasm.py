@@ -75,9 +75,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import nanold
-from .assembler import (AsmError, Program, SEGMENT_BASES, SourceLine, _local_labels,
-                        _strip_comment)
+from . import gasread, nanold
+from .assembler import AsmError, Program, SEGMENT_BASES, SourceLine, _strip_comment
 
 M32 = 0xFFFFFFFF
 
@@ -868,12 +867,16 @@ class _Core:
 
     # -- the run -------------------------------------------------------------
 
-    def assemble(self, source: str) -> Program:
+    def assemble(self, source: str, path: str | None = None,
+                 include_dirs: tuple[str, ...] = ()) -> Program:
         """Assemble and link ``source``."""
-        self._run(source)
-        return self._finish()
+        self._run(source, path, include_dirs)
+        prog = self._finish()
+        prog.printed = list(self.reader.printed)
+        return prog
 
-    def _run(self, source: str) -> None:
+    def _run(self, source: str, path: str | None = None,
+             include_dirs: tuple[str, ...] = ()) -> None:
         self.linkrelax = False                 # gas's linkrelax: the object may be relaxed
         self.file_checked = False              # file_nanomips_opts_checked
         self.toggle_linkrelax = False          # toggle_linkrelax_p
@@ -908,16 +911,16 @@ class _Core:
         self.frag = self.section.frags[-1]
         lines = source.splitlines()
         self._lines = lines
-        texts = _local_labels([_strip_comment(t) for t in _c_comments(source).split("\n")])
-        for n, raw in enumerate(lines, start=1):
-            self.line, self.raw = n, raw
+        self.reader = gasread.Reader(source, _Hooks(self), path=path, include_dirs=include_dirs,
+                                     warn=lambda n, msg: self.warnings.append((n, msg)))
+        for st in self.reader:
+            self.line, self.raw = st.line, st.raw
             try:
-                for stmt in _statements(texts[n - 1]):
-                    self._statement(stmt)
+                self._statement(st.text)
             except AsmError:
                 raise
             except (ValueError, KeyError, _MatchError) as exc:
-                raise AsmError(n, str(exc), raw) from None
+                raise AsmError(st.line, str(exc), st.raw) from None
 
     def error(self, msg: str):
         raise AsmError(self.line, msg, self.raw)
@@ -3413,12 +3416,19 @@ class _Directives:
                                          0 if fill is None else 1, mx)
             self.do_align(power, fill, mx)
             return
-        if d in (".insn", ".jumptable", ".cpsetup", ".dtprelword", ".dtpreldword",
-                 ".ehword", ".org", ".origin", ".comm", ".lcomm", ".repeat", ".rept",
-                 ".endr", ".macro", ".endm", ".if", ".endif", ".else", ".include",
-                 ".incbin", ".sleb128", ".uleb128", ".octa", ".err"):
+        if d in _NOT_MODELLED:
             self.error(f"directive {d} is not supported by the eMIPS nanoMIPS assembler")
         self.error(f"unknown pseudo-op: `{d}'")
+
+    #: the directives this assembler handles itself (emips.gasread passes them
+    #: on; the md table wins over gas's: MIPS's .end ends a function)
+    KNOWN = frozenset((".2byte", ".4byte", ".8byte", ".align", ".ascii", ".asciiz", ".asciz",
+                       ".balign", ".bss", ".byte", ".data", ".double", ".dword", ".equ",
+                       ".equiv", ".eqv", ".fill", ".float", ".global", ".globl", ".half",
+                       ".hword", ".int", ".kdata", ".ktext", ".linkrelax", ".local", ".long",
+                       ".module", ".p2align", ".previous", ".quad", ".rdata", ".sbss",
+                       ".sdata", ".section", ".set", ".short", ".single", ".skip", ".space",
+                       ".string", ".text", ".weak", ".word", ".zero"))
 
     def absolute(self, text: str) -> int:
         e, j = _Expressions(self).parse(text.strip(), 0)
@@ -3777,61 +3787,6 @@ def _unescape_gas(body: str) -> bytes:
 #: a label at the start of a statement; ``name = value``
 _LABEL_DEF = re.compile(r"\s*([A-Za-z_.$][\w.$]*|\.L\d+\.\d+)\s*:(?!=)")
 _ASSIGN = re.compile(r"\s*([A-Za-z_.$][\w.$]*)\s*=(?!=)")
-
-
-def _c_comments(source: str) -> str:
-    """app.c: ``/* ... */`` comments become a space (their newlines stay);
-    strings, ``'c`` constants and ``#`` comments are left alone."""
-    out = []
-    i, n = 0, len(source)
-    while i < n:
-        c = source[i]
-        if c == '"':
-            j = i + 1
-            while j < n and source[j] != '"' and source[j] != "\n":
-                j += 2 if source[j] == "\\" else 1
-            out.append(source[i:j + 1])
-            i = j + 1
-        elif c == "'":
-            j = i + 1
-            if j < n and source[j] == "\\":
-                j += 1
-            out.append(source[i:j + 1])
-            i = j + 1
-        elif c == "#":
-            j = source.find("\n", i)
-            j = n if j < 0 else j
-            out.append(source[i:j])
-            i = j
-        elif source.startswith("/*", i):
-            j = source.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(" " + "\n" * source.count("\n", i, j))
-            i = j
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
-
-
-def _statements(text: str) -> list[str]:
-    """A line's statements (``;`` separates them outside quotes)."""
-    out, cur, quote = [], [], None
-    for ch in text:
-        if quote:
-            cur.append(ch)
-            if ch == quote and (len(cur) < 2 or cur[-2] != "\\"):
-                quote = None
-        elif ch == '"':
-            quote = ch
-            cur.append(ch)
-        elif ch == ";":
-            out.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    out.append("".join(cur))
-    return out
 
 
 _NOP16, _NOP32 = 0x9008, 0x8000C000
@@ -4561,12 +4516,42 @@ class Assembler(_Core, _Emit, _Macros, _Directives, _Link):
     __doc__ = _Core.__doc__
 
 
+#: GNU as's directives eMIPS's nanoMIPS assembler leaves out (an error naming them)
+_NOT_MODELLED = frozenset((".insn", ".jumptable", ".cpsetup", ".dtprelword", ".dtpreldword",
+                           ".ehword", ".org", ".origin", ".comm", ".lcomm", ".incbin",
+                           ".sleb128", ".uleb128", ".octa"))
+
+
+class _Hooks:
+    """What emips.gasread asks the assembler."""
+
+    onechar = True
+
+    def __init__(self, asm: Assembler) -> None:
+        self.asm = asm
+
+    def absolute(self, text: str) -> int:
+        return self.asm.absolute(text)
+
+    def defined(self, name: str) -> bool:
+        s = self.asm.symbols.get(name)
+        return s is not None and (s.defined or s.equated is not None)
+
+    def known(self, directive: str) -> bool:
+        return (directive in self.asm.KNOWN or directive in self.asm._IGNORED
+                or directive in _NOT_MODELLED)
+
+    def strip(self, line: str) -> str:
+        return _strip_comment(line)
+
+
 def assemble(source: str, *, endian: str = "big", bases: dict[str, int] | None = None,
              nms: bool = False, crc: bool = False, ginv: bool = False, eva: bool = False,
              tlb: bool = True, dsp: bool = False, mt: bool = False, pseudo: bool = True,
              reorder: bool = True,
              linkrelax: bool = False,
-             link: "nanold.LinkOptions | dict | None" = None) -> Program:
+             link: "nanold.LinkOptions | dict | None" = None, path: str | None = None,
+             include_dirs: tuple[str, ...] = ()) -> Program:
     """Assemble and link a nanoMIPS ``source`` (see the module docstring).
     ``nms`` / ``crc`` / ``ginv`` / ``eva`` / ``tlb`` / ``dsp`` / ``mt``: the
     core's options (the instructions GNU as accepts: ``-march=32r6s``,
@@ -4580,4 +4565,4 @@ def assemble(source: str, *, endian: str = "big", bases: dict[str, int] | None =
     return Assembler(endian=endian, bases=bases, nms=nms, crc=crc, ginv=ginv, eva=eva,
                      tlb=tlb, dsp=dsp, mt=mt, pseudo=pseudo, reorder=reorder,
                      linkrelax=linkrelax,
-                     link=link).assemble(source)
+                     link=link).assemble(source, path, include_dirs)

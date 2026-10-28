@@ -234,18 +234,27 @@ class TLBView(QtWidgets.QWidget):
         if hasattr(mmu, "rows"):                # the P8700's VTLB / FTLB (MD01502 ch. 2)
             self._p8700(m, mmu)
             return
-        heads = [tr("ASID"), tr("VPN"), tr("page"), tr("PPN"), tr("PTE flags")]
+        from ..rvmmu import entry_rows
+        h = m.csrs.has_h
+        if h:                                   # (priv. ch. 21: V, hgatp, vsatp)
+            g, vmid, groot = mmu._hgatp(m)
+            vs, vasid, vroot = mmu._atp(m, m.csrs.vsatp)
+            self.address.setText(self.address.text() + "<br>" + html.escape(
+                tr("{mode}-mode, V = {v}; hgatp: {g}, VMID {vmid}; vsatp: {vs}, ASID "
+                   "{vasid} — a guest access translates twice (VS-stage, G-stage)").format(
+                    mode=m.mode_name, v=m.v, g=g.name + "x4" if g else "Bare", vmid=vmid,
+                    vs=vs.name if vs else "Bare", vasid=vasid)))
+        heads = [tr("ASID"), tr("page"), tr("size"), tr("PA"), tr("PTE flags")]
+        if h:
+            heads = [tr("stage"), tr("VMID")] + heads[:3] + [tr("GPA"), tr("PA"),
+                                                             tr("VS / PTE flags"),
+                                                             tr("G-stage flags")]
         t.setColumnCount(len(heads))
         t.setHorizontalHeaderLabels(heads)
-        entries = list(mmu.tlb.values())
+        entries = entry_rows(m)
         t.setRowCount(len(entries))
-        names = "VRWXUGAD"
-        for i, e in enumerate(reversed(entries)):           # (most recent first)
-            size = 4096 << (9 * e.level if m.xlen == 64 else 10 * e.level)
-            flags = "".join(c if e.pte >> k & 1 else "-" for k, c in enumerate(names))
-            cells = [str(e.asid), f"0x{e.vpn:x}", f"{size // 1024} KB" if size < 1 << 20
-                     else f"{size >> 20} MB" if size < 1 << 30 else f"{size >> 30} GB",
-                     f"0x{e.ppn:x}", flags]
+        for i, r in enumerate(entries):         # (most recent first)
+            cells = list(r) if h else [r[2], r[3], r[4], r[6], r[7]]
             for c, text in enumerate(cells):
                 _set(t, i, c, text, T().valid_fill if i == 0 else None, False)
         t.resizeColumnsToContents()

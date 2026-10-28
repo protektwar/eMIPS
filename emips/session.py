@@ -234,6 +234,7 @@ class Session:
         self.adjusted: list[str] = []
         self.program_notes: list[str] = []
         self._pokes: list[tuple] = []
+        self._replayed = 0
         #: EJTAG: each core's TAP (fresh at every reset: power-up), the
         #: probe on them (configuration: kept across resets) and whether
         #: it gives the EJTAGBOOT instruction; PC samples it collected
@@ -262,6 +263,11 @@ class Session:
         self.cps: CPS | None = None
         #: the MIPS P8700's cluster (emips.p8700cps): the machines are its harts
         self.rvcps = None
+        #: a generic RISC-V platform (emips.rvplatform, --rv-intc): the machines
+        #: are its harts
+        self.rvplat = None
+        #: the RISC-V trace components of generic harts (emips.rvtrace: LF11)
+        self.rvtrace = None
         #: the MT processor (emips.mt): the machines are its VPEs
         self.mt = None
         self.cpu = 0
@@ -276,9 +282,21 @@ class Session:
 
     # -- program --------------------------------------------------------------
 
-    def load_source(self, text: str) -> bool:
-        """Assemble ``text``; on success reset to the new program."""
+    def assembler_messages(self) -> list[str]:
+        """What the assembler said about the loaded program: ``.print``'s
+        strings, then its warnings as ``line N: Warning: ...``."""
+        p = self.program
+        if p is None:
+            return []
+        return list(getattr(p, "printed", ())) + [
+            f"line {n}: Warning: {msg}" for n, msg in getattr(p, "warnings", ())]
+
+    def load_source(self, text: str, path: str | None = None) -> bool:
+        """Assemble ``text`` (``path``: its file — ``.include`` / ``.incbin``
+        look next to it); on success reset to the new program."""
         self.source = text
+        self.source_path = path
+        include_dirs = getattr(self, "include_dirs", ())
         self.errors = []
         self.c_file = self.c_text = None
         self._release_note = self._nano_release()       # (reset says so)
@@ -288,7 +306,8 @@ class Session:
                                     pseudo=self.options.pseudo,
                                     reorder=self.options.reorder,
                                     arch=self.options.arch, nano=self._nano_assembler(),
-                                    rv=self._rv_assembler())
+                                    rv=self._rv_assembler(), path=path,
+                                    include_dirs=include_dirs)
         except AsmError as exc:
             self.errors = [str(exc)]
             self._drop_program()
@@ -524,6 +543,7 @@ class Session:
                 labels.setdefault(sym.value, sym.name)
         if rv:                                  # the hart's extensions vs the code's
             prog.rv_extensions = img.rv_extensions
+            prog.tls = img.tls
             missing = RV.missing_extensions(self.options.rv_extensions, img.rv_extensions)
             if missing:
                 img.notes.append(f"the code was built for {img.rv_extensions}: this hart "
@@ -696,7 +716,7 @@ class Session:
         self.program = None
         self.machine = self.pipeline = self.console = self.services = None
         self.machines, self.pipelines, self.cps = [], [], None
-        self.rvcps = None
+        self.rvcps = self.rvplat = None
         self.views, self.last_view, self.steps = {}, None, 0
 
     def unload(self) -> None:
@@ -704,7 +724,7 @@ class Session:
         self.program = None
         self.machine = self.pipeline = self.console = self.services = None
         self.machines, self.pipelines, self.cps = [], [], None
-        self.rvcps = None
+        self.rvcps = self.rvplat = None
         self.source, self.listing, self.kind = "", "", "asm"
         self.errors, self.views = [], {}
         self.output, self.steps, self.last_view, self.run_to = "", 0, None, None
@@ -783,12 +803,16 @@ class Session:
         n = o.cores
         mtc = self.mt_config()
         self.mt = None
-        self.rvcps = None
+        self.rvcps = self.rvplat = None
         if self.rv and RV.cluster_config(self) is not None:     # the P8700 (emips.p8700cps)
             self.cps = None
             self.rvcps = RV.make_cluster(self, mem)
             self.machines = self.rvcps.machines
             n = len(self.machines)
+        elif self.rv and RV.platform_config(self) is not None:  # LF9: harts on a platform
+            self.cps = None
+            self.machines = [self._make_core(None, i, mem) for i in range(n)]
+            self.rvplat = RV.make_platform(self, self.machines)
         elif mtc is not None and n == 1:          # an MT processor: its VPEs (emips.mt)
             from .mt import Processor
             n, tcs = mtc
@@ -843,6 +867,11 @@ class Session:
             self.console.sink = self.cps.gic.set_input     # TX, RX: GIC sources 0, 1
             if self.board is not None:          # a multi-core Malta
                 self.board.join_cps(self.cps)
+        self.rvtrace = RV.make_trace(self, self.machines) \
+            if self.rv and self.rvcps is None else \
+            self.rvcps.trace if self.rvcps is not None else None   # (the P8700's: LF16)
+        #: the recorded pokes a step replays (later ones were applied live)
+        self._replayed = len(self._pokes)
         boot = o.boot != "reset"
         #: the Malta's boot monitor (emips.monitor), in its flash
         self.monitor = None
@@ -854,7 +883,8 @@ class Session:
                 for va, byte in MON.stub_words(self.monitor):   # program wins)
                     m0.write_byte(va, byte)
         if self.program is not None:
-            for i in range(n) if boot else (0,):
+            # (a platform's harts all leave reset at the entry: no firmware holds them)
+            for i in range(n) if boot or self.rvplat is not None else (0,):
                 m = self.machines[i]
                 self.program.load(m, boot=boot)
                 if self.rv:
@@ -890,6 +920,7 @@ class Session:
                              for a in self.program.image):
                     m0.pc = m0.to_pc(MON.RESET)   # power-on: the monitor in the flash
                     #                             (MIPS64: kseg1 sign-extended)
+        self._p8700_cores: dict = {}            # (the P8700 model: a pipeline a core)
         self.pipelines = [self._make_pipeline(m) for m in self.machines]
         self._code = None
         self.steps = 0
@@ -1017,9 +1048,10 @@ class Session:
         FPU context: VPE 0's).  ``vp``: a Release 6 VP on its core's
         ``caches`` (its own FPU: a complete processor, MD01196 ch. 12)."""
         o = self.options
-        if self.rv:
-            return RV.make_core(self, cpu, mem, o.caches(core=cpu) if caches is False
-                                else caches)
+        if self.rv:                             # (a RISC-V hart's caches start invalid: no
+            hw = replace(o, cache_init="hardware")  # instruction can initialize or unlock
+            return RV.make_core(self, cpu, mem, hw.caches(core=cpu) if caches is False
+                                else caches)    # them — the P8700's too, MD01502 3.5)
         if caches is False:
             caches = o.caches(core=cpu, shared=cps is not None)
         if cps is not None and caches is None and cps.cm.l2 is not None:
@@ -1257,6 +1289,8 @@ class Session:
                 proc.pipeline.debug_stop = lambda pc: self._stops_at(pc, cpu)
                 self._keep_history(proc.pipeline)
             return proc.pipeline
+        if m.rv and o.model == "p8700" and m.p8700 is not None:
+            return RV.p8700_pipeline(self, m)   # (its core's, LF14: emips.pipe8700)
         if m.rv:                                # (RISC-V: P&H's RISC-V edition)
             from .rvpipeline import RVPipeline
             p = RVPipeline(m, forwarding=self.forwarding, latency=o.latency,
@@ -1322,6 +1356,8 @@ class Session:
             return [v for v in range(len(self.machines)) if self.mt.alive(v)]
         if self.rvcps is not None:
             return self.rvcps.running()
+        if self.rvplat is not None:
+            return list(range(len(self.machines)))
         if self.cps is None:
             return [0] if self.machines else []
         return self.cps.running_vps()
@@ -1404,6 +1440,8 @@ class Session:
         if self.mt_pipeline:                    # a pipeline per core: its first VPE
             vpes = self.cps.vpes if self.cps is not None else len(self.machines)
             return sorted({v - v % vpes for v in self.running()})
+        if getattr(self, "_p8700_cores", None):  # the P8700's: a pipeline per core
+            return RV.p8700_issuing(self)
         if self.mt is not None:
             return self.mt.issuing()
         return self.running()
@@ -1447,7 +1485,7 @@ class Session:
         if not self.machines:
             return True
         if self.mt is None and self.cps is None and self.rvcps is None \
-                and len(self.machines) == 1:   # (one core)
+                and len(self.machines) == 1:   # (one core, or one hart on a platform)
             p = self.pipelines[0]
             return self.machines[0].halted and (p is None or p.empty())
         for m, p in zip(self.machines, self.pipelines):
@@ -1469,9 +1507,9 @@ class Session:
         for k, i in self._dints:                # replayed debug interrupts
             if k == steps and i < len(machines):
                 machines[i].debug_interrupt()
-        for k, i, kind, key, value in self._pokes:    # and debug register writes
-            if k == steps and i < len(machines):
-                self._poke(machines[i], kind, key, value)
+        for k, i, kind, key, value in self._pokes[:self._replayed]:   # and debug register
+            if k == steps and i < len(machines):        # writes (those of this run were
+                self._poke(machines[i], kind, key, value)   # applied when made)
         mt = self.mt
         dispatch = mt is not None and not self.mt_pipeline   # one TC issues (emips.mt)
         if dispatch:                            # (what a poke changed: who issues)
@@ -1523,14 +1561,15 @@ class Session:
                 self.select(cpu)                # show the core that stopped
             where = (f"VP {cpu}: " if self.cps is not None and self.mt is not None else
                      f"{self.cpu_name(cpu)}: " if self.cps is not None
-                     or rvcps is not None and len(self.machines) > 1 else
+                     or (rvcps is not None or self.rvplat is not None)
+                     and len(self.machines) > 1 else
                      f"VPE {cpu}: " if self.mt is not None and len(self.machines) > 1 else "")
             res.fault = exc
             res.error = f"{where}{type(exc).__name__}: {exc}" + self._no_handler_hint(exc) \
                 + self._past_end_hint(exc) + self._moved_code_hint(exc)
             res.stopped = "halt"
             return res
-        if self.cps is not None or rvcps is not None:
+        if self.cps is not None or rvcps is not None or self.rvplat is not None:
             self.select(self.cpu)               # a core may have restarted
         else:
             self.last_view = self._last_views[self.cpu]
@@ -1551,7 +1590,8 @@ class Session:
             for e in m.exception_log[start:]:
                 if "vector" in e:
                     res.exceptions.append(dict(e, cpu=i) if self.cps is not None
-                                          or self.mt is not None or rvcps is not None
+                                          or self.mt is not None
+                                          or (rvcps is not None or self.rvplat is not None)
                                           and len(self.machines) > 1 else e)
         if self.halted:
             res.stopped = "exit"
@@ -1573,6 +1613,12 @@ class Session:
         views = self._views[cpu]
         trace = p.cycle()
         self.traces[cpu] = trace
+        if getattr(p, "core", None) is not None:  # (a P8700 core: its harts' views)
+            RV.p8700_views(self, cpu, p, trace)
+            if p.watch_hit is not None:
+                w, p.watch_hit = p.watch_hit, None
+                raise w
+            return
         if p.watch_hit is not None:             # held before the access (a debugger stop)
             w, p.watch_hit = p.watch_hit, None
             raise w
@@ -2099,7 +2145,10 @@ class Session:
             m.pc = m.to_pc(pc)
         m.slot_armed, m.slot_target, m._forbidden = False, None, False
         old = self.pipelines[cpu]
-        if old is not None:
+        if old is not None and getattr(old, "core", None) is not None:
+            old.core.refetch(old.k, m.pc)       # (a P8700 core: this hart fetches again)
+            self.traces[cpu] = None
+        elif old is not None:
             new = self._make_pipeline(m)
             for name in ("cycles", "retired", "stalls", "history"):
                 if hasattr(old, name):
@@ -2201,6 +2250,8 @@ class Session:
         CPS "VP N (core C)"; one MT core "VPE N"."""
         if self.rvcps is not None:
             return self.rvcps.hart_name(i)
+        if self.rvplat is not None:
+            return f"hart {i}"
         if self.mt is not None and self.cps is not None:
             return f"VP {i} (core {self.cps.vp_core(i)})"
         if self.mt is not None:
@@ -2512,8 +2563,30 @@ class Session:
         self._pokes.append((self.steps, self.cpu, kind, key, value))
         self._poke(self.machine, kind, key, value)
 
+    def rnmi(self, cause: int = 0) -> None:
+        """A request on the selected RISC-V hart's RNMI input (Smrnmi, priv.
+        ch. 8) with ``cause`` (the platform's code for mncause): taken before
+        an instruction once mnstatus.NMIE = 1.  Recorded: a step back
+        replays it."""
+        m = self.machine
+        if m is None or not m.rv or not m.csrs.smrnmi:
+            raise ValueError("an RNMI needs a RISC-V hart with Smrnmi (--rv-ext ..._smrnmi)")
+        self._pokes.append((self.steps, self.cpu, "rnmi", None, cause))
+        self._poke(m, "rnmi", None, cause)
+
     @staticmethod
     def _poke(m: Machine, kind: str, key: Any, value: int) -> int:
+        if kind == "rnmi":                      # (RISC-V Smrnmi: the RNMI input)
+            m.rnmi_pending = value
+            return 0
+        if kind == "rvtrace":                   # (a RISC-V trace register: LF11)
+            RV.trace_write(m, key, value)
+            return 0
+        if kind == "rvtrace-in":                # (the probe's external trigger)
+            m.trace_encoder.sys.probe_input()
+            return 0
+        if kind == "dbu":                       # (the P8700's Debug Unit: LF16)
+            return RV.dbu_action(m.cluster, *key)
         tap = m.ejtag.tap
         if kind == "drseg":
             m.ejtag.set_register(key, value)
@@ -2651,6 +2724,48 @@ class Session:
             rows.append((n, pc, f"{fn or '?'}  {where}".rstrip()))
         return rows
 
+    # -- RISC-V trace (LF11: emips.rvtrace) — registers through System Bus Access -------
+
+    def rv_trace_write(self, pa: int, value: int) -> None:
+        """Write a RISC-V trace component register (as a debugger does
+        through the Debug Module's System Bus Access); recorded: Reset and
+        Step Back replay it."""
+        if self.rvtrace is None:
+            raise ValueError("no RISC-V trace on this machine")
+        m = self.machines[0]
+        self._pokes.append((self.steps, 0, "rvtrace", pa, value))
+        self._poke(m, "rvtrace", pa, value)
+
+    def rv_trace_start(self, **kw: Any) -> None:
+        """Start tracing on every hart: the register writes of
+        :func:`emips.sessionrv.trace_writes` (``protocol`` "e" / "n", the
+        options ...)."""
+        if self.rvtrace is None:
+            raise ValueError("no RISC-V trace on this machine")
+        for pa, v in RV.trace_writes(self, **kw):
+            self.rv_trace_write(pa, v)
+
+    def rv_trace_in(self) -> None:
+        """The probe's external trigger (every encoder's input 3)."""
+        if self.rvtrace is None:
+            raise ValueError("no RISC-V trace on this machine")
+        self._pokes.append((self.steps, 0, "rvtrace-in", None, 0))
+        self._poke(self.machines[0], "rvtrace-in", None, 0)
+
+    # -- the P8700's Debug Unit (LF16: emips.p8700dbu) — a probe's TAP scans ------------
+
+    def dbu(self, op: str, *args: Any) -> int:
+        """A probe's action on the P8700's Debug Unit (sessionrv.dbu_action:
+        ``probe`` [trap], ``detach``, ``halt`` HART, ``dint-all``, ``resume`` /
+        ``step`` HART, ``read`` HART ADDR, ``write`` HART ADDR VALUE, ``reg``
+        HART N VALUE, ``pc`` HART PC, ``ib`` K ADDR HART, ``db`` K ADDR KIND
+        VALUE HART, ``fdc-send`` CH VALUE, ``fdc-take``); recorded: Reset and
+        Step Back replay it."""
+        if self.rvcps is None:
+            raise ValueError("the Debug Unit is the P8700's (--core p8700)")
+        self._pokes.append((self.steps, 0, "dbu", (op, args), 0))
+        return self._poke(self.machines[0], "dbu", (op, args), 0)
+
     # -- MIPS Trace (emips.pdtrace): the TCB through TAP scans ---------------------------
 
     def _tcb_scan(self, instruction: int, value: int) -> int:
@@ -2695,7 +2810,12 @@ class Session:
 
     def trace_stop(self) -> None:
         """TCBCONTROLB.EN = 0 (the last trace word is written) and
-        TCBCONTROLA.On = 0."""
+        TCBCONTROLA.On = 0 — on a RISC-V hart: every encoder and the sink
+        disabled (flushed)."""
+        if self.rv:
+            for pa, v in RV.trace_stop_writes(self):
+                self.rv_trace_write(pa, v)
+            return
         tcb = self.machine.ejtag.tap.tcb
         b = tcb.control_b & ~(PDT.TB_EN | PDT.TB_TR | PDT.TB_RM | PDT.TB_WR | PDT.TB_BF)
         self._tcb_scan(PDT.TCBCONTROLB, b | PDT.TB_WE)
@@ -2743,6 +2863,8 @@ class Session:
 
     def trace_state(self) -> list[str]:
         """The trace settings and the TCB (the debugger's ``trace``)."""
+        if self.rv:
+            return RV.trace_state(self)
         m = self.machine
         tcb = m.ejtag.tap.tcb
         st = m.pdt.settings()
@@ -2785,6 +2907,8 @@ class Session:
         """The regenerated instructions (the last ``last``) with their
         addresses, data and the trace events (the debugger's ``trace
         show``)."""
+        if self.rv:
+            return RV.trace_lines(self, last) if self.rvtrace is not None else []
         items = self.trace_steps()
         if last:
             items = items[-last:]
@@ -3105,14 +3229,27 @@ class Session:
         m = self.machine
         if m.rv:                                    # pc, the trap CSRs, fcsr
             c = m.csrs
-            rows = [("pc", m.pc), ("priv", m.priv), ("mstatus", c.mstatus_value()),
-                    ("mtvec", c.mtvec), ("mepc", c.mepc), ("mcause", c.mcause),
-                    ("mtval", c.mtval), ("mie", c.mie), ("mip", c.mip())]
+            rows = [("pc", m.pc), ("priv", m.priv)] + ([("V", m.v)] if c.has_h else []) \
+                + [("mstatus", c.mstatus_value()),
+                   ("mtvec", c.mtvec), ("mepc", c.mepc), ("mcause", c.mcause),
+                   ("mtval", c.mtval), ("mie", c.mie), ("mip", c.mip())]
             if 1 in m.modes:
                 rows += [("stvec", c.stvec), ("sepc", c.sepc), ("scause", c.scause),
                          ("stval", c.stval), ("satp", c.satp)]
+            if c.has_h:                             # (priv. ch. 21: the hypervisor's and
+                rows += [("mtval2", c.mtval2), ("mtinst", c.mtinst),        # the guest's)
+                         ("hstatus", c.hstatus), ("hedeleg", c.hedeleg),
+                         ("hideleg", c.hideleg & c.mideleg), ("hvip", c.hvip | c.mip_sw & 4),
+                         ("htval", c.htval), ("htinst", c.htinst), ("hgatp", c.hgatp),
+                         ("vsstatus", c.peek(0x200)), ("vstvec", c.vstvec),
+                         ("vsepc", c.vsepc), ("vscause", c.vscause), ("vstval", c.vstval),
+                         ("vsatp", c.vsatp)]
             if m.flen:
                 rows.append(("fcsr", m.fcsr))
+            if c.zicfilp:                           # (LF10: the landing-pad state)
+                rows.append(("ELP", c.elp))
+            if c.zicfiss:
+                rows.append(("ssp", c.ssp))
             p = m.p8700
             if p is not None:                       # (MD01502 7.3)
                 rows += [("mipstvec", p.mipstvec), ("mipsintctl", p.mipsintctl),

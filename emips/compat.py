@@ -76,16 +76,29 @@ def _rv(o: Options) -> bool:
     return o.arch in ("rv32", "rv64")
 
 
+def _has_h(o: Options) -> bool:
+    """The hart has the hypervisor extension (LF7)."""
+    from .riscv import parse_extensions
+    try:
+        return "h" in parse_extensions(o.rv_extensions)
+    except ValueError:
+        return False
+
+
+def _hypervisor(o: Options) -> bool:
+    return _rv(o) and _has_h(o) and o.rv_modes == "msu" and o.core != "p8700"
+
+
 #: a RISC-V hart (PLAN M25) has none of the MIPS settings: (field, the value
 #: it goes back to, why)
 _RV_DEFAULTS = (
     ("board", "flat", "the Malta's core cards carry MIPS CPUs (MD00048); a RISC-V program "
                       "runs on the flat RARS memory map"),
-    ("cores", 1, "a generic RISC-V core is one hart here; several cores and harts are the "
-                 "P8700 preset's (--core p8700, PLAN M25 phase 5d); several harts on one "
-                 "platform "
-                 "come with the P8700 preset (PLAN M25 phase 5)"),
-    ("model", "5-stage", "the 24K is a MIPS32 core (MD00343)"),
+    ("cores", 1, "a generic RISC-V core is one hart unless a platform interrupt controller "
+                 "joins several (--rv-intc plic|aplic|imsic, LF9); the P8700 preset has "
+                 "its own cores and harts (--core p8700, PLAN M25 phase 5d)"),
+    ("model", "5-stage", "the 24K is a MIPS32 core (MD00343); the P8700's pipeline comes "
+                         "with its preset (--core p8700, LF14)"),
     ("mmu", "fixed", "a RISC-V hart translates with satp (Sv32 / Sv39 / Sv48 / Sv57, the "
                      "privileged spec ch. 12), not a MIPS MMU"),
     ("compressed", "auto", "RISC-V has no ISA modes: its compressed instructions are the "
@@ -105,7 +118,7 @@ _RV_DEFAULTS = (
 
 
 #: what the P8700 preset decides on a RISC-V hart (its cores and harts)
-_P8700_FIELDS = ("cores", "vps")
+_P8700_FIELDS = ("cores", "vps", "model")
 
 
 def _ways(spec: str, level: int) -> int:
@@ -147,13 +160,41 @@ class Rule:
         return self.why(o, release) if callable(self.why) else self.why
 
 
+def _rv_exts(o: Options) -> set:
+    from .riscv import parse_extensions
+    try:
+        return parse_extensions(o.rv_extensions)
+    except (ValueError, KeyError):
+        return set()
+
+
 RULES = (
     # first, RISC-V (PLAN M25): another architecture — none of the MIPS settings
     *(Rule(f, "arch", (lambda f, v: lambda o, r: _rv(o) and getattr(o, f) != v
                        and not (f in _P8700_FIELDS and o.core == "p8700"
-                                and _cores.CORES["p8700"].allows(f, getattr(o, f))))(f, v),
+                                and _cores.CORES["p8700"].allows(f, getattr(o, f)))
+                       and not (f == "cores" and o.core != "p8700" and o.rv_intc != "none"))
+                       (f, v),
            (lambda f, v: lambda o: setattr(o, f, v))(f, v), why)
       for f, v, why in _RV_DEFAULTS),
+    # LF14: the P8700's own pipeline belongs to the P8700
+    Rule("model", "core", lambda o, r: o.model == "p8700" and o.core != "p8700",
+         lambda o: setattr(o, "model", "5-stage"),
+         "the out-of-order pipeline is the P8700's (MD01502 1.2.1, ch. 10, ch. 12): other "
+         "cores run the textbook 5-stage pipeline"),
+    # LF9: the generic hart's platform interrupt controller
+    Rule("rv_intc", "arch", lambda o, r: not _rv(o) and o.rv_intc != "none",
+         lambda o: setattr(o, "rv_intc", "none"),
+         "the PLIC, the APLIC and the IMSIC are RISC-V's interrupt controllers (a MIPS "
+         "system has CP0's lines, a GIC or the Malta's)"),
+    Rule("rv_intc", "core", lambda o, r: _rv(o) and o.core == "p8700" and o.rv_intc != "none",
+         lambda o: setattr(o, "rv_intc", "none"),
+         "the P8700 has its own ACLINT and APLIC (MD01502 ch. 8)"),
+    Rule("rv_extensions", "rv_intc", lambda o, r: _rv(o) and o.rv_intc == "imsic"
+         and "smaia" not in _rv_exts(o),
+         lambda o: setattr(o, "rv_extensions", o.rv_extensions + "_smaia"),
+         "a hart with an IMSIC has the AIA's CSRs (AIA 1.6 / 3.7: Smaia — mtopei, "
+         "miselect / mireg ...)"),
     # a MIPS L2 / L3 has 1-8 ways (Config2.SA / TA); 16 are the P8700's (MD01502 3.3.7)
     *(Rule(f, "arch", (lambda f: lambda o, r: not _rv(o) and _ways(getattr(o, f), lvl) > 8)(f),
            (lambda f: lambda o: setattr(o, f, _eight_ways(getattr(o, f), lvl)))(f),
@@ -277,13 +318,29 @@ RULES = (
          lambda o, r: (f"{o.cores} MT cores of {_vpes(o)} VPEs: the boot firmware's GIC "
                        f"routes the IPIs of {_MAX_VPS} VPs (Boot-MIPS init_gic; the MT CPSs, "
                        "the 1004K / interAptiv, have up to 4 cores of 2 VPEs)")),
-    Rule("iocu", "cores", lambda o, r: o.iocu and o.cores < 2,
+    Rule("iocu", "cores", lambda o, r: o.iocu and o.cores < 2 and o.core != "p8700",
          lambda o: setattr(o, "iocu", False),
          "an I/O Coherence Unit is part of a multi-core system's Coherence Manager "
-         "(GCR_CONFIG.NUMIOCU): it needs 2 or more cores"),
-    Rule("iocu", "board", lambda o, r: o.iocu and not _malta(o),
+         "(GCR_CONFIG.NUMIOCU): it needs 2 or more cores (the P8700's CM3.7 has it with "
+         "any number of cores, MD01502 5.9)"),
+    Rule("iocu", "board", lambda o, r: o.iocu and not _malta(o) and o.core != "p8700",
          lambda o: setattr(o, "iocu", False),
-         "the IOCU makes the Malta's PCI DMA coherent: the flat board has no DMA device"),
+         "the IOCU makes the Malta's PCI DMA coherent (or the P8700's AXI CDMA: --core "
+         "p8700): the flat board has no DMA device"),
+    # LF15: the P8700's memory system
+    Rule("l2_waits", "core", lambda o, r: o.l2_waits != "0:0:0" and o.core != "p8700",
+         lambda o: setattr(o, "l2_waits", "0:0:0"),
+         "the L2 RAMs' wait states are the P8700's GCR_L2_RAM_CONFIG (MD01502 5.14.1.20)"),
+    Rule("dspram", "core", lambda o, r: o.dspram and o.core != "p8700",
+         lambda o: setattr(o, "dspram", 0),
+         "the DSPRAM here is the P8700's (mipsdsprambase, MD01502 7.3.7)"),
+    Rule("boot", "arch", lambda o, r: o.boot == "guest" and not _hypervisor(o),
+         lambda o: setattr(o, "boot", "kernel"),
+         "the guest boot hands the program to VS-mode: a RISC-V hart with the hypervisor "
+         "extension (h, with M, S and U: priv. ch. 21)"),
+    Rule("rv_modes", "rv_extensions", lambda o, r: _rv(o) and _has_h(o) and o.rv_modes != "msu",
+         lambda o: setattr(o, "rv_modes", "msu"),
+         "the hypervisor extension needs M-, S- and U-mode (priv. ch. 21: HS-mode is S-mode)"),
     Rule("boot", "board", lambda o, r: o.boot == "user" and _malta(o)
          and o.mmu.split("+")[0].split(":")[0] not in ("tlb", "ftlb"),
          lambda o: setattr(o, "boot", "kernel"),

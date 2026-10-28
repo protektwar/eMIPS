@@ -3166,7 +3166,11 @@ does not set A and D itself (Svade): a PTE with A = 0, or D = 0 for a store, is
 a page fault, and the operating system sets them.  A miss walks the table
 through the caches (two reads for Sv32) and keeps the result in the TLB, which
 only <code>sfence.vma</code> empties: change a PTE, then fence (Lab 75).  M-mode
-addresses are physical.  <strong>PMP</strong> (<code>pmpcfg</code> /
+addresses are physical.  A PTE's physical page number is wider than a VA
+page number: Sv32's 22 bits reach 34-bit physical addresses (16 GB on a
+32-bit hart), Sv39 / Sv48's 44 bits 56-bit ones; the P8700 has 48.  The whole
+physical space is memory in eMIPS but for the devices; an address beyond
+the hart's width is an access fault.  <strong>PMP</strong> (<code>pmpcfg</code> /
 <code>pmpaddr</code>) gives physical address ranges read / write / execute rights
 for S- and U-mode (and, locked, for M-mode); with any entry set, S and U may
 touch only what an entry allows.</p>
@@ -3177,6 +3181,349 @@ an exception or an interrupt) raise a breakpoint exception or enter <strong>Debu
 Mode</strong>, where the hart stops with its PC in <code>dpc</code> and the reason in
 <code>dcsr</code>; <code>dret</code> leaves.  The register pane's Debug tab lists
 them.</p>
+<h3 id="vectors-groups-masks-and-the-pipeline">Vectors: groups, masks and the pipeline</h3>
+<p>A V instruction (<a href="02-writing-programs.html#228-risc-v-vectors-the-v-extension">Phase
+2, 2.28</a>) names one register, <code>v4</code>, and means a <strong>group</strong>: with
+LMUL = 4 the elements run through <code>v4</code>, <code>v5</code>, <code>v6</code>,
+<code>v7</code> one register after the other (element 0 in the lowest bits of
+<code>v4</code>), and the group must start at a multiple of LMUL — <code>v4</code> with
+LMUL = 8 is a <em>reserved</em> encoding, an illegal instruction (Lab 78).
+VLMAX = LMUL × VLEN / SEW elements fit; <code>vsetvli</code> gives vl ≤ VLMAX.
+Some operands are wider than SEW: a widening result (<code>vwmul.vv</code>) has 2 ×
+SEW elements in a group of 2 × LMUL registers, a load of EEW 16 at SEW 32 a
+group of LMUL / 2; the overlaps a destination may have with its sources are
+limited, so that an instruction can restart part-way.</p>
+<p>A <strong>mask</strong> is one bit an element, bit i of the register for element
+i, whatever SEW and LMUL are.  Compares write masks; <code>v0.t</code> makes
+element i act only where bit i of <code>v0</code> is 1.  The elements an
+instruction does not compute — masked off, or past vl (the <em>tail</em>) — are
+kept or (the "agnostic" policies <code>ta</code> / <code>ma</code>) may be filled with
+ones; eMIPS keeps them.  Loads and stores touch memory only for active elements
+(Lab 79).</p>
+<p>A trap in the middle of a vector load or store is <strong>precise to the
+element</strong>: <code>vstart</code> holds the index of the element that faulted,
+the elements before it are done, and the handler's <code>mret</code> restarts the
+instruction at <code>vstart</code>.  A fault-only-first load faults only for element
+0; a later fault shortens vl instead.  On the 5-stage pipeline a vector
+instruction holds EX for one element a cycle (one element group for the
+cryptography's, a multiply's or a floating-point operation's latency more),
+its register groups are forwarded like x registers, and <code>vsetvli</code>
+serializes — the instructions behind it are fetched again with the new vtype,
+because their register groups depend on it (Lab 80).  <code>mstatus.VS</code> =
+Off makes every vector instruction illegal; any vector instruction that runs
+sets it to Dirty, which tells an operating system to save the vector
+registers on a switch.</p>
+<h3 id="the-hypervisor-two-translations-and-v">The hypervisor: two translations and V</h3>
+<p>With the hypervisor extension (<a href="02-writing-programs.html#229-risc-v-a-hypervisor-and-its-guest">Phase
+2, 2.29</a>; the privileged manual's chapter 21) the hart's mode is a privilege
+(M, S, U) <em>and</em> V:</p>
+<table>
+<thead><tr><th>V</th><th>privilege</th><th>mode</th><th>who runs there</th><th>translation</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>M</td><td>M-mode</td><td>firmware</td><td>none</td></tr>
+<tr><td>0</td><td>S</td><td>HS-mode</td><td>the hypervisor (or a plain OS)</td><td>satp</td></tr>
+<tr><td>0</td><td>U</td><td>U-mode</td><td>the hypervisor's programs</td><td>satp</td></tr>
+<tr><td>1</td><td>S</td><td>VS-mode</td><td>a guest's kernel</td><td>vsatp, then hgatp</td></tr>
+<tr><td>1</td><td>U</td><td>VU-mode</td><td>a guest's programs</td><td>vsatp, then hgatp</td></tr>
+</tbody>
+</table>
+<p><strong>Traps.</strong>  A trap from VS / VU goes to M-mode unless
+<code>medeleg</code> (an exception) or <code>mideleg</code> (an interrupt) sends it to
+HS-mode, and from there to VS-mode when <code>hedeleg</code> / <code>hideleg</code> pass
+it on.  Into M-mode it records V in <code>mstatus.MPV</code>; into HS-mode in
+<code>hstatus.SPV</code> (and the guest's mode in SPVP); both record in GVA whether
+the trap value is a guest virtual address.  Into VS-mode it is an ordinary
+S-mode trap as the guest sees it — <code>vsepc</code>, <code>vscause</code>,
+<code>vstval</code>, <code>vsstatus</code> — and a VS interrupt arrives under its S-mode
+number (VSTI, 6, as STI, 5), so the guest's kernel needs no change.  MRET returns
+to V = MPV, SRET in HS-mode to V = SPV.  Some exceptions can never reach a guest:
+<code>hedeleg</code>'s bits for the guest-page faults (20, 21, 23), the
+virtual-instruction exception (22) and the VS-mode ecall (10) are read-only 0.
+Interrupts are taken M-level first, then HS-level (always enabled while V = 1:
+the hypervisor is never locked out), then the guest's.</p>
+<p><strong>Two translations.</strong>  An access with V = 1 is translated
+twice.  The <em>VS-stage</em> walks the guest's own page table from
+<code>vsatp</code> — Sv39 as in HS-mode — but every address it reads (each PTE) is a
+<em>guest physical</em> address, translated in turn by the <em>G-stage</em>
+(<code>hgatp</code>) before the read.  The resulting guest physical address goes
+through the G-stage once more.  The G-stage is Sv39 two bits wider, Sv39x4: a
+41-bit guest physical address, the root table 16 KB (2048 entries; bits 40:39
+pick one of four 4 KB root pages); every G-stage page must have U set (to the
+G-stage every access is a user access).  A walk of Sv39 under Sv39x4 can read
+up to 3 × 4 + 3 = 15 page-table entries.</p>
+<p><strong>Faults name their stage.</strong>  A VS-stage fault is a page fault
+(12, 13, 15) — the guest's own business, delegable to VS-mode.  A G-stage
+fault is a <em>guest-page fault</em> (20, 21, 23) for the hypervisor:
+<code>mtval</code> / <code>stval</code> hold the guest virtual address as usual, and
+<code>mtval2</code> / <code>htval</code> the guest physical one, shifted right by 2 (it
+may be wider than XLEN on RV32: Sv32x4 has 34-bit guest physical addresses).
+When the G-stage fails while the VS-stage reads one of its page tables, the
+faulting address is that PTE's, and <code>mtinst</code> / <code>htinst</code> say so:
+0x3000 on RV64 (0x2000 on RV32) — "a read for VS-stage translation".  The
+debugger's <code>hyp LOC</code> and the trace's address view say which stage
+faulted and why.</p>
+<p><strong>The TLB</strong> keeps a guest translation as one entry — guest
+virtual page to physical page, at the smaller of the two page sizes — tagged
+with V, the VM's number (<code>hgatp.VMID</code>) and the guest's ASID; changing
+<code>hgatp</code> to another VMID switches guests without flushing anything.
+<code>hfence.vvma</code> (and the guest's own <code>sfence.vma</code>) flush the current
+VM's guest translations; <code>hfence.gvma</code> those of a VMID, or of one guest
+physical address — the entries whose G-stage page holds it.  The TLB pane lists
+the guest entries with both stages' PTE flags.</p>
+<p><strong>The hypervisor's view of a guest.</strong>  <code>hlv.w</code> /
+<code>hlvx.wu</code> / <code>hsv.w</code> ... load and store as the guest would (VS- or
+VU-mode by <code>hstatus.SPVP</code>, both translations, the guest's SUM) from M-
+or HS-mode — or from U-mode when <code>hstatus.HU</code> allows it; <code>hlvx</code>
+needs execute permission instead of read (to fetch an instruction to emulate).
+<code>mstatus.MPRV</code> with MPV = 1 does the same for ordinary loads and stores
+in M-mode.  In the pipeline they are loads and stores; the fences serialize, as
+<code>sfence.vma</code> does.</p>
+<h3 id="privileged-additions-counters-cache-blocks-page-types-and-rnmis">Privileged additions: counters, cache blocks, page types and RNMIs</h3>
+<p>The extensions of <a href="02-writing-programs.html#230-risc-v-privileged-additions-counters-cache-blocks-rnmis">Phase
+2, 2.30</a>, as the hart does them (the privileged manual's chapters 5-9, 13-16,
+18-20 and the unprivileged one's chapter 19; Spike checks every rule, as
+Lab 82's numbers come from eMIPS's own caches):</p>
+<p><strong>What a counter counts.</strong>  The manual leaves the events to the
+platform; eMIPS takes the SBI's numbers (its PMU chapter), so the value an OS
+would hand the firmware is the value <code>mhpmevent</code> holds.  The general
+events come from the hart (instructions, branches — a taken branch or a jump
+counts as a <em>miss</em>: the 5-stage pipeline predicts every branch not taken —,
+cycles, the platform timer's ticks for bus / reference cycles) and from the
+5-stage pipeline (stalled cycles: IF waiting for the front end, ID or MEM holding
+for the back end); the cache events read the counters behind the Caches and
+TLB panes, so they move only with caches or paging on.  An instruction counts in
+the mode it <em>started</em> in — an <code>ecall</code> is a U-mode instruction, an
+<code>mret</code> an M-mode one — and a <code>csrw</code> to a counter takes effect
+after the instruction, as for <code>minstret</code>.  A counter that wraps past
+2<sup>64</sup> - 1 sets OF in its <code>mhpmevent</code> and raises LCOFI (13, after
+the timer interrupts in priority); <code>scountovf</code> shows the OF bits to
+S-mode — only those of counters <code>mcounteren</code> gives it.  (Spike's
+counters read 0: there the CSRs' rules are compared, not the counts.)</p>
+<p><strong>A cache block</strong> is 64 bytes, whatever the caches' lines: a CBO
+on a 32-byte-line D-cache acts on two lines, and on the L2 / L3 lines below.
+<code>cbo.clean</code> / <code>cbo.flush</code> / <code>cbo.inval</code> translate as
+a load would (they need read permission, set A, not D) but fault as stores
+(15, 7: the operation changes memory) with <code>mtval</code> = rs1, not the
+block's base; <code>cbo.zero</code> is a store of 64 zero bytes — a write-back
+D-cache allocates the lines zeroed without reading memory.  Below M-mode
+<code>menvcfg.CBIE</code> = 01 turns <code>cbo.inval</code> into a flush (the OS may
+not throw away data it does not own), 11 lets it invalidate; a guest needs
+<code>henvcfg</code>'s too (else a virtual-instruction exception).  The trace's
+address line shows the block and what each cache did.</p>
+<p><strong>Page attributes.</strong>  Svpbmt's PBMT (PTE bits 62:61) overrides
+the region's attribute: 1 NC = non-cacheable, idempotent memory (eMIPS's CCA 7,
+uncached accelerated: stores may be gathered), 2 IO = uncached I/O, 3 reserved
+(a page fault).  Svnapot's N with ppn[3:0] = 1000 marks one of sixteen
+identical 4 KB PTEs as part of a 64 KB page: one TLB entry covers all of it.
+With Svadu and <code>menvcfg.ADUE</code> the walk sets A (and D for a store) by
+storing the PTE — through the caches, checked by PMP as an S-mode write — where
+Svade would page-fault and leave it to the OS.  The TLB pane's flags show N,
+NC and IO.</p>
+<p><strong>Timers and state.</strong>  With Sstc, <code>mip.STIP</code> is
+<code>time</code> &gt;= <code>stimecmp</code> (read-only while
+<code>menvcfg.STCE</code> = 1), and VSTIP compares <code>time</code> +
+<code>htimedelta</code> with <code>vstimecmp</code>.  Smstateen's
+<code>mstateen0</code> bits (C, FCSR, JVT, CONTEXT, CSRIND, ENVCFG, SE0) hide
+state from S- and U-mode — an access is an illegal instruction until M-mode
+sets the bit — and <code>hstateen0</code> from a guest (a virtual instruction).</p>
+<p><strong>Resumable NMIs.</strong>  An ordinary trap overwrites
+<code>mepc</code> / <code>mcause</code>; if a non-maskable interrupt arrived inside an
+M-mode trap handler, that handler could never return.  Smrnmi gives the RNMI
+its own registers: <code>mnepc</code>, <code>mncause</code> (the interrupt bit and the
+platform's code), <code>mnstatus</code> (the mode in MNPP / MNPV, and NMIE).  While
+NMIE = 0 — after reset, and inside the RNMI handler — <em>every</em> interrupt is
+masked, MPRV is ignored, and an M-mode exception goes to the RNMI exception
+handler instead of <code>mtvec</code> (so a bug there cannot clobber the state of
+the trap that was interrupted).  <code>mnret</code> returns to <code>mnepc</code> in
+MNPP / MNPV's mode and sets NMIE again; software can set NMIE but never clear
+it.  eMIPS's boot sets NMIE for kernel / user / guest programs; a reset boot
+leaves it to the program, as real firmware does.</p>
+<p><strong>Smepmp</strong> makes PMP bind M-mode: <code>mseccfg.MML</code> turns
+locked entries into M-mode rules and unlocked ones into S / U-mode rules (Table
+16's combinations, an M-mode-only region that S cannot touch and vice versa),
+MMWP denies M-mode what no entry matches, RLB lets M-mode edit locked entries
+during boot; MML and MMWP stay set until reset.</p>
+<h3 id="the-aia-priorities-interrupt-files-and-msis">The AIA: priorities, interrupt files and MSIs</h3>
+<p>What <a href="02-writing-programs.html#231-risc-v-interrupts-as-memory-writes-the-aia">Phase
+2, 2.31</a>'s example does inside the hart, by the Advanced Interrupt
+Architecture's chapters (Spike, given <code>_smaia</code>, checks the CSRs, the
+files and every trap; where it departs, eMIPS follows the manual):</p>
+<p><strong>Which interrupt first.</strong>  Without the AIA the order is fixed:
+MEI, MSI, MTI, SEI, SSI, STI ....  With it each local interrupt gets a
+<em>priority number</em> in the <code>iprio</code> arrays (one byte each, 1 = the
+highest, 0 = "keep the default place"), and the external interrupt of the level
+takes its number from the interrupt controller (the IMSIC's identity, the APLIC's
+IPRIO).  <code>mtopi</code> answers "what would M-mode take now": the interrupt
+in bits 27:16 and in bits 7:0 its number — or, for one left at 0, 0 if its
+default place is above the external interrupt and 255 if below (Table 5.3).
+That is why MSI with number 0 reads 255: by default MEI beats MSI.  An
+interrupt with a number <em>p</em> ranks beside an external interrupt of
+priority <em>p</em>; ties go by the default order (Table 5.1).
+<code>stopi</code> does the same for S-mode, <code>vstopi</code> for a guest.</p>
+<p><strong>Interrupts that are not wires.</strong>  <code>mvien</code> /
+<code>mvip</code> let M-mode raise an S-level interrupt that no device drives
+(numbers 1, 9 and 13-63): S-mode sees it in <code>sip</code> and takes it
+through <code>stopi</code>, while M-mode keeps the real one.  For a guest
+<code>hvien</code> / <code>hvip</code> do the same, and <code>hvictl</code> can
+<em>inject</em> one interrupt directly — its number (IID), its priority (IPRIO)
+and, with DPR, whether it ranks above or below the guest's external
+interrupt; with VTI set, the guest's reads of <code>sip</code> / <code>sie</code>
+trap to the hypervisor (a virtual instruction), which emulates them.</p>
+<p><strong>Interrupt files.</strong>  An IMSIC file is two bit arrays and two
+registers: <code>eip</code> (pending), <code>eie</code> (enabled),
+<code>eidelivery</code> and <code>eithreshold</code>.  A store of <em>n</em> to the
+file's page sets <code>eip</code>[<em>n</em>]; the file drives its mode's
+external-interrupt line while some identity is pending, enabled and below the
+threshold.  <code>*topei</code> reads that identity (twice: bits 26:16 and
+10:0) and a write claims it — the read and the claim are one
+<code>csrrw</code>, so no other interrupt can slip in between.  A hart has an M
+file, an S file and, with the hypervisor extension, 31 <em>guest</em> files
+(GEILEN): <code>hstatus.VGEIN</code> picks the one the running guest's
+<code>vstopei</code> / <code>vsireg</code> reach and that drives VSEIP; the others
+show in <code>hgeip</code> and, enabled in <code>hgeie</code>, raise SGEI (12) in
+the hypervisor, who can switch to that guest.  The pages live at fixed
+physical addresses, so a hypervisor maps a guest's file page into the guest:
+the guest's devices then interrupt it without a trap.</p>
+<p><strong>The APLIC sends MSIs.</strong>  With IMSICs the APLIC works in MSI
+delivery mode (<code>domaincfg.DM</code> = 1): a source that becomes pending
+and enabled is sent at once as a 32-bit store of the target's EIID to the
+address 4.9.1 builds from the target's hart index and guest number and
+<code>mmsiaddrcfg</code> / <code>smsiaddrcfg</code> (base page, LHXS / LHXW / HHXS
+/ HHXW); its pending bit clears (a level-sensitive source becomes pending
+again only on its input's next rising edge, or by <code>setip</code> while the
+input is high: 4.7).  The MSI is a write by the APLIC as a bus master, like a
+device's DMA — point the base elsewhere and it lands in RAM, below the harts'
+caches (Lab 83).  <code>genmsi</code> sends one by hand.</p>
+<p><strong>Several harts.</strong>  With a controller, <code>--cores N</code>
+builds N harts on one memory; each has its own IMSIC pages, so hart 0 sends
+an <em>inter-processor interrupt</em> to hart 1 with one store to hart 1's
+page.  The core selector, <code>cpu N</code> and the Interrupts tab show each
+hart; <code>aia</code> in the debugger lists one hart's files.</p>
+<h3 id="control-flow-integrity-landing-pads-and-the-shadow-stack">Control-flow integrity: landing pads and the shadow stack</h3>
+<p>What <a href="02-writing-programs.html#232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">Phase
+2, 2.32</a>'s instructions do inside the hart (the unprivileged manual's chapter
+33, the privileged one's chapter 22; Spike checks every rule below):</p>
+<p><strong>ELP across traps.</strong>  A <code>jalr</code> through, say,
+<code>t1</code> sets ELP = LP_EXPECTED when landing pads are on in the current
+mode.  If an interrupt arrives between the <code>jalr</code> and its target, the
+trap saves ELP in the new mode's <code>xPELP</code> (<code>mstatus.MPELP</code>,
+<code>SPELP</code>, <code>vsstatus.SPELP</code>; Debug Mode in
+<code>dcsr.pelp</code>, an RNMI in <code>mnstatus.MNPELP</code>) and clears it, so
+the handler runs freely; <code>mret</code> / <code>sret</code> put it back — if
+the mode it returns to has landing pads on — and the instruction it returns to
+must still be an <code>lpad</code>.  The check comes after the fetch (an
+instruction access fault wins) and before decoding (even an illegal word is
+reported as the landing-pad fault).  A handler that catches the software check
+itself must clear <code>xPELP</code> before returning past the bad target, or the
+return expects a landing pad again.  The register pane's Interrupts tab and
+the debugger's <code>cfi</code> show ELP and which modes enforce what.</p>
+<p><strong>Shadow-stack pages.</strong>  The PTE encoding xwr = 010 (W without
+R), reserved before, means a shadow-stack page while the stage's
+<code>xenvcfg.SSE</code> is 1.  On it only <code>sspush</code>,
+<code>c.sspush</code> and <code>ssamoswap</code> may write: an ordinary store or
+any cache-block operation is a <em>store access fault</em>, a fetch an
+instruction access fault — not page faults, so the OS sees at once that the
+program attacked its own shadow stack.  Ordinary loads may read it (that is how
+a debugger walks it).  The shadow-stack instructions in turn need such a page:
+a read-only page gives a store <em>page</em> fault (copy-on-write: the OS copies
+and maps it as a shadow-stack page), any other page a store access fault —
+even for <code>sspopchk</code>, which only reads: every shadow-stack fault
+reports as a store.  <code>ssp</code> must be XLEN-aligned and the memory
+idempotent (not an I/O region), and with <code>satp</code> Bare (below M-mode)
+there are no shadow-stack pages at all: every access faults.  The TLB pane's
+flags show W without R for such a page.</p>
+<h3 id="instruction-trace-e-trace-and-n-trace">Instruction trace: E-Trace and N-Trace</h3>
+<p>A hart has an instruction trace too, the RISC-V way (the Efficient Trace
+specification 2.0, N-Trace 1.0, the Trace Control Interface 1.0 and the
+E-Trace encapsulation 1.0): an <strong>ingress port</strong> hands each retired
+group of instructions to an <strong>encoder</strong> — the address of the first
+instruction, how many halfwords retired, what ended the group (a taken or
+not-taken branch, an inferable or uninferable jump, a call, a return, a trap
+with its cause and <code>tval</code>, a return from a trap), the privilege mode —
+and the encoder sends only what a <strong>decoder</strong> that has the program
+cannot work out by itself.  Two protocols do that differently:</p>
+<ul>
+  <li><strong>E-Trace</strong> packs a <em>branch map</em> — one bit for each branch,
+  taken or not — and sends a packet when the map is full (31 branches), at an
+  <em>uninferable</em> jump (<code>jalr</code>: the target is in a register), at a
+  trap (its cause, <code>tval</code> and the address it left), and a
+  synchronisation packet with a full address now and then.  Addresses are
+  differences from the last one sent, and every packet drops its leading
+  bytes that only repeat the sign bit.</li>
+  <li><strong>N-Trace</strong> sends Nexus <em>messages</em> (a 6-bit TCODE, then
+  fields of 6-bit slices, each byte marked with two end bits): in
+  <strong>BTM</strong> mode a message for every taken branch, counting the halfwords
+  since the last one; in <strong>HTM</strong> mode a history bit for every branch and a
+  message only at an indirect jump (<code>IndirectBranchHist</code>, its target
+  XOR the last address sent) or when the history is full
+  (<code>ResourceFull</code>).</li>
+</ul>
+<p>Both can leave out more: <strong>implicit return</strong> (<code>return</code>:
+encoder and decoder keep the same stack of return addresses, so a
+<code>ret</code> to the address on top sends nothing), <strong>sequential
+jumps</strong> (<code>sijump</code>: a <code>jalr</code> right after the
+<code>lui</code> / <code>auipc</code> that set its register is inferable), and for
+E-Trace a <strong>branch predictor</strong> (<code>predict</code>: after 31 branches
+predicted right in a row it sends a count instead of maps) and a <strong>jump
+target cache</strong> (<code>cache</code>: an uninferable target sent before is sent
+as its index); for N-Trace <strong>repeated history</strong> (<code>repeat</code>: a
+history or a branch message equal to the last one is counted).</p>
+<p>The components are memory-mapped registers (the control interface): an
+encoder per hart at 0x03000000 + 0x1000 × hart, a funnel at 0x03008000 when
+there are several harts (each hart's packets carry its source ID), and a
+<strong>RAM sink</strong> at 0x03009000 with a 16 KB SRAM — or a buffer in system memory
+(<code>smem ADDRESS BYTES</code>), wrapping or stopping when full
+(<code>stoponwrap</code>).  The debugger writes them as a debug probe does through
+System Bus Access; the program can write them too.  <code>trace on
+[etrace|ntrace] [OPTIONS]</code> starts the sink and every encoder, <code>trace
+show</code> decodes what the sink holds back into the flow, <code>trace packets</code>
+lists each packet / message with the reason the encoder sent it, <code>trace
+bytes</code> what is in the sink, <code>trace read</code> / <code>write OFF</code> one
+register:</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/rv_trace.asm
+(emips) trace on return
+encoder 0: E-Trace, enabled, instruction trace on; return; sync by packets (2^8), trigger actions; 1 packets
+RAM sink: enabled, its SRAM (16 KB); 3 bytes
+(emips) c
+3003
+144
+the program exited
+   0x0040006a  ecall
+   (ended)
+(emips) trace show 6
+   0040009c  add a0, a0, t0
+   0040009e  lw ra, 12(sp)
+   004000a0  addi sp, sp, 16
+   004000a2  ret
+   00400062  li a7, 1
+   -- end: ended (not reported) (0x400062)
+(emips) trace packets 4
+   branch        branches 0x0, branch_map 0x38c8f8c8  [05 01 64 7c 64 1c]  (branch map full)
+   branch        branches 0x5, branch_map 0x4, address 0x4, notify 0x0, updiscon 0x0, irreport 0x0, irdepth 0x0  [03 15 02 01]  (uninferable jump target)
+   address       address 0x7fffffe4, notify 0x1, updiscon 0x1, irreport 0x1, irdepth 0xf  [01 92]  (uninferable jump target)
+   support       subformat 0x3, ienable 0x1, encoder_mode 0x0, qual_status 0x3, ioptions 0x1  [02 df 01]  (support)
+</code></pre>
+<p>Each E-Trace packet in the sink starts with its encapsulation header (the
+payload's length, here 5, 3, 1 and 2 bytes; with several harts their source
+ID, with <code>time</code> a timestamp).  Why the flow stops at
+<code>li a7, 1</code>: the program sets two <strong>triggers</strong> (the Debug
+specification's <code>mcontrol6</code>), and a trigger's action may be a trace
+action instead of a breakpoint — 2 starts instruction trace, 3 stops it, 4
+makes the encoder report that instruction (<em>notify</em>).  Trigger 1 stops
+it at <code>back</code>.  <code>trace on wait</code> starts the encoder with
+instruction trace off, so only the triggers' window is traced;
+<code>notrig</code> makes the encoder ignore them.  The encoder's own
+comparators and filters (privilege modes, causes, address ranges) choose too
+(<code>trace write</code> their registers).  Actions 8 and 9 drive the
+trigger module's external outputs; a <code>tmexttrigger</code> trigger (type 7)
+fires on an external input.  eMIPS wires them like a small debug system: an
+encoder's trigger output 0 is the hart's external input 0, output 1 the Debug
+Module's external trigger 0 (in <code>dmcs2</code>'s halt groups it halts or
+resumes harts), the probe's trigger (<code>trace in</code>) every encoder's
+input 3.  The Debug Module also has authentication (<code>authdata</code>:
+nothing else answers until the debugger has passed it).  The pipeline traces
+exactly what the instruction model does — packets are made when instructions
+retire.</p>
 <h2 id="514-the-mips-p8700-inside">5.14 The MIPS P8700 inside</h2>
 <p><code>--core p8700</code> (<a href="02-writing-programs.html#227-the-mips-p8700-a-risc-v-core">Phase
 2, 2.27</a>) puts RISC-V harts into a MIPS multiprocessor: what 5.8 to 5.10 tell
@@ -3240,6 +3587,121 @@ word, and whether it was corrected; an L2 error is reported after the
 instruction that met it (imprecise).  A test can flip bits on purpose
 (the caches' and the FTLB's <code>inject</code>); the debugger's <code>p8700</code>
 shows the register.</p>
+<h3 id="the-rest-of-the-memory-system">The rest of the memory system</h3>
+<p>Two <strong>prefetchers</strong> fetch data before a load asks for it (the boot
+firmware turns both on, as the P8700's OpenSBI does).  The Coherence Manager's
+<strong>L2 prefetcher</strong> (GCR_L2_PFT_CONTROL / _B) watches the L2's misses:
+two misses on neighbouring lines of one page make a <em>stream</em>, going up or
+down, and every further request of the stream fetches the next lines into the
+L2 — a window that grows while the stream still misses, never past the OS page
+size PAGE_MASK gives.  Each core's <strong>L1 prefetcher</strong> has eight
+trackers (<code>mipsconfig8</code>–<code>11</code>): a tracker follows the data
+cache's misses in one 4 KB page, learns their <em>stride</em> and, once the same
+stride came twice, fetches the line one stride ahead into the L1.  Both work in
+the background: they cost bus time, not stalls.  The L2's RAMs may need
+<strong>wait states</strong> (<code>--l2-waits</code>, read in GCR_L2_RAM_CONFIG):
+every L2 access gets slower.  The GCR's <strong>MMIO regions</strong> name
+address ranges whose requests go to a memory port of their own past the L2 (an
+external PCIe device's registers, for example).</p>
+<p><strong>DMA</strong>: a device that moves memory itself.  The P8700 system here
+has Xilinx's AXI <strong>CDMA</strong> at 0xFFFF1000 (APLIC source 5): write the
+source address (SA), the destination (DA) and the length (BTT, which starts it),
+or a chain of 64-byte descriptors (scatter-gather), then poll CDMASR.Idle or
+take its interrupt.  With an <strong>IOCU</strong> (<code>--iocu</code>) its
+requests go through the Coherence Manager: a read takes a line a core holds
+Modified, a write invalidates the cores' copies — DMA is coherent.  Without one
+the CDMA reads and writes memory below the caches, and what a write-back data
+cache still holds is invisible to it (Lab 88).  The <strong>DSPRAM</strong>
+(<code>--dspram</code>) is a core's own scratch-pad RAM at
+<code>mipsdsprambase</code>: its loads and stores never touch the caches, and no
+other core or DMA sees it.  <code>cm</code>, <code>p8700</code> and the Caches
+pane show all of this.</p>
+<h3 id="the-p8700s-own-pipeline">The P8700's own pipeline</h3>
+<p>The real P8700 is not a 5-stage machine: it fetches, decodes, issues and
+graduates up to <strong>four instructions a cycle</strong>, issues them <strong>out of
+order</strong> and runs the core's two harts at the same time (MD01502 1.2.1,
+ch. 10).  <code>--core p8700</code> in pipeline mode uses this pipeline
+(<code>--model p8700</code>; <code>--model 5-stage</code> keeps the textbook one —
+the window's mode box has both).  Its stages, as the chart shows them:</p>
+<ul>
+<li><strong>IF</strong> — the fetch unit reads up to four instructions of one hart
+  (the harts take turns) from the I-cache and <em>predicts</em> where the program
+  goes next: a TAGE predictor for branches, the L1 BTB for their targets, a
+  return-prediction stack for <code>ret</code>, the jump register cache for other
+  <code>jalr</code>s.  <strong>ib</strong>: the instruction waits in the hart's
+  instruction buffer (the front end takes 7 cycles).</li>
+<li><strong>DR</strong> — decode, rename and dispatch: up to four a cycle go into
+  the <em>window</em> (96 instructions) and into an issue queue — ALQ (the ALU),
+  AGQ (the second ALU, branches, loads and stores) or FPQ (the FPU's short and
+  long pipes).  In eMIPS the instruction <em>executes</em> here, in program
+  order, so its results are always the hart's.</li>
+<li><strong>iq</strong> / <strong>IS</strong> — it waits in its queue until its operands
+  are ready, then issues on a free unit — perhaps before older instructions.
+  Table 12.1 says how long each takes: an ALU operation 1 cycle, a load 4, a
+  multiply 4 (one a cycle), a divide 7–22 (not pipelined), FMUL 5, FMADD 8.</li>
+<li><strong>EX</strong> / <strong>co</strong> — executing, then complete and waiting.</li>
+<li><strong>GR</strong> — graduation: four a cycle, in program order per hart.</li>
+</ul>
+<p>A <strong>misprediction</strong> is found when the branch issues: what the hart
+fetched after it — dispatched, using queue slots and units, but never executed
+(the chart marks them <code>*</code>, the window <em>wrong path</em>) — is killed
+and fetching restarts at the right place: 8 cycles lost (LLVM's model of the
+P8700).  A trap, a CSR write or <code>fence.i</code> stops fetching until it
+graduates.  An instruction that uses a load's register issues as if the load
+hit; when it missed, the instruction is <em>replayed</em>.  Two adjacent
+<code>ld</code>s (or <code>sd</code>s, <code>lw</code>s, <code>sw</code>s) from the same base
+8 bytes apart are <strong>bonded</strong> into one request (3.3.6).
+<code>mipsconfig7</code> switches these off one by one (DBP: no prediction, DRPS:
+no return stack, DLBND / DSBND: no bonding, DSLD: no speculation after a load
+...).  The debugger's <code>core</code> shows the window, the queues and the
+predictors, the window's Datapath pane does the same in pipeline mode; the
+performance counters' issue / graduation / misprediction / bonding events
+(<code>perf</code>) count what this pipeline does.  What MD01502 does not tell —
+the depth of the front end, the predictors' sizes — eMIPS takes from GCC's and
+LLVM's P8700 models or assumes (the reference lists them, 6.11).  Lab 87.</p>
+<h3 id="hybrid-debug">Hybrid Debug</h3>
+<p>MIPS calls the P8700's debug support <strong>Hybrid Debug</strong>: "MIPS EJTAG with
+RISC-V trace" (MD01502 1.2.2).  Its <strong>Debug Mode</strong> is EJTAG's (5.10): a
+debug exception — an <code>ebreak</code> with <code>dcsr.ebreakm</code>, a single step
+(<code>dcsr.step</code>), a hardware breakpoint, a <em>debug interrupt</em> (DINT) —
+stops the program and the hart <em>runs a debug handler</em> with M-mode rights (no
+interrupts, no NMIs, no triggers) until <code>dret</code> returns to <code>dpc</code>.
+The handler starts at the hart's RESET_BASE + 0x480, or, when a probe set
+<em>ProbTrap</em>, at 0xFFFFFFFF_FF200200 in <strong>dmseg</strong>.  In Debug Mode
+the addresses 0xFFFFFFFF_FF200000–FF3FFFFF are <strong>dseg</strong>: dmseg is the
+Debug Unit's RAM, <strong>drseg</strong> the hart's debug registers — the DCR (IntE /
+NMIE hold the hart's interrupts outside Debug Mode), the breakpoints, the hart's trace
+encoder.  The <strong>Hybrid Debug register</strong> (<code>mipsdebug</code>) says
+why the hart is there (DINT, DBS for a step), the exception a handler instruction
+took (DEXCCODE: an exception in Debug Mode only sets <code>dpc</code> and this, and
+starts the handler again) and IEXI, which holds back an imprecise L2 error until
+<code>dret</code> (CACHEEP).</p>
+<p>The <strong>breakpoint controller</strong> has 8 instruction and 8 data
+breakpoints shared by every hart (IBAn / IBMn / IBCn, DBAn / DBMn / DBVn / DBCn in
+drseg, EJTAG's registers); a breakpoint may name one hart (TCuse / TC), and each
+hart sees which ones it hit (IBS / DBS).  A break is <em>precise</em>: Debug Mode
+starts <em>before</em> the instruction or the access, so returning with the
+breakpoint still armed hits it again — a handler disarms it, single-steps one
+instruction and arms it again (Lab 89).  A debug interrupt comes from the CPC's
+<code>DBG_DBRK_REG</code> (one bit a hart of a core; DEBUGM shows who is in Debug
+Mode) or from the probe.</p>
+<p>The <strong>Debug Unit</strong> (ch. 13) is the cluster's single JTAG TAP and a RAM.
+A probe scans EJTAG's ADDRESS / DATA / CONTROL registers to make the DBU's
+<em>register-bus master</em> read and write any core's drseg and CSRs, the GCR, the
+CPC, the interrupt controller and its RAM — which is how it loads a <em>debug
+monitor</em> there, sends a DINT, and then reads and changes the halted hart's
+registers and memory through the monitor's mailbox.  The debugger's
+<code>dbu</code> is such a probe (<code>dbu probe</code>, <code>dbu halt 1</code>,
+<code>dbu regs 1</code>, <code>dbu step 1</code>, <code>dbu ib 0 f</code> …); every
+action is TAP scans, recorded so that Reset and Step Back replay them.  The
+<strong>Fast Debug Channel</strong> (GCR 0x3F000: FDTX0–15, FDRX, FDSTAT) passes
+32-bit words between the program and the probe on 16 channels; the
+<strong>Trace Funnel</strong> (GCR 0x3F100) collects every hart's RISC-V trace (E-Trace
+or N-Trace, 5.13 — the debugger's <code>trace on</code>) in a 16 KB on-chip memory
+a probe reads 64 bytes at a time.  The CM's two <strong>performance counters</strong>
+(GCR 0x900) count its requests and L2 hits.  The <em>MIPS Hybrid Debug
+Specification</em> itself is not public: what eMIPS takes from EJTAG and assumes is
+in the reference (6.11).  Lab 89.</p>
 <h2 id="515-labs">5.15 Labs</h2>
 <p>Each lab gives a task, a way to check your answer with eMIPS, and the
 answer (click to open it — try first!).  The lab programs are in
@@ -5078,7 +5540,7 @@ and keeps the translation in the TLB until an <code>sfence.vma</code>.</p>
 </details>
 <h3 id="lab-76--one-line-two-cores">Lab 76 — One line, two cores</h3>
 <p><a href="labs/p8700_share.asm"><code>labs/p8700_share.asm</code></a> runs on a two-core
-P8700 (<code># eMIPS: --core p8700 --cores 2</code>): each core adds 1 to its own
+P8700 (<code># eMIPS: --core p8700 --cores 2 --model 5-stage</code>): each core adds 1 to its own
 counter 100 times, then core 0 prints the total, 200.  The counters are 8 bytes
 apart.  Run it and look at the Coherence Manager
 (<code>python3 -m emips debug docs/guide/labs/p8700_share.asm -c run -c cm</code>),
@@ -5094,7 +5556,7 @@ cycles on the pipeline, 2581 of them waiting for memory (CPI 6.70).  The two
 counters share one 64-byte line, so every store of one core needs it Modified
 and takes it from the other: the line bounces between the cores 200 times,
 although they never touch the same word.  64 bytes apart: 5 requests (the first
-misses), 1068 cycles (CPI 2.03), 150 waiting for memory.  The
+misses), 1076 cycles (CPI 2.05), 158 waiting for memory.  The
 total is right both times because MESI keeps one owner for a line: a store
 waits until its core holds the line, so no update is lost — false sharing
 costs time, not correctness.  Real code pads per-core data to the line size
@@ -5120,6 +5582,366 @@ prime in a register.  RV32's is 10: the hash lives in two registers, and
 word only) — three multiplies, a shift and two adds.  A character is 8 bits,
 so the XOR changes the low word only.  That is the cost of a 32-bit machine on
 64-bit data: about twice the work here (Lab 62 compares MIPS32 and MIPS64).</p>
+</details>
+<h3 id="lab-78--strip-mining">Lab 78 — Strip mining</h3>
+<p><a href="labs/rv_vsum.asm"><code>labs/rv_vsum.asm</code></a> adds 100 words with a
+vector loop and prints the sum and how many times the loop ran.  Run it, then
+change the loop's <code>m1</code> to <code>m2</code>, <code>m4</code> and <code>m8</code>; run each
+also on a hart with longer registers
+(<code>python3 -m emips run --rv-ext imafdcv_zicsr_zicntr_zvl256b ...</code>) and on an
+embedded one (<code>--arch rv32 --rv-ext imac_zicsr_zicntr_zve32x</code>, with
+<code>lw</code> for <code>ld</code>).  How many loops each time, and what does <code>m8</code>
+need?</p>
+<details>
+<summary>Answer</summary>
+<p>VLMAX = LMUL × VLEN / 32: 4, 8, 16 elements an iteration with VLEN 128 —
+25, 13 and 7 loops for the 100 words — and twice as many elements with
+<code>zvl256b</code> (13, 7, 4 loops).  With <code>m8</code> the load is an illegal
+instruction: <code>v4</code> starts no group of eight registers (a group must start
+at a multiple of LMUL), so the program stops at the trap.  Load into
+<code>v16</code> (and sum <code>v16</code>): 4 loops, 2 with <code>zvl256b</code>.  The Zve32x
+hart's VLEN is 32 — one word a register: 100 loops at <code>m1</code>.  The program
+never changes: it only learns vl from <code>vsetvli</code>.</p>
+</details>
+<h3 id="lab-79--masks">Lab 79 — Masks</h3>
+<p><a href="labs/rv_vabs.asm"><code>labs/rv_vabs.asm</code></a> makes twelve words
+non-negative with a scalar loop: a branch for each element.  Do it with vector
+instructions — a compare that sets the mask <code>v0</code> where an element is
+negative, then a subtraction from 0 that acts only there (<code>v0.t</code>).
+<a href="labs/rv_vabs.check"><code>labs/rv_vabs.check</code></a> checks the results and
+that no more than 40 instructions run (the scalar loop takes 77).  Which
+elements do the masked instruction and the store leave alone?</p>
+<details>
+<summary>Answer</summary>
+<pre><code class="language-asm"># arch: rv64
+# rv-ext: imafdcv_zicsr_zicntr
+        .data
+count:  .dword 12
+nums:   .word 5, -3, 0, -128, 77, -1, 2147483647, -2147483647, 9, -9, 64, -65
+        .text
+main:   la      a1, nums
+        ld      a2, count
+loop:   vsetvli t0, a2, e32, m1, ta, mu
+        vle32.v v4, (a1)
+        vmslt.vx v0, v4, zero       # v0[i] = nums[i] &lt; 0
+        vrsub.vi v4, v4, 0, v0.t    # 0 - x where v0[i] is set
+        vse32.v v4, (a1)
+        slli    t1, t0, 2
+        add     a1, a1, t1
+        sub     a2, a2, t0
+        bnez    a2, loop
+        li      a7, 10
+        ecall
+</code></pre>
+<p>32 instructions (3 loops of 4 words; with <code>m4</code> one loop: 14).  The
+masked <code>vrsub.vi</code> leaves the non-negative elements as they were loaded
+(<code>mu</code>: masked-off elements undisturbed), so the store writes every element
+back, unchanged where the mask is 0.  Masking the store too
+(<code>vse32.v v4, (a1), v0.t</code>) would write only the negative ones.  Note
+-2147483647 becomes 2147483647, but -2147483648 would stay itself: 0 - x
+wraps around at 32 bits, as with scalar <code>neg</code>.</p>
+</details>
+<h3 id="lab-80--vectors-on-the-pipeline">Lab 80 — Vectors on the pipeline</h3>
+<p>Run Lab 78's program on the pipeline (<code>python3 -m emips pipe
+docs/guide/labs/rv_vsum.asm</code>) with <code>m1</code>, <code>m2</code> and <code>m4</code>.  The
+cycles go down, but the <code>ex-busy</code> stall cycles go up: why both?</p>
+<details>
+<summary>Answer</summary>
+<p>1086, 966, 906 cycles (620, 524, 476 instructions); <code>ex-busy</code> 156, 180,
+192.  A vector instruction holds EX one element a cycle, so loading and adding
+the 100 words costs about 200 element-cycles whatever LMUL is — with longer
+groups fewer instructions do them, each staying longer in EX (more cycles
+counted as <code>ex-busy</code> behind it).  What larger groups save is the loop's
+scalar work: fewer iterations of <code>vsetvli</code> (which serializes: the
+instructions after it are fetched again), the pointer and count updates and
+the taken branch.  The <code>branch</code> stalls (100) are the fill loop's, the
+same each time.</p>
+</details>
+<h3 id="lab-81--a-hypervisor-and-its-guest">Lab 81 — A hypervisor and its guest</h3>
+<p><a href="labs/rv_hyp.asm"><code>labs/rv_hyp.asm</code></a> is a hypervisor in
+M-mode: it builds a G-stage page table (Sv39x4) that maps the program's code and
+data where they are and guest physical page 0x20000000 onto a page of its own,
+then runs a guest in VS-mode.  The guest reads 42 at 0x20000000, then loads from
+0x30000000 and the hypervisor reports a guest-page fault.  (1) Why is mcause
+21 and not 13 (a load page fault)?  Which register holds 0x30000000 as the
+guest's <em>virtual</em> address, which as its <em>guest physical</em> one?
+(2) Map guest physical 0x30000000 onto the same page, so that the guest's
+second load reads 42 too and the guest ends without a trap — the
+<a href="labs/rv_hyp.check"><code>labs/rv_hyp.check</code></a> checks.  (3) Put
+<code>csrr t1, hstatus</code> in the guest: what happens, and could the hypervisor
+let the guest's own handler take it (<code>hedeleg</code>)?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) The guest translates nothing itself — <code>vsatp</code> is Bare, so its
+virtual address is its guest physical address — and the VS-stage cannot fault;
+the G-stage (the hypervisor's table) has no entry for 0x30000000, so it is a
+<em>load guest-page fault</em>, 21, for the hypervisor (13 would be a fault in
+the guest's own page table).  <code>mtval</code> holds the guest virtual address
+0x30000000, <code>mtval2</code> the guest physical address shifted right by 2
+(0xc000000: the program shifts it back); <code>mtinst</code> is 0 — the fault is the
+load's own access, not a page-table read.  (2) 0x30000000's bits 40:30 are 0,
+so its root entry is 0 (l1), and its l1 index is bits 29:21 = 0x180.  Point
+l1[0x180] at l0, as l1[0x100] is (l0[0] maps the page):</p>
+<pre><code class="language-mips">        la      t1, l0              # l1[0x180]: GPA 0x30000000 -> l0
+        srli    t1, t1, 12
+        slli    t1, t1, 10
+        ori     t1, t1, 1
+        li      t3, 0x180*8
+        add     t3, t0, t3
+        sd      t1, 0(t3)
+</code></pre>
+<p>(added after l1[0x100]'s store, while t0 still holds l1).  Both guest
+physical pages are now the same physical page.  (3) <code>hstatus</code> is a
+hypervisor CSR: from VS-mode it is a <em>virtual-instruction exception</em>
+(22) — mtval holds the instruction, MPV = 1.  <code>hedeleg</code> bit 22 is
+read-only 0: the exception can go to HS-mode (<code>medeleg</code>) but never to the
+guest, because it exists for the hypervisor to emulate (or refuse) what the
+guest tried.</p>
+</details>
+<h3 id="lab-82--counting-cache-misses">Lab 82 — Counting cache misses</h3>
+<p><a href="labs/rv_hpm.asm"><code>labs/rv_hpm.asm</code></a> sums a 32 × 32
+matrix of words twice, row by row and column by column, on a hart with a 2 KB
+two-way D-cache of 32-byte lines; <code>mhpmcounter3</code> / <code>4</code> count
+the L1 D-cache's read accesses and read misses (SBI events 0x10000 and
+0x10001).  (1) Why are 128 of the 1024 loads misses row by row?  (2) Column by
+column every load misses.  Which cache sets does one column use, and why is a
+line gone before the next column (4 bytes further on) needs it?  (3) Set
+<code>mhpmevent4</code> to <code>0x10001 | 1 &lt;&lt; 62</code> (MINH): what does it
+count now?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) A 32-byte line holds 8 words: the first load of each line misses and
+brings in the next 7 — 1024 / 8 = 128 misses (the matrix, 4 KB, never fits in
+the 2 KB cache, so the second pass starts cold again).  (2) The cache has 2 KB
+/ 2 ways / 32 bytes = 32 sets; a line's set is address bits 9:5.  Going down a
+column adds 128 bytes (a row), which adds 4 to the set number: a column uses
+only 8 sets, but needs 32 lines — 4 lines a set for 2 ways.  With LRU each line
+is replaced before the walk comes back to it, so the next column (same lines,
+the next word) misses on all 32 again: 1024 misses.  With a 4 KB cache
+(<code>--dcache 4K:2:32</code>: 64 sets, a column's 32 lines in 16 sets × 2 ways)
+the whole matrix stays from the first pass and the second misses 0 times.  (3) MINH stops the counter in M-mode, where the whole
+program runs: it counts 0 misses (Sscofpmf; MINH / SINH / UINH filter by
+mode).</p>
+</details>
+<h3 id="lab-83--interrupts-as-memory-writes">Lab 83 — Interrupts as memory writes</h3>
+<p><a href="labs/rv_msi.asm"><code>labs/rv_msi.asm</code></a> runs two harts with
+an IMSIC each (<code>--rv-intc imsic --cores 2</code>).  Hart 1 enables
+identities 1-63 in its M file and waits; its handler claims an identity
+(<code>csrrw t0, mtopei, zero</code>) and writes it down.  Hart 0 stores 7, 3
+and 5 to hart 1's file page, has the APLIC send identity 9 (<code>genmsi</code>),
+then moves the APLIC's MSI base page (<code>mmsiaddrcfg</code>) to 0x80100000
+and sends the same MSI again.  It prints <code>hart 1 took: 7 3 5 9</code> and
+<code>word at 0x80101000: 9</code>.  (1) 3 has the highest priority (the smallest
+number), yet 7 comes first.  Why — and why do 3 and 5 then come in that
+order?  (2) Add <code>eithreshold</code> = 6 to hart 1's set-up (select 0x72).
+What does hart 1 take now, and why does the program never end?  (3) Where
+did the last MSI go, why to 0x80101000, and why does hart 1 not take
+it?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) An interrupt is taken as soon as it is pending and enabled: the harts
+run one instruction each in turn, so hart 1 takes 7 the instruction after
+hart 0 stores it, before 3 even exists.  Its handler runs with MIE = 0 while
+hart 0 sends 3 and 5; after <code>mret</code> both are pending and
+<code>mtopei</code> shows the smaller identity first: 3, then (another trap) 5.
+Priority orders what is pending <em>together</em>, not what arrives
+one at a time.  (2) Only identities below the threshold interrupt: hart 1
+takes 3 and 5 (<code>took</code> = 3, 5, <code>count</code> = 2); 7 stays pending
+in <code>eip0</code> (<code>cpu 1</code> then <code>aia</code> in the debugger lists
+<code>7PE</code>: pending and enabled, and <code>mtopi</code> 0), so hart 0 waits for a third identity forever.  (3) An MSI is
+just a 32-bit write of the EIID to an address the APLIC computes (4.9.1):
+the base page 0x80100 with hart index 1 in the low bits of the page number
+(LHXW = 1 bit for two harts, LHXS = 0) — 0x80101 × 0x1000 = 0x80101000.
+That is RAM, not an interrupt file, so the 9 is stored there and no hart
+sees an interrupt; with the reset base 0x24000 the same arithmetic gives
+hart 1's M file at 0x24001000.</p>
+</details>
+<h3 id="lab-84--a-rop-return-and-a-jop-jump">Lab 84 — A ROP return and a JOP jump</h3>
+<p><a href="labs/rv_cfi.asm"><code>labs/rv_cfi.asm</code></a> builds an Sv39 page
+table in M-mode — the program and data mapped one to one by two 1 GB pages,
+and a 4 KB shadow-stack page at 0xC0000000 —, turns on landing pads and the
+shadow stack for S-mode (<code>menvcfg.LPE</code>, <code>SSE</code>), points
+<code>ssp</code> at the top of that page and calls <code>victim</code> twice from
+S-mode.  The second call's "buffer overflow" overwrites the saved
+<code>ra</code> with the address of <code>gadget</code>.  It prints
+<code>victim returned normally</code> twice, then <code>trap: mcause 18, mtval
+3</code>.  (1) Which instruction trapped, and why did the first call not?
+(2) Delete the <code>sspopchk ra</code>.  What happens now?  (3) Call
+<code>victim</code> through a function pointer instead of <code>call</code>
+(<code>la t1, victim</code>, <code>jalr t1</code>).  What does the program print,
+and what must <code>victim</code> begin with?  (4) With that fixed, jump to
+<code>victim + 4</code> instead — what happens?  (5) Why does <code>ret</code>
+never need a landing pad?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>sspopchk ra</code>: the <code>ra</code> loaded from the stack is
+<code>gadget</code>'s address, the shadow copy the real return address — unequal,
+a software-check exception (18) with <code>mtval</code> 3, a shadow-stack fault;
+the first call loaded what it had saved.  The shadow copy could not have been
+overwritten too: the page is a shadow-stack page, where an ordinary
+<code>sd</code> is a store access fault.  (2) Nothing checks the return:
+<code>ret</code> jumps to <code>gadget</code>, which prints <code>gadget ran: the
+attacker won</code> — a successful ROP.  (3) <code>trap: mcause 18, mtval 2</code>:
+an indirect call through <code>t1</code> expects a landing pad at its target, and
+<code>victim</code> starts with <code>addi</code>.  Starting it with <code>lpad
+0</code> makes the call land (and the direct <code>call</code>s still work:
+with ELP = NO_LP_EXPECTED the <code>lpad</code> does nothing).  (4)
+<code>mtval</code> 2 again: <code>victim + 4</code> is the <code>addi</code>, not a
+landing pad — a JOP jump into the middle of a function is stopped.  (5) A
+<code>jalr</code> through <code>ra</code> or <code>t0</code> is a return; its target is
+protected by the shadow stack instead (and <code>t2</code> is left for jumps
+the compiler checks itself, such as a bounds-checked <code>switch</code> table).</p>
+</details>
+<h3 id="lab-85--what-a-trace-costs-on-a-hart">Lab 85 — What a trace costs on a hart</h3>
+<p><a href="labs/rv_trace.asm"><code>labs/rv_trace.asm</code></a> sums the digits
+of the numbers 1 to 300 (a call to <code>digits</code> each, a short loop
+inside), then computes fib(12) recursively, about 10,600 instructions.  It
+also sets two triggers: at <code>fib</code> with action 2 (trace on), at
+<code>back</code> with action 3 (trace off).  For each setting run
+<code>trace on ...</code>, <code>c</code>, <code>trace off</code> and read the packets and
+bytes in the last lines.  (1) Compare <code>trace on</code> (E-Trace) with
+<code>trace on return</code>.  Why the difference?  (2) Add
+<code>predict</code>, then <code>cache</code>, to <code>return</code>.  What do they
+save here, and why?  (3) Now N-Trace: <code>trace on ntrace btm</code>,
+<code>ntrace htm</code>, <code>ntrace htm return</code>.  Why is BTM the largest,
+and how does the best N-Trace compare with the best E-Trace?  (4)
+<code>trace on wait return</code>: what does <code>trace show</code> start and
+end with, and how big is the trace?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) 773 packets / 2108 bytes, then 59 packets / 336 bytes.  The program
+returns about 765 times (300 calls of <code>digits</code>, 465 calls in fib(12)),
+and every <code>ret</code> is a <code>jalr</code> through <code>ra</code> — a target the
+decoder cannot infer, so each one ends a packet with its address.  With
+implicit return both sides keep a stack of return addresses: a return to the
+top of it sends nothing, and what is left is mostly full branch maps of 31
+branches — 336 bytes for about 10,600 instructions, a quarter of a bit an
+instruction.  (2) Nothing: still 59 packets, 336 bytes.  The predictor only
+sends a count after 31 branches predicted right in a row, and the loop in
+<code>digits</code> runs one to three times — its 2-bit counter mispredicts the
+exit every few branches.  The jump target cache only helps uninferable jumps
+whose target comes again, and here those are all returns, already handled.
+(3) BTM 1797 messages / 4396 bytes, HTM 769 / 3256, HTM + return 52 / 364.
+BTM sends a message for every taken branch; HTM a bit for every branch and a
+message only at an indirect jump (a return, so about as many as E-Trace's
+packets) or when 31 history bits are full — with implicit return only those
+remain.  364 bytes against E-Trace's 336: the same information, but Nexus
+spends 2 bits of every byte on the end markers.  (4) It starts at
+<code>fib</code>'s first instruction (<code>-- start (0x400082)</code>: trigger 0
+turned trace on) and ends at <code>back</code>, the <code>li a7, 1</code> where trigger
+1 turned it off: 24 packets, 128 bytes (<code>ntrace htm wait return</code>: 19
+messages, also 128 bytes).  A trace window around the code in question is
+how a real system keeps its trace buffer from overflowing.</p>
+</details>
+<h3 id="lab-86--code-that-writes-code">Lab 86 — Code that writes code</h3>
+<p><a href="labs/rv_macros.asm"><code>labs/rv_macros.asm</code></a> builds a table
+of the Fibonacci numbers F0 … F15 with <code>.rept</code> and <code>.set</code>,
+then adds them up — unrolled, a macro used sixteen times, or in a loop:
+<code>.if UNROLL</code> chooses (<a href="02-writing-programs.html#233-macros-repetition-and-conditional-assembly">Phase
+2, 2.33</a>).  (1) What does it print, and what are the table's last two
+words?  (2) Run it with <code>UNROLL</code> 1 and 0: how many instructions run,
+and how many bytes of code does <code>main</code> take (<code>python3 -m emips
+asm</code>)?  (3) In the loop, <code>add_word a0</code> leaves out the second
+argument.  What does <code>off</code> become there, and what happens if the
+line says just <code>add_word</code>?  (4) With <code>UNROLL</code> 0, wrap the
+loop — from <code>li t1, N</code> to <code>bnez</code>, with <code>la s0, fib</code>
+as the block's first line — in <code>.rept 2</code>.  What does it print, and why
+do the two <code>bnez … 1b</code> not jump to the same label?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) 1596 (F0 + … + F15 = F17 − 1); the table ends with 377 and 610.  Every
+<code>.word a</code> takes the value <code>a</code> has at that copy of the block —
+the <code>.set</code>s after it change it for the next copy.  (2) Unrolled: 39
+instructions run and <code>main</code> is 118 bytes (16 × <code>lw</code> +
+<code>add</code> — the <code>add</code> is a 2-byte <code>c.add</code>); the loop: 88
+instructions run (16 trips of 5) in 38 bytes.  Unrolling trades code size for
+the branch and counter work of every trip.  (3) Its default, 0 —
+<code>lw t0, 0(s0)</code>.  Without <code>reg</code> the assembler stops:
+"Missing value for required parameter `reg' of macro `add_word'" —
+<code>reg:req</code> asks for it.  (4) 3192, the sum twice.  A numeric local
+label is a new symbol each time it is defined (GNU calls them
+<code>.L1^B1</code>, <code>.L1^B2</code> …; eMIPS <code>.L1.0</code>,
+<code>.L1.1</code>), and <code>1b</code> means the latest one so far — so each copy's
+<code>bnez</code> goes back to its own copy's <code>1:</code>.  A named label there
+would be defined twice and refused.</p>
+</details>
+<h3 id="lab-87--out-of-order-on-the-p8700">Lab 87 — Out of order on the P8700</h3>
+<p><a href="labs/p8700_ooo.asm"><code>labs/p8700_ooo.asm</code></a> runs 64 trips
+of a loop that loads, adds and multiplies twice, on the P8700's own pipeline
+(<a href="#the-p8700s-own-pipeline">The P8700's own pipeline</a>).  (1) Run it
+(<code>python3 -m emips run docs/guide/labs/p8700_ooo.asm</code>) and with
+<code>--model 5-stage</code>: how many cycles, what CPI?  (2) The two multiplies
+both feed <code>a0</code>.  Set <code>CHAINS</code> to 2 (the second feeds
+<code>a1</code>): how many cycles now, and why?  (3) Back to <code>CHAINS</code> 1,
+set <code>PREDICT</code> to 0 (no branch prediction): how many branches are
+mispredicted (the debugger's <code>run</code>, then <code>core predict</code>), and
+how many cycles does it cost?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) 617 cycles for 459 instructions, CPI 1.34; the 5-stage pipeline needs
+1249 (CPI 2.72).  The P8700 issues the next trips' loads, adds and loop
+counter while a multiply is still running and keeps several load misses in
+flight; the 5-stage waits in EX for every multiply and every miss (the
+prefetchers help both: the buffer is read in order).
+(2) 395 cycles (CPI 0.86).  With one chain each trip's two multiplies wait for
+each other: 2 × 4 cycles a trip, 512 cycles in all — the loop's critical path.
+With two chains each is 4 cycles a trip and they run side by side; what is
+left is the front end and the buffer's first misses — the L1 and L2
+prefetchers fetch the rest of it ahead.  (3) 63 of the 64
+branches (every taken one; the TAGE predictor got 8 wrong while it learned the
+loop, the last trip included), 803 cycles: 186 more — not 63 × 8, because
+while the front end fetches again the multiply chain is still running; out of
+order hides part of the penalty.</p>
+</details>
+<h3 id="lab-88--dma-and-the-caches">Lab 88 — DMA and the caches</h3>
+<p><a href="labs/p8700_dma.asm"><code>labs/p8700_dma.asm</code></a> fills 4 KB with
+1 … 512, has the AXI CDMA copy them and prints the copy's last doubleword
+(<a href="#the-rest-of-the-memory-system">The rest of the memory system</a>).
+(1) Run it, then with <code>--iocu</code>: what does it print each time, and
+why?  (2) With <code>--iocu</code>, the debugger's <code>run</code> then
+<code>cm</code>: how many cache-to-cache transfers did the CM make, and why that
+many?  (3) How many clock cycles does the copy take?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) 0, then 512.  The stores of the fill loop stay in core 0's write-back
+data cache (Modified lines); without an IOCU the CDMA reads memory below the
+caches, which still holds the zeros it had, and copies them — and the hart then
+reads that copy.  With the IOCU every DMA read goes through the Coherence
+Manager, which finds the Modified line in core 0's cache and sends it (and
+every DMA write invalidates the cores' copies of its lines).  Without an IOCU
+the software would have to write the lines back first, or keep DMA buffers
+uncached.  (2) 512: the CDMA moves 8 bytes a clock, and each 8-byte read is a
+request the CM serves cache to cache from core 0's line.  (3) 512 cycles —
+4096 bytes at 8 a clock; the wait loop polls CDMASR 128 times (4
+instructions a trip, one a cycle in instruction mode).</p>
+</details>
+<h3 id="lab-89--a-breakpoint-with-no-debugger">Lab 89 — A breakpoint with no debugger</h3>
+<p><a href="labs/p8700_debug.asm"><code>labs/p8700_debug.asm</code></a> runs on two
+harts: hart 1 sends hart 0 a debug interrupt (<code>DBG_DBRK_REG</code>), and hart
+0's own debug handler at RESET_BASE + 0x480 puts instruction breakpoint 0 on
+<code>f</code>, then counts its hits while <code>main</code> calls <code>f</code> ten
+times (<a href="#hybrid-debug">Hybrid Debug</a>).  (1) Run it: what does it print,
+and why the second number?  (2) Why does the handler clear IBC0 and set
+<code>dcsr.step</code> on a hit instead of just returning?  (3) In the debugger,
+<code>dbu probe</code> first, then <code>step 100</code> and <code>dbu regs 0</code>:
+who handled the DINT this time, where is hart 0, and why will the program never
+finish?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>10 21</code>: ten hits of the breakpoint, and 21 Debug Mode entries — the
+DINT, then for each call the breakpoint and the single step after it
+(<code>dcsr.cause</code> 3, 2 and 4 — the handler's three ways).  The same in
+instruction mode and in both pipelines.  (2) The break is precise: Debug Mode
+starts before <code>f</code>'s first instruction, and <code>dpc</code> is that
+instruction.  Returning with IBC0 still armed would hit it again at once, forever.
+So the handler disarms it, lets exactly one instruction run (<code>dret</code> with
+<code>dcsr.step</code>: Debug Mode again after it, cause 4) and then arms it again.
+(3) The probe's monitor: with ProbTrap the vector is dmseg + 0x200, the DBU's RAM,
+so the program's handler never runs.  <code>dbu regs 0</code> says <em>in the monitor
+(entered 1 time(s)), pc 0x400014</em> — hart 0 was in <code>wait</code>; the monitor
+saved its registers and waits for the probe's command.  Nobody set the breakpoint
+or <code>go</code>: after <code>dbu resume 0</code> hart 0 spins in <code>wait</code>
+for ever.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

@@ -131,22 +131,24 @@ def find_toolchain(endian: str = "big", arch: str = "mips32") -> Toolchain:
                      "(e.g. gcc-mips-linux-gnu)")
 
 
-def _rv_toolchain(arch: str) -> Toolchain:
-    for prefix in RV_PREFIXES:
+def _rv_toolchain(arch: str, compiler: str = "auto") -> Toolchain:
+    """A RISC-V GCC, else clang; ``compiler`` "gcc" / "clang" insists (LF6:
+    clang 18 auto-vectorizes RVV loops, GCC 13 only has the intrinsics)."""
+    for prefix in RV_PREFIXES if compiler != "clang" else ():
         if arch == "rv64" and prefix.startswith("riscv32"):
             continue
         gcc, ld = shutil.which(f"{prefix}-gcc"), shutil.which(f"{prefix}-ld")
         if gcc and (ld or shutil.which("ld.lld")):
             return Toolchain([gcc], [ld or shutil.which("ld.lld")], "gcc")
-    clang = shutil.which("clang")
+    clang = shutil.which("clang") if compiler != "gcc" else None
     if clang:
         ld = next((shutil.which(f"{p}-ld") for p in RV_PREFIXES if shutil.which(f"{p}-ld")),
                   None) or shutil.which("ld.lld")
         if ld:
             return Toolchain([clang, f"--target=riscv{arch[2:]}-unknown-elf"], [ld], "clang")
-    raise BuildError("no RISC-V C compiler found: install a RISC-V GCC (e.g. "
-                     "gcc-riscv64-unknown-elf with binutils-riscv64-unknown-elf) or clang "
-                     "with ld.lld")
+    raise BuildError(f"no RISC-V {'C compiler' if compiler == 'auto' else compiler} found: "
+                     "install a RISC-V GCC (e.g. gcc-riscv64-unknown-elf with "
+                     "binutils-riscv64-unknown-elf) or clang with ld.lld")
 
 
 #: the order -march names the single-letter extensions in (the ISA manual's
@@ -154,17 +156,31 @@ def _rv_toolchain(arch: str) -> Toolchain:
 _RV_LETTERS = "iemafdqlcbkjtpvh"
 
 
-def rv_march(arch: str, extensions: str) -> tuple[str, str]:
+#: standard extensions GCC 13.2 refuses in -march (C needs none of their
+#: instructions): the MOPs, Zcmp, Zcmt, Zacas, Zabha and A's parts by name
+GCC13_UNKNOWN = frozenset({"zimop", "zcmop", "zcmp", "zcmt", "zacas", "zabha", "zaamo",
+                           "zalrsc",
+                           # LF8's that GCC 13's -march lacks (no C needs them)
+                           "smrnmi", "smcsrind", "sscsrind", "smcdeleg", "ssccfg", "svvptc",
+                           # LF10's (GCC 13 has no -fcf-protection for RISC-V either)
+                           "zicfilp", "zicfiss"})
+
+
+def rv_march(arch: str, extensions: str, gcc: bool = True) -> tuple[str, str]:
     """(-march, -mabi) for a hart with ``extensions``: the canonical ISA
     string, the psABI's integer (ilp32 / lp64) or hardware floating-point
     calling convention (``f`` / ``d`` suffix).  Vendor extensions (the
     P8700's ``xmips*``) are left out: GCC 13 knows none, and C does not
-    need their instructions."""
+    need their instructions; with ``gcc``, :data:`GCC13_UNKNOWN` too."""
     from .riscv import parse_extensions
-    exts = {e for e in parse_extensions(extensions) if not e.startswith("x")} | {"i"}
+    exts = {e for e in parse_extensions(extensions) if not e.startswith("x")
+            and not (gcc and e in GCC13_UNKNOWN)} | {"i"}
     letters = "".join(c for c in _RV_LETTERS if c in exts)
+    # (the multi-letter order: GNU as's z, s, x — GCC 13's parser wants s before z)
+    first = "s" if gcc else "z"
     multi = sorted((e for e in exts if len(e) > 1),
-                   key=lambda e: (e[0] != "z", _RV_LETTERS.find(e[1]) if e[0] == "z" else 0, e))
+                   key=lambda e: (e[0] != first, e[0] == "x",
+                                  _RV_LETTERS.find(e[1]) if e[0] == "z" else 0, e))
     march = f"rv{arch[2:]}{letters}" + "".join("_" + e for e in multi)
     abi = ("ilp32" if arch == "rv32" else "lp64") + ("d" if "d" in exts else
                                                       "f" if "f" in exts else "")
@@ -192,7 +208,8 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
           toolchain: Toolchain | None = None, mips16: bool = False,
           micromips: bool = False, fpu: bool = True, dsp: int = 0,
           arch: str = "mips32", nms: bool = False, msa: bool = False,
-          extensions: str = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb") -> str:
+          extensions: str = "imafdc_zicsr_zifencei_zicntr_zihpm_zba_zbb",
+          compiler: str = "auto") -> str:
     """Compile and link ``sources`` (C or assembly .S) into the ELF
     ``output``; returns the commands run (for the user to see).  Raises
     :class:`BuildError`.  ``mips16``: the C files as MIPS16e (``-mips16``;
@@ -218,12 +235,15 @@ def build(sources: list[str | Path], output: str | Path, *, release: str = "R2",
     ``arch="nanomips"``: a p32 nanoMIPS executable (``nms``: for a core with
     the nanoMIPS subset only; ``dsp``: the DSP ASE, ``-mdsp``); no compressed
     ISAs.  ``arch="rv32"`` / ``"rv64"``: a RISC-V executable for a hart
-    with ``extensions`` (-march / -mabi from them: :func:`rv_march`)."""
+    with ``extensions`` (-march / -mabi from them: :func:`rv_march`);
+    ``compiler`` "gcc" / "clang" chooses (default: a RISC-V GCC, else clang)."""
     if arch in ("rv32", "rv64"):
         if mips16 or micromips or dsp or msa or nms:
             raise BuildError("MIPS16e / microMIPS / the DSP Module / MSA / NMS are MIPS "
                              "options: a RISC-V program takes the hart's extensions")
-        return _build_rv(sources, output, arch, extensions, optimize, extra, toolchain)
+        return _build_rv(sources, output, arch, extensions, optimize, extra,
+                         toolchain or (_rv_toolchain(arch, compiler) if compiler != "auto"
+                                       else None))
     if arch == "nanomips":
         return _build_nano(sources, output, endian, optimize, extra, toolchain, nms,
                            mips16 or micromips, dsp)

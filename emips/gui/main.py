@@ -39,6 +39,7 @@ from .systempane import SystemView
 from .mtpane import MTView
 from .checkpane import CheckView
 from .datapath import DatapathView
+from .core8700 import Core8700View
 from .datapath24k import Datapath24KView
 from .examples import EXAMPLES, Example
 from .i18n import tr
@@ -180,6 +181,13 @@ def _has_checks(p: Path) -> bool:
         return False
 
 
+def _mode_index(s, mode: str | None = None) -> int:
+    """The mode box's item: instruction, 5-stage, 24K, P8700."""
+    if (mode or s.mode) != "pipeline":
+        return 0
+    return {"24k": 2, "p8700": 3}.get(s.options.model, 1)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, path: str | None = None,
                  settings: QtCore.QSettings | None = None) -> None:
@@ -249,6 +257,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.datapath_pane = QtWidgets.QStackedWidget()
         self.datapath_pane.addWidget(self.datapath)
         self.datapath_pane.addWidget(self.datapath24k)
+        self.core8700 = Core8700View()
+        self.datapath_pane.addWidget(self.core8700)
         self.counters = CounterView()
         self.trace = TraceView()
         self.board = BoardView()
@@ -270,6 +280,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.details = InstrPanel()
         self.registers = RegisterView()
         self.registers.dint_requested.connect(self.debug_interrupt)
+        self.registers.rnmi_requested.connect(self.request_rnmi)
         self.registers.probe_changed.connect(self.set_probe)
         self.console = ConsoleView()
         self.console.submit_line.connect(self.give_input)
@@ -493,7 +504,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode_group = QtGui.QActionGroup(self)
         for i, (key, text) in enumerate((("mode_instruction", tr("&Instruction")),
                                          ("mode_pipeline", tr("5-stage &pipeline")),
-                                         ("mode_24k", tr("MIPS &24K pipeline")))):
+                                         ("mode_24k", tr("MIPS &24K pipeline")),
+                                         ("mode_p8700", tr("MIPS P&8700 pipeline")))):
             a = A(key, text, checkable=True)
             a.triggered.connect(lambda _=False, i=i: self.mode.setCurrentIndex(i))
             self.mode_group.addAction(a)
@@ -657,7 +669,8 @@ class MainWindow(QtWidgets.QMainWindow):
         tb.addActions([a["step_back"], a["step"], a["step_line"], a["run"], a["pause"]])
         tb.addSeparator()
         self.mode = QtWidgets.QComboBox()
-        self.mode.addItems([tr("Instruction"), tr("5-stage pipeline"), tr("24K pipeline")])
+        self.mode.addItems([tr("Instruction"), tr("5-stage pipeline"), tr("24K pipeline"),
+                            tr("P8700 pipeline")])
         self.mode.setToolTip(tr("Instruction: one instruction per step. 5-stage pipeline: "
                                 "one clock cycle per step, the textbook pipeline. 24K "
                                 "pipeline: the MIPS 24K's 8 stages, branch prediction."))
@@ -695,10 +708,13 @@ class MainWindow(QtWidgets.QMainWindow):
             why = forbidden("model", "24k", s.options, s.release)   # (a microMIPS core)
             self.mode.model().item(2).setEnabled(why is None or mode_index == 2)
             self.mode.setItemData(2, why or "", Qt.ItemDataRole.ToolTipRole)
+            why = forbidden("model", "p8700", s.options, s.release)  # (the P8700's own)
+            self.mode.model().item(3).setEnabled(why is None or mode_index == 3)
+            self.mode.setItemData(3, why or "", Qt.ItemDataRole.ToolTipRole)
             self.mode.blockSignals(False)
-            self.fwd.setEnabled(mode_index != 2)    # the 24K always has its bypasses
-            self.fwd.setToolTip(tr("Forwarding paths of the 5-stage pipeline") if mode_index != 2
-                                else tr("The 24K always has its bypasses"))
+            self.fwd.setEnabled(mode_index < 2)     # the 24K / P8700 always bypass
+            self.fwd.setToolTip(tr("Forwarding paths of the 5-stage pipeline") if mode_index < 2
+                                else tr("This pipeline always has its bypasses"))
             from .. import cores
             core = cores.get(s.options.core)
             self.m_core.setCurrentIndex(max(0, self.m_core.findData(s.options.core)))
@@ -894,8 +910,7 @@ class MainWindow(QtWidgets.QMainWindow):
             {k: v for k in Options().to_strings()
              if (v := self.settings.value(f"options/{k}")) is not None})
         self.mode.blockSignals(True)
-        self.mode.setCurrentIndex(0 if s.mode != "pipeline" else
-                                  (2 if s.options.model == "24k" else 1))
+        self.mode.setCurrentIndex(_mode_index(s))
         self.mode.blockSignals(False)
         self.fwd.blockSignals(True)
         self.fwd.setChecked(s.forwarding)
@@ -931,8 +946,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_actions(self) -> None:
         s, a = self.session, self.actions
-        mode_index = 0 if s.mode != "pipeline" else (2 if s.options.model == "24k" else 1)
-        a[("mode_instruction", "mode_pipeline", "mode_24k")[mode_index]].setChecked(True)
+        mode_index = _mode_index(s)
+        a[("mode_instruction", "mode_pipeline", "mode_24k", "mode_p8700")[mode_index]] \
+            .setChecked(True)
         self._sync_machine_bar(mode_index)
         a["forwarding"].blockSignals(True)
         a["forwarding"].setChecked(s.forwarding)
@@ -1222,7 +1238,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if (s.mode == "pipeline") != (prof.mode == "pipeline"):
             self.mode.blockSignals(True)
             self.mode.setCurrentIndex(0 if prof.mode != "pipeline" else
-                                      (2 if s.options.model == "24k" else 1))
+                                      _mode_index(s, "pipeline"))
             self.mode.blockSignals(False)
             s.set_mode(prof.mode, forwarding=s.forwarding)
             self._put("mode", s.mode)
@@ -1648,6 +1664,8 @@ class MainWindow(QtWidgets.QMainWindow):
                              "{n} instruction words").format(
                     arch=arch_title(s.options.arch), release=s.options.rv_extensions if s.rv else s.release, endian=s.endian,
                     n=len(code)))
+                for text in s.assembler_messages():     # (LF12: .print, .warning ...)
+                    self._log(text)
             for note in s.disk_notes:           # a disk image that is not there
                 self._log(tr("disk: {note}").format(note=note))
         else:
@@ -1672,8 +1690,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pause()
         s = self.session
         i = self.mode.currentIndex()
-        model = {1: "5-stage", 2: "24k"}.get(i, s.options.model)
-        if model != s.options.model:            # 5-stage <-> 24K: the pipeline model
+        model = {1: "5-stage", 2: "24k", 3: "p8700"}.get(i, s.options.model)
+        if model != s.options.model:            # 5-stage / 24K / P8700: the pipeline model
             s.options = replace(s.options, model=model)
             for k, v in s.options.to_strings().items():
                 self._put(f"options/{k}", v)
@@ -1741,7 +1759,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return s.load_c(self.editor.toPlainText(),
                             self.path.name if self.path else "program.c",
                             optimize=f"-O{s.options.c_optimize}")
-        return s.load_source(self.editor.toPlainText())
+        return s.load_source(self.editor.toPlainText(),
+                             str(self.path) if self.path else None)
 
     # -- checks (PLAN M21 phase 2; emips.check, gui/checkpane.py) ---------------------------
 
@@ -1932,6 +1951,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gdb_label.setText(text)
         self.gdb_label.show()
 
+    def request_rnmi(self) -> None:
+        """The Interrupts tab's RNMI button: the selected hart's RNMI input
+        (Smrnmi, cause 0)."""
+        s = self.session
+        if s.machine is None:
+            return
+        try:
+            s.rnmi(0)
+        except ValueError as exc:
+            self.status.showMessage(str(exc), 4000)
+            return
+        self.status.showMessage(tr("resumable NMI requested: taken before an instruction "
+                                   "once mnstatus.NMIE = 1"), 4000)
+        self.refresh()
+
     def debug_interrupt(self) -> None:
         """Run > Debug Interrupt: the DINT input of the selected core."""
         s = self.session
@@ -2097,8 +2131,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         lines: dict[int, str] = {}
         if s.pipeline is not None:
-            for st, line in s.stage_lines().items():
-                lines.setdefault(line, theme.colors().stage[st][0])
+            for st, line in s.stage_lines().items():   # (the P8700's: textbook colours)
+                lines.setdefault(line, (theme.stage_colours(st)
+                                        or theme.colors().stage["ID"])[0])
         else:
             cur = s.current_line()
             if cur:
@@ -2112,6 +2147,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if s.pipeline is not None and s.pipeline.name in ("24K", "34K"):
             self.datapath_pane.setCurrentWidget(self.datapath24k)
             self.datapath24k.refresh(s)
+        elif s.pipeline is not None and s.pipeline.name == "p8700":
+            self.datapath_pane.setCurrentWidget(self.core8700)
+            self.core8700.refresh(s)
         else:
             self.datapath_pane.setCurrentWidget(self.datapath)
             self.datapath.refresh(s)

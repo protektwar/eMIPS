@@ -27,7 +27,7 @@ Edition* (ch. 4) — IF, ID, EX, MEM, WB — with the choices of its section
   instructions fetched after them are fetched again (what they change —
   privilege, translation, PMP, triggers, the counters — applies to every
   later fetch; fence.i's ordering of stores before fetches, unpriv.
-  ch. 6);
+  ch. 5);
 * the clock: the hart's ``cycle`` / ``time`` follow the real cycles.
 
 Results are **identical** to :class:`emips.simrv.RVMachine` (the
@@ -59,27 +59,45 @@ from typing import Any, Callable
 from .exceptions import FetchError, WatchpointHit
 from .pipeline import LATENCY, CycleTrace, History, Info, Slot, StageView, _pop_run
 from .riscv import GPR_NAMES, FPR_NAMES
-from .tracerv import fp_operands
+from .rvfpu import FMTS, operand_formats
+from .rvvector import is_vector, resources
 
 STAGES = ("IF", "ID", "EX", "MEM", "WB")
 
 #: loads (their value exists at the end of MEM): the integer / F loads, LR,
 #: SC (its result comes from the memory system) and the AMOs
-_LOADS = {"lb", "lh", "lw", "ld", "lbu", "lhu", "lwu", "flw", "fld"}
-_STORES = {"sb", "sh", "sw", "sd", "fsw", "fsd", "mips.sdp", "mips.swp"}
+_LOADS = {"lb", "lh", "lw", "ld", "lbu", "lhu", "lwu", "flw", "fld", "flh", "flq",
+          # the hypervisor's (priv. 21.3.1)
+          "hlv.b", "hlv.bu", "hlv.h", "hlv.hu", "hlv.w", "hlv.wu", "hlv.d", "hlvx.hu",
+          "hlvx.wu",
+          # Zicfiss (33.2.5 / 33.2.7): the shadow-stack loads / swaps
+          "sspopchk.x1", "sspopchk.x5", "ssamoswap.w", "ssamoswap.d"}
+_STORES = {"sb", "sh", "sw", "sd", "fsw", "fsd", "fsh", "fsq", "mips.sdp", "mips.swp",
+           "cm.push", "hsv.b", "hsv.h", "hsv.w", "hsv.d", "sspush.x1", "sspush.x5",
+           "ssamoswap.w", "ssamoswap.d",
+           # the CMOs (unpriv. ch. 19): writes to the memory system in MEM
+           "cbo.clean", "cbo.flush", "cbo.inval", "cbo.zero"}
 _BRANCHES = {"beq", "bne", "blt", "bge", "bltu", "bgeu"}
 #: what serializes (see the module docstring), besides the CSR writes
 _SERIALIZE = {"ecall": "ecall", "ebreak": "ebreak", "mret": "mret", "sret": "sret",
               "dret": "dret", "wfi": "wfi", "fence.i": "fence.i",
               "sfence.vma": "sfence.vma", "mips.ihb": "mips.ihb",
-              "mips.mtlbwr": "mips.mtlbwr"}
+              "hfence.vvma": "hfence.vvma", "hfence.gvma": "hfence.gvma",
+              "mips.mtlbwr": "mips.mtlbwr", "wrs.nto": "wrs.nto", "wrs.sto": "wrs.sto",
+              # LF8: Smrnmi's return, Svinval's (as SFENCE.VMA / HFENCE.*: priv. 15)
+              "mnret": "mnret", "sinval.vma": "sinval.vma", "hinval.vvma": "hinval.vvma",
+              "hinval.gvma": "hinval.gvma", "sfence.w.inval": "sfence.w.inval",
+              "sfence.inval.ir": "sfence.inval.ir"}
 #: the RARS services' registers (ecall: a7 the service, a0-a3 / fa0 in,
 #: a0 / fa0 out; emips.rvservices)
 _ECALL_READS = frozenset({("r", 17), ("r", 10), ("r", 11), ("r", 12), ("r", 13)})
 _ECALL_WRITES = frozenset({("r", 10)})
-#: rows whose register fields are reserved (unpriv. 2.7 / ch. 6: fence's rd and
+#: rows whose register fields are reserved (unpriv. 2.7 / ch. 5: fence's rd and
 #: rs1, fence.i's): they read and write no register
 _NO_REGISTERS = {"fence", "fence.tso", "pause", "fence.i"}
+#: the MOPs (Zimop 10): rd written, rs1 / rs2 not read ("no syntactic
+#: dependency from x[rs1] or x[rs2] to x[rd]")
+_NO_READS = {"mop.r.N", "mop.rr.N"}
 
 
 @dataclass(frozen=True)
@@ -92,13 +110,15 @@ class RVInfo(Info):
 
 def _latency_of(name: str, latency: dict[str, int]) -> int:
     """The cycles a multiply / divide / F-D operation holds EX."""
-    if name.startswith("mul"):
+    if name.startswith(("mul", "clmul")):        # (Zbc's carry-less products: the multiplier)
         return latency["MUL"]
     if name.startswith(("div", "rem")):
         return latency["DIV"]
-    if not name.startswith("f") or name.startswith(("fence", "flw", "fld", "fsw", "fsd")):
+    if not name.startswith("f") or name.startswith(("fence", "flw", "fld", "fsw", "fsd", "flh",
+                                                    "flq", "fsh", "fsq")):
         return 1
     op, fmt = (name.split(".") + ["s"])[:2]
+    fmt = "d" if fmt == "q" else "s" if fmt == "h" else fmt     # (Q: D's times, H: S's)
     if op in ("fadd", "fsub"):
         return latency["FP_ADD"]
     if op == "fmul":
@@ -109,9 +129,28 @@ def _latency_of(name: str, latency: dict[str, int]) -> int:
         return latency["FP_DIV_D" if fmt == "d" else "FP_DIV_S"]
     if op == "fsqrt":
         return latency["FP_SQRT_D" if fmt == "d" else "FP_SQRT_S"]
-    if op == "fcvt":
+    if op in ("fcvt", "fcvtmod", "fround", "froundnx"):
         return latency["FP_CVT"]
     return latency["FP_CMP"]                    # compares, min / max, sign, moves, class
+
+
+def _zc_registers(i) -> tuple[set, set, int]:
+    """(reads, writes, EX cycles) of a Zcmp / Zcmt instruction: PUSH reads
+    sp and its list, one word a cycle; POP / POPRET[Z] read sp and write the
+    list, sp (and a0); the moves their two pairs; CM.JALT writes ra."""
+    from .riscv import rlist_regs, sreg
+    name, f = i.base.name, i.f
+    if name == "cm.jalt":
+        return set(), ({("r", 1)} if f["index"] >= 32 else set()), 1
+    if name in ("cm.mva01s", "cm.mvsa01"):
+        s = {("r", sreg(f["sreg1"])), ("r", sreg(f["sreg2"]))}
+        a = {("r", 10), ("r", 11)}
+        return (s, a, 1) if name == "cm.mva01s" else (a, s, 1)
+    regs = {("r", r) for r in rlist_regs(f["rlist"])}
+    n = max(1, len(regs))
+    if name == "cm.push":
+        return regs | {("r", 2)}, {("r", 2)}, n
+    return {("r", 2)}, regs | {("r", 2)} | ({("r", 10)} if name == "cm.popretz" else set()), n
 
 
 def _csr_writes(i) -> bool:
@@ -130,29 +169,57 @@ def _csr_writes(i) -> bool:
 _INFO: dict[tuple, RVInfo] = {}
 
 
-def analyze(i, latency: dict[str, int] = LATENCY) -> RVInfo:
+def analyze(i, latency: dict[str, int] = LATENCY, vector=None) -> RVInfo:
     """Registers read / written and the timing class of a decoded RISC-V
     instruction (``i``: an :class:`emips.riscv.RV`; a compressed one's
-    operands are its expansion's)."""
-    key = (i.raw, i.size, i.base.name, id(latency))
+    operands are its expansion's).  ``vector``: the hart's
+    :class:`emips.rvvector.VectorUnit` — a vector instruction's register
+    groups and timing follow its vtype / vl (vset{i}vl{i} serializes, so
+    the instructions behind it are analysed again)."""
+    vec = vector is not None and is_vector(i)
+    key = (i.raw, i.size, i.base.name, i.inx, id(latency)) + \
+        ((vector.vtype, vector.vl, vector.vlen) if vec else ())
     hit = _INFO.get(key)
     if hit is not None:
         return hit
+    if vec:
+        reads, writes, ex_cycles, load = resources(i, vector, latency)
+        serialize = "a vtype change" if i.base.name.startswith("vset") else ""
+        info = _INFO[key] = RVInfo(frozenset(), frozenset(reads), frozenset(writes),
+                                   "MEM" if load else "EX", ex_cycles, 0, "", True, serialize)
+        return info
     name, f = i.base.name, i.f
-    fp = fp_operands(name)
+    fmts = operand_formats(name)
 
-    def res(field: str):
+    def res(field: str) -> list:
         n = f.get(field)
         if n is None:
-            return None
-        if field in fp:
-            return ("f", n)
-        return ("r", n) if n else None
+            return []
+        if field in fmts and not i.inx:
+            return [("f", n)]
+        if not n:
+            return []
+        if field in fmts and FMTS[fmts[field]].bits > i.inx:
+            return [("r", n), ("r", n + 1)]     # (RV32 Zdinx: an even / odd pair, 26.3)
+        return [("r", n)]
 
-    reads = {r for r in (res("rs1"), res("rs2"), res("rs3")) if r is not None}
-    writes = {r for r in (res("rd"), res("rd2")) if r is not None}
+    reads = {r for k in ("rs1", "rs2", "rs3") for r in res(k)}
+    writes = {r for k in ("rd", "rd2") for r in res(k)}
     if name in _NO_REGISTERS:                   # (their rd / rs1 fields are reserved)
         reads, writes = set(), set()
+    elif name in _NO_READS or name.startswith("fli."):   # (FLI's rs1: the constant's number)
+        reads = set()
+    ex_cycles = _latency_of(name, latency)
+    if name.startswith("cm."):                  # Zcmp / Zcmt (28.13 / 28.14): no rd / rs fields
+        reads, writes, ex_cycles = _zc_registers(i)
+    if name.startswith("amocas."):              # Zacas (15.1): rd is compared too; a 2·XLEN
+        pair = name == "amocas.q" or name == "amocas.d" and i.xlen == 32    # operand: a pair
+        for field, into in (("rd", reads), ("rs2", reads), ("rd", writes)):
+            n = f[field]
+            if n:
+                into.add(("r", n))
+                if pair:
+                    into.add(("r", n + 1))
     control, reads_id, serialize = "", frozenset(), ""
     if name in _BRANCHES:
         control, reads_id, reads = "branch", frozenset(reads), set()
@@ -163,16 +230,18 @@ def analyze(i, latency: dict[str, int] = LATENCY) -> RVInfo:
     if name == "ecall":
         reads |= _ECALL_READS
         writes |= _ECALL_WRITES
+    if name == "lpad":                          # (33.1.2: the label in x7[31:12])
+        reads.add(("r", 7))
     if name in _SERIALIZE:
         serialize = _SERIALIZE[name]
     elif name.startswith("csrr") and _csr_writes(i):
         serialize = "a CSR write"
-    load = (name in _LOADS or name.startswith(("lr.", "sc.", "amo"))
+    load = (name in _LOADS or name.startswith(("lr.", "sc.", "amo", "cm.pop"))
             or name in ("mips.ldp", "mips.lwp"))
     if len(_INFO) >= 1 << 14:
         _INFO.clear()
     info = _INFO[key] = RVInfo(frozenset(reads_id), frozenset(reads), frozenset(writes),
-                               "MEM" if load else "EX", _latency_of(name, latency), 0,
+                               "MEM" if load else "EX", ex_cycles, 0,
                                control, True, serialize)
     return info
 
@@ -187,7 +256,7 @@ def control_signals(i, info: RVInfo) -> dict[str, Any]:
     store = name in _STORES
     write = any(r[0] == "r" for r in info.writes) and name != "ecall"   # (an x register)
     imm = any(k.startswith("imm") or k in ("shamt", "zimm") for k in f) \
-        or name in ("lui", "auipc")
+        or name in ("lui", "auipc") or name.startswith(("hlv", "hsv"))  # (offset 0)
     return {"RegDst": "rd" if write else "-",
             "ALUSrc": "imm" if imm else "reg" if "rs2" in f else "-",
             "MemtoReg": load, "RegWrite": write, "MemRead": load,
@@ -196,8 +265,17 @@ def control_signals(i, info: RVInfo) -> dict[str, Any]:
             "ALUOp": name}
 
 
+def _sleep(m) -> str:
+    """The stall's text while a WFI / WRS waits."""
+    if m.wrs_until is not None:
+        return "WRS: waiting on the reservation set"
+    return "WFI: sleeping until an interrupt"
+
+
 def _rname(r) -> str:
     kind, n = r
+    if kind == "v":
+        return f"v{n}"
     return f"x{n} ({GPR_NAMES[n]})" if kind == "r" else f"f{n} ({FPR_NAMES[n]})"
 
 
@@ -294,7 +372,7 @@ class RVPipeline:
                         fetch_error=exc, fetch_cache=m.fetch_accesses)
         self.fetch_pc = (pc + i.size) & m.amask
         return Slot(self._seq, pc, i.raw, None, self._dis.text(i.raw, i.size, pc),
-                    analyze(i, self.latency), fetch_cache=m.fetch_accesses,
+                    analyze(i, self.latency, m.vector), fetch_cache=m.fetch_accesses,
                     insn=i, size=i.size)
 
     def _goto(self, target: int) -> None:
@@ -373,7 +451,7 @@ class RVPipeline:
         interrupt — "flush" —, or WFI still sleeping — "wait"."""
         from .simrv import CAUSE_HALTREQ, INTERRUPT_NAMES
         m = self.m
-        if m.halt_request:
+        if m.halt_request and not m.debug_mode:
             m.halt_request = False
             m.pc = s.pc
             m.enter_debug(CAUSE_HALTREQ)
@@ -383,18 +461,22 @@ class RVPipeline:
             ev.append(f"an L2 error before {s.text}: Cache Error, flush, fetch the handler "
                       f"at 0x{m.pc:08x}")
             return "flush"
-        req = None if m._stepping else m.interrupt_request()
+        req = None if m._stepping or m._step_next else m.interrupt_request()
         if req is not None:
             m.take_interrupt(req, s.pc)
             ev.append(f"interrupt {INTERRUPT_NAMES.get(req[0], req[0])} before {s.text}: "
                       f"flush, fetch the handler at 0x{m.pc:08x}")
             return "flush"
+        if m.trace_stall and not m.trace_encoder.drain():
+            ev.append("the trace encoder stalls the hart (trTeInstStallEna: the sink is "
+                      "full)")
+            return "wait"
         if m.waiting:
-            if m.csrs.mip() & m.csrs.mie:
-                m.waiting = False
-                ev.append("WFI: an interrupt is pending, wake up")
-            else:
+            wrs = m.wrs_until is not None
+            if m.still_waiting():
                 return "wait"
+            ev.append("WRS: the wait ends (an interrupt, the reservation gone or the "
+                      "timeout)" if wrs else "WFI: an interrupt is pending, wake up")
         return None
 
     def _issue(self, s: Slot, stage: str, ev: list[str], trace: CycleTrace) -> bool:
@@ -425,14 +507,18 @@ class RVPipeline:
                 trace.ex_view = view
         s.executed = True
         seq = (s.pc + s.size) & m.amask
-        if len(m.exception_log) != logged or m.debug_mode:
+        halted = m.debug_mode and m.hybrid is None     # (the P8700's Debug Mode runs: LF16)
+        if len(m.exception_log) != logged or halted:
             e = m.exception_log[-1] if m.exception_log else {}
             what = e.get("error") or e.get("name") or "a trap"
-            if m.debug_mode:
+            if halted:
                 ev.append(f"{s.text}: Debug Mode — the pipeline stops")
+            elif e.get("debug") is not None:
+                ev.append(f"{s.text}: {what} — flush, fetch the debug handler at "
+                          f"0x{m.pc:08x}")
             else:
                 ev.append(f"{s.text}: {what} — flush, fetch the handler at 0x{m.pc:08x}")
-            s.executed = e.get("debug") is None and "cause" not in e and not m.debug_mode
+            s.executed = e.get("debug") is None and "cause" not in e and not halted
             return True
         if m.halted:
             ev.append(f"{s.text}: program exit, pipeline drains")
@@ -476,6 +562,11 @@ class RVPipeline:
                            f"{mem.mem_wait + 1} more cycle{'s' if mem.mem_wait else ''})")
             self.stalls["memory"] = self.stalls.get("memory", 0) + 1
             st["WB"] = None
+            hpm = m.csrs.hpm
+            if hpm is not None and hpm.armed:
+                hpm.stall(False, (m.priv, m.v))     # (SBI event 9: the back end)
+                if if_wait:
+                    hpm.stall(True, (m.priv, m.v))
             p = m.p8700
             if p is not None and p.counters.armed and mem.insn is not None \
                     and mem.insn.base.name in _LOADS:
@@ -540,7 +631,7 @@ class RVPipeline:
         ids = st["ID"]
         if not flush and ids is not None:
             if ex_holds:
-                stall = (("wait", "WFI: sleeping until an interrupt") if ex_wait and
+                stall = (("wait", _sleep(m)) if ex_wait and
                          self.watch_hit is None else ("ex-busy", f"EX busy ({ex.text})"))
             else:
                 stall = self._hazard(ids)
@@ -552,10 +643,10 @@ class RVPipeline:
                     ids.executed = False
                     st["ID"] = None                       # (it was not executed)
                 elif b == "wait":
-                    stall = ("wait", "WFI: sleeping until an interrupt")
+                    stall = ("wait", _sleep(m))
                 else:
                     taken = self._issue(ids, "ID", ev, trace)
-                    if not ids.executed or m.debug_mode:
+                    if not ids.executed or (m.debug_mode and m.hybrid is None):
                         flush = True                      # a trap in ID: precise here
                         if not ids.executed:
                             st["ID"] = None
@@ -572,6 +663,12 @@ class RVPipeline:
                 (st["IF"] is not None) + (st["ID"] is not None and not st["ID"].executed) \
                 if flush else 0
             self._count(p.counters, ids, stall, flush or squash, if_wait, dropped)
+        hpm = m.csrs.hpm                                   # (the generic hart's: SBI 8 / 9)
+        if hpm is not None and hpm.armed:
+            if stall:
+                hpm.stall(False, (m.priv, m.v))
+            if if_wait:
+                hpm.stall(True, (m.priv, m.v))
 
         # the pipeline registers
         st["WB"] = st["MEM"]
@@ -582,7 +679,7 @@ class RVPipeline:
             keep_id = st["ID"] is not None and st["ID"].executed
             st["EX"] = st["ID"] if keep_id else (ex if ex_holds else None)
             st["ID"] = st["IF"] = None
-            if m.debug_mode:
+            if m.debug_mode and m.hybrid is None:
                 self.parked = True
             elif m.halted:
                 self.fetching = False

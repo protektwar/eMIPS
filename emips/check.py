@@ -306,14 +306,14 @@ def _subject(t: str, line: int) -> tuple:
         return ("stalls", sm.group(1))
     if low in ("hi", "lo", "pc"):
         return ("special", low)
-    rm = re.fullmatch(r"\$(f[tsa]\d+)(?:\.([sd]))?", t, re.I)   # RISC-V: $fa0, $ft1.d
+    rm = re.fullmatch(r"\$(f[tsa]\d+)(?:\.([hsdq]))?", t, re.I)   # RISC-V: $fa0, $ft1.d
     if rm:
         from .riscv import FPR_NAMES
         name = rm.group(1).lower()
         if name not in FPR_NAMES:
             raise CheckError(line, f"not an FPU register: ${name}")
         return ("fpr", FPR_NAMES.index(name), (rm.group(2) or "").lower())
-    fm = re.fullmatch(r"(\$f\d+)(?:\.([sd]))?", t, re.I)
+    fm = re.fullmatch(r"(\$f\d+)(?:\.([hsdq]))?", t, re.I)
     if fm:
         n = parse_fpr(fm.group(1))
         if n is None or n > 31:
@@ -334,13 +334,25 @@ def _subject(t: str, line: int) -> tuple:
         return ("vec", n, fmt, index, bool(wm.group(4)))
     if low == "msacsr":
         return ("special", "msacsr")
+    vm_ = re.fullmatch(r"\$v(\d+)(?:\.e(8|16|32|64)\s*\[\s*(\d+)\s*\](?:\.(f))?)?", t, re.I)
+    if vm_ and (vm_.group(2) or int(vm_.group(1)) > 1):     # RISC-V V: $v3, $v3.e32[2][.f]
+        n = int(vm_.group(1))                   # ($v0 / $v1 alone: MIPS's GPRs too)
+        if n > 31:
+            raise CheckError(line, f"not a vector register: $v{n}")
+        w = int(vm_.group(2) or 0)
+        if vm_.group(4) and w == 8:
+            raise CheckError(line, f".f needs an e16 / e32 / e64 element: {t}")
+        return ("rvvec", n, w, int(vm_.group(3) or 0), bool(vm_.group(4)))
+    if low in ("vl", "vtype", "vstart", "vxrm", "vxsat", "vlenb"):
+        return ("rvcsr", low)
     if t.startswith("$"):
         return ("reg", _gpr(t, line))
     mm = re.fullmatch(r"(word|half|byte|float|double)\s*\[\s*(.+?)\s*\]", t, re.I)
     if mm:
         return ("mem", mm.group(1).lower(), _location(mm.group(2), line))
     raise CheckError(line, f"unknown subject {t!r} (output, $reg, hi, lo, pc, $fN[.s|.d], "
-                           "$wN[.b|.h|.w|.d[I][.f]], msacsr, word / half / byte / float / double[LOC], cycles, instructions, "
+                           "$wN[.b|.h|.w|.d[I][.f]], msacsr, $vN[.eW[I][.f]], vl, vtype, vstart, "
+                           "word / half / byte / float / double[LOC], cycles, instructions, "
                            "steps, stalls [KIND], exceptions, exit code)")
 
 
@@ -388,8 +400,8 @@ def _location(t: str, line: int) -> tuple:
 
 
 def _number(t: str, subject: tuple, line: int) -> Any:
-    floating = subject[0] == "fpr" and subject[2] or subject[0] == "vec" and subject[4] or \
-        subject[0] == "mem" and subject[1] in ("float", "double")
+    floating = subject[0] == "fpr" and subject[2] or subject[0] in ("vec", "rvvec") \
+        and subject[4] or subject[0] == "mem" and subject[1] in ("float", "double")
     if floating:
         try:
             return float(t)
@@ -606,9 +618,30 @@ def _read(s, subject: tuple) -> tuple[Any, int | None, str]:
             raise _Unavailable("stalls: pipeline mode only (eMIPS: --pipeline)")
         n = sum(p.stalls.values()) if subject[1] is None else p.stalls.get(subject[1], 0)
         return n, None, str(n)
+    if kind == "reg" and m.rv and subject[1].lower() in ("$v0", "$v1"):
+        subject, kind = ("rvvec", int(subject[1][2]), 0, 0, False), "rvvec"
     if kind == "reg":
         v = m.read_reg(_reg(m, subject[1]))
         return v, 32, _hex(v, 32)
+    if kind in ("rvvec", "rvcsr"):              # the RISC-V vector unit (LF6)
+        vu = getattr(m, "vector", None) if m.rv else None
+        if vu is None:
+            raise _Unavailable("this core has no RISC-V vector unit (eMIPS: --arch rv64 "
+                               "--rv-ext with v)")
+        if kind == "rvcsr":
+            v = getattr(vu, subject[1])
+            return v, m.xlen, _hex(v, m.xlen)
+        _, n, w, index, floating = subject
+        v = vu.register(n)
+        if not w:
+            return v, vu.vlen, f"0x{v:0{vu.vlenb * 2}x}"
+        if index >= vu.vlen // w:
+            raise _Unavailable(f"$v{n}.e{w} has elements 0..{vu.vlen // w - 1} (VLEN {vu.vlen})")
+        e = (v >> (index * w)) & ((1 << w) - 1)
+        if floating:
+            f = struct.unpack({16: ">e", 32: ">f", 64: ">d"}[w], e.to_bytes(w // 8, "big"))[0]
+            return f, w, repr(f)
+        return e, w, _hex(e, w)
     if kind == "special" and subject[1] == "msacsr":
         if not m.msa:
             raise _Unavailable("msacsr: this core has no MSA (eMIPS: --msa msa)")
@@ -637,14 +670,13 @@ def _read(s, subject: tuple) -> tuple[Any, int | None, str]:
         if not m.flen:
             raise _Unavailable("this hart has no F / D extension")
         raw = m.fpr[n]
-        if fmt == "d":
-            if m.flen < 64:
-                raise _Unavailable("this hart has no D extension")
-            v = struct.unpack("<d", raw.to_bytes(8, "little"))[0]
-            return v, 64, repr(v)
-        if fmt == "s":
-            v = struct.unpack("<f", (raw & M32).to_bytes(4, "little"))[0]
-            return v, 32, repr(v)
+        if fmt:                                  # .h / .s / .d / .q: the value (21.2: unboxed)
+            from .rvfpu import FMTS, number
+            f = FMTS[fmt]
+            if f.bits > m.flen:
+                raise _Unavailable(f"this hart has no {fmt.upper()} format (FLEN {m.flen})")
+            v = number(raw & ((1 << f.bits) - 1), f)
+            return v, f.bits, repr(v)
         return raw, m.flen, _hex(raw, m.flen)
     if kind == "fpr":
         from .sim import fpr_get
@@ -704,6 +736,11 @@ def _as_format(x: float, bits: int) -> float:
     """``x`` rounded to the single / double format the value is in."""
     if bits == 32:
         return struct.unpack(">f", struct.pack(">f", x))[0]
+    if bits == 16:                               # (RISC-V Zfh: binary16)
+        try:
+            return struct.unpack(">e", struct.pack(">e", x))[0]
+        except OverflowError:
+            return float("inf") if x > 0 else float("-inf")
     return x
 
 

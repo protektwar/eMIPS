@@ -160,6 +160,13 @@ class Program:
     rv_extensions: str = ""
     #: the assembler's warnings: (line, message)
     warnings: list = field(default_factory=list)
+    #: the strings of ``.print`` (GNU as prints them while it assembles)
+    printed: list = field(default_factory=list)
+    #: RISC-V: the TLS block (address, initialized bytes, size) — the boot
+    #: points tp at it (thread 0 runs in the image itself)
+    tls: tuple | None = None
+    #: RISC-V: the ``.attribute`` tags (tag -> value) for .riscv.attributes
+    rv_attributes: dict = field(default_factory=dict)
     #: what the nanoMIPS linker changed (gold's --debug=target lines)
     link_log: list = field(default_factory=list)
     #: nanoMIPS: what its instructions need of the core besides the base
@@ -185,9 +192,14 @@ class Program:
         ``boot`` plays the firmware (decision 11's "machine" boot): sp and
         gp set (RARS's sp; gp = __global_pointer$, where the linker's
         gp-relative accesses assume it, as GNU's crt0 sets it) and
+        tp the TLS block (LF12: the image's .tdata / .tbss are thread 0's;
+        the RISC-V TLS ABI's variant I puts tp at the block's start), and
         mstatus.FS = Initial (the F / D registers usable, as a MIPS boot
-        sets CU1); without it the hart stays in its reset state (priv.
-        3.4: FS Off, sp / gp 0) with the program at the reset vector."""
+        sets CU1) and, with a vector unit, mstatus.VS = Initial (LF6: the
+        vector registers usable, 30.3.2) and, with Smrnmi, mnstatus.NMIE = 1
+        (LF8: interrupts possible, priv. 8.3 leaves it to the boot code);
+        without it the hart stays in its reset state (priv. 3.4: FS / VS
+        Off, sp / gp 0, NMIE 0) with the program at the reset vector."""
         if not getattr(machine, "rv", False) or machine.arch != self.arch:
             raise ValueError(f"a {self.arch} program needs a {self.arch} core")
         for a, b in self.image.items():
@@ -197,9 +209,17 @@ class Program:
             return
         machine.write_reg(2, 0x7FFFEFFC if self.arch == "rv32" else 0x7FFFEFF0)
         machine.write_reg(3, self.symbols.get("__global_pointer$", BOOT_GP))
+        if self.tls is not None:                # (LF12: thread 0's tp = the TLS block)
+            machine.write_reg(4, self.tls[0])
         if machine.flen:
             from .rvcsr import FS_SHIFT
             machine.csrs.mstatus |= 1 << FS_SHIFT          # Initial
+        if machine.vector is not None:
+            from .rvcsr import VS_SHIFT
+            machine.csrs.mstatus |= 1 << VS_SHIFT          # Initial
+        if machine.csrs.smrnmi:
+            from .rvcsr import NMIE
+            machine.csrs.mnstatus |= NMIE
 
     def load(self, machine, *, boot: bool = True) -> None:
         """Copy the image into ``machine`` and point its PC at the entry.
@@ -464,56 +484,6 @@ _NAME = re.compile(r"[A-Za-z_.$][\w.$]*$")
 _ZALC = frozenset({"BLEZALC", "BGEZALC", "BGTZALC", "BLTZALC", "BEQZALC", "BNEZALC"})
 #: a DSP Module accumulator operand
 _AC = re.compile(r"\$ac([0-3])", re.I)
-#: a numeric local label (GNU as: "1:"), and a reference to one ("1f" the
-#: next definition, "1b" the latest)
-_LOCAL = re.compile(r"^\s*(\d+)\s*:")
-_LOCAL_REF = re.compile(r"(?<![\w.$'])(\d+)([fb])(?![\w.$])")
-
-
-def _local_labels(texts: list[str]) -> list[str]:
-    """Give GNU as's numeric local labels names: definition k of label N
-    is ``.LN.k``; ``Nb`` refers to the latest definition at or before the
-    line, ``Nf`` to the next one after it (outside quotes)."""
-    defs: dict[str, list[int]] = {}
-    heads: list[list[tuple[str, int]]] = []
-    for i, t in enumerate(texts):
-        found = []
-        rest = t
-        while True:
-            m = _LOCAL.match(rest) or _LABEL.match(rest)
-            if not m:
-                break
-            if m.re is _LOCAL:
-                found.append((m.group(1), m.end()))
-                defs.setdefault(m.group(1), []).append(i)
-            rest = rest[m.end():]
-        heads.append(found)
-    if not defs:
-        return texts
-    seen: dict[str, int] = {}
-    out = []
-    for i, t in enumerate(texts):
-        for num, _end in heads[i]:
-            k = seen.get(num, 0)
-            seen[num] = k + 1
-            t = re.sub(rf"^(\s*(?:[A-Za-z_.$][\w.$]*\s*:\s*|\.L\d+\.\d+\s*:\s*)*){num}\s*:",
-                       rf"\g<1>.L{num}.{k}:", t, count=1)
-
-        def ref(m: re.Match, i: int = i) -> str:
-            num, way = m.group(1), m.group(2)
-            lines = defs.get(num)
-            if lines is None:
-                return m.group(0)
-            if way == "b":
-                ks = [k for k, line in enumerate(lines) if line <= i]
-                return f".L{num}.{ks[-1]}" if ks else m.group(0)
-            ks = [k for k, line in enumerate(lines) if line > i]
-            return f".L{num}.{ks[0]}" if ks else m.group(0)
-
-        parts = re.split(r"(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])')", t)
-        t = "".join(p if j % 2 else _LOCAL_REF.sub(ref, p) for j, p in enumerate(parts))
-        out.append(t)
-    return out
 
 
 def _strip_comment(line: str) -> str:
@@ -580,7 +550,7 @@ class _Unresolved(Exception):
 
 
 _TOKEN = re.compile(r"\s*(%hi|%lo|0[xX][0-9a-fA-F]+|0[bB][01]+|\d+|'(?:\\.|[^'])'"
-                    r"|<<|>>|[A-Za-z_.$][\w.$]*|[-+*/()&|~])")
+                    r"|<<|>>|==|!=|<>|<=|>=|&&|\|\||[A-Za-z_.$][\w.$]*|[-+*/%()&|^~!<>])")
 
 
 def _eval(expr: str, lookup: Callable[[str], int]) -> int:
@@ -616,6 +586,8 @@ def _eval(expr: str, lookup: Callable[[str], int]) -> int:
             return atom()
         if t == "~":
             return ~atom()
+        if t == "!":
+            return int(not atom())
         if t in ("%hi", "%lo"):
             if take() != "(":
                 raise ValueError(f"{t} needs (...)")
@@ -634,16 +606,27 @@ def _eval(expr: str, lookup: Callable[[str], int]) -> int:
             return int(t)
         return lookup(t)
 
-    prec = {"|": 1, "&": 2, "<<": 3, ">>": 3, "+": 4, "-": 4, "*": 5, "/": 5}
+    # gas's operator ranks (expr.c op_rank): the bitwise operators bind
+    # tighter than + and -; a comparison is -1 when true
+    prec = {"*": 8, "/": 8, "%": 8, "<<": 8, ">>": 8, "|": 7, "^": 7, "&": 7, "!": 7,
+            "+": 5, "-": 5, "==": 4, "!=": 4, "<>": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+            "&&": 3, "||": 2}
 
     def binop(level: int) -> int:
         v = atom()
         while peek() in prec and prec[peek()] > level:
             op = take()
             r = binop(prec[op])
-            v = {"|": v | r, "&": v & r, "<<": v << r, ">>": v >> r,
-                 "+": v + r, "-": v - r, "*": v * r,
-                 "/": int(v / r) if r else 0}[op]
+            if op in ("/", "%") and not r:
+                raise ValueError("division by zero")
+            v = {"|": lambda: v | r, "&": lambda: v & r, "^": lambda: v ^ r,
+                 "!": lambda: v | ~r, "<<": lambda: v << r, ">>": lambda: v >> r,
+                 "+": lambda: v + r, "-": lambda: v - r, "*": lambda: v * r,
+                 "/": lambda: int(v / r), "%": lambda: v - int(v / r) * r,
+                 "==": lambda: -(v == r), "!=": lambda: -(v != r), "<>": lambda: -(v != r),
+                 "<": lambda: -(v < r), "<=": lambda: -(v <= r), ">": lambda: -(v > r),
+                 ">=": lambda: -(v >= r), "&&": lambda: int(bool(v and r)),
+                 "||": lambda: int(bool(v or r))}[op]()
         return v
 
     v = binop(0)
@@ -825,6 +808,31 @@ _DIRECTIVES_IGNORED = {".globl", ".global", ".ent", ".end", ".type", ".size",
                        ".mask", ".fmask", ".abicalls", ".option"}
 
 
+class _Hooks:
+    """What emips.gasread asks the assembler (``.if``, ``.ifdef``, a macro's
+    name, comments)."""
+
+    onechar = True
+    KNOWN = frozenset((".text", ".data", ".ktext", ".kdata", ".set", ".eqv", ".equ", ".align",
+                       ".space", ".word", ".half", ".byte", ".float", ".double", ".dword",
+                       ".8byte", ".ascii", ".asciiz", *_DIRECTIVES_IGNORED))
+
+    def __init__(self, asm: "Assembler") -> None:
+        self.asm = asm
+
+    def absolute(self, text: str) -> int:
+        return self.asm._const(text, self.asm.reader.current.line)
+
+    def defined(self, name: str) -> bool:
+        return name in self.asm.symbols
+
+    def known(self, directive: str) -> bool:
+        return directive in self.KNOWN
+
+    def strip(self, line: str) -> str:
+        return _strip_comment(line)
+
+
 class _Relax(Exception):
     """A MIPS16e statement needs its long form: lay the program out again."""
 
@@ -947,7 +955,9 @@ class Assembler:
 
     # -- public -------------------------------------------------------------
 
-    def assemble(self, source: str) -> Program:
+    def assemble(self, source: str, path: str | None = None,
+                 include_dirs: tuple[str, ...] = ()) -> Program:
+        self._path, self._include_dirs = path, include_dirs
         #: MIPS16e statements (by line) too far for their short form
         self._m16_long: set[int] = set()
         for _ in range(64):                     # MIPS16e relaxation: sizes only grow
@@ -977,6 +987,7 @@ class Assembler:
         stmts = self._pass1(source)
         for st in stmts:
             self._emit(st)
+        self.prog.printed = list(self.reader.printed)
         self.prog.symbols = dict(self.symbols)
         for name in ("main", "__start"):
             if name in self.symbols:
@@ -998,10 +1009,13 @@ class Assembler:
         #: yet: an auto-aligning directive moves them along (GNU as, MARS)
         self._pending: list[str] = []
         prev: _Stmt | None = None                 # previous instruction
-        lines = source.splitlines()
-        texts = _local_labels([_strip_comment(raw) for raw in lines])
-        for n, raw in enumerate(lines, start=1):
-            text = texts[n - 1]
+        from . import gasread
+        self.reader = gasread.Reader(source, _Hooks(self), path=self._path,
+                                     include_dirs=self._include_dirs,
+                                     warn=lambda n, msg: self.prog.warnings.append((n, msg)))
+        for gst in self.reader:
+            n, text = gst.line, gst.text
+            raw = gst.text.strip() if gst.expanded else gst.raw
             while True:
                 m = _LABEL.match(text)
                 if not m:
@@ -1019,6 +1033,8 @@ class Assembler:
             if "\t" in head:
                 head, _, more = head.partition("\t")
                 rest = more + " " + rest
+            if self._consts:                    # (gas: a .set / .equ symbol's value now)
+                rest = self._current_constants(head.lower(), rest)
             mnemonic, ops = head.lower(), _split_operands(rest.strip())
             try:
                 if self.wide and not mnemonic.startswith("."):
@@ -1086,6 +1102,26 @@ class Assembler:
             except (ValueError, KeyError) as exc:
                 raise AsmError(n, str(exc), raw) from None
         return stmts
+
+    def _current_constants(self, mnemonic: str, rest: str) -> str:
+        """The operands with every .set / .equ / .eqv name replaced by the
+        value it has here: gas reads a constant symbol when the statement is
+        assembled (``.set n, n + 1`` in a ``.rept`` gives each copy its own
+        value) — this assembler evaluates operands in its second pass."""
+        define = mnemonic in (".set", ".eqv", ".equ")
+        if define:                              # (NAME, VALUE: only the value)
+            name, sep, value = rest.partition(",")
+            if not sep:
+                return rest
+            return name + sep + self._current_constants("", value)
+        parts = re.split(r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'])')", rest)
+
+        def sub(m: re.Match) -> str:
+            name = m.group(0)
+            return str(self.symbols[name]) if name in self._consts else name
+
+        return "".join(p if k % 2 else re.sub(r"(?<![\w.$])[A-Za-z_.$][\w.$]*", sub, p)
+                       for k, p in enumerate(parts))
 
     def _directive_layout(self, n, raw, d, ops, rest, lc, seg, reorder,
                           at_ok, stmts):
@@ -2233,7 +2269,8 @@ def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,
              bases: dict[str, int] | None = None,
              release: str | None = None, pseudo: bool = True,
              reorder: bool = True, arch: str = "mips32",
-             nano: dict | None = None, rv: dict | None = None) -> Program:
+             nano: dict | None = None, rv: dict | None = None, path: str | None = None,
+             include_dirs: tuple[str, ...] = ()) -> Program:
     """Assemble ``source`` for a MIPS32 ``release`` (default R5; ``arch``
     "mips64": MIPS64; "nanomips": :mod:`emips.nanoasm`, GNU's nanoMIPS
     assembler and linker, Release 6 only); raises :class:`AsmError` on the
@@ -2241,19 +2278,24 @@ def assemble(source: str, *, endian: str = "big", isa: ISA | None = None,
     in ``.set noreorder``; ``nano``: :func:`emips.nanoasm.assemble`'s
     options (the core's ``nms`` / ``crc`` ..., ``linkrelax``, ``link``);
     ``arch`` "rv32" / "rv64": :mod:`emips.rvasm` (GNU as + ld for RISC-V,
-    little-endian), ``rv`` its ``extensions`` / ``relax``."""
+    little-endian), ``rv`` its ``extensions`` / ``relax``.  ``path``: the
+    source's file (``.include`` / ``.incbin`` look in its folder, then in
+    ``include_dirs``: emips.gasread)."""
     if arch in ("rv32", "rv64"):
         from . import rvasm
         rv = rv or {}
         relax = rv.get("relax", True)
         return rvasm.assemble(source, arch=arch,
                               extensions=rv.get("extensions", rvasm.DEFAULT_EXTENSIONS),
-                              relax=relax, link_relax=relax, bases=bases, strict=not pseudo)
+                              relax=relax, link_relax=relax, bases=bases, strict=not pseudo,
+                              path=path, include_dirs=include_dirs)
     if arch == "nanomips":
         if release not in (None, "R6"):
             raise ValueError(f"nanoMIPS is Release 6 based: no {release}")
         from . import nanoasm
         return nanoasm.assemble(source, endian=endian, bases=bases, pseudo=pseudo,
-                                reorder=reorder, **(nano or {}))
+                                reorder=reorder, path=path, include_dirs=include_dirs,
+                                **(nano or {}))
     return Assembler(endian=endian, isa=isa, bases=bases, release=release,
-                     pseudo=pseudo, reorder=reorder, arch=arch).assemble(source)
+                     pseudo=pseudo, reorder=reorder, arch=arch).assemble(
+                         source, path=path, include_dirs=include_dirs)

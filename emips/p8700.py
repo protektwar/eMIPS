@@ -141,12 +141,12 @@ class P8700:
         """The reset values (7.3: "Undefined" ones are 0, mipsintctl the
         standard routing — DEVIATIONS)."""
         self.mipstvec = self.mipstval = self.mipsscratch = 0
-        self.mipsdsprambase = 0
+        self._dspram_base = 0
         #: mipscacheerr / mipserrctl when the hart has no core's (emips.p8700err)
         self._errors = None
         self.mipsintctl = INTCTL_RESET
         self.config5 = self.config6 = self.config7 = 0
-        self.config8 = self.config9 = self.config11 = 0
+        self.config8 = self.config9 = self._config11 = 0
         self.tracker = [[0] * len(TRACKER_BITS) for _ in range(8)]
         self.pmacfg = [0] * 64
         #: the hardware interrupt lines (standard mip bits)
@@ -298,11 +298,45 @@ class P8700:
     def write_config8(self, v: int) -> None:
         self.config8 = v & 0x7FF
 
+    def l1pf(self):
+        """The core's L1 prefetcher (emips.p8700mem; a cluster's core with a
+        data cache), None otherwise."""
+        c = self.m.caches
+        return getattr(c, "l1pf", None) if c is not None else None
+
     def _tracker(self) -> tuple[list[int], int] | None:
         sel = self.config8 & 0xFF
         if sel >= len(TRACKER_BITS):
             return None
-        return self.tracker[self.config8 >> 8 & 7], sel
+        k = self.config8 >> 8 & 7
+        pf = self.l1pf()
+        return (pf.trackers[k].regs if pf is not None else self.tracker[k]), sel
+
+    @property
+    def config11(self) -> int:
+        """mipsconfig11.PFEN (7.3.15): bit k enables tracker k (the core's)."""
+        pf = self.l1pf()
+        return pf.pfen if pf is not None else self._config11
+
+    @config11.setter
+    def config11(self, v: int) -> None:
+        pf = self.l1pf()
+        if pf is not None:
+            pf.pfen = v & 0xFF
+        self._config11 = v & 0xFF
+
+    @property
+    def mipsdsprambase(self) -> int:
+        sp = self.m.spram                       # (per core: its harts share it)
+        return sp.raw if sp is not None else self._dspram_base
+
+    @mipsdsprambase.setter
+    def mipsdsprambase(self, v: int) -> None:
+        """7.3.7: the core's DSPRAM moves to the base (emips.p8700mem)."""
+        self._dspram_base = v & ((1 << 64) - 1)
+        sp = self.m.spram
+        if sp is not None:
+            sp.set_base(self._dspram_base)
 
     def write_config9(self, v: int) -> None:
         self.config9 = v & 0x7FFF
@@ -353,32 +387,32 @@ EVENTS: dict[int, tuple[str, str]] = {
     13: ("store_grad", "retire"), 14: ("no_isu", "cycle"), 15: ("one_isu", "cycle"),
     16: ("two_isu", "cycle"), 17: ("three_isu", "cycle"), 18: ("four_isu", "cycle"),
     19: ("isu_block", "pipeline"), 20: ("dec_stall", "pipeline"), 21: ("dmap_stall", ""),
-    22: ("ibfr_empty", "pipeline"), 23: ("itrkr_num_replay", ""), 24: ("br_grad", "retire"),
+    22: ("ibfr_empty", "pipeline"), 23: ("itrkr_num_replay", "pipeline"), 24: ("br_grad", "retire"),
     25: ("br_miss_grad", "pipeline"), 26: ("jr_ret_grad", "retire"),
     27: ("jr_ret_miss_grad", "pipeline"), 28: ("jr_grad", "retire"),
     29: ("jr_miss_grad", "pipeline"), 30: ("br_t_grad", "retire"),
     31: ("br_nt_grad", "retire"), 32: ("redirect", "pipeline"),
-    33: ("num_exceptions", "trap"), 34: ("exe_redir", ""), 35: ("load_blocked", "pipeline"),
-    36: ("sync_blocked", ""), 37: ("rftch_inbnd_oel", ""), 38: ("rftch_inbnd_misalgn", ""),
+    33: ("num_exceptions", "trap"), 34: ("exe_redir", "pipeline"), 35: ("load_blocked", "pipeline"),
+    36: ("sync_blocked", "pipeline"), 37: ("rftch_inbnd_oel", ""), 38: ("rftch_inbnd_misalgn", "pipeline"),
     64: ("dtlb_lookup", "cache"), 65: ("dtlb_miss_new", "cache"), 66: ("dtlb_miss_merge", ""),
-    67: ("bond_load", ""), 68: ("bond_store", ""), 69: ("total_dcache_lookups", "cache"),
+    67: ("bond_load", "pipeline"), 68: ("bond_store", "pipeline"), 69: ("total_dcache_lookups", "cache"),
     70: ("loads_dcache_lookup", "cache"), 71: ("stores_dcache_lookup", "cache"),
     72: ("total_dcache_misses", "cache"), 73: ("load_dcache_misses", "cache"),
     74: ("store_dcache_misses", "cache"), 75: ("smb_full", ""),
     76: ("DCACHE load Retries", ""),
-    **{77 + k: (f"L1 Prefetch from Prefetch tracker {k}", "") for k in range(8)},
-    85: ("rftch_inbnd_prd", ""), 128: ("all harts stalled", ""),
+    **{77 + k: (f"L1 Prefetch from Prefetch tracker {k}", "prefetch") for k in range(8)},
+    85: ("rftch_inbnd_prd", ""), 128: ("all harts stalled", "pipeline"),
     129: ("utb_access", "cache"), 130: ("utlb MMU wait stalls", ""),
     131: ("utb_miss", "cache"), 132: ("ica_access", "cache"),
     133: ("ica_miss", "cache"), 134: ("ibuff_cred_stall", ""),
-    135: ("PCBuffer credit stalls", ""), 136: ("hart stalls", ""),
+    135: ("PCBuffer credit stalls", ""), 136: ("hart stalls", "pipeline"),
     137: ("redirect_stall", "pipeline"), 138: ("ica_miss_stall", "pipeline"),
-    139: ("uncached_stall", ""), 140: ("prb_full", ""), 141: ("l1btb_rps_hit", ""),
-    142: ("l1btb_prs_mispred", ""), 143: ("rps_hit_l1btb_miss", ""),
+    139: ("uncached_stall", ""), 140: ("prb_full", ""), 141: ("l1btb_rps_hit", "pipeline"),
+    142: ("l1btb_prs_mispred", "pipeline"), 143: ("rps_hit_l1btb_miss", "pipeline"),
     144: ("ica_way_mispred", ""), 145: ("jtlb_miss", "cache"),
-    146: ("no_spec_fetch_maar", ""), 147: ("fetch_kill_cti", ""),
-    148: ("no_ifu_2_idu_inst", ""), 149: ("l1btb_non_rps_hit", ""),
-    150: ("l1btb_non_rps_mispred", ""), 151: ("jal_b_hit_l1btb_miss", ""),
+    146: ("no_spec_fetch_maar", ""), 147: ("fetch_kill_cti", "pipeline"),
+    148: ("no_ifu_2_idu_inst", "pipeline"), 149: ("l1btb_non_rps_hit", "pipeline"),
+    150: ("l1btb_non_rps_mispred", "pipeline"), 151: ("jal_b_hit_l1btb_miss", "pipeline"),
     152: ("l1btb_hit_masked", ""), 160: ("PDTrace backpressure stall", ""),
     161: ("PDTrace backpressure stall cycles", ""), 162: ("PDTrace overflow", ""),
     163: ("PDTrace LSU backpressure stall", ""),
@@ -451,6 +485,11 @@ class Counters:
         self.graduated = 0
         #: the sampled sources' last totals (cache / TLB events)
         self._last: dict[int, int] = {}
+        #: the P8700 pipeline (emips.pipe8700) drives the issue / graduation
+        #: events: an instruction's retire events wait in :attr:`last` for it
+        #: to graduate (:meth:`graduate`)
+        self.pipeline = False
+        self.last: tuple | None = None
 
     def write_event(self, k: int, v: int) -> None:
         ev = v & 0xFF
@@ -490,8 +529,17 @@ class Counters:
     # -- the sources -------------------------------------------------------------
 
     def retired(self, i: "RV", pc: int, nxt: int) -> None:
+        if self.pipeline:                       # (counted when it graduates)
+            self.last = _classes(i, pc, nxt)
+            return
         self.graduated += 1
         for ev in _classes(i, pc, nxt):
+            self.add(ev)
+
+    def graduate(self, events: tuple | None) -> None:
+        """An instruction graduates in the P8700 pipeline: its retire
+        events (taken from :attr:`last` when it executed)."""
+        for ev in events or ():
             self.add(ev)
 
     def trap(self) -> None:
@@ -501,10 +549,14 @@ class Counters:
         """The cycle events (``cycles`` clocks; the graduations happened
         in the last of them) and the sampled ones."""
         g, self.graduated = self.graduated, 0
-        if cycles > 1:
+        if self.pipeline:                       # (the pipeline counts 2-6 / 14-18)
+            cycles = 0
+        elif cycles > 1:
             self.add(6, cycles - 1)
             self.add(14, cycles - 1)
-        if g:
+        if not cycles:
+            pass
+        elif g:
             self.add(1 + min(g, 4), 1)          # one_grad ... four_grad
             self.add(14 + min(g, 4), 1)         # one_isu ... four_isu
         else:
@@ -603,6 +655,8 @@ CSRS: list[CSR] = [
         lambda c, v: c.m.p8700.errors().write_errctl(v)),
     CSR(0x7CB, "mipsintctl", _p, _attr("mipsintctl"), lambda c, v: c.m.p8700.write_intctl(v)),
     CSR(0x7CC, "mipsdsprambase", _p, _attr("mipsdsprambase"), _store("mipsdsprambase")),
+    CSR(0x7CF, "mipsdebug", _p, lambda c: c.m.hybrid.read(),       # (7.4; LF16: the
+        lambda c, v: c.m.hybrid.write(v)),                          # number is assumed)
     CSR(0x7D1, "mipsconfig1", _p, lambda c: c.m.p8700.config1()),
     CSR(0x7D5, "mipsconfig5", _p, _attr("config5"), lambda c, v: c.m.p8700.write_config5(v)),
     CSR(0x7D6, "mipsconfig6", _p, _attr("config6"),

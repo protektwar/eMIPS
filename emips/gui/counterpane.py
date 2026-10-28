@@ -114,11 +114,19 @@ class CounterView(QtWidgets.QWidget):
                     "N EVENT):").format(cy=c.read(0xB00), ir=c.read(0xB02))
                     + "\n" + "\n".join(m.p8700.counters.lines()))
                 return
+            if c.hpm is not None:               # Zihpm: the SBI PMU events (emips.rvhpm)
+                self.ratio.setText(tr(
+                    "RISC-V: the counters are CSRs (Zicntr / Zihpm, priv. 3.1.10-3.1.11) — "
+                    "cycle {cy:,}, instret {ir:,}, time {tm:,}.  mhpmcounter3-31 count the "
+                    "SBI PMU event written to mhpmevent3-31 (csrw, or the debugger's perf N "
+                    "EVENT; perf events lists them):").format(
+                        cy=c.read(0xB00), ir=c.read(0xB02), tm=m.mtime)
+                    + "\n" + "\n".join(c.hpm.lines()))
+                return
             self.ratio.setText(tr(
-                "RISC-V: the counters are CSRs (Zicntr / Zihpm, priv. 3.1.10-3.1.11) — cycle "
-                "{cy:,}, instret {ir:,}, time {tm:,}; mhpmcounter3-31 count no event on this "
-                "hart (mhpmevent keeps what is written).  The MIPS performance counters "
-                "above belong to MIPS cores.").format(
+                "RISC-V: the counters are CSRs (Zicntr, priv. 3.1.10) — cycle {cy:,}, instret "
+                "{ir:,}, time {tm:,}; this hart has no mhpmcounter3-31 (Zihpm).  The MIPS "
+                "performance counters above belong to MIPS cores.").format(
                     cy=c.read(0xB00), ir=c.read(0xB02), tm=m.mtime))
             return
         self._loading = True

@@ -460,7 +460,7 @@ def control_rv(s, key: str) -> int | None:
     if i is None:
         return None
     from .rvcontrol import word32
-    return word32(i)
+    return word32(i)                            # (None: Zcmp / Zcmt, no 32-bit equivalent)
 
 
 def control_nano(s, key: str):
@@ -1303,7 +1303,8 @@ RV_PARTS: dict[str, tuple[str, str]] = {
 def _rv_fp(name: str) -> bool:
     """An F / D instruction the FPU executes (not its loads / stores)."""
     from .tracerv import fp_operands
-    return bool(fp_operands(name)) and name not in ("flw", "fld", "fsw", "fsd")
+    return bool(fp_operands(name)) and name not in ("flw", "fld", "fsw", "fsd", "flh", "fsh",
+                                                    "flq", "fsq")
 
 
 def _rv_size(s, d) -> int:
@@ -1391,11 +1392,11 @@ def _rv_control(s, d, det, ev, pipeline):
 
 def _rv_regs(s, d, det, ev, pipeline):
     from .riscv import FPR_NAMES, GPR_NAMES as RV_GPRS
-    from .tracerv import fp_operands
+    from .tracerv import f_registers
     out = []
     i = rv_of(s, d)
     if d.get("pc") is not None and i is not None:
-        fp = fp_operands(i.base.name)
+        fp = f_registers(i)
         reads = [f"{k} = {FPR_NAMES[i.f[k]] if k in fp else RV_GPRS[i.f[k]]}"
                  for k in ("rs1", "rs2", "rs3") if k in i.f]
         out.append(f"read ports (ID, {d.get('text')}): "

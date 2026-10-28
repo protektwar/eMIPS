@@ -423,8 +423,8 @@ def _rv_template(name: str) -> list[tuple[int, int, str, str]]:
     from .tracerv import fields
     row = next(r for r in ROWS if r.name == name)
 
-    class _I:                                   # (fields() reads row, raw, size, base)
-        pass
+    class _I:                                   # (fields() reads row, raw, size, base, inx)
+        inx = 0
     i = _I()
     i.row, i.raw, i.size, i.base = row, row.match, row.size, row
     out = []

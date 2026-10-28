@@ -94,6 +94,17 @@ def colors() -> Colors:
     return _current
 
 
+#: the P8700 pipeline's stages and chart cells (emips.pipe8700) in the
+#: textbook stage colours
+STAGE_ALIAS = {"DR": "ID", "IS": "EX", "co": "MEM", "GR": "WB", "rp": "ID"}
+
+
+def stage_colours(st: str) -> tuple[str, str] | None:
+    """(fill, stroke) of stage / chart cell ``st``, or None."""
+    stage = _current.stage
+    return stage.get(st) or stage.get(STAGE_ALIAS.get(st, ""))
+
+
 def set_dark(dark: bool) -> bool:
     """Use the dark (or light) set; True if that changed anything."""
     global _current

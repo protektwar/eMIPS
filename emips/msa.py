@@ -786,7 +786,7 @@ def _fixed_executors() -> dict[str, Callable]:
 # exception with the destination unwritten).
 
 #: binary16 (FEXDO.H, FEXUPL / FEXUPR.W: 3.5.3, Table 3.7)
-H = F.Fmt("H", 5, 10)
+H = F.H
 FMT = {16: H, 32: F.S, 64: F.D}
 #: the Cause / Enable / Flag bits (E V Z O U I = 5..0)
 _BIT = {"E": 0x20, "V": 0x10, "Z": 0x08, "O": 0x04, "U": 0x02, "I": 0x01}

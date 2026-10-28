@@ -48,6 +48,10 @@ from math import isqrt
 # rounding modes (FCSR.RM); RMM = round to nearest, ties away from zero
 # (IEEE 754-2008 roundTiesToAway: RISC-V's rm 4, PLAN M25 — no MIPS FPU has it)
 RN, RZ, RP, RM, RMM = 0, 1, 2, 3, 4
+#: round to odd (truncate, then set the LSB when inexact; overflow gives the
+#: largest finite value): RISC-V's vfncvt.rod.f.f.w (unpriv. 30.13.18),
+#: softfloat's softfloat_round_odd
+ROD = 5
 
 #: FCSR Cause / Enable / Flag bit index of each flag (relative: I = 0).
 FLAG_BITS = {"I": 0, "U": 1, "O": 2, "Z": 3, "V": 4}
@@ -103,6 +107,9 @@ class Fmt:
 
 S = Fmt("S", 8, 23)
 D = Fmt("D", 11, 52)
+#: binary16 and binary128 (MSA's halves; RISC-V's Zfh and Q)
+H = Fmt("H", 5, 10)
+Q = Fmt("Q", 15, 112)
 
 
 # ------------------------------------------------------------ classification
@@ -177,6 +184,8 @@ def _round_int(m: Fraction, neg: bool, rm: int) -> int:
         return q + 1 if rem >= Fraction(1, 2) else q
     if rm == RZ:
         return q
+    if rm == ROD:
+        return q | 1
     if rm == RP:
         return q if neg else q + 1
     return q + 1 if neg else q              # RM

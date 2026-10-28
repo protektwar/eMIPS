@@ -1,0 +1,9 @@
+# Lab 79 — masks: the checks of a solution
+# (python3 -m emips check docs/guide/labs/rv_vabs.asm, or Run → Check)
+eMIPS: --arch rv64 --rv-ext imafdcv_zicsr_zicntr
+check: word[nums] == 5
+check: word[nums+4] == 3
+check: word[nums+12] == 128
+check: word[nums+28] == 2147483647
+check: word[nums+44] == 65
+check: instructions <= 40      (a vector loop: no branch per element)

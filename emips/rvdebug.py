@@ -20,9 +20,9 @@ A trigger that fires raises :class:`Fired` (timing *before*) or leaves it
 in :attr:`Triggers.after` (timing *after*: the hart takes it once the
 instruction has retired).  Action 0 is a breakpoint exception, action 1
 Debug Mode (only with dmode = 1, writable in Debug Mode only); the trace
-actions 2-4 set ``hit`` and nothing else (no trace encoder is attached:
-5.3, "triggers that have an action other than 0 or 1 don't affect the
-execution of the hart").
+actions 2-4 set ``hit`` and pulse the hart's trace ingress port (LF11:
+E-Trace 4.2.5 — trace on / off / notify, :meth:`Triggers._pulse`); they do
+not affect the execution of the hart (5.3).
 
 Where the specification leaves a choice, eMIPS takes Spike's
 (``riscv/triggers.cc``): the trigger checks' order (an address match
@@ -45,13 +45,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .simrv import RVMachine
 
-MCONTROL, ICOUNT, ITRIGGER, ETRIGGER, MCONTROL6, DISABLED = 2, 3, 4, 5, 6, 15
-TYPES = (MCONTROL, ICOUNT, ITRIGGER, ETRIGGER, MCONTROL6, DISABLED)
+MCONTROL, ICOUNT, ITRIGGER, ETRIGGER, MCONTROL6, TMEXTTRIGGER, DISABLED = 2, 3, 4, 5, 6, 7, 15
+TYPES = (MCONTROL, ICOUNT, ITRIGGER, ETRIGGER, MCONTROL6, TMEXTTRIGGER, DISABLED)
+#: TM external trigger inputs (5.7.16: input 0 — LF11's trace encoder output 0)
+TM_EXT_INPUTS = 1
 #: tinfo (5.7.5): the supported types, version 1 (the ratified 1.0)
 TINFO = sum(1 << t for t in TYPES) | 1 << 24
 #: actions (Table 12)
 BREAKPOINT, DEBUG_MODE = 0, 1
 ACTION_MAX = 4                              # (2-4: trace on / off / notify)
+#: 8 / 9: a signal on TM external trigger output 0 / 1 (Table 12)
+ACTIONS = (0, 1, 2, 3, 4, 8, 9)
 #: tcontrol (5.7.6)
 MTE, MPTE = 1 << 3, 1 << 7
 #: match (5.7.12)
@@ -60,6 +64,8 @@ EQUAL, NAPOT, GE, LT, MASK_LOW, MASK_HIGH = 0, 1, 2, 3, 4, 5
 #: dcsr (4.9.1)
 DCSR_DEBUGVER = 4 << 28
 EBREAKM, EBREAKS, EBREAKU = 1 << 15, 1 << 13, 1 << 12
+#: the hypervisor extension's dcsr bits (4.9.1): ebreak in VS / VU, V
+EBREAKVS, EBREAKVU, DCSR_V = 1 << 17, 1 << 16, 1 << 5
 CAUSE_SHIFT = 6
 MPRVEN, STEP = 1 << 4, 1 << 2
 #: dcsr.cause (Table 8)
@@ -70,15 +76,24 @@ class Fired(Exception):
     """A trigger fired: its ``action`` and the tval of a breakpoint
     exception (the matching address; 0 for icount / itrigger / etrigger)."""
 
-    def __init__(self, action: int, tval: int = 0, after: bool = False) -> None:
+    def __init__(self, action: int, tval: int = 0, after: bool = False,
+                 gva: bool = False) -> None:
         super().__init__(action, tval)
         self.action = action
         self.tval = tval
         self.after = after
+        #: tval is a guest virtual address (an access with V = 1: priv. 21.2.1)
+        self.gva = gva
 
 
 def _f(v: int, lo: int, width: int = 1) -> int:
     return v >> lo & ((1 << width) - 1)
+
+
+def _mhselect(sel: int, h: bool) -> int:
+    """textra's mhselect as legalised (5.7.17; Spike): with H 0, 1, 2, 4,
+    5, 6 (3 -> 0, 7 -> 4), without it 0 or 4."""
+    return (0, 1, 2, 0, 4, 5, 6, 4)[sel & 7] if h else (4 if sel & 4 else 0)
 
 
 @dataclass
@@ -92,6 +107,10 @@ class Trigger:
     m: int = 0
     s: int = 0
     u: int = 0
+    #: VS / VU-mode (the hypervisor extension: mcontrol6, icount, itrigger,
+    #: etrigger — 5.7.12-5.7.15)
+    vs: int = 0
+    vu: int = 0
     action: int = 0
     hit: int = 0
     # mcontrol / mcontrol6
@@ -109,6 +128,8 @@ class Trigger:
     pending_read: int = 0
     # itrigger
     nmi: int = 0
+    # tmexttrigger (5.7.16): the TM external trigger inputs it fires on
+    ext_select: int = 0
     # textra32 / textra64 (5.7.17 / 5.7.18)
     mhvalue: int = 0
     mhselect: int = 0
@@ -131,6 +152,9 @@ class Triggers:
         #: a timing-after match of the current instruction (taken when it
         #: retires; no other trigger is looked at until then)
         self.after: Fired | None = None
+        #: TM external trigger inputs signalled since the last instruction
+        #: (5.7.16; the outputs, actions 8 / 9, go to m.tm_ext_output)
+        self.ext_pending = 0
         self._armed()
 
     @property
@@ -145,6 +169,10 @@ class Triggers:
     def has_u(self) -> bool:
         return 0 in self.m.modes
 
+    @property
+    def has_h(self) -> bool:
+        return "h" in self.m.extensions
+
     def _armed(self) -> None:
         """What the hart must look at (Spike's trigger_updated)."""
         ts = self.triggers
@@ -154,6 +182,7 @@ class Triggers:
         self.stores = any(t.store for t in mc)
         self.icounts = [t for t in ts if t.type == ICOUNT]
         self.traps = any(t.type in (ITRIGGER, ETRIGGER) for t in ts)
+        self.exts = [t for t in ts if t.type == TMEXTTRIGGER]
 
     # -- the CSRs (5.7) -----------------------------------------------------------
 
@@ -173,13 +202,15 @@ class Triggers:
         elif t.type == MCONTROL6:
             v |= ((t.hit >> 1) << 25 | (t.hit & 1) << 22 | t.select << 21 | t.action << 12
                   | t.chain << 11 | t.match << 7 | t.m << 6 | t.s << 4 | t.u << 3
-                  | t.execute << 2 | t.store << 1 | t.load)
+                  | t.execute << 2 | t.store << 1 | t.load | t.vs << 24 | t.vu << 23)
         elif t.type == ICOUNT:
             v |= (t.hit << 24 | t.count_read << 10 | t.m << 9 | t.pending_read << 8
-                  | t.s << 7 | t.u << 6 | t.action)
+                  | t.s << 7 | t.u << 6 | t.action | t.vs << 26 | t.vu << 25)
         elif t.type in (ITRIGGER, ETRIGGER):
             v |= (t.hit << (x - 6) | t.m << 9 | t.s << 7 | t.u << 6 | t.action
-                  | (t.nmi << 10 if t.type == ITRIGGER else 0))
+                  | (t.nmi << 10 if t.type == ITRIGGER else 0) | t.vs << 12 | t.vu << 11)
+        elif t.type == TMEXTTRIGGER:
+            v |= t.hit << (x - 6) | t.ext_select << 6 | t.action
         return v
 
     def write1(self, val: int) -> None:
@@ -199,11 +230,11 @@ class Triggers:
         t = Trigger(type=typ if typ in TYPES else DISABLED, dmode=dmode)
         t.mhvalue, t.mhselect, t.sbytemask, t.svalue, t.sselect = (
             old.mhvalue, old.mhselect, old.sbytemask, old.svalue, old.sselect)
-        s, u = self.has_s, self.has_u
+        s, u, h = self.has_s, self.has_u, self.has_h
 
         def action(width: int) -> int:
             a = _f(val, 0 if width == 6 else 12, width)
-            return BREAKPOINT if a > ACTION_MAX or (a == DEBUG_MODE and not dmode) else a
+            return BREAKPOINT if a not in ACTIONS or (a == DEBUG_MODE and not dmode) else a
 
         if t.type in (MCONTROL, MCONTROL6):
             six = t.type == MCONTROL6
@@ -215,6 +246,8 @@ class Triggers:
             t.match = match if match in (EQUAL, GE, LT, MASK_LOW, MASK_HIGH) or \
                 (match == NAPOT and six) else EQUAL
             t.m, t.s, t.u = _f(val, 6), _f(val, 4) if s else 0, _f(val, 3) if u else 0
+            if six and h:
+                t.vs, t.vu = _f(val, 24), _f(val, 23)
             t.execute, t.store, t.load = _f(val, 2), _f(val, 1), _f(val, 0)
             # timing: data-load triggers after, execute before, mcontrol6 before
             if t.select and t.load:
@@ -227,12 +260,20 @@ class Triggers:
             t.hit = _f(val, 24)
             t.count = t.count_read = _f(val, 10, 14)
             t.m, t.s, t.u = _f(val, 9), _f(val, 7) if s else 0, _f(val, 6) if u else 0
+            if h:
+                t.vs, t.vu = _f(val, 26), _f(val, 25)
             t.pending = t.pending_read = _f(val, 8)
+            t.action = action(6)
+        elif t.type == TMEXTTRIGGER:            # (5.7.16: intctl 0 — no CLIC)
+            t.hit = _f(val, x - 6)
+            t.ext_select = _f(val, 6, 16) & ((1 << TM_EXT_INPUTS) - 1)
             t.action = action(6)
         elif t.type in (ITRIGGER, ETRIGGER):
             t.hit = _f(val, x - 6)
             t.nmi = _f(val, 10) if t.type == ITRIGGER else 0
             t.m, t.s, t.u = _f(val, 9), _f(val, 7) if s else 0, _f(val, 6) if u else 0
+            if h:
+                t.vs, t.vu = _f(val, 12), _f(val, 11)
             t.action = action(6)
         ts[i] = t
         self._write2(t, old.tdata2)
@@ -258,7 +299,7 @@ class Triggers:
 
     def read3(self) -> int:
         t = self.triggers[self.tselect]
-        mhselect = 4 if t.mhselect >= 4 else 0  # (without H: only 0 and 4)
+        mhselect = _mhselect(t.mhselect, self.has_h)
         if self.xlen == 32:
             return (t.mhvalue << 26 | mhselect << 23 | t.sbytemask << 18 | t.svalue << 2
                     | t.sselect)
@@ -281,10 +322,14 @@ class Triggers:
 
     # -- matching ---------------------------------------------------------------------
 
-    def _common(self, t: Trigger, prv: int) -> bool:
-        """The mode filter (``prv``: the mode the event happened in), textra,
-        and 5.4's re-entrancy rule for action 0 (the current mode)."""
-        if not (t.m if prv == 3 else t.s if prv == 1 else t.u):
+    def _common(self, t: Trigger, mode: tuple[int, int]) -> bool:
+        """The mode filter (``mode``: the (privilege, V) the event happened
+        in — VS / VU: the vs / vu bits), textra, and 5.4's re-entrancy rule
+        for action 0 (the current mode; VS-mode with medeleg[3] and
+        hedeleg[3]: vsstatus.SIE)."""
+        prv, v = mode
+        if not (t.m if prv == 3 else (t.vs if v else t.s) if prv == 1 else
+                (t.vu if v else t.u)):
             return False
         if not self._textra(t):
             return False
@@ -294,7 +339,10 @@ class Triggers:
             if self.has_s:
                 if m.priv == 3 and not c.status_bit(3):            # MIE
                     return False
-                if m.priv == 1 and c.medeleg >> 3 & 1 and not c.status_bit(1):   # SIE
+                if m.priv == 1 and not m.v and c.medeleg >> 3 & 1 and not c.status_bit(1):
+                    return False                                    # SIE
+                if m.priv == 1 and m.v and c.medeleg >> 3 & 1 and c.hedeleg >> 3 & 1 \
+                        and not c.vsstatus >> 1 & 1:                # vsstatus.SIE
                     return False
             elif m.priv == 3 and not self.tcontrol & MTE:
                 return False
@@ -309,14 +357,22 @@ class Triggers:
                     mask &= ~(0xFF << 8 * k)
             if self.scontext & mask != t.svalue & mask:
                 return False
-        elif t.sselect == 2:                    # satp.ASID (ASIDMAX 9 / 16)
-            satp = self.m.csrs.satp
+        elif t.sselect == 2:                    # satp.ASID (ASIDMAX 9 / 16; V = 1: vsatp's)
+            satp = self.m.csrs.vsatp if self.m.v else self.m.csrs.satp
             asid = satp >> 22 & 0x1FF if x == 32 else satp >> 44 & 0xFFFF
             if asid != t.svalue & ((1 << (9 if x == 32 else 16)) - 1):
                 return False
-        if t.mhselect >= 4:                     # mcontext = mhvalue
-            if self.mcontext & ((1 << (7 if x == 32 else 14)) - 1) != t.mhvalue:
-                return False
+        sel = _mhselect(t.mhselect, self.has_h)
+        if sel:
+            value = t.mhvalue if sel == 4 else t.mhvalue << 1 | sel >> 2
+            if sel in (1, 4, 5):                # mcontext / hcontext (5.7.17)
+                if self.mcontext & ((1 << (7 if x == 32 else 14)) - 1) != value:
+                    return False
+            else:                               # 2, 6: hgatp.VMID (VMIDMAX 7 / 14)
+                h = self.m.csrs.hgatp
+                vmid = h >> 22 & 0x7F if x == 32 else h >> 44 & 0x3FFF
+                if vmid != value & ((1 << (7 if x == 32 else 14)) - 1):
+                    return False
         return True
 
     def _simple(self, t: Trigger, value: int) -> bool:
@@ -342,20 +398,23 @@ class Triggers:
                data: int | None) -> Fired | None:
         if not (t.execute if op == "execute" else t.store if op == "store" else t.load):
             return None
-        if not self._common(t, self.m.priv):
+        m = self.m
+        if not self._common(t, (m.priv, m.v)):
             return None
         hit = (3 if t.timing else 1) if t.type == MCONTROL6 else 1
+        gva = bool(m.v if op == "execute" or not hasattr(m.mmu, "effective")
+                   else m.mmu.effective(m, op)[1])  # (the access's V: Spike)
         if not t.select:
             for k in range(size):
                 if self._simple(t, addr + k):
                     t.hit = hit
-                    return Fired(t.action, addr + k, bool(t.timing))
+                    return Fired(t.action, addr + k, bool(t.timing), gva)
             return None
         if size * 8 > self.xlen or data is None:
             return None
         if self._simple(t, data):
             t.hit = hit
-            return Fired(t.action, addr, bool(t.timing))
+            return Fired(t.action, addr, bool(t.timing), gva)
         return None
 
     def memory(self, op: str, addr: int, size: int, data: int | None = None) -> None:
@@ -375,7 +434,9 @@ class Triggers:
                 chain_ok = True
                 continue
             r = self._match(t, op, addr, size, data)
-            if r is not None and not t.chain and r.action <= DEBUG_MODE and \
+            if r is not None and not t.chain and r.action > DEBUG_MODE:
+                self._pulse(r.action)
+            elif r is not None and not t.chain and \
                     (best is None or best.action < r.action):
                 best = r
             chain_ok = r is not None or not t.chain
@@ -396,26 +457,28 @@ class Triggers:
             t.count_read, t.pending_read = t.count, t.pending
         if self.m.debug_mode or not self.icounts:
             return None
-        prv = self.m.priv
+        prv = (self.m.priv, self.m.v)
         best: Fired | None = None
         for t in self.icounts:
             if t.pending and self._common(t, prv):
                 t.pending = 0
                 t.hit = 1
-                if t.action <= DEBUG_MODE and (best is None or best.action < t.action):
+                if t.action > DEBUG_MODE:
+                    self._pulse(t.action)
+                elif best is None or best.action < t.action:
                     best = Fired(t.action, 0)
         if best is None or best.action != DEBUG_MODE:
             self.count_one(prv)
         return best
 
-    def icount_trap(self, prv: int) -> None:
-        """An interrupt taken from mode ``prv``: it counts (5.7.13 2.)."""
+    def icount_trap(self, prv: int, v: int = 0) -> None:
+        """An interrupt taken from mode ``prv`` (V ``v``): it counts (5.7.13 2.)."""
         for t in self.icounts:
             t.count_read, t.pending_read = t.count, t.pending
         if not self.m.debug_mode:
-            self.count_one(prv)
+            self.count_one((prv, v))
 
-    def count_one(self, prv: int) -> None:
+    def count_one(self, prv: tuple[int, int]) -> None:
         """One instruction (or trap) in mode ``prv`` for the icount
         triggers."""
         for t in self.icounts:
@@ -424,8 +487,8 @@ class Triggers:
                     t.pending = 1
                 t.count -= 1
 
-    def trap(self, cause: int, interrupt: bool, prv: int) -> Fired | None:
-        """After a trap from mode ``prv`` (5.7.14 / 5.7.15): an itrigger /
+    def trap(self, cause: int, interrupt: bool, prv: tuple[int, int]) -> Fired | None:
+        """After a trap from mode ``prv`` = (privilege, V) (5.7.14 / 5.7.15): an itrigger /
         etrigger with the cause's bit in tdata2 fires before the handler's
         first instruction."""
         if self.m.debug_mode or not self.traps:
@@ -435,15 +498,70 @@ class Triggers:
             if t.type == (ITRIGGER if interrupt else ETRIGGER) and self._common(t, prv) \
                     and t.tdata2 >> cause & 1:
                 t.hit = 1
-                if t.action <= DEBUG_MODE and (best is None or best.action < t.action):
+                if t.action > DEBUG_MODE:
+                    self._pulse(t.action)
+                elif best is None or best.action < t.action:
                     best = Fired(t.action, 0)
         return best
+
+    def _pulse(self, action: int) -> None:
+        """A trace action (Table 12: 2 trace on, 3 trace off, 4 trace
+        notify): a pulse to the trace encoder with the instruction retired
+        this cycle (E-Trace 4.2.5, Table 4.9); 8 / 9: a signal on TM
+        external trigger output 0 / 1.  Neither affects the hart (5.3)."""
+        if action >= 8:
+            out = self.m.tm_ext_output
+            if out is not None:
+                out(action - 8)
+            return
+        port = self.m.ingress
+        if port is not None:
+            port.pulses |= 1 << (action - 2)
+
+    def ext_input(self, k: int) -> None:
+        """TM external trigger input ``k`` signals (5.7.16)."""
+        if k < TM_EXT_INPUTS:
+            self.ext_pending |= 1 << k
+
+    def external(self) -> Fired | None:
+        """Before an instruction: a tmexttrigger whose input signalled fires
+        (5.7.16: asynchronously, tval 0); one that may not fire now (5.4's
+        rule for action 0) drops the event."""
+        pending, self.ext_pending = self.ext_pending, 0
+        if self.m.debug_mode:
+            return None
+        best: Fired | None = None
+        for t in self.exts:
+            if not t.ext_select & pending:
+                continue
+            if t.action == BREAKPOINT and not self._breakpoint_ok():
+                continue
+            t.hit = 1
+            if t.action > DEBUG_MODE:
+                self._pulse(t.action)
+            elif best is None or best.action < t.action:
+                best = Fired(t.action, 0)
+        return best
+
+    def _breakpoint_ok(self) -> bool:
+        """5.4's re-entrancy rule for a breakpoint exception (the current mode)."""
+        m = self.m
+        c = m.csrs
+        if self.has_s:
+            if m.priv == 3 and not c.status_bit(3):
+                return False
+            if m.priv == 1 and not m.v and c.medeleg >> 3 & 1 and not c.status_bit(1):
+                return False
+        elif m.priv == 3 and not self.tcontrol & MTE:
+            return False
+        return True
 
     # -- views ------------------------------------------------------------------------
 
     def lines(self) -> list[str]:
         names = {MCONTROL: "mcontrol", ICOUNT: "icount", ITRIGGER: "itrigger",
-                 ETRIGGER: "etrigger", MCONTROL6: "mcontrol6", DISABLED: "disabled"}
+                 ETRIGGER: "etrigger", MCONTROL6: "mcontrol6",
+                 TMEXTTRIGGER: "tmexttrigger", DISABLED: "disabled"}
         out = []
         for k, t in enumerate(self.triggers):
             modes = "".join(c for c, b in (("M", t.m), ("S", t.s), ("U", t.u)) if b)

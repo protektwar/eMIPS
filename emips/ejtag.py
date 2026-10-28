@@ -176,6 +176,10 @@ class EJTAG:
     """A core's EJTAG unit: the memory-mapped debug registers of drseg
     and the dmseg window to the probe (none connected: ProbEn = 0)."""
 
+    #: how many instruction / data breakpoints (the 24K's 4 / 2; the P8700's
+    #: breakpoint controller has 8 / 8: emips.p8700dbg)
+    ib_count, db_count = IB_COUNT, DB_COUNT
+
     def __init__(self, m) -> None:
         self.m = m
         #: a 64-bit core: 64-bit registers, doubleword drseg transactions
@@ -199,17 +203,18 @@ class EJTAG:
         self.pc_count = 0
         self.sample_due = False
         self.ibs_bs = 0
-        self.iba = [0] * IB_COUNT
-        self.ibm = [0] * IB_COUNT
-        self.ibasid = [0] * IB_COUNT
-        self.ibc = [0] * IB_COUNT
+        ni, nd = self.ib_count, self.db_count
+        self.iba = [0] * ni
+        self.ibm = [0] * ni
+        self.ibasid = [0] * ni
+        self.ibc = [0] * ni
         self.dbs_bs = 0
-        self.dba = [0] * DB_COUNT
-        self.dbm = [0] * DB_COUNT
-        self.dbasid = [0] * DB_COUNT
-        self.dbc = [0] * DB_COUNT
-        self.dbv = [0] * DB_COUNT
-        self.dbvh = [0] * DB_COUNT
+        self.dba = [0] * nd
+        self.dbm = [0] * nd
+        self.dbasid = [0] * nd
+        self.dbc = [0] * nd
+        self.dbv = [0] * nd
+        self.dbvh = [0] * nd
 
     @property
     def asid_sup(self) -> bool:
@@ -290,17 +295,17 @@ class EJTAG:
             return self.read_dcr()
         sup = self.asid_sup
         if offset == IBS:
-            return (int(sup) << 30) | (IB_COUNT << 24) | self.ibs_bs
+            return (int(sup) << 30) | (self.ib_count << 24) | self.ibs_bs
         if offset == DBS:
-            return (int(sup) << 30) | (DB_COUNT << 24) | self.dbs_bs
+            return (int(sup) << 30) | (self.db_count << 24) | self.dbs_bs
         n, r = (offset >> 8) & 0xF, offset & 0xFF
-        if offset & 0xF000 == 0x1000 and 1 <= n <= IB_COUNT:
+        if offset & 0xF000 == 0x1000 and 1 <= n <= self.ib_count:
             n -= 1
             regs = {IBA: self.iba, IBM: self.ibm, IBC: self.ibc,
                     IBASID: self.ibasid if sup else None}
             if r in regs:
                 return regs[r][n] if regs[r] is not None else 0
-        if offset & 0xF000 == 0x2000 and 1 <= n <= DB_COUNT:
+        if offset & 0xF000 == 0x2000 and 1 <= n <= self.db_count:
             n -= 1
             regs = {DBA: self.dba, DBM: self.dbm, DBC: self.dbc, DBV: self.dbv,
                     DBVH: self.dbvh, DBASID: self.dbasid if sup else None}
@@ -317,14 +322,14 @@ class EJTAG:
             self.dcr = (self.dcr & ~DCR_WRITE) | (value & DCR_WRITE)
             return
         sup = self.asid_sup
-        asid = (BC_ASIDUSE if sup else 0) | (BC_TC_WRITE if self.m.mt is not None else 0)
+        asid = (BC_ASIDUSE if sup else 0) | (BC_TC_WRITE if self.tc_use else 0)
         if offset == IBS:                     # BS: R/W on the 24K (Table 11.8)
-            self.ibs_bs = value & ((1 << IB_COUNT) - 1)
+            self.ibs_bs = value & ((1 << self.ib_count) - 1)
         elif offset == DBS:                     # BS: R/W0 (Table 11.14)
-            self.dbs_bs &= value | ~((1 << DB_COUNT) - 1)
+            self.dbs_bs &= value | ~((1 << self.db_count) - 1)
         else:
             n, r = (offset >> 8) & 0xF, offset & 0xFF
-            if offset & 0xF000 == 0x1000 and 1 <= n <= IB_COUNT:
+            if offset & 0xF000 == 0x1000 and 1 <= n <= self.ib_count:
                 n -= 1
                 if r == IBA:
                     self.iba[n] = value
@@ -334,7 +339,7 @@ class EJTAG:
                     self.ibasid[n] = value & 0xFF
                 elif r == IBC:
                     self.ibc[n] = value & (IBC_WRITE | asid)
-            elif offset & 0xF000 == 0x2000 and 1 <= n <= DB_COUNT:
+            elif offset & 0xF000 == 0x2000 and 1 <= n <= self.db_count:
                 n -= 1
                 if r == DBA:
                     self.dba[n] = value
@@ -348,6 +353,15 @@ class EJTAG:
                     self.dbv[n] = value
                 elif r == DBVH:
                     self.dbvh[n] = value
+        self.changed()
+
+    @property
+    def tc_use(self) -> bool:
+        """IBCn / DBCn have TCuse and TC (the MT Module: MD00047 5.3)."""
+        return self.m.mt is not None
+
+    def changed(self) -> None:
+        """The breakpoints changed (the core re-arms its checks)."""
         self.m.debug_hw_changed()
 
     # -- matching (MD00047 5.3; MD00343 11.2.5) ------------------------------------
@@ -359,7 +373,7 @@ class EJTAG:
         (BE)).  No MIPS16e: ISAMode is 0, so IBA / IBM bit 0 (ISA / ISAM)
         take part as an ordinary address bit."""
         hits, brk = 0, False
-        for n in range(IB_COUNT):
+        for n in range(self.ib_count):
             c = self.ibc[n]
             if not c & (BC_BE | BC_TE):
                 continue
@@ -381,7 +395,7 @@ class EJTAG:
         value)."""
         full = (1 << width) - 1
         precise, brk, value = 0, False, 0
-        for n in range(DB_COUNT):
+        for n in range(self.db_count):
             c = self.dbc[n]
             if not c & (BC_BE | BC_TE) or c & (DBC_NOSB if store else DBC_NOLB):
                 continue

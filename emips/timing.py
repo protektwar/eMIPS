@@ -126,6 +126,10 @@ class Timing:
         self.nonblocking = False
         #: the system bus (emips.coherence shares one between the cores)
         self.bus = Bus()
+        #: the L2 RAMs' wait states (the P8700's GCR_L2_RAM_CONFIG, MD01502
+        #: 5.14.1.20): extra cycles of a refill the L2 serves (tag + way
+        #: select + data) and of one that misses it (the tag lookup)
+        self.l2_waits = (0, 0)
         self.reset_state()
 
     @property
@@ -280,7 +284,11 @@ class Timing:
             self._fsb()
         beats = _beats(n)
         start = max(self.cursor(), self.after_write)
-        ready = max(start + self.p[level] + (beats - 1) * self.p["BEAT"],
+        lat = self.p[level]
+        if self.l2_waits != (0, 0):
+            lat += self.l2_waits[0] if level == "L2" else \
+                self.l2_waits[1] if self.c.l2 is not None and level in ("L3", "MEM") else 0
+        ready = max(start + lat + (beats - 1) * self.p["BEAT"],
                     self.read_free + beats * self.p["BEAT"])
         self.read_free = ready
         what = (f"{'I' if cache == 'I' else 'D'}-cache miss "
@@ -291,6 +299,12 @@ class Timing:
             self.read_latency += ready - self.now
             self._note_outstanding(ready, level)
         self._deliver(ready, what, pa if cache == "D" else None)
+
+    def background(self, n: int) -> None:
+        """A read of ``n`` bytes nobody waits for (an L2 prefetch): it only
+        holds the bus for its beats."""
+        if self.active:
+            self.read_free = max(self.read_free, self.cursor()) + _beats(n) * self.p["BEAT"]
 
     def _note_outstanding(self, ready: int, level: str) -> None:
         now = self.now

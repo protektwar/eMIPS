@@ -38,4 +38,4 @@ finish: la      t3, done            # core 1: say so, then stop
         sd      t4, 0(t3)
 idle:   wfi
         j       idle
-# eMIPS: --core p8700 --cores 2
+# eMIPS: --core p8700 --cores 2 --model 5-stage

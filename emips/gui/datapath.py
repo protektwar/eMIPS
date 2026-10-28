@@ -642,8 +642,8 @@ class DatapathView(QtWidgets.QGraphicsView):
         r = _rv_of(s, d)
         if r is not None:                       # RISC-V: rs1 / rs2 and the Imm Gen
             from ..riscv import FPR_NAMES, GPR_NAMES as RV_GPRS
-            from ..tracerv import fp_operands
-            fp = fp_operands(r.base.name)
+            from ..tracerv import f_registers
+            fp = f_registers(r)
             reads = [(FPR_NAMES if k in fp else RV_GPRS)[r.f[k]]
                      for k in ("rs1", "rs2", "rs3") if k in r.f]
             self.values["regs"].set("read " + ("  ".join(reads) or "-"))
