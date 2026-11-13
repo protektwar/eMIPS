@@ -1,5 +1,5 @@
 /* Lab 77: the same C for RV32 and RV64 (python3 -m emips cc c_rv.c -O 2
- * --arch rv32 and --arch rv64; prebuilt: c_rv_32.elf, c_rv_64.elf).
+ * --arch rv32 and --arch rv64; -o c_rv_32.elf / -o c_rv_64.elf).
  * fnv64() is the 64-bit FNV-1a hash; main hashes a text 100 times and
  * prints the hash's two halves. */
 #include "emips.h"

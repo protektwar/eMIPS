@@ -1,0 +1,24 @@
+{
+    // eMIPS in a GitHub Codespace (or any dev container): the command line in
+    // the terminal, the window on a desktop in the browser (port 6080), the
+    // MIPS and RISC-V C compilers and gdb-multiarch for the guide's C and GDB
+    // labs.  The setup is .devcontainer/setup.sh.
+    "name": "eMIPS",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "features": {
+        "ghcr.io/devcontainers/features/desktop-lite:1": {
+            "password": "noPassword"
+        }
+    },
+    "forwardPorts": [6080],
+    "portsAttributes": {
+        "6080": {
+            "label": "eMIPS window (desktop)",
+            "onAutoForward": "notify"
+        }
+    },
+    "postCreateCommand": "bash .devcontainer/setup.sh",
+    "hostRequirements": {
+        "cpus": 2
+    }
+}

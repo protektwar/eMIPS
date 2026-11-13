@@ -136,6 +136,36 @@ def dark_palette() -> QtGui.QPalette:
     return p
 
 
+_PE = QtWidgets.QStyle.PrimitiveElement
+
+
+class FramedMenus(QtWidgets.QProxyStyle):
+    """The chosen style (Fusion or the desktop's) with a 1px frame in the
+    theme's ``menu_border`` colour around every popup menu — menu bar
+    menus, submenus, context menus — and every combo-box list, so a menu
+    stands apart from the window behind it.  Only the frame changes: the
+    menu's background and selected-item highlight stay the style's own
+    (a style sheet would reset the editor's font and the highlight)."""
+
+    def drawPrimitive(self, element, option, painter, widget=None) -> None:
+        if element == _PE.PE_FrameMenu or (
+                element == _PE.PE_Frame and widget is not None
+                and widget.metaObject().className() == "QComboBoxPrivateContainer"):
+            painter.save()
+            painter.setPen(QtGui.QColor(theme.colors().menu_border))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(option.rect.adjusted(0, 0, -1, -1))
+            painter.restore()
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        value = super().pixelMetric(metric, option, widget)
+        if metric == QtWidgets.QStyle.PixelMetric.PM_MenuPanelWidth:
+            return max(value, 1)                # room for the frame
+        return value
+
+
 def _alive(obj) -> bool:
     """Is the Qt object behind this Python wrapper still there?"""
     try:
@@ -476,7 +506,7 @@ class MainWindow(QtWidgets.QMainWindow):
           tr("Assemble the source (or reload the HEX image) and reset"))
         A("run", tr("&Run ▶▶"), self.run, "F5", tr("Run until a breakpoint, the end, "
                                                   "an error or an input request"))
-        A("pause", tr("&Pause ❚❚"), self.pause, "F6")
+        A("pause", tr("&Pause ❚❚"), self.pause_run, "F6")
         A("step", tr("&Step ▶"), self.step, "F10", tr("One instruction / one clock cycle"))
         A("step_back", tr("Step &Back ◀"), self.step_back, "Shift+F10", tr("Undo one step"))
         A("step_line", tr("Step &Line"), self.step_line, "F11",
@@ -1433,10 +1463,10 @@ class MainWindow(QtWidgets.QMainWindow):
             app._emips_system_style = app.style().name()
         self.theme_name = name
         if name == "system":
-            app.setStyle(app._emips_system_style)
+            app.setStyle(FramedMenus(QtWidgets.QStyleFactory.create(app._emips_system_style)))
             app.setPalette(QtGui.QPalette())    # nothing pinned: the platform's
         else:
-            app.setStyle("Fusion")
+            app.setStyle(FramedMenus(QtWidgets.QStyleFactory.create("Fusion")))
             app.setPalette(dark_palette() if name == "dark" else app.style().standardPalette())
         self.actions[f"theme_{name}"].setChecked(True)
         if save:
@@ -2029,6 +2059,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "timer"):
             self.timer.stop()
         self.session.budget = None
+
+    def pause_run(self) -> None:
+        """Run > Pause: stop, and show where it stopped — at the high speeds
+        the run loop's refreshes are light ones (no editor line, memory,
+        caches ... and "running…" in the status bar)."""
+        running = hasattr(self, "timer") and self.timer.isActive()
+        self.pause()
+        if running:
+            self.refresh()
 
     def _speed_changed(self, value: int) -> None:
         self.timer.setInterval(SPEEDS[value][1])

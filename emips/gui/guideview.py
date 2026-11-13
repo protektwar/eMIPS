@@ -8,7 +8,7 @@ list as one line, every heading also a named anchor (``scrollToAnchor``),
 each lab answer (``<details>``) folded behind a link, and an *Open in the
 editor* link above every complete program.  Links to other pages, to
 their sections and back / forward work as in a browser; a link to a lab
-program (``labs/*.asm``, ``.c``, ``.elf``) opens it in the editor, a web
+program (``labs/*.asm``, ``.c``) opens it in the editor, a web
 link or anything else opens outside (``QDesktopServices``); *Open in a
 web browser* shows the page there with the guide's own stylesheet."""
 
@@ -55,6 +55,10 @@ def adapt(page_html: str, open_answers: set[int]) -> str:
         return '<p class="nav">' + " &nbsp;·&nbsp; ".join(parts) + "</p><hr>"
     text = _NAV.sub(nav, text)
     text = re.sub(r'<(h[1-6]) id="([^"]+)">', r'<\1 id="\2"><a name="\2"></a>', text)
+    code = iter(range(1 << 30))     # numbered before the answers fold: as programs() does
+    text = _ASM.sub(lambda m: (f'<p class="run"><a href="emips:code/{next(code)}">'
+                               f'{html.escape(tr("Open in the editor"))}</a></p>'
+                               + m.group(0)), text)
     count = iter(range(1 << 30))
 
     def details(m: re.Match) -> str:
@@ -65,10 +69,6 @@ def adapt(page_html: str, open_answers: set[int]) -> str:
                     f'<div class="answer">{m.group(2)}</div>')
         return f'<p class="summary"><a href="emips:answer/{n}">▸ {summary}</a></p>'
     text = _DETAILS.sub(details, text)
-    code = iter(range(1 << 30))
-    text = _ASM.sub(lambda m: (f'<p class="run"><a href="emips:code/{next(code)}">'
-                               f'{html.escape(tr("Open in the editor"))}</a></p>'
-                               + m.group(0)), text)
     return text
 
 

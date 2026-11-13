@@ -1279,7 +1279,10 @@ def exec_file_for(session, path: str | None = None) -> str:
     from pathlib import Path
     from .elfwrite import write_elf
     if session.kind == "elf":
-        return str(Path(session.source or path).resolve())
+        elf = Path(session.source or path)
+        if session.c_file is not None:          # (built from C: source is the .c)
+            elf = elf.with_suffix(".elf")
+        return str(elf.resolve())
     src = Path(path).resolve() if path else Path("program.asm")
     out = Path(tempfile.mkdtemp(prefix="emips-gdb-")) / (src.stem + ".elf")
     out.write_bytes(write_elf(session.program, source=src, arch=session.options.arch))

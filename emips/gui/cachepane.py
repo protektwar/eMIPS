@@ -123,7 +123,10 @@ class CacheView(QtWidgets.QWidget):
                 _set(self.table, r, wv.way, cv.cell_text(c, wv), bg, bold)
                 self.table.item(r, wv.way).setToolTip(cv.cell_tip(c, sidx, wv, big))
         if focus is not None and focus in rows:
-            self.table.scrollToItem(self.table.item(rows.index(focus), acc.way or 0))
+            self.layout().activate()                # (the address line may have grown:
+            self.table.scrollToItem(                #  scroll in the table's new height)
+                self.table.item(rows.index(focus), acc.way or 0),
+                QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
         text = cv.stats_lines(c)
         if c.kind == "D" and s.machine.caches.wbb is not None:
             text += cv.wbb_lines(s.machine.caches.wbb)

@@ -1,5 +1,5 @@
 /* Lab: the same C as MIPS32 and as MIPS16e (python3 -m emips cc c_mips16.c -O 1
- * and cc c_mips16.c -O 1 --mips16; prebuilt: c_mips16_32.elf, c_mips16_16.elf).
+ * and cc c_mips16.c -O 1 --mips16; -o c_mips16_32.elf / -o c_mips16_16.elf).
  * checksum() mixes the bytes of a string; main prints the sum. */
 #include "emips.h"
 

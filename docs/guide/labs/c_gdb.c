@@ -1,5 +1,5 @@
-/* Lab: a bug to find with GDB (python3 -m emips gdb c_gdb.elf, then
- * gdb-multiarch -ex 'target remote :1234').  It should print
+/* Lab: a bug to find with GDB (python3 -m emips cc c_gdb.c -O 0; emips gdb
+ * c_gdb.elf; gdb-multiarch -ex 'target remote :1234').  It should print
  * "9 7 5 = 21": every score is set once and never changed again... */
 #include "emips.h"
 

@@ -15,7 +15,8 @@ from .widgets import _set, mono_font
 T = theme.colors
 
 #: the stage colour a window entry gets by its state
-_STATE_STAGE = {"queued": "ID", "dispatched": "ID", "executing": "EX", "complete": "WB"}
+_STATE_STAGE = {"queued": "ID", "dispatched": "ID", "executing": "EX", "complete": "WB",
+                "fetching": "IF", "buffered": "IF"}
 
 
 class Core8700View(QtWidgets.QWidget):
@@ -45,10 +46,15 @@ class Core8700View(QtWidgets.QWidget):
         p = getattr(s.pipeline, "core", None)
         if p is None:
             return
-        self.title.setText(tr("P8700 core: cycle {c}, {n} graduated — the window "
-                              "(dispatched instructions, oldest first)").format(
-                                  c=p.cycles, n=p.retired))
-        rows = p.rows()
+        title = tr("P8700 core: cycle {c}, {n} graduated — the window (dispatched "
+                   "instructions, oldest first), then the instruction buffer").format(
+                       c=p.cycles, n=p.retired)
+        idle = [h for h in p.harts if not h.rob and not h.done]
+        for h in idle:                          # (why there is nothing to show)
+            why = p.front_state(h) or tr("the front end fetches")
+            title += "\n" + tr("hart {k}: the window is empty — {why}").format(k=h.k, why=why)
+        self.title.setText(title)
+        rows = p.rows(buffer=True)
         self.window.setRowCount(len(rows))
         c = T()
         for r, row in enumerate(rows):

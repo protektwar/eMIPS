@@ -1,6 +1,6 @@
 /* Lab: the same C for MIPS32 (the o32 ABI) and for MIPS64 (n64)
  * (python3 -m emips cc c_long.c -O 1 and cc c_long.c -O 1 --arch mips64;
- * prebuilt: c_long_32.elf, c_long_64.elf).  main prints the sizes of a
+ * -o c_long_32.elf / -o c_long_64.elf).  main prints the sizes of a
  * few types, then how many bytes a million 4 KB pages hold, computed twice. */
 #include "emips.h"
 

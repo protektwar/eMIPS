@@ -109,6 +109,27 @@ choice open, it says which one it made.
 
 ## Running it
 
+### In your browser — GitHub Codespaces
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/protektwar/eMIPS?quickstart=1)
+
+A Codespace is a Linux machine in the cloud that opens in your browser,
+with eMIPS already installed: the command line in its terminal, the window
+on a desktop you open from the **Ports** tab (port **6080**, *eMIPS
+window*), and the MIPS and RISC-V C compilers and `gdb-multiarch` for the
+guide's C and GDB labs.  The first start takes a few minutes; then, in the
+terminal:
+
+```bash
+emips-gui                                            # the window, on the desktop
+python3 -m emips run docs/guide/labs/trace_me.asm    # the command line
+```
+
+You need a GitHub account; Codespaces count against its monthly free
+allowance (stop the Codespace when you are done).
+
+### On your computer
+
 You need **Python 3.10 or newer** (on Windows type `py` where this says
 `python3`).  The simulator needs nothing else; the window needs **PyQt6**
 (or PySide6 — either works).
@@ -118,7 +139,7 @@ git clone https://github.com/protektwar/eMIPS.git
 cd eMIPS
 ```
 
-### Straight from the folder — nothing to install
+#### Straight from the folder — nothing to install
 
 ```bash
 python3 -m emips run docs/guide/labs/trace_me.asm    # the terminal works right away
@@ -138,7 +159,7 @@ python3 -m emips gui
 
 Run the `python3 -m emips ...` commands from inside the `eMIPS` folder.
 
-### In a virtual environment — any system, with pip
+#### In a virtual environment — any system, with pip
 
 Most Linux distributions refuse `pip install` into the system's Python
 (*error: externally-managed-environment*); a virtual environment is the
@@ -155,7 +176,7 @@ Activate it again (`source .venv/bin/activate`) in every new terminal.
 Already have PyQt6 from your system?  `python3 -m venv
 --system-site-packages .venv` lets the environment use it.
 
-### As an application — pipx
+#### As an application — pipx
 
 ```bash
 pipx install ".[gui]"                 # Debian / Ubuntu: sudo apt install pipx
@@ -204,8 +225,9 @@ print(m.read_reg(8))         # 14
 
 ## The user guide
 
-[**docs/guide/index.html**](docs/guide/index.html) — open it in a web
-browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
+Online at [**protektwar.github.io/eMIPS**](https://protektwar.github.io/eMIPS/),
+and in this folder as [**docs/guide/index.html**](docs/guide/index.html) —
+open it in a web browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
 computer architecture behind every number on the screen (with 89 labs
 you check with eMIPS itself), and a reference.

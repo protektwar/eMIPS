@@ -652,7 +652,9 @@ class RegisterView(QtWidgets.QTabWidget):
             "This core has no FPU (Config1.FP = 0): Status.CU1 reads 0, every FPU "
             "instruction is Coprocessor Unusable"))
         self.fpr.setEnabled(fpu)
-        for i, raw in enumerate(s.machine.fpr):
+        fpr = s.machine.fpr
+        fr64 = bool(s.machine.status & (1 << 26))       # Status.FR
+        for i, raw in enumerate(fpr):
             if not fpu:
                 _set(self.fpr, i, 0, f"$f{i}")
                 _set(self.fpr, i, 1, tr("no FPU"))
@@ -660,10 +662,23 @@ class RegisterView(QtWidgets.QTabWidget):
                 continue
             lo = raw & 0xFFFFFFFF
             single = struct.unpack(">f", lo.to_bytes(4, "big"))[0]
-            dbl = struct.unpack(">d", raw.to_bytes(8, "big"))[0]
             _set(self.fpr, i, 0, f"$f{i}")
-            _set(self.fpr, i, 1, f"0x{raw:016x}")
-            _set(self.fpr, i, 2, f"{single:.7g} / {dbl:.15g}")
+            if fr64:
+                dbl = struct.unpack(">d", raw.to_bytes(8, "big"))[0]
+                _set(self.fpr, i, 1, f"0x{raw:016x}")
+                _set(self.fpr, i, 2, f"{single:.7g} / {dbl:.15g}")
+            elif i % 2:
+                # FR = 0: 32-bit FPRs, a double in an even / odd pair (Vol. I 6.3)
+                _set(self.fpr, i, 1, f"0x{lo:08x}")
+                _set(self.fpr, i, 2, tr("{single} / (the high half of $f{even})")
+                     .format(single=f"{single:.7g}", even=i - 1))
+            else:
+                pair = ((fpr[i + 1] & 0xFFFFFFFF) << 32) | lo
+                dbl = struct.unpack(">d", pair.to_bytes(8, "big"))[0]
+                _set(self.fpr, i, 1, f"0x{lo:08x}")
+                _set(self.fpr, i, 2, tr("{single} / {double} ($f{odd}:$f{even})")
+                     .format(single=f"{single:.7g}", double=f"{dbl:.17g}",
+                             odd=i + 1, even=i))
 
 
     def _refresh_rv_fpu(self, s: Session) -> None:
@@ -838,8 +853,11 @@ class MemoryView(QtWidgets.QWidget):
     """Hex dump (4 words per row) from an address or a segment, by
     virtual address (as the program sees it: through the data cache, when
     it holds the line) or physical address (the RAM, after the MMU,
-    bypassing the caches).  MIPS64: 64-bit addresses, and doublewords (2
-    per row, as LD loads them) when *doublewords* is on."""
+    bypassing the caches).  Words are values, as LW loads them in the
+    current byte order; *bytes* shows the 16 bytes of a row in address
+    order instead, with their characters (in little-endian the word
+    0x11223344 is the bytes 44 33 22 11).  MIPS64: 64-bit addresses, and
+    doublewords (2 per row, as LD loads them) when *doublewords* is on."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -860,19 +878,25 @@ class MemoryView(QtWidgets.QWidget):
                                    "instead of words"))
         self.doubles.setChecked(True)
         self.doubles.setVisible(False)
+        self.bytes = QtWidgets.QCheckBox(tr("bytes"))
+        self.bytes.setToolTip(tr("Show the bytes in address order (16 a row) and their "
+                                 "characters, as they are stored, instead of the words "
+                                 "as a load reads them"))
         bar.addWidget(self.segment)
         bar.addWidget(self.address)
         bar.addWidget(self.physical)
         bar.addWidget(self.doubles)
+        bar.addWidget(self.bytes)
         lay.addLayout(bar)
-        self.table = _table([tr("address"), "+0", "+4", "+8", "+c", "ascii"])
+        self.table = _table([tr("address"), "+0", "+4", "+8", "+c"])
         lay.addWidget(self.table)
         self.segment.currentIndexChanged.connect(lambda _: self.address.clear())
         self._session: Session | None = None
         self.address.returnPressed.connect(lambda: self._session and self.refresh(self._session))
         self.physical.toggled.connect(lambda _: self._session and self.refresh(self._session))
         self.doubles.toggled.connect(lambda _: self._session and self.refresh(self._session))
-        self._layout: bool | None = None         # doublewords shown?
+        self.bytes.toggled.connect(lambda _: self._session and self.refresh(self._session))
+        self._layout: str | None = None          # "words", "doubles" or "bytes"
 
     def start(self, s: Session) -> int:
         text = self.address.text().strip()
@@ -896,22 +920,28 @@ class MemoryView(QtWidgets.QWidget):
             return
         rows = s.memory_words(self.start(s), 32 if self.segment.currentIndex() != 3 else 1,
                               physical=self.physical.isChecked())
-        self.doubles.setVisible(s.wide)
-        doubles = s.wide and self.doubles.isChecked()
-        fresh = doubles != self._layout
-        if fresh:                                # the columns: 4 words or 2 doublewords
-            self._layout = doubles
-            heads = ["+0", "+8"] if doubles else ["+0", "+4", "+8", "+c"]
-            self.table.setColumnCount(len(heads) + 2)
-            self.table.setHorizontalHeaderLabels([tr("address")] + heads + ["ascii"])
+        self.doubles.setVisible(s.wide and not self.bytes.isChecked())
+        layout = "bytes" if self.bytes.isChecked() else \
+            "doubles" if s.wide and self.doubles.isChecked() else "words"
+        fresh = layout != self._layout
+        if fresh:                    # the columns: 4 words, 2 doublewords or 16 bytes
+            self._layout = layout
+            heads = [f"+{k:x}" for k in range(16)] + ["ascii"] if layout == "bytes" \
+                else ["+0", "+8"] if layout == "doubles" else ["+0", "+4", "+8", "+c"]
+            self.table.setColumnCount(len(heads) + 1)
+            self.table.setHorizontalHeaderLabels([tr("address")] + heads)
         self.table.setRowCount(len(rows))
         big = s.machine.big_endian
         for r, (addr, words) in enumerate(rows):
             _set(self.table, r, 0, f"0x{addr:016x}" if addr >> 32 else f"0x{addr:08x}")
-            chars = "".join("    " if w is None else
-                            "".join(chr(b) if 32 <= b < 127 else "." for b in w.to_bytes(4, "big"))
-                            for w in words)
-            if doubles:                          # as LD loads them (the byte order)
+            if layout == "bytes":                # (the bytes in address order)
+                data = [None if w is None else b for w in words
+                        for b in (w.to_bytes(4, "big" if big else "little")
+                                  if w is not None else (None,) * 4)]
+                cells = ["--" if b is None else f"{b:02x}" for b in data]
+                cells.append("".join(" " if b is None else chr(b) if 32 <= b < 127 else "."
+                                     for b in data))
+            elif layout == "doubles":            # as LD loads them (the byte order)
                 cells = []
                 for hi, lo in ((words[0], words[1]), (words[2], words[3])):
                     if not big:
@@ -921,8 +951,7 @@ class MemoryView(QtWidgets.QWidget):
                 cells = ["--------" if w is None else f"{w:08x}" for w in words]
             for c, text in enumerate(cells):
                 _set(self.table, r, c + 1, text)
-            _set(self.table, r, len(cells) + 1, chars)
-        if fresh and rows:                       # (16-digit cells: wide enough)
+        if fresh and rows:                       # (wide enough for the cells)
             for c in range(self.table.columnCount() - 1):
                 self.table.resizeColumnToContents(c)
 
@@ -996,13 +1025,20 @@ class DisassemblyView(QtWidgets.QTableWidget):
 
     def refresh(self, s: Session) -> None:
         rows = s.disassembly()
-        if rows != self._cache:                 # new program / register names
-            self._cache = rows
-            self.setRowCount(len(rows))
-            self._rows = [a for a, *_ in rows]
+        firmware = s.firmware_disassembly()     # (the boot firmware's TLB refill
+        if rows + firmware != self._cache:      #  handler, after the program's code)
+            self._cache = rows + firmware
+            self.setRowCount(len(rows) + len(firmware))
+            self._rows = [a for a, *_ in rows] + [a for a, *_ in firmware]
             c_lines = s.c_text.splitlines() if s.c_text is not None else None
             last = None
             prog = s.program
+            fw = getattr(s.machine, "firmware", None)
+            for r, (a, w, text) in enumerate(firmware, len(rows)):
+                _set(self, r, 0, f"0x{a:08x}")
+                _set(self, r, 1, fw.encoding(a, w).rstrip())
+                _set(self, r, 2, text)
+                _set(self, r, 3, tr("boot firmware"))
             for r, (a, w, text, line) in enumerate(rows):
                 _set(self, r, 0, f"0x{a:08x}")
                 _set(self, r, 1, prog.encoding(a, w).rstrip() if prog is not None

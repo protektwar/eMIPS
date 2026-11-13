@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -910,5 +911,20 @@ def main(argv: list[str] | None = None) -> None:
     args.fn(args)
 
 
+def cli() -> None:
+    """The command line (``python3 -m emips``, the ``emips`` script): a reader
+    that stops early (``| head``) ends it quietly, as other command-line
+    tools, not with a BrokenPipeError traceback (the Python documentation's
+    recipe for SIGPIPE: stdout pointed at devnull so the final flush cannot
+    fail again)."""
+    try:
+        main()
+        sys.stdout.flush()
+    except BrokenPipeError:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    cli()

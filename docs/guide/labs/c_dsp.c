@@ -1,5 +1,5 @@
 /* Lab: brighten a 64-pixel image in C (python3 -m emips cc c_dsp.c -O 2, and
- * cc c_dsp.c -O 2 --dspr2; prebuilt: c_dsp_plain.elf, c_dsp.elf).  With the
+ * cc c_dsp.c -O 2 --dspr2; -o c_dsp_plain.elf / -o c_dsp.elf).  With the
  * DSP Module (__mips_dsp: -mdsp / -mdspr2) brighten() uses GCC's builtins on
  * four pixels at a time; without it, a pixel at a time.  main prints the
  * sum of the pixels and the last one. */

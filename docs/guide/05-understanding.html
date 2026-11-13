@@ -4151,13 +4151,19 @@ the three sets of numbers.</p>
 10 18 26 34
 ...
 </code></pre>
-<p>The 24K divides one bit a cycle but skips the dividend's leading zero
-bytes (<em>early-in</em>, Table 2.2): 8, 16, 24 or 32 cycles for a dividend of
-up to 8, 16, 24 or 32 significant bits — the numbers grow by 8.  (A
-signed <code>div</code> with a negative operand takes 2 more: the sign adjustment.)
-The 5-stage model has one fixed divide latency (Settings → Processor →
-Pipeline latencies): <code>37 37 37 37</code>.  Instruction mode counts one cycle
-per instruction: <code>3 3 3 3</code> — it is not a timing model.</p>
+<p>Between the two counter reads run three instructions — <code>divu</code>,
+<code>mflo</code> and the second <code>mfc0</code> — so each number is <strong>3 plus the
+cycles <code>mflo</code> waits</strong> for the quotient.  The 24K divides one bit a
+cycle but skips the dividend's leading zero bytes (<em>early-in</em>): Table 2.2
+of its Software User's Manual (MD00343, "MDU Instruction Delays") gives
+DIVU → MFLO 7, 15, 23 or 31 cycles for a dividend of up to 8, 16, 24 or 32
+significant bits — 3 + 7 = <code>10</code>, then <code>18 26 34</code>; <code>pipe</code> counts
+76 = 7 + 15 + 23 + 31 <code>div</code> stall cycles.  (A signed <code>div</code> with a
+negative operand takes 2 more: the sign adjustment.)  The 5-stage model has
+one fixed divide latency (Settings → Processor → Pipeline latencies, DIV 35):
+<code>mflo</code> waits 34 cycles, <code>37 37 37 37</code>.  Instruction mode counts one
+cycle per instruction and never waits: <code>3 3 3 3</code> — it is not a timing
+model.</p>
 </details>
 <h3 id="lab-17--when-the-caches-disagree">Lab 17 — When the caches disagree</h3>
 <p><code>docs/guide/labs/cores_sum.asm</code> prints 5050 with <code>--cores 4 --caches</code>
@@ -4215,14 +4221,15 @@ run look at the Coherence Manager (<code>debug ... -c "c; cm"</code>).  Then try
 <details>
 <summary>Answer</summary>
 <p>With <code>STRIDE</code> 4 the two counters share a line: every store needs the
-line Exclusive, so it goes back and forth between the caches (about 100
-CM requests and 90 cache-to-cache transfers, against 15 with <code>STRIDE</code>
-32), and core 0's loop takes 495 Count ticks instead of 207.  The
-5-stage pipeline's blocking caches wait for every transfer: 752 against
-227.  The 24K hides part of it — its stores wait in the fill-store
-buffer and its loads take their own bytes from there.  Instruction mode
-has no time (150 both), but the CM traffic is the same.  Keep data that
-different cores write in different lines (<code>.align 5</code>).</p>
+line Exclusive, so it goes back and forth between the caches (95 CM
+requests and 91 cache-to-cache transfers, against 5 requests and 2
+transfers with <code>STRIDE</code> 32), and core 0's loop takes 495 Count ticks
+instead of 207.  The 5-stage pipeline's blocking caches wait for every
+transfer: 752 against 227 (154 requests).  The 24K hides part of it — its
+stores wait in the fill-store buffer and its loads take their own bytes
+from there.  Instruction mode has no time (150 both), but the CM traffic
+is there all the same: 154 requests against 5.  Keep data that different
+cores write in different lines (<code>.align 5</code>).</p>
 </details>
 <h3 id="lab-20--wake-them-all-at-once">Lab 20 — Wake them all at once</h3>
 <p>Change <code>docs/guide/labs/ipi.asm</code> so that core 0 wakes cores 1-3 with <strong>one</strong>
@@ -4264,17 +4271,28 @@ source first.
 <code>0x000000a2 3 3</code>: all three ticks came while the vector-2 handler ran.</p>
 </details>
 <h3 id="lab-22--where-the-arguments-go">Lab 22 — Where the arguments go</h3>
-<p><a href="labs/c_calls.c"><code>labs/c_calls.c</code></a> (prebuilt: <code>c_calls.elf</code>) calls
-<code>mix(1, 2, 3, 4, 5, 6)</code>.  Stop at <code>mix</code> (<code>break mix</code>, <code>c</code>): where are
-the six arguments?  Where will the result be when it returns?</p>
+<p><a href="labs/c_calls.c"><code>labs/c_calls.c</code></a> calls
+<code>mix(1, 2, 3, 4, 5, 6)</code>.  Build it at <code>-O 0</code> (Build in the window, or let
+<code>python3 -m emips debug docs/guide/labs/c_calls.c</code> build it) and stop at <code>mix</code>
+(<code>break mix</code>, <code>c</code>): where are the six arguments?  Where will the result be
+when it returns?</p>
 <details>
 <summary>Answer</summary>
-<p>The o32 calling convention: the first four arguments in <code>$a0</code>-<code>$a3</code>
-(1, 2, 3, 4); the others on the stack, at <code>16($sp)</code> and <code>20($sp)</code> of
-the caller — <code>mem $sp</code> shows 5 and 6 there (the 16 bytes below are the
-<em>home area</em> the caller reserves for <code>$a0</code>-<code>$a3</code>, which a callee may
-spill into).  The result comes back in <code>$v0</code> (91).  <code>mix</code> then moves
-<code>$sp</code> down by 24 for its own frame.</p>
+<p>The o32 calling convention (System V ABI, MIPS supplement, 3-17 to 3-19)
+lays the arguments out as one row of words from the caller's <code>$sp</code>:
+argument <em>n</em> at <code>4(n − 1)($sp)</code>.  The words below offset 16 —
+arguments 1 to 4 — travel in <code>$a0</code>-<code>$a3</code> (1, 2, 3, 4); everything from
+offset 16 on is stored at its place, so <code>main</code> writes 5 at <code>16($sp)</code> and 6
+at <code>20($sp)</code> before <code>jal mix</code> — <code>mem $sp</code> shows them.  The first 16
+bytes are reserved all the same and still empty at the call: the <em>home
+area</em>, where a callee that needs its arguments in memory (a variadic
+function walking them with <code>va_arg</code>, an argument whose address is taken,
+any variable at <code>-O 0</code>) stores <code>$a0</code>-<code>$a3</code>, so that all six sit side by
+side.  The result comes back in <code>$v0</code> (91).  <code>mix</code> (GCC, <code>-O 0</code>) does
+exactly that: it moves <code>$sp</code> down by 8 for its own frame and stores
+<code>$a0</code>-<code>$a3</code> at 8 to 20 bytes above its new <code>$sp</code> — memory then holds
+1, 2, 3, 4, 5, 6 in a row.  (clang's <code>mix</code> takes 24 bytes and keeps them in
+its own frame.)</p>
 </details>
 <h3 id="lab-23--recursion-and-the-stack">Lab 23 — Recursion and the stack</h3>
 <p><a href="labs/c_recursion.c"><code>labs/c_recursion.c</code></a>: <code>fact(6)</code>.  Stop on <code>return
@@ -4283,21 +4301,25 @@ spill into).  The result comes back in <code>$v0</code> (91).  <code>mix</code> 
 <details>
 <summary>Answer</summary>
 <p>Eight: <code>fact</code> six times (n = 6 ... 1), <code>main</code>, <code>__start</code>.  Each <code>fact</code>
-frame is 40 bytes (<code>addiu $sp, $sp, -40</code>: <code>$ra</code>, <code>$fp</code>, the argument,
-a temporary, padding to keep <code>$sp</code> 8-byte aligned): <code>$sp</code> is 6 × 40
-bytes below where <code>main</code> called it.  <code>finish</code> returns to the caller —
+frame is 24 bytes (<code>addiu $sp, $sp, -24</code>: <code>$ra</code>, <code>$fp</code> and the 16-byte
+home area for the call it makes; <code>n</code> itself stays in its caller's home
+area, <code>24($fp)</code>): <code>$sp</code> is 6 × 24 = 144 bytes below where <code>main</code>
+called it.  (clang's frames are 40 bytes: it keeps <code>n</code> and a temporary in
+its own.)  <code>finish</code> returns to the caller —
 the <code>fact</code> that called this one, after its <code>jal</code>, still on line 9 — and
 <code>bt</code> shows one frame less.</p>
 </details>
 <h3 id="lab-24--what-the-optimiser-does">Lab 24 — What the optimiser does</h3>
 <p>The same C (<a href="labs/c_opt.c"><code>labs/c_opt.c</code></a>) built with <code>-O 0</code>
-(<code>c_opt_O0.elf</code>) and <code>-O 2</code> (<code>c_opt_O2.elf</code>).  Run both in the pipeline
+(<code>python3 -m emips cc docs/guide/labs/c_opt.c -O 0 -o c_opt_O0.elf</code>) and
+<code>-O 2</code> (<code>-o c_opt_O2.elf</code>; in the window: Settings → Assembler → C
+optimisation, then Build).  Run both in the pipeline
 (<code>python3 -m emips pipe ...</code>): instructions, cycles, stalls?  Look at
 the second loop in both listings (<code>dis</code>): why the difference?</p>
 <details>
 <summary>Answer</summary>
-<p><code>-O 0</code>: 3191 instructions, 3849 cycles, 454 load-use stalls; <code>-O 2</code>:
-935 instructions, 1134 cycles, no load-use stall.  At <code>-O 0</code> every
+<p><code>-O 0</code>: 2539 instructions, 3253 cycles, 515 load-use stalls; <code>-O 2</code>:
+860 instructions, 1057 cycles, no load-use stall.  At <code>-O 0</code> every
 variable lives in memory: each use of <code>i</code> and <code>sum</code> is a <code>lw</code>, each
 change a <code>sw</code>, and a load is often used by the next instruction (a
 stall).  At <code>-O 2</code> <code>i</code> and <code>sum</code> stay in registers, the loop is three
@@ -4307,20 +4329,26 @@ use.</p>
 </details>
 <h3 id="lab-25--why-volatile">Lab 25 — Why <code>volatile</code></h3>
 <p><a href="labs/c_mmio.c"><code>labs/c_mmio.c</code></a> echoes the MMIO keyboard to the
-display in capitals (<code>run --keys "hi there." c_mmio.elf</code> prints <code>HI
-THERE</code>).  <code>emips.h</code> declares the device registers <code>volatile</code>.  Build it
+display in capitals (<code>run --keys "hi there." docs/guide/labs/c_mmio.c</code>
+builds it at <code>-O 0</code> and prints <code>HI THERE</code>; at <code>-O 2</code> it prints the
+same).  <code>emips.h</code> declares the device registers <code>volatile</code>.  Build it
 again with <code>MMIO_*</code> replaced by plain <code>*(unsigned *)0xFFFF0000</code> ...
-(not <code>volatile</code>) at <code>-O 2</code>: what does it print, and where does it
-hang?</p>
+(not <code>volatile</code>) at <code>-O 2</code> and run it with the same keys: what does it
+print, and why?  Look at <code>main</code> in its listing (<code>dis</code>).</p>
 <details>
 <summary>Answer</summary>
-<p>It prints <code>H</code> and then spins forever on a <code>j</code> to itself.  Without
-<code>volatile</code> the compiler may assume memory changes only when the program
-writes it: it reads the display's ready bit <strong>once</strong>, before the loop
-(<code>lw</code> of 0xFFFF0008), and turns <code>while (!ready)</code> into "if not ready,
-loop forever".  After the first character the display is busy for a
-few cycles — not ready at that one read — so the program never looks
-again.  <code>volatile</code> forces a load for every read in the source.</p>
+<p>Without <code>volatile</code> the compiler may assume memory changes only when the
+program writes it, and that a store nobody reads back can be dropped.
+With GCC it prints just an empty line: of all the stores to the display's
+data register only the last one is left (the <code>'\n'</code>, in the delay slot of
+<code>main</code>'s <code>jr $ra</code>), and each <code>while (!ready)</code> became "read the ready bit
+once; if it is not set, branch to yourself forever" (<code>b</code> to its own
+address in the listing) — here every key and the display were ready at
+their one read, so it ends at once.  clang compiles it differently: it
+prints <code>H</code> and then spins forever on a <code>j</code> to itself — after the first
+character the display is busy for a few cycles, not ready at the one read
+of 0xFFFF0008, so the program never looks again.  <code>volatile</code> forces a load
+for every read and a store for every write in the source.</p>
 </details>
 <h3 id="lab-26--one-step-at-a-time">Lab 26 — One step at a time</h3>
 <p><a href="labs/ejtag_trace.asm"><code>labs/ejtag_trace.asm</code></a> is a debug monitor that
@@ -4536,11 +4564,16 @@ than take one character?  What goes wrong if the program writes
 <code>head</code> too?  And without <code>MCR.OUT2</code>?</p>
 <details>
 <summary>Answer</summary>
-<p>The 16550's FIFO can hold several characters by the time the
-interrupt is serviced (the receiver interrupts at its trigger level or
-after a timeout, and keys keep coming): each read of RBR takes one, and
-the interrupt goes away only when the FIFO is empty — one character per
-interrupt would leave the rest waiting for the next key.  The ring works
+<p>Each read of RBR takes one character, and the receiver's interrupt
+stays requested while its FIFO still holds one (the trigger level is 1).
+IRQ 4 is edge-triggered: an ISR that takes one character and leaves
+another behind never lets the line fall, so the 8259 sees no new rising
+edge and the ISR is never called again — the characters wait for ever (a
+new key only adds to the FIFO).  Here the keys come one character time
+apart and the ISR is fast, so each usually arrives alone and one
+character per interrupt happens to work; make the ISR slow (a delay
+loop before it reads) and it stops after the first.  Reading until LSR.DR
+is 0 empties the FIFO at every interrupt.  The ring works
 because each index has one writer: the ISR moves <code>head</code> (after writing
 the character), the program <code>tail</code>; if both wrote <code>head</code>, an interrupt
 between the program's load and store of it would lose a character (a
@@ -4598,7 +4631,9 @@ them, and the kernel does not touch them.</p>
 <a href="04-command-line.html#412-gdb--debugging-with-gdb">Phase 4, 4.12</a>): run
 <code>python3 -m emips gdb PROGRAM</code> in one terminal and, from the eMIPS
 folder, <code>gdb-multiarch -ex 'target remote :1234'</code> in another.</p>
-<p><a href="labs/c_gdb.c"><code>labs/c_gdb.c</code></a> (prebuilt: <code>c_gdb.elf</code>) sets
+<p><a href="labs/c_gdb.c"><code>labs/c_gdb.c</code></a> (build it at <code>-O 0</code>:
+<code>python3 -m emips cc docs/guide/labs/c_gdb.c -O 0</code>, then
+<code>python3 -m emips gdb docs/guide/labs/c_gdb.elf</code>) sets
 three scores and prints them, but instead of <code>9 7 5 = 21</code> it prints
 <code>9 1744830471 5 = 1744830485</code>, and no line assigns the second score
 after <code>main</code> sets it.  In GDB: <code>break main</code>, <code>continue</code>, then
@@ -4610,7 +4645,7 @@ score, and how?  Why 1744830471?</p>
 
 Old value = 7
 New value = 1744830471
-set_name (p=0x1001000c &lt;players+12&gt;, name=0x400758 "elizabeth") at ././docs/guide/labs/c_gdb.c:18
+set_name (p=0x1001000c &lt;players+12&gt;, name=0x400684 "elizabeth") at docs/guide/labs/c_gdb.c:18
 18              i++;
 (gdb) print i
 $1 = 8
@@ -4720,8 +4755,8 @@ speed does.</p>
 </details>
 <h3 id="lab-42--c-in-16-bits">Lab 42 — C in 16 bits</h3>
 <p><a href="labs/c_mips16.c"><code>labs/c_mips16.c</code></a> built twice, the same <code>-O 1</code>:
-as MIPS32 (<code>c_mips16_32.elf</code>) and with <code>cc --mips16</code>
-(<code>c_mips16_16.elf</code>).  Both print 80955297.  Compare <code>checksum</code> in
+as MIPS32 (<code>python3 -m emips cc docs/guide/labs/c_mips16.c -O 1 -o
+c_mips16_32.elf</code>) and with <code>cc --mips16</code> (<code>-o c_mips16_16.elf</code>).  Both print 80955297.  Compare <code>checksum</code> in
 the two listings (<code>dis</code>): its size, and the instructions of its
 loop.  Run both: who executes more instructions, and where do the extra
 ones come from?  What is <code>emips_syscall1</code> doing in the MIPS16e
@@ -4781,7 +4816,7 @@ old branches.</p>
 </details>
 <h3 id="lab-45--c-in-micromips">Lab 45 — C in microMIPS</h3>
 <p>Lab 42's <a href="labs/c_mips16.c"><code>labs/c_mips16.c</code></a> a third time, with
-<code>cc --micromips</code> (Release 5): <code>c_mips16_mm.elf</code>.  It prints the same
+<code>cc --micromips</code> (Release 5, <code>-o c_mips16_mm.elf</code>).  It prints the same
 80955297.  How many bytes is <code>checksum</code> now, against the MIPS32 and
 MIPS16e builds?  How many instructions does the program execute?  Where
 did <code>emips_syscall1</code> go?</p>
@@ -4927,8 +4962,8 @@ and the microAptiv do not have.</p>
 </details>
 <h3 id="lab-51--dsp-in-c">Lab 51 — DSP in C</h3>
 <p><a href="labs/c_dsp.c"><code>labs/c_dsp.c</code></a> brightens a 64-pixel image in C, built
-twice with <code>-O 2</code>: <code>c_dsp_plain.elf</code> as plain C and <code>c_dsp.elf</code>
-with <code>cc --dspr2</code>, where it calls GCC's builtins
+twice with <code>-O 2</code>: as plain C (<code>-o c_dsp_plain.elf</code>) and with
+<code>cc --dspr2</code> (<code>-o c_dsp.elf</code>), where it calls GCC's builtins
 <code>__builtin_mips_repl_qb</code> and <code>__builtin_mips_addu_s_qb</code>.  Both print
 11664 255.  Compare the brightening loops in the two listings
 (<code>python3 -m emips dis</code>) and the instructions each program executes.
@@ -5214,13 +5249,13 @@ XContext's BadVPN2 holds VA 39..13, Context's only 31..13.</p>
 </details>
 <h3 id="lab-62--c-on-64-bits">Lab 62 — C on 64 bits</h3>
 <p><a href="labs/c_long.c"><code>labs/c_long.c</code></a> built twice with <code>-O 1</code>: for MIPS32 (the
-o32 ABI, <code>c_long_32.elf</code>) and for MIPS64 (n64, <code>cc --arch mips64</code>,
-<code>c_long_64.elf</code>).  It prints the sizes of <code>int</code>, <code>long</code>, a pointer and
+o32 ABI, <code>cc ... -o c_long_32.elf</code>) and for MIPS64 (n64,
+<code>cc --arch mips64 ... -o c_long_64.elf</code>).  It prints the sizes of <code>int</code>, <code>long</code>, a pointer and
 <code>struct entry</code>, then how many bytes a million 4 KB pages hold, computed by
 <code>bytes_int</code> and by <code>bytes_long</code>.  Predict both outputs, then run them
-(<code>python3 -m emips run docs/guide/labs/c_long_64.elf</code>).  Why does the
+(<code>python3 -m emips run c_long_64.elf</code>).  Why does the
 struct grow?  Why is <code>bytes_int</code> wrong on both?  Compare <code>bytes_long</code> in
-the two listings (<code>python3 -m emips dis docs/guide/labs/c_long_64.elf</code>).</p>
+the two listings (<code>python3 -m emips dis c_long_64.elf</code>).</p>
 <details>
 <summary>Answer</summary>
 <p>MIPS32: <code>4 4 4 8</code>, -198967296, -198967296.  MIPS64: <code>4 8 8 16</code>,
@@ -5337,10 +5372,10 @@ to memory and the program prints 16 again.</p>
 </details>
 <h3 id="lab-67--c-in-fewer-bytes">Lab 67 — C in fewer bytes</h3>
 <p><a href="labs/c_nano.c"><code>labs/c_nano.c</code></a> built twice with <code>-O 2</code>: for MIPS32
-(<code>c_nano_32.elf</code>) and for nanoMIPS (<code>cc --arch nanomips</code>, <code>c_nano.elf</code>).  It
+(<code>-o c_nano_32.elf</code>) and for nanoMIPS (<code>cc --arch nanomips -o c_nano.elf</code>).  It
 sorts a table of records and prints the keys and a checksum.  Run both (they
 print the same), then compare <code>sort</code> and <code>checksum</code> in the two listings
-(<code>python3 -m emips dis docs/guide/labs/c_nano.elf</code>): how many bytes does
+(<code>python3 -m emips dis c_nano.elf</code>): how many bytes does
 each take, and where do the bytes go?</p>
 <details>
 <summary>Answer</summary>
@@ -5445,11 +5480,11 @@ handler right on cores with CP0 hazards.)</p>
 <h3 id="lab-72--what-the-compiler-vectorizes">Lab 72 — What the compiler vectorizes</h3>
 <p><a href="labs/c_msa.c"><code>labs/c_msa.c</code></a> fills two arrays of 256 ints, computes
 <code>c[i] = 3 * a[i] + b[i]</code> and sums <code>c</code> — plain C, no builtins.  It is
-built twice at <code>-O 3</code>: <code>c_msa_plain.elf</code> as usual and
-<code>c_msa.elf</code> with <code>cc --msa</code> (<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  Both print 130816.  How
+built twice at <code>-O 3</code>: as usual (<code>-o c_msa_plain.elf</code>) and with
+<code>cc --msa</code> (<code>-o c_msa.elf</code>) (<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  Both print 130816.  How
 many instructions does each run, and how many of them are <code>main</code>'s?
 Compare the loops in the two listings (<code>python3 -m emips dis
-docs/guide/labs/c_msa.elf</code>): which ones did GCC vectorize, and how does it
+c_msa.elf</code>): which ones did GCC vectorize, and how does it
 multiply by 3?</p>
 <details>
 <summary>Answer</summary>
@@ -5566,10 +5601,10 @@ costs time, not correctness.  Real code pads per-core data to the line size
 <p><a href="labs/c_rv.c"><code>labs/c_rv.c</code></a> hashes a 43-character text 100 times
 with 64-bit FNV-1a (an XOR and a multiply by 0x100000001b3 per character) and
 prints <code>0xdaddb8dc 0xb537ace9</code>.  It is built at <code>-O 2</code> for RV32
-(<code>c_rv_32.elf</code>) and RV64 (<code>c_rv_64.elf</code>) with <code>cc --arch rv32</code>
+(<code>-o c_rv_32.elf</code>) and RV64 (<code>-o c_rv_64.elf</code>) with <code>cc --arch rv32</code>
 / <code>rv64</code> (<a href="04-command-line.html#411-cc--build-a-c-program">4.11</a>).  How many
 instructions does each run?  Compare <code>fnv64</code>'s loop in the two listings
-(<code>python3 -m emips dis docs/guide/labs/c_rv_32.elf</code>): how does RV32 do
+(<code>python3 -m emips dis c_rv_32.elf</code>): how does RV32 do
 the 64-bit multiply, and why does it XOR only one register?</p>
 <details>
 <summary>Answer</summary>

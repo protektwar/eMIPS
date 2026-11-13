@@ -1,6 +1,6 @@
 # Lab: how long does a divide take?  Counter 0 counts cycles; the program
 # reads it before and after each divu + mflo and prints the difference.
-# Run it with --model 24k (the 24K divides 8, 16, 24 or 32 bits at a time:
+# Run it with --model 24k (the 24K skips the dividend's leading zero bytes:
 # "early-in"), and on the 5-stage model (one fixed latency).
         .data
 nums:   .word 100, 0x1234, 0x123456, 0x12345678, 0

@@ -56,8 +56,8 @@ copy:   lw    $t1, 0($t2)           # copy the 4 KB page
         addiu $k0, $k0, 4
         bne   $t2, $k1, copy
         sll   $t3, $t3, 3           # the copy's PA (drop the kseg0 bits) ...
-        srl   $t3, $t3, 9
-        sll   $t3, $t3, 6           # ... as EntryLo.PFN
+        srl   $t3, $t3, 15          # ... >> 12: its PFN ...
+        sll   $t3, $t3, 6           # ... in EntryLo's PFN field (bits 6 up)
         ori   $t3, $t3, 0x1f        # C = 3, D = 1 (writable), V, G
         sw    $t3, 0($t0)           # the page table: the child's own frame
         tlbp                        # Index = the entry of EntryHi (the page)

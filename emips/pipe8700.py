@@ -1317,9 +1317,10 @@ class P8700Pipeline:
                f"{len(self.harts)} hart(s)"]
         if what in ("", "window"):
             for h in self.harts:
+                front = self.front_state(h)
                 out.append(f"hart {h.k}: window {len(h.rob)}/{self._window(h)}, "
                            f"instruction buffer {len(h.ibuf)}/{self.cfg['IBUF']}, fetch "
-                           f"0x{h.fetch_pc:08x}" + self._front(h))
+                           f"0x{h.fetch_pc:08x}" + (f" ({front})" if front else ""))
                 for op in list(h.rob)[:12]:
                     out.append("  " + self._row(op))
                 if len(h.rob) > 12:
@@ -1347,10 +1348,13 @@ class P8700Pipeline:
                        f"instructions dispatched {st['ghosts']}, killed {st['killed']}")
         return out
 
-    def rows(self) -> list[dict[str, Any]]:
+    def rows(self, buffer: bool = False) -> list[dict[str, Any]]:
         """The window, oldest first per hart (the GUI's table): hart, seq,
         pc, text, unit, state ("queued" / "executing" / "complete"),
-        cycles left, wrong path, mispredicted, bonded."""
+        cycles left, wrong path, mispredicted, bonded.  With ``buffer``
+        each hart's instruction buffer follows its window: "fetching"
+        (its I-cache miss is still on the way: cycles left) or "buffered"
+        (fetched, not dispatched yet)."""
         cyc = self.cycles
         out = []
         for h in self.harts:
@@ -1365,7 +1369,32 @@ class P8700Pipeline:
                             "unit": op.unit, "state": state, "left": left,
                             "ghost": op.ghost, "mispredicted": op.mispredict and not op.ghost,
                             "bonded": bool(op.bond or op.bonded)})
+            if buffer:
+                for op in h.ibuf:
+                    miss = op.fetched + op.fetch_wait - cyc
+                    state, left = ("fetching", miss + 1) if miss >= 0 and op.fetch_wait \
+                        else ("buffered", None)
+                    out.append({"hart": h.k, "seq": op.seq, "pc": op.pc, "text": op.text,
+                                "unit": "", "state": state, "left": left,
+                                "ghost": False, "mispredicted": False, "bonded": False})
         return out
+
+    def front_state(self, h: _Hart) -> str:
+        """What a hart's front end is doing, in words (the GUI's title when
+        the window is empty); "" when it simply fetches."""
+        cyc = self.cycles
+        miss = next((op for op in h.ibuf
+                     if op.fetch_wait and op.fetched + op.fetch_wait >= cyc), None)
+        if miss is not None and not (h.done or h.parked):
+            left = miss.fetched + miss.fetch_wait - cyc + 1
+            return (f"an I-cache miss: the fetch of 0x{miss.pc:08x} waits for memory "
+                    f"({left} more cycle(s))")
+        front = self._front(h)
+        if front:
+            return front.strip()[1:-1]
+        if h.ibuf and not h.rob:
+            return "the fetched instructions are on their way through decode to dispatch"
+        return ""
 
     def _front(self, h: _Hart) -> str:
         if h.done:
@@ -1375,6 +1404,11 @@ class P8700Pipeline:
         if h.hold is not None:
             return f" (waits for {h.hold.text} to graduate)"
         if h.stop is not None:
+            if h.stop.fetch_error is not None:
+                return (f" (stopped at 0x{h.stop.pc:08x}: no code there; an older branch "
+                        "will redirect the fetch)")
+            if h.stop.fetch_exc is not None:
+                return f" (stopped at 0x{h.stop.pc:08x}: {h.stop.text[1:-1]})"
             return f" (waits for {h.stop.text} to resolve)"
         if h.wrong is not None:
             return f" (wrong path after {h.wrong.text})"

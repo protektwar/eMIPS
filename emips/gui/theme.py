@@ -44,6 +44,7 @@ class Colors:
     bar_fill: str              # pipeline registers
     bar_stroke: str
     value_bg: tuple[int, int, int, int]   # RGBA behind values on wires
+    menu_border: str           # the 1px frame of every popup menu / list
 
 
 LIGHT = Colors(
@@ -60,6 +61,7 @@ LIGHT = Colors(
     canvas="#ffffff", bubble="#f8fafc", idle_line="#cbd5e1", idle_text="#64748b",
     part_fill="#ffffff", text="#0f172a", muted_text="#475569",
     bar_fill="#e2e8f0", bar_stroke="#475569", value_bg=(255, 255, 255, 225),
+    menu_border="#9ca3af",
 )
 
 DARK = Colors(
@@ -76,6 +78,7 @@ DARK = Colors(
     canvas="#1b1d22", bubble="#202329", idle_line="#3f4651", idle_text="#8b93a1",
     part_fill="#23262d", text="#e5e7eb", muted_text="#a3aab5",
     bar_fill="#2f3540", bar_stroke="#8b93a1", value_bg=(27, 29, 34, 225),
+    menu_border="#7c8491",
 )
 
 #: the stages of the 24K pipeline model in the colours of the textbook

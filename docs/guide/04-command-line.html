@@ -1314,22 +1314,23 @@ their arguments and the local variables: a conditional breakpoint, the
 call stack with the arguments, <code>finish</code> with the value returned.
 Start GDB in the folder <code>cc</code> ran in (here: the repository) so it
 finds the sources:</p>
-<pre><code class="language-text">$ python3 -m emips gdb docs/guide/labs/c_recursion.elf      # (one terminal)
+<pre><code class="language-text">$ python3 -m emips cc docs/guide/labs/c_recursion.c -O 0
+$ python3 -m emips gdb docs/guide/labs/c_recursion.elf      # (one terminal)
 $ gdb-multiarch -q -ex 'target remote :1234'                # (another)
 (gdb) break fact if n == 3
-Breakpoint 1 at 0x400414: file ././docs/guide/labs/c_recursion.c, line 7.
+Breakpoint 1 at 0x400420: file docs/guide/labs/c_recursion.c, line 7.
 (gdb) continue
-Breakpoint 1, fact (n=3) at ././docs/guide/labs/c_recursion.c:7
+Breakpoint 1, fact (n=3) at docs/guide/labs/c_recursion.c:7
 7           if (n &lt;= 1)
 (gdb) bt
-#0  fact (n=3) at ././docs/guide/labs/c_recursion.c:7
-#1  0x00400450 in fact (n=4) at ././docs/guide/labs/c_recursion.c:9
-#2  0x00400450 in fact (n=5) at ././docs/guide/labs/c_recursion.c:9
-#3  0x00400450 in fact (n=6) at ././docs/guide/labs/c_recursion.c:9
-#4  0x0040049c in main () at ././docs/guide/labs/c_recursion.c:14
+#0  fact (n=3) at docs/guide/labs/c_recursion.c:7
+#1  0x00400450 in fact (n=4) at docs/guide/labs/c_recursion.c:9
+#2  0x00400450 in fact (n=5) at docs/guide/labs/c_recursion.c:9
+#3  0x00400450 in fact (n=6) at docs/guide/labs/c_recursion.c:9
+#4  0x00400490 in main () at docs/guide/labs/c_recursion.c:14
 (gdb) finish
-Run till exit from #0  fact (n=3) at ././docs/guide/labs/c_recursion.c:7
-0x00400450 in fact (n=4) at ././docs/guide/labs/c_recursion.c:9
+Run till exit from #0  fact (n=3) at docs/guide/labs/c_recursion.c:7
+0x00400450 in fact (n=4) at docs/guide/labs/c_recursion.c:9
 9           return n * fact(n - 1);
 Value returned is $1 = 6
 </code></pre>

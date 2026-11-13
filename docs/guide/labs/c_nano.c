@@ -1,6 +1,6 @@
 /* Lab: the same C for MIPS32 and for nanoMIPS (python3 -m emips cc
- * c_nano.c -O 2 and cc c_nano.c -O 2 --arch nanomips; prebuilt:
- * c_nano_32.elf, c_nano.elf).  It sorts a table of records by key and
+ * c_nano.c -O 2 and cc c_nano.c -O 2 --arch nanomips; -o
+ * c_nano_32.elf / -o c_nano.elf).  It sorts a table of records by key and
  * prints the keys and a checksum of the values: compare the code. */
 #include "emips.h"
 

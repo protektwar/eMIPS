@@ -389,7 +389,8 @@ buffer: .space  16              # 0x10010020: 16 zero bytes
 <p><strong>Byte order.</strong>  By default eMIPS is <strong>big-endian</strong>: the word
 <code>0x12345678</code> is stored as the bytes <code>12 34 56 78</code>.  Choose little-endian
 with <strong>Configure → Byte Order</strong> (GUI) or <code>--little</code> (terminal); the
-Memory pane shows the bytes as they are stored.</p>
+Memory pane shows words as a load reads them, and with <strong>bytes</strong> ticked the bytes as
+they are stored.</p>
 <h2 id="26-pseudo-instructions">2.6 Pseudo-instructions</h2>
 <p>Pseudo-instructions are conveniences: the assembler turns each one into
 one or more real instructions, exactly as GNU <code>as</code> does.  The
@@ -1246,10 +1247,17 @@ compiler made (<a href="03-the-gui.html#the-source-pane-c-programs">Phase 3</a>)
 <pre><code class="language-text">$ python3 -m emips cc docs/guide/labs/c_primes.c -O 0
 wrote docs/guide/labs/c_primes.elf: run it with  python3 -m emips run docs/guide/labs/c_primes.elf
 </code></pre>
-<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/c_primes.elf
+<pre><code class="language-console">$ python3 -m emips run docs/guide/labs/c_primes.c
 primes below 100: 25
 ...
 </code></pre>
+<p>The guide ships no executables: you build every C program yourself —
+Build in the window, <code>cc</code>, or <code>run</code> / <code>debug</code> / <code>gdb</code> on the <code>.c</code>.
+The addresses, frame sizes and counts in the C labs' answers come from
+Ubuntu 24.04's MIPS GCC 12.4 (<code>mips-linux-gnu-gcc</code>), which eMIPS uses
+when it is installed.  Another compiler (clang, another GCC) makes other
+code: the numbers move, the reasoning holds — a lab says where the two
+compilers part ways.</p>
 <p>What <code>cc</code> puts around your code: <code>crt0.S</code> (sets <code>$gp</code> and <code>$sp</code>,
 clears <code>.bss</code>, calls <code>main</code> and ends the program with its return value,
 the <em>exit2</em> service), <code>libemips.c</code> (<code>memcpy</code>, <code>memset</code>, <code>memmove</code>,
@@ -1278,13 +1286,13 @@ and <strong>byte order</strong> from its header, and the
 debugger shows <code>c_primes.c:14: if (composite[i])</code> beside the PC, <code>break
 main</code> stops at a function, and the GUI's listing has each C line above
 its instructions.</p>
-<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_primes.elf -c &quot;break main&quot; -c c
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_primes.c -c &quot;break main&quot; -c c
 (emips) break main
-breakpoint at 0x00400400  addiu $sp, $sp, -40              c_primes.c:11: {
+breakpoint at 0x00400450  addiu $sp, $sp, -40              c_primes.c:11: {
 (emips) c
 breakpoint
    0x00400038  nop
-=&gt; 0x00400400  addiu $sp, $sp, -40              c_primes.c:11: {
+=&gt; 0x00400450  addiu $sp, $sp, -40              c_primes.c:11: {
 </code></pre>
 <p>Debugging is at the level of C lines: <code>stepline</code> (<code>sl</code>) runs to the
 next C line — into a called function —, <code>nextline</code> (<code>nl</code>) over calls,
@@ -1294,9 +1302,9 @@ the C file.  The call stack is kept by watching the program: every
 <code>jal</code> / <code>jalr</code> / <code>bal</code> that is taken pushes a frame, every <code>jr $ra</code>
 pops one — it works for assembly programs too.
 (<a href="labs/c_recursion.c"><code>labs/c_recursion.c</code></a>: <code>fact</code> calls itself):</p>
-<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_recursion.elf -c &quot;break 8&quot; -c c -c bt
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/c_recursion.c -c &quot;break 8&quot; -c c -c bt
 (emips) break 8
-breakpoint at 0x00400430  sw $at, 28($fp)                  c_recursion.c:8: return 1;
+breakpoint at 0x00400430  addiu $v0, $zero, 1              c_recursion.c:8: return 1;
 (emips) c
 breakpoint
 ...
@@ -1307,7 +1315,7 @@ breakpoint
 #3  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
 #4  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
 #5  0x00400448 in fact   c_recursion.c:9: return n * fact(n - 1);
-#6  0x00400494 in main   c_recursion.c:14: print_int(fact(6));
+#6  0x00400488 in main   c_recursion.c:14: print_int(fact(6));
 #7  0x00400034 in __start   crt0.S:21: 2:      jal     main
 </code></pre>
 <p>In the GUI the <strong>Source</strong> pane shows the C file at the current line

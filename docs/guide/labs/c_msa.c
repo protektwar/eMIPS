@@ -1,6 +1,6 @@
 /* Lab 72: what GCC's auto-vectorizer makes of a C loop (python3 -m emips cc
- * c_msa.c -O 3, and cc c_msa.c -O 3 --msa; prebuilt: c_msa_plain.elf,
- * c_msa.elf).  The source is the same for both: no builtins, no vector
+ * c_msa.c -O 3, and cc c_msa.c -O 3 --msa; -o c_msa_plain.elf /
+ * -o c_msa.elf).  The source is the same for both: no builtins, no vector
  * types — with -mmsa GCC uses MSA by itself. */
 #include "emips.h"
 

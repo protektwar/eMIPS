@@ -235,6 +235,8 @@ class Session:
         self.program_notes: list[str] = []
         self._pokes: list[tuple] = []
         self._replayed = 0
+        #: the step whose replayed debug interrupts / pokes were applied
+        self._replay_at = -1
         #: EJTAG: each core's TAP (fresh at every reset: power-up), the
         #: probe on them (configuration: kept across resets) and whether
         #: it gives the EJTAGBOOT instruction; PC samples it collected
@@ -872,6 +874,7 @@ class Session:
             self.rvcps.trace if self.rvcps is not None else None   # (the P8700's: LF16)
         #: the recorded pokes a step replays (later ones were applied live)
         self._replayed = len(self._pokes)
+        self._replay_at = -1
         boot = o.boot != "reset"
         #: the Malta's boot monitor (emips.monitor), in its flash
         self.monitor = None
@@ -1504,12 +1507,7 @@ class Session:
             res.stopped = "input"
             return res
         machines, steps = self.machines, self.steps
-        for k, i in self._dints:                # replayed debug interrupts
-            if k == steps and i < len(machines):
-                machines[i].debug_interrupt()
-        for k, i, kind, key, value in self._pokes[:self._replayed]:   # and debug register
-            if k == steps and i < len(machines):        # writes (those of this run were
-                self._poke(machines[i], kind, key, value)   # applied when made)
+        self._replay_due()
         mt = self.mt
         dispatch = mt is not None and not self.mt_pipeline   # one TC issues (emips.mt)
         if dispatch:                            # (what a poke changed: who issues)
@@ -2345,6 +2343,7 @@ class Session:
         """Set the YIELD qualifier inputs (recorded: a step back replays)."""
         if self.mt is None:
             raise ValueError("no MT Module")
+        self._replay_due()
         self._pokes.append((self.steps, self.cpu, "yq", None, value))
         self._poke(self.machine, "yq", None, value)
         if not self.mt_pipeline:
@@ -2354,6 +2353,7 @@ class Session:
         """Set the policy manager's PM_sys_avail input (0-7; recorded)."""
         if self.mt is None:
             raise ValueError("no MT Module")
+        self._replay_due()
         self._pokes.append((self.steps, self.cpu, "pm-sys", None, value))
         self._poke(self.machine, "pm-sys", None, value)
         if not self.mt_pipeline:
@@ -2542,6 +2542,25 @@ class Session:
 
     # -- EJTAG (emips.ejtag) ---------------------------------------------------------
 
+    def _replay_due(self) -> None:
+        """Apply what a replay owes the current step — the debug interrupts
+        and debug register writes recorded at it before the last reset
+        (those of this run were applied when made) — once: ``step`` calls
+        it first, and so does every write made before the step runs, which
+        the replay at the step's start would otherwise undo (a hardware
+        breakpoint changed after a reset kept the old one)."""
+        steps = self.steps
+        if self._replay_at == steps:
+            return
+        self._replay_at = steps
+        machines = self.machines
+        for k, i in self._dints:                # replayed debug interrupts
+            if k == steps and i < len(machines):
+                machines[i].debug_interrupt()
+        for k, i, kind, key, value in self._pokes[:self._replayed]:   # and debug register
+            if k == steps and i < len(machines):        # writes
+                self._poke(machines[i], kind, key, value)
+
     def debug_interrupt(self) -> None:
         """A request on the selected core's DINT input (as a probe's
         EjtagBrk): a Debug Interrupt exception before its next
@@ -2549,6 +2568,7 @@ class Session:
         replays it."""
         if self.machine is None:
             return
+        self._replay_due()
         self._dints.append((self.steps, self.cpu))
         self.machine.debug_interrupt()
 
@@ -2560,6 +2580,7 @@ class Session:
         registers).  Recorded: a step back replays it."""
         if self.machine is None:
             return
+        self._replay_due()
         self._pokes.append((self.steps, self.cpu, kind, key, value))
         self._poke(self.machine, kind, key, value)
 
@@ -2571,6 +2592,7 @@ class Session:
         m = self.machine
         if m is None or not m.rv or not m.csrs.smrnmi:
             raise ValueError("an RNMI needs a RISC-V hart with Smrnmi (--rv-ext ..._smrnmi)")
+        self._replay_due()
         self._pokes.append((self.steps, self.cpu, "rnmi", None, cause))
         self._poke(m, "rnmi", None, cause)
 
@@ -2664,6 +2686,7 @@ class Session:
         what a scan shifted out."""
         if self.machine is None:
             return 0
+        self._replay_due()
         self._pokes.append((self.steps, self.cpu, kind, key, value))
         return self._poke(self.machine, kind, key, value)
 
@@ -2733,6 +2756,7 @@ class Session:
         if self.rvtrace is None:
             raise ValueError("no RISC-V trace on this machine")
         m = self.machines[0]
+        self._replay_due()
         self._pokes.append((self.steps, 0, "rvtrace", pa, value))
         self._poke(m, "rvtrace", pa, value)
 
@@ -2749,6 +2773,7 @@ class Session:
         """The probe's external trigger (every encoder's input 3)."""
         if self.rvtrace is None:
             raise ValueError("no RISC-V trace on this machine")
+        self._replay_due()
         self._pokes.append((self.steps, 0, "rvtrace-in", None, 0))
         self._poke(self.machines[0], "rvtrace-in", None, 0)
 
@@ -2763,6 +2788,7 @@ class Session:
         Step Back replay it."""
         if self.rvcps is None:
             raise ValueError("the Debug Unit is the P8700's (--core p8700)")
+        self._replay_due()
         self._pokes.append((self.steps, 0, "dbu", (op, args), 0))
         return self._poke(self.machines[0], "dbu", (op, args), 0)
 
@@ -3020,6 +3046,7 @@ class Session:
         the CPU's NMI input); recorded for step back."""
         if self.machine is None or self.board is None:
             return
+        self._replay_due()
         self._pokes.append((self.steps, 0, "board-nmi", None, 0))
         self._poke(self.machines[0], "board-nmi", None, 0)
 
@@ -3432,6 +3459,16 @@ class Session:
                     for a, w, t, _ in self.program.listing(abi=self.abi)]
         return [(a, w, t, self.program.source_map[a].line)
                 for a, w, t, _ in self.program.listing(abi=self.abi)]
+
+    def firmware_disassembly(self) -> list[tuple[int, int, str]]:
+        """``(address, word, text)`` of the boot firmware's code on the
+        selected core (the TLB refill handler ``Program.load`` puts at
+        0x80000000): the code a TLB miss steps through, which is not the
+        program's (none: an empty list)."""
+        fw = getattr(self.machine, "firmware", None) if self.machine is not None else None
+        if fw is None:
+            return []
+        return [(a, w, t) for a, w, t, _ in fw.listing(abi=self.abi)]
 
     def cache_accesses(self) -> list[tuple[str, Any]]:
         """The cache accesses of the last step, as ``(where, CacheAccess)``:

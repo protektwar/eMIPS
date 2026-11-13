@@ -785,8 +785,8 @@ pseudo-instruction's several instructions at once).</p>
 </tbody>
 </table>
 <h2 id="38-memory">3.8 Memory</h2>
-<p>A hex dump: each row is an address and four 32-bit words, then the same
-16 bytes as text.</p>
+<p>A hex dump: each row is an address and four 32-bit words — or, with
+<strong>bytes</strong> ticked, the same 16 bytes one by one and as text.</p>
 <ul>
 <li>Choose a region: <strong>.data</strong> (<code>0x10010000</code>), <strong>.text</strong> (<code>0x00400000</code>),
   <strong>stack</strong> (from just below <code>$sp</code>), <strong>MMIO</strong> (the four console device
@@ -799,8 +799,14 @@ pseudo-instruction's several instructions at once).</p>
   (<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>).</li>
 </ul>
 <p><img alt="Memory" src="img/03-memory.png"></p>
-<p>Words are shown as the processor reads them in the current byte order.
-On a MIPS64 core <strong>doublewords</strong> (ticked by default) shows two 64-bit
+<p>Words are shown as the processor reads them in the current byte order:
+the values <code>lw</code> loads.  <strong>bytes</strong> shows what is stored, in address
+order, with the characters: on a little-endian core the word
+<code>0x11223344</code> still reads <code>11223344</code>, and its bytes are
+<code>44 33 22 11</code>
+(<a href="05-understanding.html#58-memory-addresses-and-byte-order">Phase 5, 5.8</a>).</p>
+<p><img alt="The Memory pane with bytes ticked: 16 bytes a row in address order, and the characters" src="img/03-memory-bytes.png"></p>
+<p>On a MIPS64 core <strong>doublewords</strong> (ticked by default) shows two 64-bit
 values per row, as <code>ld</code> loads them, and a typed address may have 64 bits
 (<code>0x9000000000001000</code>, xkphys, with a TLB).</p>
 <h3 id="caches">Caches</h3>
@@ -1014,7 +1020,7 @@ rounding error when the value cannot be stored exactly.</p>
 for the next match) work as in a web browser.  Above every complete program of the
 guide, <strong>Open in the editor</strong> puts it in the editor and assembles it (a
 program for another release switches to it); a link to a lab program
-(<code>labs/….asm</code>, <code>.c</code>, <code>.elf</code>) opens that file.  The answers of
+(<code>labs/….asm</code>, <code>.c</code>) opens that file.  The answers of
 the labs stay folded until you click <strong>▸ Answer</strong>.  <strong>Open in a web
 browser</strong> shows the same page in your browser — the guide is a set of HTML pages
 in <code>docs/guide/</code> (start at <code>index.html</code>), readable without eMIPS too.</p>
@@ -1392,7 +1398,7 @@ keyboard focus (the editor, a console field ...).</p>
 Check (F8) and Checks File… (<a href="#checking-your-program-the-checks-pane">3.3</a>);
 Debug Interrupt (DINT: EJTAG Debug Mode, <a href="05-understanding.html#debug-mode-ejtag">Phase 5</a>);
 GDB Server (GDB debugs the program, <a href="04-command-line.html#gdb-and-the-window">Phase 4</a>);
-Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline / MIPS P8700 pipeline — with <code>--core p8700</code>: the Datapath pane then shows its window, queues and predictors); Forwarding.</p>
+Mode (Instruction / 5-stage pipeline / MIPS 24K pipeline / MIPS P8700 pipeline — with <code>--core p8700</code>: the Datapath pane then shows its window, then each hart's instruction buffer — still fetching after an I-cache miss, or buffered —, the queues and predictors; while the window is empty its title says why); Forwarding.</p>
 <p><strong>View</strong> — show or hide each pane (Datapath, Pipeline, Disassembly,
 Instruction, Registers, Console, Memory, Caches, TLB, Counters, Trace,
 Board, System, MT, Checks, Messages); Register Names (ABI <code>$t0</code> / numbers
