@@ -1,5 +1,5 @@
-# The user guide on GitHub Pages: docs/guide as the site, deployed on every
-# push to main.
+# The user guide on GitHub Pages, and eMIPS in the browser at run/
+# (web/build_site.py), deployed on every push to main.
 name: The user guide on GitHub Pages
 
 on:
@@ -25,8 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
+      - run: python3 web/build_site.py _site
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: docs/guide
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v5

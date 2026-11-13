@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eMIPS in your browser</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <strong>eMIPS</strong> <span class="sub">in your browser</span>
+  <nav><a href="../">User guide</a> · <a href="https://github.com/protektwar/eMIPS">GitHub</a></nav>
+  <span id="status" role="status">Loading Python…</span>
+</header>
+
+<div class="toolbar">
+  <label>Program <select id="programs" disabled></select></label>
+  <label>Release <select id="release">
+    <option value="">as the program says</option>
+    <option>R1</option><option>R2</option><option>R3</option><option>R5</option><option>R6</option>
+  </select></label>
+  <label>Mode <select id="mode">
+    <option value="">instruction</option>
+    <option value="--pipeline --model 5-stage">5-stage pipeline</option>
+    <option value="--pipeline --model 24k">24K pipeline</option>
+  </select></label>
+  <span class="buttons">
+    <button id="assemble" disabled title="Assemble the editor's program (Ctrl+B)">Assemble</button>
+    <button id="step" disabled title="One instruction, or one cycle in a pipeline mode (F10)">Step</button>
+    <button id="run" disabled title="Run to a breakpoint, input or the end (F5)">Run</button>
+    <button id="pause" disabled>Pause</button>
+    <button id="back" disabled title="Undo one step">Step back</button>
+    <button id="reset" disabled>Reset</button>
+  </span>
+</div>
+
+<div id="messages" hidden></div>
+
+<main>
+  <section class="pane editor-pane">
+    <h2>Program <span id="file"></span> <span id="where"></span></h2>
+    <div class="editor">
+      <div id="gutter" aria-hidden="true"></div>
+      <div class="code">
+        <div id="current" hidden></div>
+        <textarea id="source" spellcheck="false" wrap="off"
+                  aria-label="The program (MIPS assembly)"></textarea>
+      </div>
+    </div>
+  </section>
+  <section class="pane listing-pane">
+    <h2>Disassembly <span class="hint">click a row: breakpoint</span></h2>
+    <div class="scroll"><table id="listing"><thead><tr>
+      <th></th><th>address</th><th>word</th><th>instruction</th><th>line</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+  <section class="pane regs-pane">
+    <h2>Registers</h2>
+    <div class="scroll"><table id="regs"><tbody></tbody></table></div>
+  </section>
+  <section class="pane console-pane">
+    <h2>Console</h2>
+    <pre id="console" aria-live="polite"></pre>
+    <div class="inputs">
+      <input id="input" placeholder="input for read_int / read_string … (Enter)" disabled>
+      <input id="keys" placeholder="keyboard (MMIO): type, Enter sends the keys" disabled>
+    </div>
+  </section>
+  <section class="pane debugger-pane">
+    <h2>Debugger <span class="hint">the command line's debugger: type help</span></h2>
+    <pre id="dbgout"></pre>
+    <input id="dbg" placeholder="(emips) step 3 · regs · mem $sp · pipe · cache · help" disabled>
+  </section>
+</main>
+
+<footer>eMIPS runs here in your browser (Python in WebAssembly, Pyodide): the
+programs and labs of the <a href="../">user guide</a> in assembly. The window,
+C programs and GDB need eMIPS on your computer or in a
+<a href="https://codespaces.new/protektwar/eMIPS?quickstart=1">GitHub Codespace</a>.</footer>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -7,7 +7,8 @@ ALU computes, how the pipeline stages overlap, where and why the
 pipeline stalls, what the caches and the TLB do, how cores share memory.
 
 **The user guide:** [protektwar.github.io/eMIPS](https://protektwar.github.io/eMIPS/) ·
-**Run it in your browser:** [GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
+**Run it in your browser:** [eMIPS on a web page](https://protektwar.github.io/eMIPS/run/) ·
+[GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
 
 ![eMIPS: the editor, the 5-stage datapath and the registers](docs/guide/img/01-pipeline-mode.png)
 
@@ -111,6 +112,16 @@ choice open, it says which one it made.
 </p>
 
 ## Running it
+
+### In your browser — a web page
+
+[**protektwar.github.io/eMIPS/run**](https://protektwar.github.io/eMIPS/run/)
+runs eMIPS itself in the page (Python in WebAssembly, Pyodide; nothing to
+install): the examples, the guide's labs and your own assembly programs,
+with the editor, the disassembly, the registers, the console, the 5-stage
+and 24K pipelines and the command line's debugger.  The first visit
+downloads about 8 MB.  The window's panes, C programs and GDB need eMIPS
+on your computer or in a Codespace.
 
 ### In your browser — GitHub Codespaces
 
