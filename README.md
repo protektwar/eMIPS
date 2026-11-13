@@ -7,7 +7,8 @@ ALU computes, how the pipeline stages overlap, where and why the
 pipeline stalls, what the caches and the TLB do, how cores share memory.
 
 The **user guide**: [protektwar.github.io/eMIPS](https://protektwar.github.io/eMIPS/)\
-Run it in your browser: [**eMIPS on a web page**](https://protektwar.github.io/eMIPS/run/) · [GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
+Run it in your browser: [**eMIPS on a web page**](https://protektwar.github.io/eMIPS/run/) · [GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)\
+Videos on YouTube: [**Complete Guide**](https://www.youtube.com/playlist?list=PLBJC6xGXQ8Ig) · [**Labs**](https://www.youtube.com/playlist?list=PLZfnrn2iCpIw) · [**Explained**](https://www.youtube.com/playlist?list=PLfnUgzk_CAmo)
 
 eMIPS is **free**.\
 If it helped you learn or teach, you can say thank you with a coffee: [**buymeacoffee.com/AHerlas ☕**](https://buymeacoffee.com/AHerlas)
@@ -247,6 +248,18 @@ open it in a web browser, or in eMIPS with **Help → User Guide** (F1).  Six ph
 started, writing programs, the window in depth, the command line, the
 computer architecture behind every number on the screen (with 89 labs
 you check with eMIPS itself), and a reference.
+
+
+## Videos
+
+Three YouTube playlists, made with eMIPS itself:
+
+- [**eMIPS — Complete Guide**](https://www.youtube.com/playlist?list=PLBJC6xGXQ8Ig): the guide's chapters, from the first
+  program to the computer architecture behind the screen.
+- [**eMIPS Labs**](https://www.youtube.com/playlist?list=PLZfnrn2iCpIw): one video per lab — the question, the experiment
+  in eMIPS, the answer.
+- [**eMIPS Explained**](https://www.youtube.com/playlist?list=PLfnUgzk_CAmo): one idea in depth (how a cache, the TLB,
+  cache coherence work).
 
 ## Author
 
