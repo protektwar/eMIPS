@@ -6,12 +6,11 @@ and watch what happens inside: how each instruction is decoded, what the
 ALU computes, how the pipeline stages overlap, where and why the
 pipeline stalls, what the caches and the TLB do, how cores share memory.
 
-**The user guide:** [protektwar.github.io/eMIPS](https://protektwar.github.io/eMIPS/) ·
-**Run it in your browser:** [eMIPS on a web page](https://protektwar.github.io/eMIPS/run/) ·
-[GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
+The **user guide**: [protektwar.github.io/eMIPS](https://protektwar.github.io/eMIPS/)\
+Run it in your browser: [**eMIPS on a web page**](https://protektwar.github.io/eMIPS/run/) · [GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
 
-eMIPS is free.  If it helped you learn or teach, you can say thank you
-with a coffee: [**buymeacoffee.com/AHerlas**](https://buymeacoffee.com/AHerlas) ☕
+eMIPS is **free**.\
+If it helped you learn or teach, you can say thank you with a coffee: [**buymeacoffee.com/AHerlas ☕**](https://buymeacoffee.com/AHerlas)
 
 ![eMIPS: the editor, the 5-stage datapath and the registers](docs/guide/img/01-pipeline-mode.png)
 
