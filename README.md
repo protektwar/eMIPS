@@ -10,6 +10,9 @@ pipeline stalls, what the caches and the TLB do, how cores share memory.
 **Run it in your browser:** [eMIPS on a web page](https://protektwar.github.io/eMIPS/run/) ·
 [GitHub Codespaces](https://codespaces.new/protektwar/eMIPS?quickstart=1)
 
+eMIPS is free.  If it helped you learn or teach, you can say thank you
+with a coffee: [**buymeacoffee.com/AHerlas**](https://buymeacoffee.com/AHerlas) ☕
+
 ![eMIPS: the editor, the 5-stage datapath and the registers](docs/guide/img/01-pipeline-mode.png)
 
 The MIPS32 *Architecture for Programmers* manuals are the reference:
@@ -255,6 +258,9 @@ eMIPS began in 2021 as a Ruby library and a Discord bot; in 2026 it was
 rewritten in Python and grew into this teaching emulator.  It was
 developed with the help of Claude (Anthropic), used as an AI programming
 assistant.
+
+eMIPS, its guide and its labs are free.  If they helped you, a coffee is a
+welcome thank you: [buymeacoffee.com/AHerlas](https://buymeacoffee.com/AHerlas).
 
 ## License
 
