@@ -49,6 +49,8 @@ def make_core(session, cpu: int, mem, caches):
         session.console.attach(m)
     else:
         session.console.share(m)
+    if session._display is not None:
+        session._display.attach(m, owner=cpu == 0)
     m.syscall_handler = session.services
     rnmi_vectors(session, m)
     return m
@@ -141,7 +143,7 @@ def console_sink(session):
     """The console's interrupt lines -> the hart's MEIP (bit 11); on a
     platform (``--rv-intc``) sources 1 (TX) / 2 (RX) of its PLIC / APLIC; on
     a P8700 the APLIC's source 4 (the Boston board's UART, QEMU's)."""
-    levels = {}
+    levels = session._meip_levels = {}
 
     def sink(line: int, on: bool) -> None:
         levels[line] = on
@@ -154,6 +156,24 @@ def console_sink(session):
         elif session.machines:
             session.machines[0].set_interrupt(11, any(levels.values()))
     return sink
+
+
+def display_irq(session, on: bool) -> None:
+    """The bitmap display's vertical blank (emips.display): the P8700's
+    APLIC source 8, a platform's source 3, else the hart's MEIP (shared
+    with the console)."""
+    from .display import P8700_SOURCE, RV_SOURCE
+    cl = session.rvcps
+    if cl is not None and cl.ic is not None:
+        cl.ic.set_input(P8700_SOURCE, on)
+    elif session.rvplat is not None:
+        session.rvplat.set_input(RV_SOURCE, on)
+    elif session.machines:
+        levels = getattr(session, "_meip_levels", None)
+        if levels is None:
+            levels = session._meip_levels = {}
+        levels["display"] = on
+        session.machines[0].set_interrupt(11, any(levels.values()))
 
 
 def boot(session, m) -> None:
@@ -288,6 +308,8 @@ def needs_input(m, pc: int) -> bool:
     a7 = m.read_reg(17) & M32
     if a7 not in READ_SERVICES and not (a7 == 63 and m.read_reg(10) == 0):
         return False
+    if a7 >= 50 and not m.flen and a7 in (52, 53):
+        return False                            # (no F: the dialog is not offered)
     c = code(m, pc)
     return c is not None and c == (ECALL, 4)
 

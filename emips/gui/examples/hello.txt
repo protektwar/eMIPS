@@ -1,0 +1,3 @@
+Hello from a file.
+This text was given to the program with --file;
+it reaches no other file on your computer.

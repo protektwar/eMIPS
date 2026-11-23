@@ -129,6 +129,30 @@ for teachers.</p>
 <td><code>$v0</code></td>
 </tr>
 <tr>
+<td style="text-align: right;">13</td>
+<td>open file</td>
+<td><code>$a0</code> = name, <code>$a1</code> = 0 read / 1 write / 9 append</td>
+<td><code>$v0</code> = descriptor, -1 on error</td>
+</tr>
+<tr>
+<td style="text-align: right;">14</td>
+<td>read file</td>
+<td><code>$a0</code> = descriptor, <code>$a1</code> = buffer, <code>$a2</code> = length</td>
+<td><code>$v0</code> = bytes read, 0 at the end, -1</td>
+</tr>
+<tr>
+<td style="text-align: right;">15</td>
+<td>write file</td>
+<td><code>$a0</code> = descriptor, <code>$a1</code> = buffer, <code>$a2</code> = length</td>
+<td><code>$v0</code> = bytes written, -1</td>
+</tr>
+<tr>
+<td style="text-align: right;">16</td>
+<td>close file</td>
+<td><code>$a0</code> = descriptor</td>
+<td></td>
+</tr>
+<tr>
 <td style="text-align: right;">17</td>
 <td>exit2</td>
 <td><code>$a0</code> = exit code</td>
@@ -152,8 +176,84 @@ for teachers.</p>
 <td><code>$a0</code></td>
 <td></td>
 </tr>
+<tr>
+<td style="text-align: right;">30</td>
+<td>time</td>
+<td></td>
+<td><code>$a0</code> / <code>$a1</code> = milliseconds (low / high)</td>
+</tr>
+<tr>
+<td style="text-align: right;">31</td>
+<td>MIDI out</td>
+<td><code>$a0</code> pitch, <code>$a1</code> ms, <code>$a2</code> instrument, <code>$a3</code> volume (0-127)</td>
+<td>a note, recorded</td>
+</tr>
+<tr>
+<td style="text-align: right;">32</td>
+<td>sleep</td>
+<td><code>$a0</code> = milliseconds</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">33</td>
+<td>MIDI out, waiting</td>
+<td>as 31</td>
+<td>waits the note's duration</td>
+</tr>
+<tr>
+<td style="text-align: right;">40</td>
+<td>random seed</td>
+<td><code>$a0</code> = stream, <code>$a1</code> = seed</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align: right;">41</td>
+<td>random int</td>
+<td><code>$a0</code> = stream</td>
+<td><code>$a0</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">42</td>
+<td>random int range</td>
+<td><code>$a0</code> = stream, <code>$a1</code> = bound</td>
+<td><code>$a0</code> in [0, bound)</td>
+</tr>
+<tr>
+<td style="text-align: right;">43</td>
+<td>random float</td>
+<td><code>$a0</code> = stream</td>
+<td><code>$f0</code> in [0, 1)</td>
+</tr>
+<tr>
+<td style="text-align: right;">44</td>
+<td>random double</td>
+<td><code>$a0</code> = stream</td>
+<td><code>$f0</code> in [0, 1)</td>
+</tr>
 </tbody>
 </table>
+<p>Also MARS's dialogs: 50 ConfirmDialog, 51-54 InputDialogInt / Float / Double /
+String, 55 MessageDialog, 56-59 MessageDialogInt / Float / Double / String
+(<a href="02-writing-programs.html#dialogs">2.35, Dialogs</a>): an input dialog's answer
+is an input line (<code>!cancel</code> on the command line for Cancel).</p>
+<p>The time, sound and random services are MARS's, with one difference: a
+run must replay exactly (Step Back, checks), so time is the core's cycle
+count at 1 MHz from 0 rather than the clock on the wall, sleep and a waiting
+MIDI note let that time pass, MIDI notes are recorded rather than sent to a
+synthesizer, and a random stream never seeded with 40 starts from seed 0 —
+seeded, it gives exactly MARS's numbers (Java's <code>java.util.Random</code>).</p>
+<p>The file services reach only the program's own <strong>files</strong>: the ones given
+with <code>--file NAME=PATH</code> (or Settings → Exceptions &amp; I/O → Files) and the
+ones it creates — never anything else on your computer.  Every run starts from
+the given files again; the Files pane, the debugger's <code>files</code> and
+<code>run --files-out DIR</code> show and save what the run wrote.  Descriptors 0, 1
+and 2 are the console (reading 0 takes one input line), the program's own
+start at 3, as in MARS.</p>
+<p>The MIDI notes a program plays (31 and 33) are listed in the Sound pane —
+which plays them as they happen when your Qt has QtMultimedia — and by the
+debugger's <code>midi</code>; <code>run --midi-wav FILE</code> renders them as a WAV
+file and <code>run --midi-file FILE</code> writes a standard MIDI file that any
+synthesizer plays with its real instruments.</p>
 <p>Any other number in <code>$v0</code> takes the <strong>System Call exception</strong>.</p>
 <p>On <strong>RISC-V</strong> (<code>--arch rv32</code> / <code>rv64</code>,
 <a href="02-writing-programs.html#226-risc-v-rv32-and-rv64">Phase 2, 2.26</a>) the services are
@@ -309,8 +409,10 @@ RARS's: <code>ecall</code> with the number in <code>a7</code>, arguments in <cod
 </tr>
 </tbody>
 </table>
-<p>Also 31 / 33 (MIDI: time only), 40 / 43 / 44 (random seed, float, double),
-57 / 62 / 1024 (close, seek, open: no files to reach).  Any other number is a
+<p>Also 31 / 33 (MIDI: recorded notes, 33 waits), 40 / 43 / 44 (random seed, float, double),
+50-56 and 58-60 (RARS's dialogs, as MARS's; 60 = MessageDialogFloat with <code>fa1</code>),
+1024 / 57 / 62 (open, close, seek: the program's files, as MARS's 13-16 above;
+63 / 64 read and write them too).  Any other number is a
 real <strong>environment call</strong> trap: <code>mcause</code> 8, 9 or 11 (from U-, S- or
 M-mode).</p>
 <h2 id="62-registers">6.2 Registers</h2>

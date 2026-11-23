@@ -351,6 +351,8 @@ def _cmd_run(args) -> None:
     s = _session(args)
     d = Debugger(s, stdout=sys.stdout, program_input=sys.stdin)
     s.on_output = lambda text: (sys.stdout.write(text), sys.stdout.flush())
+    s.on_dialog = lambda dl: (sys.stdout.write(("\n" if s.output and not s.output.endswith("\n")
+                                                else "") + dl.line() + "\n"), sys.stdout.flush())
     d.live_output = True
     try:
         for loc in args.breaks or []:
@@ -365,7 +367,7 @@ def _cmd_run(args) -> None:
     if steps is None:
         steps = 1_000_000 if s.board is not None else 100_000
     r = _run_to_stop(d, steps, args.trace)
-    s.on_output = None
+    s.on_output = s.on_dialog = None
     if s.output and not s.output.endswith("\n"):
         print()
     if r.error:
@@ -432,6 +434,18 @@ def _extras(d: Debugger, args) -> None:
         if getattr(args, "perf", None):
             print("--- performance counters")
             d.do_perf("")
+        if getattr(args, "display_png", None):
+            d.do_display("save " + args.display_png)
+        if getattr(args, "midi_wav", None):
+            d.do_midi("wav " + args.midi_wav)
+        if getattr(args, "midi_file", None):
+            d.do_midi("mid " + args.midi_file)
+        if getattr(args, "files_out", None):
+            area = d.s.file_area
+            out = Path(args.files_out)
+            out.mkdir(parents=True, exist_ok=True)
+            for name in sorted(area.written if area is not None else ()):
+                print(d.s.save_file(name, str(out / Path(name).name)))
     except CliError as exc:
         print(f"error: {exc}")
 
@@ -547,6 +561,16 @@ def _disk(text: str) -> str:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
     return text
+
+
+def _display(text: str) -> str:
+    """argparse type of --display (emips.display.parse)."""
+    from .display import parse
+    try:
+        sp = parse(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return sp.text() if sp is not None else ""
 
 
 def _board(text: str) -> str:
@@ -704,6 +728,19 @@ def build_parser() -> argparse.ArgumentParser:
                                 "RAM, the MARS layout) or malta[:RAM_MB[:SWITCHES]] "
                                 "(the MIPS Malta: the GT-64120's memory map, bus "
                                 "errors, the board registers; programs in kseg0)")
+            p.add_argument("--file", action="append", dest="data_files", metavar="NAME=PATH",
+                           help="a file the program may open (MARS 13-16, RARS 1024 / 63 "
+                                "/ 64 / 57 / 62) under NAME (default: PATH's file name); "
+                                "repeat for more — programs reach no other host file, "
+                                "every run starts from these (run --files-out DIR saves "
+                                "what it wrote)")
+            p.add_argument("--display", metavar="WxH[:UNIT][@BASE]", type=_display,
+                           default=None,
+                           help="a bitmap display (MARS's): WIDTHxHEIGHT screen pixels, "
+                                "the unit size (1-32: each memory word drawn as UNIT x "
+                                "UNIT pixels), the base address or data / gp / static "
+                                "(default) / heap / mmio; one word 0x00RRGGBB a pixel, "
+                                "e.g. 512x256:8@static")
             p.add_argument("--disk", metavar="[SLOT=]IMAGE", action="append", type=_disk,
                            default=None,
                            help="an IDE disk on the Malta (with --board malta): SLOT "
@@ -813,6 +850,17 @@ def build_parser() -> argparse.ArgumentParser:
                            help="count these events on the performance counters "
                                 "(user + kernel mode) and print them, e.g. "
                                 "instructions,dcache_miss")
+            p.add_argument("--midi-wav", metavar="FILE",
+                           help="at the end, render the MIDI notes the program played "
+                                "(services 31 / 33) as a WAV file")
+            p.add_argument("--midi-file", metavar="FILE",
+                           help="at the end, write those notes as a Standard MIDI File")
+            p.add_argument("--files-out", metavar="DIR",
+                           help="at the end, write every file the program wrote or "
+                                "created (--file) into DIR")
+            p.add_argument("--display-png", metavar="FILE",
+                           help="at the end, write the bitmap display (--display) as a "
+                                "PNG image")
         if name == "run":
             p.add_argument("--steps", type=int, default=None,
                            help="stop after this many steps (default 100000; on the "

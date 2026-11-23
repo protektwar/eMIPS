@@ -65,4 +65,11 @@ EXAMPLES = [
             output="-2102132736\n120"),
     Example("rv_trap.asm", "RISC-V: a trap handler, an exception and an interrupt",
             output="2"),
+    Example("bitmap_gradient.asm", "The bitmap display: a gradient (MARS's Bitmap Display)"),
+    Example("read_file.asm", "Files: read a file given with the program",
+            output="Hello from a file.\nThis text was given to the program with --file;\n"
+                   "it reaches no other file on your computer.\n"),
+    Example("play_scale.asm", "Sound: a scale (MIDI notes, the Sound pane)"),
+    Example("dialogs.asm", "Dialogs: ask and answer (MARS's 50-59)",
+            input=("19", "Ada", "y"), output="Hello, Ada\n"),
 ]

@@ -32,6 +32,9 @@ from .cachepane import CacheView
 from .counterpane import CounterView
 from .tracepane import TraceView
 from .boardpane import BoardView
+from .displaypane import DisplayView
+from .filespane import FilesView
+from .soundpane import SoundView
 from .guideview import GuideView
 from .partdialog import PartDialog
 from .sourceview import SourceView
@@ -240,6 +243,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.guide: GuideView | None = None     # Help > User Guide, made when first asked
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
+        #: the program's dialogs (services 50-59, emips.dialogs): ``runner(
+        #: service, kind, text, icon)`` shows one and returns the answer of an
+        #: input dialog (a line, dialogs.CANCEL ...); tests put their own here
+        self.dialog_runner = self._qt_dialog
+        self._dialogs_seen = 0
         #: Run > GDB Server (emips.gdbstub.GdbServer), polled by gdb_timer
         self.gdb = None
         self.gdb_timer = QtCore.QTimer(self)
@@ -292,6 +300,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.counters = CounterView()
         self.trace = TraceView()
         self.board = BoardView()
+        self.display = DisplayView()
+        self.display.save_requested.connect(self.save_display)
+        self.files = FilesView()
+        self.files.save_requested.connect(self.save_file)
+        self.sound = SoundView()
+        self.sound.save_requested.connect(self.save_sound)
         self.board.nmi_requested.connect(self.board_nmi)
         self.board.save_disk_requested.connect(self.save_disk)
         self.system = SystemView()
@@ -351,6 +365,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("counters", tr("Counters"), self.counters),
                 ("trace", tr("Trace"), self.trace),
                 ("board", tr("Board"), self.board),
+                ("display", tr("Display"), self.display),
+                ("files", tr("Files"), self.files),
+                ("sound", tr("Sound"), self.sound),
                 ("system", tr("System"), self.system),
                 ("mt", tr("MT"), self.mtview),
                 ("checks", tr("Checks"), self.checks),
@@ -376,11 +393,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.removeDockWidget(dock)
         self.addDockWidget(right, d["datapath"])
         self.splitDockWidget(d["datapath"], d["registers"], Qt.Orientation.Horizontal)
-        for k in ("pipeline", "disassembly", "instruction", "source"):
+        for k in ("pipeline", "disassembly", "instruction", "source", "display"):
             self.tabifyDockWidget(d["datapath"], d[k])
         self.addDockWidget(bottom, d["console"])
-        for k in ("memory", "caches", "tlb", "counters", "trace", "board", "system", "mt",
-                  "checks", "messages"):
+        for k in ("memory", "files", "sound", "caches", "tlb", "counters", "trace", "board", "system",
+                  "mt", "checks", "messages"):
             self.tabifyDockWidget(d["console"], d[k])
         for k in TOOL_DOCKS:                    # Tools: next to the views, hidden
             self.tabifyDockWidget(d["datapath"], d[k])
@@ -1211,6 +1228,10 @@ class MainWindow(QtWidgets.QMainWindow):
             wanted.append("mt")
         if o.board.split(":")[0] == "malta":
             wanted.append("board")
+        if o.display:
+            wanted.append("display")
+        if o.files:
+            wanted.append("files")
         for key in wanted:
             self.docks[key].show()
         if wanted:
@@ -1582,6 +1603,51 @@ class MainWindow(QtWidgets.QMainWindow):
         except (OSError, ValueError) as exc:
             self._fail(str(exc))
 
+    def save_sound(self, kind: str, path: str | None = None) -> None:
+        """The Sound pane's Save WAV / Save MIDI: the notes played so far."""
+        from .. import midi as MIDI
+        events = self.session.midi_events()
+        if path is None:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, tr("Save WAV") if kind == "wav" else tr("Save MIDI"),
+                "tune." + kind, tr("WAV files (*.wav)") if kind == "wav" else
+                tr("MIDI files (*.mid)"))
+            if not path:
+                return
+        try:
+            Path(path).write_bytes(MIDI.wav(events) if kind == "wav" else MIDI.midi_file(events))
+            self._log(tr("wrote {path}").format(path=path))
+        except OSError as exc:
+            self._fail(str(exc))
+
+    def save_file(self, name: str, path: str | None = None) -> None:
+        """The Files pane's Save File: a file of the program's area as the
+        run has left it."""
+        if path is None:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, tr("Save File"), name)
+            if not path:
+                return
+        try:
+            self._log(self.session.save_file(name, path))
+        except (OSError, ValueError) as exc:
+            self._fail(str(exc))
+
+    def save_display(self, path: str | None = None) -> None:
+        """The Display pane's Save Image: the bitmap display as a PNG."""
+        frame = self.session.display_frame()
+        if frame is None:
+            return
+        if path is None:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, tr("Save Image"), "display.png", tr("PNG images (*.png);;All files (*)"))
+            if not path:
+                return
+        try:
+            Path(path).write_bytes(frame.png())
+            self._log(tr("wrote {path}").format(path=path))
+        except OSError as exc:
+            self._fail(str(exc))
+
     def show_guide(self, page: str = "", fragment: str = "") -> GuideView:
         """Help > User Guide: the HTML guide in its own window (one,
         raised again when asked again); ``page`` / ``fragment``: where."""
@@ -1884,7 +1950,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def step(self) -> None:
         if not self._ensure_assembled():
             return
-        self._report(self.session.step())
+        r = self.session.step()
+        if r.stopped == "input" and self._answer_dialog():
+            r = self.session.step()             # (the dialog's syscall, answered)
+        self._report(r)
+        self._show_dialogs()
         self.refresh()
 
     def step_line(self) -> None:
@@ -2036,6 +2106,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pause()
         if not self.session.step_back():
             self.status.showMessage(tr("at the start"), 2000)
+        self._dialogs_seen = len(self.session.dialogs())     # (replayed: not shown again)
         self.refresh()
 
     def run(self) -> None:
@@ -2076,10 +2147,72 @@ class MainWindow(QtWidgets.QMainWindow):
     def _tick(self) -> None:
         n = SPEEDS[self.speed.value()][0]
         r = self.session.run(max_steps=n)
+        if r.stopped == "input" and self._answer_dialog():
+            return                              # (answered: the run goes on)
         if r.stopped or r.error:
             self.pause()
             self._report(r)
+        self._show_dialogs()
         self.refresh(light=n > 50 and not r.stopped)
+
+    # -- the program's dialogs (MARS's services 50-59) -----------------------------------
+
+    def _show_dialogs(self) -> None:
+        """Show the message dialogs the program showed since the last call
+        (the run waits meanwhile) and log every dialog in Messages."""
+        dialogs = self.session.dialogs()
+        if len(dialogs) < self._dialogs_seen:   # (a reset)
+            self._dialogs_seen = 0
+        new, self._dialogs_seen = dialogs[self._dialogs_seen:], len(dialogs)
+        if not new:
+            return
+        running = self.timer.isActive()
+        self.timer.stop()
+        try:
+            for d in new:
+                self._log(d.line())
+                if not d.is_input:
+                    self.dialog_runner(d.service, d.kind, d.text, d.icon)
+        finally:
+            if running:
+                self.timer.start()
+
+    def _answer_dialog(self) -> bool:
+        """The program waits in an input dialog (50-54): ask, give the
+        answer as its input line (replayed by Step Back)."""
+        d = self.session.pending_dialog()
+        if d is None:
+            return False
+        self._show_dialogs()                    # (the messages before it first)
+        running = self.timer.isActive()
+        self.timer.stop()
+        try:
+            answer = self.dialog_runner(d[0], d[1], d[2], "question")
+        finally:
+            if running:
+                self.timer.start()
+        self.session.give_input(answer)
+        return True
+
+    def _qt_dialog(self, service: int, kind: str, text: str, icon: str):
+        """A real dialog (JOptionPane's look in Qt)."""
+        from .. import dialogs as D
+        title = D.TITLES.get(service, "eMIPS")
+        if kind == "message":
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle(title)
+            box.setText(text)
+            I = QtWidgets.QMessageBox.Icon
+            box.setIcon({"error": I.Critical, "information": I.Information,
+                         "warning": I.Warning, "question": I.Question}.get(icon, I.NoIcon))
+            box.exec()
+            return None
+        if kind == "confirm":
+            B = QtWidgets.QMessageBox.StandardButton
+            answer = QtWidgets.QMessageBox.question(self, title, text, B.Yes | B.No | B.Cancel)
+            return "y" if answer == B.Yes else "n" if answer == B.No else "cancel"
+        line, ok = QtWidgets.QInputDialog.getText(self, title, text)
+        return line if ok else D.CANCEL
 
     def give_input(self, line: str) -> None:
         self.session.give_input(line)
@@ -2201,6 +2334,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.counters.refresh(s)
         self.trace.refresh(s)
         self.board.refresh(s)
+        self.display.refresh(s)
+        self.files.refresh(s)
+        had = self.sound.table.rowCount()
+        self.sound.refresh(s)
+        if not had and self.sound.table.rowCount():      # the first notes: show the pane
+            self.docks["sound"].show()
+            self.docks["sound"].raise_()
         self.system.refresh(s)
         self.mtview.refresh(s)
         self.source.refresh(s)

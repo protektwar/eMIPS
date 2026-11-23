@@ -6,6 +6,7 @@ main window decides what has to be re-assembled or reset."""
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
 from ..cores import get as core_preset
 from ..cache import Geometry
@@ -671,8 +672,115 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow(tr("MMIO display busy after a character (cycles)"), self.tx_delay)
         form.addRow(tr("MMIO keyboard: cycles between keys"), self.rx_delay)
         lay.addLayout(form)
+        lay.addSpacing(12)
+        lay.addWidget(self._files_box())
+        lay.addSpacing(12)
+        lay.addWidget(self._display_box())
         lay.addStretch()
         return w
+
+    def _files_box(self) -> QtWidgets.QWidget:
+        """The program's files (emips.files, PLAN M27): what MARS's 13-16 and
+        RARS's open / read / write / close / lseek reach."""
+        box = QtWidgets.QGroupBox(tr("Files the program may open"))
+        lay = QtWidgets.QVBoxLayout(box)
+        row = QtWidgets.QHBoxLayout()
+        self.files_edit = QtWidgets.QLineEdit()
+        self.files_edit.setPlaceholderText(tr("NAME=PATH, ... (or PATH: the name is its "
+                                              "file name)"))
+        self.files_edit.setToolTip(tr("The program opens a file by NAME; it reaches no "
+                                      "other file, and every run starts from these (the "
+                                      "Files pane saves what it wrote)"))
+        row.addWidget(self.files_edit, 1)
+        add = QtWidgets.QPushButton(tr("Add…"))
+        add.clicked.connect(self._add_file)
+        row.addWidget(add)
+        lay.addLayout(row)
+        return box
+
+    def _add_file(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, tr("A file the program may open"))
+        if path:
+            text = self.files_edit.text().strip()
+            name = Path(path).name
+            self.files_edit.setText(f"{text}, {name}={path}" if text else f"{name}={path}")
+
+    def _files_spec(self) -> str:
+        from ..files import parse_files
+        try:
+            return ",".join(f"{n}={p}" for n, p in parse_files(self.files_edit.text()))
+        except ValueError:
+            return ""
+
+    def _display_box(self) -> QtWidgets.QWidget:
+        """The bitmap display (emips.display, PLAN M27): MARS's choices."""
+        from ..display import BASES
+        box = QtWidgets.QGroupBox(tr("Bitmap display (as MARS's)"))
+        box.setCheckable(True)
+        box.setToolTip(tr("Draws memory as pixels: one word 0x00RRGGBB a pixel, row by row "
+                          "from the base address (View > Display)"))
+        self.display_box = box
+        form = QtWidgets.QFormLayout(box)
+        def combo(values, editable=False):
+            c = QtWidgets.QComboBox()
+            c.setEditable(editable)
+            for v in values:
+                c.addItem(str(v), v)
+            return c
+        self.display_w = combo((64, 128, 256, 512, 1024))
+        self.display_h = combo((64, 128, 256, 512, 1024))
+        self.display_uw = combo((1, 2, 4, 8, 16, 32))
+        self.display_uh = combo((1, 2, 4, 8, 16, 32))
+        self.display_base = QtWidgets.QComboBox()
+        self.display_base.setEditable(True)
+        for name, addr in BASES.items():
+            self.display_base.addItem(f"0x{addr:08x} ({name})", name)
+        form.addRow(tr("Display width (pixels)"), self.display_w)
+        form.addRow(tr("Display height (pixels)"), self.display_h)
+        form.addRow(tr("Unit width (pixels a word)"), self.display_uw)
+        form.addRow(tr("Unit height (pixels a word)"), self.display_uh)
+        form.addRow(tr("Base address"), self.display_base)
+        form.addRow(_note(tr("The display reads physical memory below the caches: with "
+                             "write-back caches a pixel appears when its line is written "
+                             "back.")))
+        return box
+
+    def _set_display(self, text: str) -> None:
+        from ..display import BASE_NAMES, DisplaySpec, parse
+        try:
+            sp = parse(text)
+        except ValueError:
+            sp = None
+        self.display_box.setChecked(sp is not None)
+        sp = sp or DisplaySpec()
+        for c, v in ((self.display_w, sp.width), (self.display_h, sp.height),
+                     (self.display_uw, sp.unit_w), (self.display_uh, sp.unit_h)):
+            i = c.findData(v)
+            if i < 0:
+                c.addItem(str(v), v)
+                i = c.count() - 1
+            c.setCurrentIndex(i)
+        name = BASE_NAMES.get(sp.base)
+        if name is not None:
+            self.display_base.setCurrentIndex(self.display_base.findData(name))
+        else:
+            self.display_base.setEditText(f"0x{sp.base:08x}")
+
+    def _display_spec(self) -> str:
+        from ..display import parse
+        if not self.display_box.isChecked():
+            return ""
+        i = self.display_base.currentIndex()
+        text = self.display_base.currentText().strip()
+        base = self.display_base.itemData(i) if i >= 0 and \
+            self.display_base.itemText(i) == text else text.split()[0] if text else "static"
+        spec = (f"{self.display_w.currentData()}x{self.display_h.currentData()}:"
+                f"{self.display_uw.currentData()}x{self.display_uh.currentData()}@{base}")
+        try:
+            sp = parse(spec)
+        except ValueError:
+            return ""
+        return sp.text() if sp else ""
 
     def _run_tab(self) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()
@@ -765,6 +873,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.syscalls.setChecked(o.syscalls)
         self.tx_delay.setValue(o.tx_delay)
         self.rx_delay.setValue(o.rx_delay)
+        self._set_display(o.display)
+        self.files_edit.setText(", ".join(o.files.split(",")) if o.files else "")
         self.step_limit.setValue(o.step_limit)
         self._set_cache(self.icache, o.icache)
         self._set_cache(self.dcache, o.dcache)
@@ -802,7 +912,7 @@ class SettingsDialog(QtWidgets.QDialog):
             vps=self.vps.value(), itu=self.itu.currentData(),
             iocu=self.iocu.isChecked(),
             shadow_sets=self.shadow_sets.value(), board=self._board_spec(),
-            disks=self._disks_spec(), c_optimize=self.c_optimize.currentData(),
+            disks=self._disks_spec(), display=self._display_spec(), files=self._files_spec(), c_optimize=self.c_optimize.currentData(),
             compressed=self.compressed.currentData(), c_isa=self.c_isa.currentData(),
             fpu=self.fpu.isChecked(), dsp=self.dsp.currentData(), msa=self.msa.currentData(),
             msa_wrp=self.msa_wrp.value(), mt=self.mt.currentData(),

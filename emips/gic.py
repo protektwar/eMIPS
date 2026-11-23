@@ -80,6 +80,8 @@ SRC_CONSOLE_TX, SRC_CONSOLE_RX = 0, 1
 #: the Coherence Manager's error interrupt (MD01025 Table 11.11 "Signal
 #: Interrupt"; where it is wired is the system's choice: eMIPS source 2)
 SRC_CM_ERROR = 2
+#: eMIPS's bitmap display: its vertical blank (emips.display), to core 0's pin 2
+SRC_DISPLAY = 4
 #: Boot-MIPS: sources 24 + n and 32 + n interrupt VPE n (IPIs)
 FIRST_IPI = 24
 #: the I6400's GIC (a CM3, MD01196 ch. 7): eMIPS builds 64 sources ("in
@@ -598,7 +600,8 @@ class GIC(_Registers):
         sources 24-39 rising-edge, enabled, 24 + n and 32 + n to VPE n (the
         IPIs; their pin: the reset value, pin 0); and, for eMIPS's
         console, its TX / RX sources level active-high, enabled, to core
-        0's pins 0 / 1 (Cause.IP2 / IP3, as without a GIC)."""
+        0's pins 0 / 1 (Cause.IP2 / IP3, as without a GIC); the bitmap
+        display's source: :meth:`route_display`."""
         self.base = GIC_BASE_PA
         cps = self.cps
         if cps.cm3:                     # the I6400: 32 + VPNum (MD01196 7.2.7) to it
@@ -624,6 +627,16 @@ class GIC(_Registers):
             self.map_vp[src] = 1
         # (the core's timer / counters reset mapped to pin 5 = IP7 and enabled,
         # MD01025 Tables 12.45 / 12.49: nothing to do for them)
+        self.update()
+
+    def route_display(self) -> None:
+        """The firmware's set-up of the bitmap display's vertical blank
+        (emips.display, when there is one): source 4, level active-high,
+        enabled, to core 0's pin 2 (Cause.IP4, as without a GIC)."""
+        self.pol |= 1 << SRC_DISPLAY
+        self.mask |= 1 << SRC_DISPLAY
+        self.map_pin[SRC_DISPLAY] = MAP_TO_PIN | 2
+        self.map_vp[SRC_DISPLAY] = 1
         self.update()
 
     def describe(self) -> list[str]:

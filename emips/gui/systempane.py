@@ -102,6 +102,9 @@ class SystemView(QtWidgets.QTabWidget):
 
     def refresh(self, s: Session) -> None:
         self._session = s
+        if s.machine is not None and s.cps is None and s.rv and len(s.machines) > 1:
+            self._refresh_harts(s)
+            return
         if s.machine is None or s.cps is None:
             self.note.setText(tr("One core: no Coherent Processing System. Choose 2 to 6 "
                                  "cores in Configure > Settings > Processor."))
@@ -167,3 +170,35 @@ class SystemView(QtWidgets.QTabWidget):
         regs = cv.register_rows(s)
         _fill(self.regs, [[r.block, r.name, f"+0x{r.offset:04x}", f"0x{r.value:08x}",
                            r.meaning] for r in regs])
+
+    def _refresh_harts(self, s: Session) -> None:
+        """A RISC-V platform of several harts (a P8700 cluster, --cores N on
+        a generic hart): the harts in the Cores tab (Session.cores), the
+        P8700 Coherence Manager's counts and domains in the Coherence tab;
+        the GIC and the CM2 registers are a MIPS CPS's."""
+        colors = T()
+        rows = s.cores()
+        self.note.setText(tr("{n} harts; every running hart steps together, hart 0 first. The "
+                             "highlighted one is shown in the other panes. (The GIC and "
+                             "Registers tabs are a MIPS CPS's.)").format(n=len(rows)))
+        d = s.hex_digits("pc")
+        cells = []
+        for c in rows:
+            m = s.machines[c["cpu"]]
+            state = ("exited" if c["halted"] else "waiting (WFI)" if c["waiting"]
+                     else c["state"])
+            cells.append([s.cpu_name(c["cpu"]),
+                          state, f"0x{c['pc']:0{d}x}" if c["pc"] is not None else "-",
+                          str(c["line"]) if c["line"] else "-", m.mode_name, "-"])
+        _fill(self.cores, cells, [colors.valid_fill if c["selected"] else None for c in rows])
+        cm = getattr(getattr(s, "rvcps", None), "cm", None)
+        if cm is not None:
+            lines = cm.describe()
+            self.counts.setText("\n".join(lines))
+        else:
+            self.counts.setText(tr("No Coherence Manager: the harts share one memory."))
+        for t in (self.domain, self.copies, self.sources, self.locals, self.regs):
+            t.setRowCount(0)
+        self.line.setText("")
+        self.gic_head.setText("")
+        self.gic_cores.setPlainText("")

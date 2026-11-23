@@ -83,8 +83,9 @@ DARK = Colors(
 
 #: the stages of the 24K pipeline model in the colours of the textbook
 #: stage doing the same work (fetch, decode / register read, execute,
-#: memory, completion)
-STAGE_ALIASES = {"IS": "IF", "IT": "IF", "RF": "ID", "AG": "EX", "MS": "MEM", "ER": "WB"}
+#: memory, completion); IR / IK = the MIPS16e recoder, still the front end
+STAGE_ALIASES = {"IS": "IF", "IT": "IF", "IR": "IF", "IK": "IF", "RF": "ID", "AG": "EX",
+                 "MS": "MEM", "ER": "WB"}
 for _set in (LIGHT, DARK):
     for _name, _like in STAGE_ALIASES.items():
         _set.stage.setdefault(_name, _set.stage[_like])

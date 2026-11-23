@@ -1,0 +1,9 @@
+A load reads memory,
+a store writes it back;
+the cache sits between them
+and keeps a little of each.
+
+The pipeline overlaps five steps,
+the hazard unit waits,
+and every branch has one more slot
+before it changes course.

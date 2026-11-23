@@ -13,14 +13,16 @@ formats are Java's (``Integer.toString``, ``Float.toString`` /
 random streams are ``java.util.Random`` (the 48-bit LCG), so a seeded
 program prints what RARS prints.
 
-Choices (eMIPS has no host clock, sound, dialogs or files in a program's
-reach, and a run must replay exactly — ``sim.DEVIATIONS["RARS services"]``):
-time (30) counts the hart's cycles at 1 MHz from 0, sleep (32) and the
-synchronous MIDI (33) let that time pass, MIDI (31) is silent; an unseeded
-random stream starts from seed 0; GetCWD (17) gives "/"; open (1024) fails
-(-1), read / write / close / lseek (57 / 62 / 63 / 64) know the standard
-descriptors 0-2 only; the dialogs (50-60) are not offered (an environment
-call exception, as an unknown service).  RARS's "ExitingException" errors
+Choices (no host clock, sound or files in a program's reach, and a run
+must replay exactly — ``sim.DEVIATIONS["RARS services"]``): time (30)
+counts the hart's cycles at 1 MHz from 0, sleep (32) and the synchronous
+MIDI (33) let that time pass, MIDI notes (31 / 33) are recorded as
+``emips.console.MidiEvent`` in ``midi`` (PLAN M27); an unseeded random
+stream starts from seed 0; GetCWD (17) gives "/"; open / read / write /
+close / lseek (1024 / 63 / 64 / 57 / 62) work on the program's file area
+(:mod:`emips.files`, ``--file``: never the host's files); the dialogs
+(50-56, 58-60) are RARS's, answered through the input like a read
+(:mod:`emips.dialogs`).  RARS's "ExitingException" errors
 (an unreadable number, a negative sbrk ...) stop the program with
 :class:`ServiceError`.
 """
@@ -31,13 +33,15 @@ import struct
 from typing import Callable
 
 from .exceptions import SimException
+from .files import FileArea, FileTable
+from . import dialogs as D
 
 M32 = 0xFFFFFFFF
 HEAP_BASE = 0x10040000                       # RARS's heap (= MARS's)
 DATA_LIMIT = 0x10040000 + 0x3FFC0000         # (dataSegmentLimitAddress: below the stack)
 CYCLES_PER_MS = 1000                         # time (30) / sleep (32): a 1 MHz clock
 #: the services that read input (Session.needs_input)
-READ_SERVICES = frozenset((5, 6, 7, 8, 12))
+READ_SERVICES = frozenset((5, 6, 7, 8, 12, 50, 51, 52, 53, 54))
 
 
 class ServiceError(SimException):
@@ -139,6 +143,10 @@ class RarsServices:
         self.heap = HEAP_BASE
         self.exit_code: int | None = None
         self.streams: dict[int, JavaRandom] = {}
+        self.midi: list = []                    # emips.console.MidiEvent
+        self.files = FileTable(FileArea())      # (the Session gives the program's files)
+        self.dialogs: list = []                 # emips.dialogs.Dialog (50-60)
+        self.on_dialog = None
 
     def write(self, text: str) -> None:
         self.output += text
@@ -238,10 +246,15 @@ class RarsServices:
             ms = m.cycles // CYCLES_PER_MS
             self._set(m, 10, ms & M32)
             self._set(m, 11, (ms >> 32) & M32)
-        elif code in (31, 32, 33):              # MidiOut / Sleep / MidiOutSync
-            ms = a0 if code == 32 else self._a(m, 1) if code == 33 else 0
-            if ms > 0:
-                m.advance(ms * CYCLES_PER_MS)
+        elif code == 32:                        # Sleep
+            if a0 > 0:
+                m.advance(a0 * CYCLES_PER_MS)
+        elif code in (31, 33):                  # MidiOut / MidiOutSync (a0-a3)
+            from .console import MidiEvent
+            ev = MidiEvent.of(m, [self._a(m, i) for i in range(4)], code == 33)
+            self.midi.append(ev)
+            if ev.sync and ev.duration > 0:
+                m.advance(ev.duration * CYCLES_PER_MS)
         elif code == 34:                        # PrintIntHex
             self.write(f"0x{a0 & M32:08x}")
         elif code == 35:                        # PrintIntBinary
@@ -267,9 +280,9 @@ class RarsServices:
         elif code == 44:                        # RandDouble -> fa0
             m.fpr[10] = struct.unpack("<Q", struct.pack("<d", self._stream(m).next_double()))[0]
         elif code == 57:                        # Close
-            pass
-        elif code == 62:                        # LSeek: the standard descriptors cannot
-            self._set(m, 10, -1)
+            self.files.close(a0)
+        elif code == 62:                        # LSeek (a0 fd, a1 offset, a2 whence)
+            self._set(m, 10, self.files.seek(a0, self._a(m, 1), self._a(m, 2)))
         elif code == 63:                        # Read (a0 fd, a1 buffer, a2 length)
             self._read(m, a0, self._a(m, 2))
         elif code == 64:                        # Write (a0 fd, a1 buffer, a2 length)
@@ -277,11 +290,97 @@ class RarsServices:
         elif code == 93:                        # Exit2 (a0 code)
             self.exit_code = a0
             m.halted = True
-        elif code == 1024:                      # Open: no host files in reach
-            self._set(m, 10, -1)
+        elif code in D.INPUT or code in D.RARS_MESSAGES:    # the dialogs
+            if code in D.FLOAT_SERVICES and not m.flen:
+                return False
+            self._dialog(m, code)
+        elif code == 1024:                      # Open (a0 name, a1 flags) -> a0 fd
+            self._set(m, 10, self.files.open(self._string(m, m.read_reg(10)), self._a(m, 1)))
         else:
             return False                        # an environment call exception
         return True
+
+    def peek_dialog(self, m):
+        """The input dialog the next ecall would show: (service, kind,
+        text) or None (a view)."""
+        code = _s32(m.read_reg(17))
+        if code not in D.INPUT or code in D.FLOAT_SERVICES and not m.flen:
+            return None
+        return code, D.INPUT[code], self._string(m, m.read_reg(10))
+
+    def _show(self, d) -> None:
+        self.dialogs.append(d)
+        if self.on_dialog is not None:
+            self.on_dialog(d)
+
+    def _fbox(self, m, n: int, x: float) -> None:
+        bits = struct.unpack("<I", struct.pack("<f", x))[0]
+        m.fpr[n] = (((1 << m.flen) - 1) & ~M32 | bits) if m.flen > 32 else bits
+
+    def _dialog(self, m, code: int) -> None:
+        """RARS 1.6's dialogs (SyscallConfirmDialog ... MessageDialogFloat),
+        their registers as RARS has them: InputDialogFloat into f0 (ft0),
+        InputDialogDouble into fa0, MessageDialogFloat (60) from fa1."""
+        text = self._string(m, m.read_reg(10))
+        if code not in D.INPUT:
+            a1 = self._a(m, 1)
+            icon = D.ICONS.get(a1, "plain") if code == 55 else "information"
+            if code == 56:
+                text += str(a1)
+            elif code == 58:
+                text += java_string(struct.unpack("<d", (m.fpr[10] & ((1 << 64) - 1))
+                                                  .to_bytes(8, "little"))[0])
+            elif code == 59:
+                text += self._string(m, m.read_reg(11))
+            elif code == 60:
+                text += java_string(struct.unpack("<f", (m.fpr[11] & M32)
+                                                  .to_bytes(4, "little"))[0], single=True)
+            self._show(D.Dialog(code, "message", text, icon))
+            return
+        answer = self.read_line()
+        self._show(D.Dialog(code, D.INPUT[code], text, answer=answer))
+        if code == 50:
+            self._set(m, 10, D.confirm_value(answer, rars=True))
+        elif code == 51:
+            if answer == D.CANCEL:
+                self._set(m, 10, 0), self._set(m, 11, -2)
+            elif answer == "":
+                self._set(m, 10, 0), self._set(m, 11, -3)
+            else:
+                try:
+                    self._set(m, 10, D.parse_int(answer)), self._set(m, 11, 0)
+                except ValueError:
+                    self._set(m, 10, 0), self._set(m, 11, -1)
+        elif code in (52, 53):
+            if code == 52:
+                self._fbox(m, 0, 0.0)           # f0 = 0 first
+            else:
+                m.fpr[0] = 0
+            if answer == D.CANCEL:
+                self._set(m, 11, -2)
+            elif answer == "":
+                self._set(m, 11, -3)
+            else:
+                try:
+                    x = D.parse_float(answer)
+                    if code == 52:
+                        self._fbox(m, 0, x)
+                    else:                       # (RARS writes the double to fa0)
+                        m.fpr[10] = struct.unpack("<Q", struct.pack("<d", x))[0]
+                    self._set(m, 11, 0)
+                except (ValueError, OverflowError):
+                    self._set(m, 11, -1)
+        else:                                   # 54: a1 buffer, a2 size
+            buf, size = m.read_reg(11), self._a(m, 2)
+            if answer == D.CANCEL:
+                self._set(m, 11, -2)
+            elif answer == "":
+                self._set(m, 11, -3)
+            else:
+                stores, flag = D.string_bytes(answer.encode("utf-8"), size, True)
+                for off, b in stores:
+                    m.write_byte((buf + off) & m.amask, b)
+                self._set(m, 11, flag)
 
     def _read_string(self, m, buf: int, max_len: int) -> None:
         """SyscallReadString: at most a1 - 1 characters, a newline when it
@@ -304,23 +403,32 @@ class RarsServices:
             m.write_byte((buf + n) & m.amask, 0)
 
     def _read(self, m, fd: int, length: int) -> None:
-        if fd != 0 or length < 0:
+        if length < 0:
             self._set(m, 10, -1)
             return
-        data = (self.read_line() + "\n").encode("utf-8")[:length]
+        if fd == 0:
+            data = (self.read_line() + "\n").encode("utf-8")[:length]
+        else:
+            data = self.files.read(fd, length)
+            if data is None:
+                self._set(m, 10, -1)
+                return
         buf = m.read_reg(11)
         for k, b in enumerate(data):
             m.write_byte((buf + k) & m.amask, b)
         self._set(m, 10, len(data))
 
     def _write_fd(self, m, fd: int, length: int) -> None:
-        if length < 0 or fd not in (1, 2):
+        if length < 0:
             self._set(m, 10, -1)
             return
         buf = m.read_reg(11)
         data = bytes(m.read_byte((buf + k) & m.amask) for k in range(length))
-        self.write(data.decode("utf-8", "replace"))
-        self._set(m, 10, length)
+        if fd in (1, 2):
+            self.write(data.decode("utf-8", "replace"))
+            self._set(m, 10, length)
+        else:
+            self._set(m, 10, self.files.write(fd, data))
 
 
 def _java_int(text: str) -> int:

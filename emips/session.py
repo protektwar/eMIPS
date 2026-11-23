@@ -46,7 +46,7 @@ from .options import Options, is_rv
 from . import sessionrv as RV
 
 M32 = 0xFFFFFFFF
-READ_SERVICES = {5, 6, 7, 8, 12}
+READ_SERVICES = {5, 6, 7, 8, 12, 50, 51, 52, 53, 54}   # (50-54: dialogs)
 #: the stack of core N starts N x 64 KB below core 0's (the boot firmware)
 CORE_STACK = 0x10000
 #: why a nanoMIPS core has no MIPS Trace
@@ -227,6 +227,9 @@ class Session:
         #: the disk images (source -> (bytes, sectors)): read once per
         #: program load, every run starts from them (deterministic replay)
         self._media: dict[str, tuple[bytes, int]] = {}
+        #: the files option's sources, read once a program load (path -> bytes)
+        self._file_data: dict[str, bytes] = {}
+        self.file_area = None
         #: why a disk of the ``disks`` option is not there (a missing file ...)
         self.disk_notes: list[str] = []
         #: what reset adjusted to make the settings go together (emips.compat);
@@ -257,6 +260,10 @@ class Session:
         self.stop_at_end = False
         #: called with every piece of program output (live printing, CLI)
         self.on_output = None
+        self._dialog_at: list[int] = []         # (where each dialog came in the output)
+        #: ``on_dialog(dialog)``: each dialog as the program shows it
+        #: (emips.dialogs; the command line prints it, the window shows it)
+        self.on_dialog = None
         #: the cores (one Machine / pipeline each); :attr:`machine` /
         #: :attr:`pipeline` are the selected core's (:attr:`cpu`, what the
         #: views show); :attr:`cps` = the platform with more than one core
@@ -321,7 +328,7 @@ class Session:
             return False
         self.kind = "asm"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
-        self._media = {}                    # disk images are read again
+        self._media = {}; self._file_data = {}                    # disk images are read again
         try:
             self.reset()
         except BusError as exc:                 # the image is not where the board has memory
@@ -362,7 +369,7 @@ class Session:
             self.program = prog
             self.kind = "hex"
             self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
-            self._media = {}
+            self._media = {}; self._file_data = {}
             self.reset()
             return True
         words = sorted({a & ~3 for a in image
@@ -397,7 +404,7 @@ class Session:
         self.program = prog
         self.kind = "hex"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
-        self._media = {}                    # disk images are read again
+        self._media = {}; self._file_data = {}                    # disk images are read again
         self.reset()
         return True
 
@@ -644,7 +651,7 @@ class Session:
             return False
         self.kind = "elf"
         self._inputs, self._keys, self._dints, self._pokes = [], "", [], []
-        self._media = {}                    # disk images are read again
+        self._media = {}; self._file_data = {}                    # disk images are read again
         self.reset()
         return True
 
@@ -781,6 +788,7 @@ class Session:
                                    rx_delay=o.rx_delay)
         self.console.feed(self._keys)
         self._input_pos = 0
+        self._display = self._make_display()
         self.services = None
         if self.syscalls and o.syscalls:
             if self.rv:                         # RARS's services (decision 10)
@@ -788,6 +796,13 @@ class Session:
                 self.services = RarsServices(read_line=self._read_line, write=self._emit)
             else:
                 self.services = SyscallServices(read_line=self._read_line, write=self._emit)
+        self.file_area = self._make_file_area()
+        if self.services is not None:
+            from .files import FileTable
+            self.services.files = FileTable(self.file_area)
+        self._dialog_at: list[int] = []
+        if self.services is not None:
+            self.services.on_dialog = self._dialog_shown
         if self.rv:                             # the console's lines -> MEIP
             self.console.sink = RV.console_sink(self)
         mem = PMemory()
@@ -907,6 +922,8 @@ class Session:
                 self.rvcps.boot()
             if boot and self.cps is not None:
                 self.cps.boot()
+                if self._display is not None and self.board is None:
+                    self.cps.gic.route_display()    # (the display's vertical blank)
                 if self.board is not None:
                     self.board.cps_firmware()
             if self.board is not None:          # YAMON's load / go (emips.monitor)
@@ -1085,6 +1102,8 @@ class Session:
                 self.console.share(m)
         else:
             board.attach(m, pins=cpu == 0)
+        if self._display is not None:            # (after the board: first on the bus)
+            self._display.attach(m, owner=cpu == 0)
         m.syscall_handler = self.services
         while len(self.taps) <= cpu:            # the core's TAP (power-up)
             t = TAPM.TAP()
@@ -1143,7 +1162,15 @@ class Session:
                 return micromips.text(i, pc, abi=self.abi, release=self.release, arch=m.arch)
             if m.wide:                          # MIPS64: its own table, the n64 names
                 return disassemble(m.code_word(pc), pc, isa=m.isa, abi=self.abi)
-            return decode_word(m.code_word(pc), release=self.release, pc=pc, abi=self.abi).text
+            word = m.code_word(pc)
+        except Exception:                                   # noqa: BLE001
+            return "?"
+        try:                                    # the core's own table first (an MT
+            return disassemble(word, pc, isa=m.isa, abi=self.abi)   # core's fork / yield)
+        except Exception:                                   # noqa: BLE001
+            pass
+        try:
+            return decode_word(word, release=self.release, pc=pc, abi=self.abi).text
         except Exception:                                   # noqa: BLE001
             return "?"
 
@@ -1426,6 +1453,30 @@ class Session:
         elif self.console is not None:
             self.console.feed(text)
 
+    def pending_dialog(self):
+        """The input dialog (services 50-54) the next instruction would
+        show and wait for: (service, kind, text), or None."""
+        if not self.needs_input():
+            return None
+        for i in self._issuing():
+            if self._core_needs_input(i):
+                return self.services.peek_dialog(self.machines[i])
+        return None
+
+    def dialogs(self) -> list:
+        """The dialogs the program has shown since the reset
+        (emips.dialogs.Dialog: message dialogs and answered input ones)."""
+        return list(self.services.dialogs) if self.services is not None else []
+
+    def dialog_positions(self) -> list[int]:
+        """Where each of :meth:`dialogs` came in the output (its length then)."""
+        return list(self._dialog_at)
+
+    def _dialog_shown(self, d) -> None:
+        self._dialog_at.append(len(self.output))
+        if self.on_dialog is not None and not getattr(self, "_replaying", False):
+            self.on_dialog(d)
+
     def needs_input(self) -> bool:
         """Is the next instruction to execute (on any core) a read_*
         syscall with no input available yet?"""
@@ -1454,8 +1505,11 @@ class Session:
         if m.rv:
             pc = self._next_executing_pc(cpu)
             return pc is not None and RV.needs_input(m, pc)
-        if m.read_reg(2) not in READ_SERVICES:  # (cheap: before the fetch)
-            return False
+        v0 = m.read_reg(2)
+        if v0 not in READ_SERVICES and not (v0 == 14 and m.read_reg(4) == 0):
+            return False                        # (cheap: before the fetch; 14: read of fd 0)
+        if v0 >= 50 and self.services.peek_dialog(m) is None:
+            return False                        # (a dialog this core does not offer)
         pc = self._next_executing_pc(cpu)
         if pc is None:
             return False
@@ -2189,9 +2243,13 @@ class Session:
             return False
         target = self.steps - 1
         self.reset()
-        for _ in range(target):
-            if self.step().steps == 0:
-                break
+        self._replaying = True                  # (dialogs are not announced again)
+        try:
+            for _ in range(target):
+                if self.step().steps == 0:
+                    break
+        finally:
+            self._replaying = False
         return True
 
     def toggle_breakpoint(self, addr: int) -> bool:
@@ -2985,6 +3043,56 @@ class Session:
             label = source if source.lower().startswith("blank:") else Path(source).name
             self.board.attach_disk(slot, m, name=f"{slot} ({label})")
 
+    def _make_file_area(self):
+        """The ``files`` option's files (emips.files), each as it was when
+        the program was loaded: every run starts from them."""
+        from .files import FileArea, parse_files
+        given: dict[str, bytes] = {}
+        try:
+            pairs = parse_files(self.options.files)
+        except ValueError as exc:
+            self.program_notes.append(str(exc))
+            pairs = []
+        for name, path in pairs:
+            data = self._file_data.get(path)
+            if data is None:
+                try:
+                    data = self._file_data[path] = Path(path).expanduser().read_bytes()
+                except OSError as exc:
+                    self.program_notes.append(f"--file {name}: {exc.strerror or exc}: {path}")
+                    continue
+            given[name] = data
+        return FileArea(given)
+
+    def midi_events(self) -> list:
+        """The MIDI notes the run has played so far (services 31 / 33:
+        emips.console.MidiEvent, in the order they were played)."""
+        sv = self.services
+        return list(sv.midi) if sv is not None else []
+
+    def file_lines(self) -> list[str]:
+        """The file area and the open descriptors (debugger ``files``)."""
+        area = self.file_area
+        if area is None:
+            return ["no program"]
+        out = area.lines()
+        if self.services is not None:
+            out += self.services.files.open_lines()
+        return out
+
+    def file_data(self, name: str) -> bytes:
+        area = self.file_area
+        if area is None or name not in area.data:
+            raise ValueError(f"no file {name!r} (files: "
+                             f"{', '.join(sorted(area.data)) if area else 'none'})")
+        return bytes(area.data[name])
+
+    def save_file(self, name: str, path: str) -> str:
+        """Write a file of the area as the run has left it to ``path``."""
+        data = self.file_data(name)
+        Path(path).expanduser().write_bytes(data)
+        return f"wrote {name} ({len(data)} bytes) to {path}"
+
     def disk_sources(self) -> dict[str, str]:
         """slot -> what the ``disks`` option puts there."""
         from .malta import parse_disks
@@ -3006,6 +3114,54 @@ class Session:
         Path(target).expanduser().write_bytes(disk.media.image())
         return (f"{slot}: {disk.sectors} sectors ({len(disk.media.written)} written by the "
                 f"program) saved to {target}")
+
+    # -- the bitmap display (emips.display, PLAN M27 phase S2) ----------------------
+
+    def display_device(self):
+        """The bitmap display of ``Options.display`` (None: none): the
+        device on the cores' buses since the last reset."""
+        return getattr(self, "_display", None)
+
+    def _make_display(self):
+        from .display import BitmapDisplay, parse
+        try:
+            spec = parse(self.options.display)
+        except ValueError:
+            spec = None
+        return BitmapDisplay(spec, irq=self._display_irq) if spec is not None else None
+
+    def _display_irq(self, on: bool) -> None:
+        """The display's vertical-blank interrupt, where the console's go
+        (emips.display): HW2 of a single core, GIC source 4 on a CPS, a
+        hart's MEIP / its platform's source; not wired on the Malta."""
+        from .display import GIC_SOURCE, IRQ_LINE
+        if self.board is not None:
+            return
+        if self.cps is not None:
+            self.cps.gic.set_input(GIC_SOURCE, on)
+        elif self.rv:
+            RV.display_irq(self, on)
+        else:
+            m = self._display.owner
+            if m is not None and bool(m.irq_lines >> IRQ_LINE & 1) != on:
+                (m.assert_irq if on else m.clear_irq)(IRQ_LINE)
+
+    def display_frame(self):
+        """A scan-out of the selected core's view of memory (a
+        ``display.Frame``; None without a display or a program): physical
+        memory below the caches, no side effects."""
+        dev = self.display_device()
+        if dev is None or self.machine is None:
+            return None
+        return dev.scan(self.machine)
+
+    def display_word(self, column: int, row: int) -> tuple[int, int | None, int] | None:
+        """(virtual address, physical address or None, the word) of the
+        display's pixel at (column, row)."""
+        dev = self.display_device()
+        if dev is None or self.machine is None:
+            return None
+        return dev.word_at(self.machine, column, row)
 
     def disk_lines(self, *, states: bool = True) -> list[str]:
         """The IDE disks (the debugger's ``disk``): why one is missing,

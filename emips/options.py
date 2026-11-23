@@ -255,6 +255,14 @@ class Options:
     #: sec0 / sec1 and SOURCE an image file or blank:SIZE (emips.ata; every
     #: run starts from the image, Session.save_disk keeps what it wrote)
     disks: str = ""
+    #: the bitmap display (emips.display, PLAN M27 phase S2): "" for none,
+    #: or "WxH[:UNIT[xUNIT]][@BASE]" — MARS's Bitmap Display (screen pixels,
+    #: the unit size, the base address or data / gp / static / heap / mmio)
+    display: str = ""
+    #: the program's files (emips.files, PLAN M27 phase S3): "NAME=PATH,..."
+    #: (or PATH: NAME = its file name) — what MARS's 13-16 / RARS's open ...
+    #: reach; every run starts from these files, never the host's others
+    files: str = ""
     #: the MMU (Config.MT): "fixed" (the Fixed Mapping MMU) or "tlb[:N]"
     #: (a TLB of N dual entries, default 32, with the 24K micro-TLBs)
     mmu: str = "fixed"
@@ -415,6 +423,16 @@ class Options:
             parse_disks(self.disks)
         except ValueError:
             self.disks = d.disks
+        try:
+            from .files import parse_files
+            parse_files(self.files)
+        except ValueError:
+            self.files = d.files
+        try:
+            from .display import parse as parse_display
+            parse_display(self.display)
+        except ValueError:
+            self.display = d.display
         for name in ("tx_delay", "rx_delay", "step_limit"):
             if getattr(self, name) < 0:
                 setattr(self, name, getattr(d, name))
@@ -457,10 +475,12 @@ class Options:
         return dict(USER_SEGMENT_BASES if self.boot == "user" else SEGMENT_BASES)
 
     def assembler_differs(self, other: "Options") -> bool:
-        """Do these options assemble a source differently from ``other``?"""
+        """Do these options assemble a source differently from ``other``?
+        (A C program's build also follows the DSP Module, MSA and the core
+        preset: Session._c_dsp / _c_msa.)"""
         return (self.pseudo, self.reorder, self.segment_bases(), self.c_optimize,
                 self.c_isa, self.fpu, self.arch, self.nms, self.relax, self.rv_extensions,
-                self.rv_relax) != \
+                self.rv_relax, self.dsp, self.msa, self.core) != \
             (other.pseudo, other.reorder, other.segment_bases(), other.c_optimize, other.c_isa,
              other.fpu, other.arch, other.nms, other.relax, other.rv_extensions,
-             other.rv_relax)
+             other.rv_relax, other.dsp, other.msa, other.core)

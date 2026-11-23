@@ -31,7 +31,7 @@ from .options import BOOT_MODES, Options
 #: the header (the first lines of a file)
 HEADER = re.compile(r"^\s*(?:#|//|/\*+|\*)\s*eMIPS:\s*(.*?)\s*(?:\(.*\))?\s*(?:\*/)?\s*$")
 #: the options a profile owns (the machine): unnamed ones go to their defaults
-PROFILE_FIELDS = ("board", "disks", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
+PROFILE_FIELDS = ("board", "disks", "display", "files", "iocu", "model", "icache", "dcache", "cache_parity", "l2", "l3",
                   "cache_ecc", "write_buffer", "nonblocking", "cache_init", "mmu", "cores",
                   "shadow_sets", "boot", "compressed", "fpu", "dsp", "msa", "msa_wrp", "mt",
                   "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv",
@@ -56,6 +56,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--little", action="store_true")
     p.add_argument("--board")
     p.add_argument("--disk", action="append")
+    p.add_argument("--display")
+    p.add_argument("--file", action="append", dest="data_files")
     p.add_argument("--model", choices=("5-stage", "24k", "p8700"))
     p.add_argument("--caches", action="store_true")
     p.add_argument("--icache")
@@ -169,6 +171,13 @@ def _resolve_disk(spec: str, base: Path | None) -> str:
     return f"{slot.strip()}{sep}{source}"
 
 
+def _resolve_path(path: str, base: str | Path | None) -> str:
+    p = Path(path).expanduser()
+    if base is not None and not p.is_absolute():
+        return str((Path(base) / p).resolve())
+    return path
+
+
 def read(text: str, base: str | Path | None = None) -> Profile | None:
     """The program's profile (None: no header); ``base``: the program's
     folder (disk image paths are relative to it).  A malformed header is
@@ -186,7 +195,8 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
     for name in ("board", "model", "icache", "dcache", "l2", "l3", "mmu", "cores",
                  "shadow_sets", "boot", "cache_init", "compressed", "dsp", "msa", "msa_wrp",
                  "mt", "mt_pm", "itc", "vps", "itu", "core", "arch", "crc", "ginv",
-                 "rv_extensions", "rv_modes", "rv_rnmi", "rv_intc", "l2_waits", "dspram"):
+                 "rv_extensions", "rv_modes", "rv_rnmi", "rv_intc", "l2_waits", "dspram",
+                 "display"):
         v = getattr(ns, name)
         if v is not None:
             o[name] = v.lower() if isinstance(v, str) and name not in ("boot", "rv_rnmi") \
@@ -195,6 +205,14 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
         o["disks"] = ",".join(_resolve_disk(d, Path(base) if base is not None else None)
                               for d in ns.disk)
         ns.disk = o["disks"].split(",")
+    if ns.data_files:                   # (paths relative to the program's folder)
+        from .files import parse_files
+        try:
+            pairs = parse_files(",".join(ns.data_files))
+        except ValueError as exc:
+            raise ValueError(f"eMIPS header: {exc}") from None
+        o["files"] = ",".join(f"{n}={_resolve_path(path, base)}" for n, path in pairs)
+        ns.data_files = o["files"].split(",")
     if ns.caches:
         o.setdefault("icache", "32K")
         o.setdefault("dcache", "32K")

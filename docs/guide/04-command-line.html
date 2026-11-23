@@ -359,6 +359,16 @@ output — the test suite re-runs them.</p>
 <td>an IDE disk on the Malta (with <code>--board malta</code>; repeatable): SLOT <code>pri0</code> (the default, then <code>pri1</code>, <code>sec0</code>, <code>sec1</code>), IMAGE a file (its bytes are the sectors) or <code>blank:SIZE</code> (<code>blank:8M</code>); every run starts from the image (<a href="05-understanding.html#an-ide-disk">Phase 5, An IDE disk</a>)</td>
 </tr>
 <tr>
+<td><code>--display WxH[:UNIT][@BASE]</code></td>
+<td>run, pipe, debug</td>
+<td>a bitmap display, as MARS's: WIDTH x HEIGHT screen pixels, each memory word drawn as UNIT x UNIT (1-32, or <code>UxV</code>), from BASE — an address or <code>data</code> / <code>gp</code> / <code>static</code> (default) / <code>heap</code> / <code>mmio</code>; one word <code>0x00RRGGBB</code> a pixel, e.g. <code>512x256:8@gp</code> (<a href="02-writing-programs.html#the-bitmap-display">Phase 2, 2.35</a>)</td>
+</tr>
+<tr>
+<td><code>--file NAME=PATH</code></td>
+<td>run, pipe, debug</td>
+<td>a file the program may open (services 13-16; RARS's 1024 / 63 / 64 / 57 / 62) by NAME (default: PATH's file name); repeatable; it reaches no other file and every run starts from these (<a href="02-writing-programs.html#files">Phase 2, 2.35</a>)</td>
+</tr>
+<tr>
 <td><code>--mmu SPEC</code></td>
 <td>run, pipe, debug</td>
 <td>the MMU: <code>fixed</code> (default), <code>bat</code>, <code>tlb[:N]</code> (a 24K's TLB, N = 32), <code>ftlb[:N[:SETSxWAYS]]</code> (VTLB + FTLB, 64 + 128x4); a TLB takes <code>+sc</code> (segmentation control, EVA) and <code>+pw</code> (page table walker), e.g. <code>ftlb+sc+pw</code>; on a MIPS64 core (<code>--arch mips64</code>) <code>fixed</code> and <code>bat</code> keep 32-bit addresses, a TLB gives the 64-bit address space — with <code>+sc</code> the xkphys regions of SegCtl1.XAM / SegCtl2.XR and a 64-bit EBase, with <code>+pw</code> 64-bit page tables (PWSize.PS, PWCtl.XK / XS / XU) (<a href="05-understanding.html#the-tlb">Phase 5</a>); on a nanoMIPS core also <code>mpu[:N]</code> (the I7200's memory protection unit with N regions, 16 by default: PA = VA, segments and regions with RI / WI / XI) and <code>fixed+mpu[:N]</code> (the fixed mapping with N MPU regions) (<a href="05-understanding.html#the-other-mmus">Phase 5, The other MMUs</a>)</td>
@@ -461,6 +471,18 @@ $zero 0x00000000    $at 0x00000000    $v0 0x0000000a    $v1 0x00000000
 <tr>
 <td><code>--perf EVENT[,EVENT]</code></td>
 <td>set the performance counters to count these events (user and kernel mode) and print them at the end (<a href="05-understanding.html#counting-it-yourself-the-performance-counters">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>--display-png FILE</code></td>
+<td>at the end, write the bitmap display (<code>--display</code>) as a PNG image</td>
+</tr>
+<tr>
+<td><code>--files-out DIR</code></td>
+<td>at the end, write every file the program wrote or created (<code>--file</code>) into DIR</td>
+</tr>
+<tr>
+<td><code>--midi-wav FILE</code> / <code>--midi-file FILE</code></td>
+<td>at the end, the MIDI notes the program played (services 31 / 33) as a WAV file / a standard MIDI file (<a href="02-writing-programs.html#sound">Phase 2, 2.35</a>)</td>
 </tr>
 <tr>
 <td><code>--pipeline</code></td>
@@ -735,6 +757,18 @@ condition and increment) gets a breakpoint on each.</p>
 <tr>
 <td><code>board</code></td>
 <td>the board: on the Malta its SDRAM, LEDs, ASCII display and switches, the GT-64120's interrupt cause, bus error and decode error addresses, and what it decodes where (<a href="05-understanding.html#a-real-board-the-mips-malta">Phase 5</a>)</td>
+</tr>
+<tr>
+<td><code>display</code> / <code>display at COL ROW</code> / <code>display save FILE</code></td>
+<td>the bitmap display: its size, base and the words written so far / one pixel: its address, physical address and colour / a PNG of it (<a href="02-writing-programs.html#the-bitmap-display">Phase 2, 2.35</a>)</td>
+</tr>
+<tr>
+<td><code>files</code> / <code>files show NAME</code> / <code>files save NAME FILE</code></td>
+<td>the program's files: each one's size and whether the run wrote or created it, the descriptors open / its contents (text or a hex dump) / write it as the run left it (<a href="02-writing-programs.html#files">Phase 2, 2.35</a>)</td>
+</tr>
+<tr>
+<td><code>midi</code> / <code>midi wav FILE</code> / <code>midi mid FILE</code></td>
+<td>the MIDI notes played so far: when, the core, note, duration, instrument, volume / as a WAV file / as a standard MIDI file (<a href="02-writing-programs.html#sound">Phase 2, 2.35</a>)</td>
 </tr>
 <tr>
 <td><code>disk</code> / <code>disk show SLOT LBA [N]</code> / <code>disk save SLOT [FILE]</code></td>
@@ -1016,8 +1050,9 @@ double 0.1   (normal: +1.fraction × 2^(1019 − 1023) = +1.fraction × 2^-4)
 note: single precision cannot hold 0.1 exactly: stored 0.10000000149011612 (error +1.49e-09)
 </code></pre>
 <p><strong>Console</strong>: <code>input TEXT</code> gives a line to the next <code>read_int</code> /
-<code>read_string</code> ...; <code>keys TEXT</code> types on the memory-mapped keyboard (<code>\n</code>
-is Enter).</p>
+<code>read_string</code> ... or the next input dialog (services 50-54; <code>input !cancel</code> is its
+Cancel button, <code>!close</code> closes a confirm dialog); <code>keys TEXT</code> types on the
+memory-mapped keyboard (<code>\n</code> is Enter).</p>
 <pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/hello_input.asm
 (emips) input 7
 (emips) continue
@@ -1142,6 +1177,14 @@ the program exited
 <tr>
 <td><code>set board flat|malta[:RAM_MB[:SWITCHES[:MHZ]]]</code></td>
 <td>the board (like <code>--board</code>); the program is assembled again</td>
+</tr>
+<tr>
+<td><code>set display WxH[:UNIT][@BASE]|none</code></td>
+<td>the bitmap display (like <code>--display</code>); the program goes on</td>
+</tr>
+<tr>
+<td><code>set files NAME=PATH[,...]|none</code></td>
+<td>the program's files (like <code>--file</code>); the program restarts with them</td>
 </tr>
 <tr>
 <td><code>set disks [SLOT=]IMAGE[,...]|none</code></td>

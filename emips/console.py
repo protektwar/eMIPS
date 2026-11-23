@@ -31,7 +31,12 @@ from __future__ import annotations
 
 import struct
 from collections import deque
+from dataclasses import dataclass
 from typing import Callable
+
+from .files import FileArea, FileTable
+from . import dialogs as D
+from .rvservices import CYCLES_PER_MS, JavaRandom, ServiceError
 
 M32 = 0xFFFFFFFF
 
@@ -179,6 +184,29 @@ class MmioConsole:
                 machine.clear_irq(line)
 
 
+@dataclass(frozen=True)
+class MidiEvent:
+    """One MIDI note (MARS 31 / 33, RARS 31 / 33): when (the core's cycle)
+    and what — out-of-range values already replaced by ToneGenerator's
+    defaults (pitch 60, 1000 ms, instrument 0, volume 100)."""
+    cycle: int
+    cpu: int
+    pitch: int
+    duration: int                             # ms
+    instrument: int
+    volume: int
+    sync: bool                                # 33: the program waited for it
+
+    @classmethod
+    def of(cls, m, args: list[int], sync: bool) -> "MidiEvent":
+        pitch, duration, instrument, volume = args
+        ok = range(128)
+        return cls(m.cycles + getattr(m, "clock_offset", 0), getattr(m, "cpu", 0),
+                   pitch if pitch in ok else 60, duration if duration >= 0 else 1000,
+                   instrument if instrument in ok else 0, volume if volume in ok else 100,
+                   sync)
+
+
 class SyscallServices:
     """MARS / SPIM syscall services (install as ``machine.syscall_handler``).
 
@@ -190,7 +218,21 @@ class SyscallServices:
     a nanoMIPS core (PLAN M23) the registers are the same numbers — the
     service and the result in $2 (p32's $t4), the arguments in $4-$6
     ($a0-$a2), as UHI keeps them on nanoMIPS (MD01069 ch. 2) — and the
-    FPU services (2, 3, 6, 7) are not offered: it has no FPRs.
+    FPU services (2, 3, 6, 7, 43, 44) are not offered: it has no FPRs.
+
+    MARS 4.5's time, sound and random services (PLAN M27 phase S1;
+    MARS 4.5's ``mars/mips/instructions/syscalls/``), as RARS's are on RISC-V
+    (``emips.rvservices``) and with the same choices, because a run must
+    replay exactly (``sim.DEVIATIONS["MARS services"]``): time (30) counts
+    the core's cycles at 1 MHz from 0 (MARS: the host's clock), sleep (32)
+    lets that time pass, MIDI (31 / 33: pitch, duration, instrument,
+    volume in $a0-$a3, each out of 0-127 replaced by ToneGenerator's
+    default) is recorded in :attr:`midi` as an event at the core's cycle
+    (:class:`MidiEvent`) and 33 waits its duration; the random streams
+    (40-44) are ``java.util.Random`` — a seeded one draws what MARS draws,
+    an unseeded one starts from seed 0 (MARS: the host's clock) — results
+    in $a0 / $f0; a bound below 1 for 42 stops the program
+    (:class:`~emips.rvservices.ServiceError`, MARS's ProcessingException).
     """
 
     HEAP_BASE = 0x10040000                    # MARS heap
@@ -202,15 +244,28 @@ class SyscallServices:
         self.output = ""
         self.heap = self.HEAP_BASE
         self.exit_code: int | None = None
+        self.streams: dict[int, JavaRandom] = {}
+        self.midi: list[MidiEvent] = []
+        self.files = FileTable(FileArea())    # (the Session gives the program's files)
+        #: the dialogs shown so far (emips.dialogs.Dialog; 50-59)
+        self.dialogs: list = []
+        #: ``on_dialog(dialog)``: told of each one as it is shown
+        self.on_dialog = None
 
     def write(self, text: str) -> None:
         self.output += text
         if self._write:
             self._write(text)
 
+    def _stream(self, index: int) -> JavaRandom:
+        s = self.streams.get(index)
+        if s is None:                         # (MARS: new Random(), seeded by the clock)
+            s = self.streams[index] = JavaRandom(0)
+        return s
+
     def __call__(self, m, code: int) -> bool:
         v0 = m.read_reg(2)
-        if m.nano and v0 in (2, 3, 6, 7):     # nanoMIPS has no FPRs: as an unknown service
+        if m.nano and v0 in (2, 3, 6, 7, 43, 44):   # nanoMIPS has no FPRs: an unknown service
             return False
         a0, a1 = m.read_reg(4), m.read_reg(5)
         s32 = lambda x: x - (1 << 32) if x & 0x80000000 else x   # noqa: E731
@@ -262,9 +317,163 @@ class SyscallServices:
             self.write(f"{a0:064b}" if wide else f"{a0:032b}")
         elif v0 == 36:                        # MARS: print unsigned
             self.write(str(a0))
+        elif v0 == 30:                        # time: ms in $a0 (low) / $a1 (high)
+            ms = (m.cycles + getattr(m, "clock_offset", 0)) // CYCLES_PER_MS
+            m.write_reg(4, ms & M32)
+            m.write_reg(5, (ms >> 32) & M32)
+        elif v0 == 32:                        # sleep $a0 ms
+            if s32(a0 & M32) > 0:
+                m.advance(s32(a0 & M32) * CYCLES_PER_MS)
+        elif v0 in (31, 33):                  # MIDI out (33: synchronous)
+            ev = MidiEvent.of(m, [s32(m.read_reg(r) & M32) for r in (4, 5, 6, 7)], v0 == 33)
+            self.midi.append(ev)
+            if ev.sync and ev.duration > 0:
+                m.advance(ev.duration * CYCLES_PER_MS)
+        elif v0 == 40:                        # random seed ($a0 stream, $a1 seed)
+            s = self.streams.get(s32(a0 & M32))
+            if s is None:
+                self.streams[s32(a0 & M32)] = JavaRandom(s32(a1 & M32))
+            else:
+                s.set_seed(s32(a1 & M32))
+        elif v0 == 41:                        # random int -> $a0
+            m.write_reg(4, self._stream(s32(a0 & M32)).next_int() & M32)
+        elif v0 == 42:                        # random int in [0, $a1) -> $a0
+            bound = s32(a1 & M32)
+            if bound <= 0:
+                raise ServiceError("Upper bound of range cannot be negative (syscall 42)")
+            m.write_reg(4, self._stream(s32(a0 & M32)).next_int(bound))
+        elif v0 == 43:                        # random float -> $f0
+            bits = struct.unpack(">I", struct.pack(">f", self._stream(s32(a0 & M32))
+                                                   .next_float()))[0]
+            m.fpr[0] = (m.fpr[0] & ~M32) | bits
+        elif v0 == 44:                        # random double -> $f0 / $f1
+            from .sim import fpr_set
+            bits = struct.unpack(">Q", struct.pack(">d", self._stream(s32(a0 & M32))
+                                                   .next_double()))[0]
+            fpr_set(m, 0, "L", bits)
+        elif v0 == 13:                        # open ($a0 name, $a1 flags) -> $v0 fd
+            m.write_reg(2, self.files.open(_cstring(m, a0), s32(a1 & M32)) & M32)
+        elif v0 == 14:                        # read ($a0 fd, $a1 buffer, $a2 length)
+            m.write_reg(2, self._read_fd(m, s32(a0 & M32), a1,
+                                         s32(m.read_reg(6) & M32)) & M32)
+        elif v0 == 15:                        # write ($a0 fd, $a1 buffer, $a2 length)
+            m.write_reg(2, self._write_fd(m, s32(a0 & M32), a1,
+                                          s32(m.read_reg(6) & M32)) & M32)
+        elif v0 == 16:                        # close ($a0 fd)
+            self.files.close(s32(a0 & M32))
+        elif 50 <= v0 <= 59:                  # the dialogs (emips.dialogs)
+            if m.nano and v0 in D.FLOAT_SERVICES:
+                return False
+            self._dialog(m, v0, a0, s32(a1 & M32))
         else:
             return False                      # not ours: take the exception
         return True
+
+    def _show(self, d) -> None:
+        self.dialogs.append(d)
+        if self.on_dialog is not None:
+            self.on_dialog(d)
+
+    def peek_dialog(self, m):
+        """The input dialog the next syscall would show, as (service, kind,
+        text), or None (a view: no side effects)."""
+        v0 = m.read_reg(2) & M32
+        if v0 not in D.INPUT or m.nano and v0 in D.FLOAT_SERVICES:
+            return None
+        return v0, D.INPUT[v0], _cstring(m, m.read_reg(4))
+
+    def _dialog(self, m, v0: int, a0: int, a1: int) -> None:
+        """MARS 4.5's dialogs (SyscallConfirmDialog ... MessageDialogString)."""
+        from .rvservices import java_string
+        from .sim import fpr_get, fpr_set
+        text = _cstring(m, a0)
+        if v0 not in D.INPUT:                 # 55-59: shown, nothing returned
+            icon = D.ICONS.get(a1, "plain") if v0 == 55 else "information"
+            if v0 == 56:
+                text += str(a1)
+            elif v0 == 57:
+                text += java_string(struct.unpack(">f", (m.fpr[12] & M32).to_bytes(4, "big"))[0],
+                                    single=True)
+            elif v0 == 58:
+                text += java_string(struct.unpack(">d", fpr_get(m, 12, "D").to_bytes(8, "big"))[0])
+            elif v0 == 59:
+                text += _cstring(m, m.read_reg(5))
+            self._show(D.Dialog(v0, "message", text, icon))
+            return
+        answer = self.read_line()             # (InputNeeded: the window asks)
+        self._show(D.Dialog(v0, D.INPUT[v0], text, answer=answer))
+        set_a0 = (lambda v: m.write_reg(4, v & M32))
+        set_a1 = (lambda v: m.write_reg(5, v & M32))
+        if v0 == 50:
+            set_a0(D.confirm_value(answer, rars=False))
+            return
+        if v0 == 51:
+            if answer == D.CANCEL:
+                set_a0(0), set_a1(-2)
+            elif answer == "":
+                set_a0(0), set_a1(-3)
+            else:
+                try:
+                    set_a0(D.parse_int(answer)), set_a1(0)
+                except ValueError:
+                    set_a0(0), set_a1(-1)
+            return
+        if v0 in (52, 53):
+            single = v0 == 52
+
+            def put(x: float) -> None:
+                if single:
+                    bits = struct.unpack(">I", struct.pack(">f", x))[0]
+                    m.fpr[0] = (m.fpr[0] & ~M32) | bits
+                else:
+                    fpr_set(m, 0, "L", struct.unpack(">Q", struct.pack(">d", x))[0])
+            put(0.0)
+            if answer == D.CANCEL:
+                set_a1(-2)
+            elif answer == "":
+                set_a1(-3)
+            else:
+                try:
+                    put(D.parse_float(answer)), set_a1(0)
+                except (ValueError, OverflowError):
+                    set_a1(-1)
+            return
+        size = m.read_reg(6) & M32                            # 54: string
+        buf, size = m.read_reg(5), size - (1 << 32) if size >> 31 else size
+        if answer == D.CANCEL:
+            set_a1(-2)
+        elif answer == "":
+            set_a1(-3)
+        else:
+            stores, flag = D.string_bytes(bytes(ord(c) & 0xFF for c in answer), size, False)
+            for off, b in stores:
+                m.write_byte((buf + off) & m.amask, b)
+            set_a1(flag)
+
+    def _read_fd(self, m, fd: int, buf: int, length: int) -> int:
+        """MARS readFromFile: the bytes read, 0 at the end, -1 (not open for
+        reading, a negative length); fd 0 = the console's next input line."""
+        if length < 0:
+            return -1
+        if fd == 0:
+            data = (self.read_line() + "\n").encode("latin-1", "replace")[:length]
+        else:
+            data = self.files.read(fd, length)
+            if data is None:
+                return -1
+        for i, b in enumerate(data):
+            m.write_byte((buf + i) & m.amask, b)
+        return len(data)
+
+    def _write_fd(self, m, fd: int, buf: int, length: int) -> int:
+        """MARS writeToFile: the length written or -1; fd 1 / 2 = the console."""
+        if length < 0:
+            return -1
+        data = bytes(m.read_byte((buf + i) & m.amask) for i in range(length))
+        if fd in (1, 2):
+            self.write(data.decode("latin-1"))
+            return length
+        return self.files.write(fd, data)
 
 
 def _cstring(m, addr: int, limit: int = 1 << 16) -> str:

@@ -67,6 +67,7 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#232-risc-v-control-flow-integrity-landing-pads-and-a-shadow-stack">2.32 RISC-V control-flow integrity: landing pads and a shadow stack</a></li>
 <li><a href="#233-macros-repetition-and-conditional-assembly">2.33 Macros, repetition and conditional assembly</a></li>
 <li><a href="#234-risc-v-more-directives-thread-local-storage-and-the-got">2.34 RISC-V: more directives, thread-local storage and the GOT</a></li>
+<li><a href="#235-pictures-files-sound-and-random-numbers">2.35 Pictures, files, sound and random numbers</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -3092,6 +3093,214 @@ scratch: .space 4
 <code>auipc</code> / <code>lw</code> pairs read slots of the <code>.got</code> after
 <code>.data</code> (eMIPS keeps <code>.data</code> at RARS's 0x10010000 and puts
 <code>.tdata</code>, <code>.tbss</code> and the GOT after it).</p>
+<h2 id="235-pictures-files-sound-and-random-numbers">2.35 Pictures, files, sound and random numbers</h2>
+<p>MARS gives its programs more than a console: a <strong>bitmap display</strong>,
+<strong>files</strong>, <strong>MIDI sound</strong>, <strong>random numbers</strong>, the
+<strong>time</strong> and <strong>dialogs</strong>.  eMIPS has them all, with the same service numbers (RARS's on
+RISC-V), and with one rule MARS does not have: a run must come out the same
+every time — Step Back replays it from the start, and checks
+(<a href="04-command-line.html#414-check--does-the-program-do-what-it-should">4.14</a>)
+compare it with what it should do.  So nothing a program does reaches your
+computer's clock, its random numbers or its files: time is the core's own
+clock, random numbers come from a seed, and files are only those you give
+the program.  The full list of services is in
+<a href="06-reference.html#61-system-calls">6.1</a>.</p>
+<h3 id="random-numbers-and-the-time">Random numbers and the time</h3>
+<p>Service 40 seeds a random stream (<code>$a0</code> the stream's number,
+<code>$a1</code> the seed), 41 draws an int, 42 an int in [0, <code>$a1</code>), 43 / 44
+a float / double in [0, 1).  They are Java's <code>java.util.Random</code>, as in MARS,
+so a seeded program draws exactly MARS's numbers.  A stream never seeded starts
+from seed 0 (MARS seeds it from the clock: a different run each time):</p>
+<pre><code class="language-asm"># output: 3 4 1 3 1 2 6 3 2 6 
+        .text
+main:   li    $v0, 40                 # seed stream 0 with 42
+        li    $a0, 0
+        li    $a1, 42
+        syscall
+        li    $s0, 10                 # ten dice
+roll:   li    $v0, 42                 # 0 .. 5 from stream 0
+        li    $a0, 0
+        li    $a1, 6
+        syscall
+        addiu $a0, $a0, 1             # 1 .. 6
+        li    $v0, 1
+        syscall
+        li    $a0, ' '
+        li    $v0, 11
+        syscall
+        addiu $s0, $s0, -1
+        bnez  $s0, roll
+        li    $v0, 10
+        syscall
+</code></pre>
+<p>Service 30 gives the time in milliseconds (<code>$a0</code> the low word,
+<code>$a1</code> the high): in eMIPS the core's cycles at 1 MHz from the start, 1000
+cycles a millisecond.  Service 32 sleeps <code>$a0</code> milliseconds — the clock
+moves on that far, without the program running:</p>
+<pre><code class="language-asm"># output: 250
+        .text
+main:   li    $v0, 30                 # the time: milliseconds in $a0 (low) / $a1 (high)
+        syscall
+        move  $s0, $a0
+        li    $v0, 32                 # sleep 250 ms
+        li    $a0, 250
+        syscall
+        li    $v0, 30
+        syscall
+        subu  $a0, $a0, $s0           # how long it slept
+        li    $v0, 1
+        syscall
+        li    $v0, 10
+        syscall
+</code></pre>
+<h3 id="the-bitmap-display">The bitmap display</h3>
+<p>MARS's <strong>Bitmap Display</strong> draws memory as pixels: one word
+<code>0x00RRGGBB</code> a pixel, row after row from a base address.  Switch it on with
+<code>--display WIDTHxHEIGHT[:UNIT][@BASE]</code> (the program's
+<code># eMIPS:</code> line, the command line, or Settings → Exceptions &amp; I/O →
+<strong>Bitmap display</strong>): WIDTH x HEIGHT screen pixels, each memory word drawn as
+UNIT x UNIT of them, from BASE — an address, or one of MARS's choices
+<code>data</code> (0x10000000), <code>gp</code> (0x10008000), <code>static</code> (0x10010000,
+the default), <code>heap</code> (0x10040000), <code>mmio</code> (0xFFFF0000).  A word's
+address is BASE + (row x columns + column) x 4.</p>
+<pre><code class="language-mips">        # the pixel at (column $a0, row $a1) of a 32-word-wide display at $gp
+        sll   $t0, $a1, 5            # row * 32
+        addu  $t0, $t0, $a0          # + column
+        sll   $t0, $t0, 2            # * 4 bytes
+        addu  $t0, $t0, $gp
+        sw    $s7, 0($t0)            # the colour 0x00RRGGBB
+</code></pre>
+<p>The example <code>bitmap_gradient.asm</code> (File → Examples) paints a gradient; its
+first line asks for <code>--display 256x256:16@static</code>, so the window opens the
+<strong>Display</strong> pane (<a href="03-the-gui.html#display-files-and-sound">3.8</a>).
+The debugger's <code>display</code> says what is drawn, <code>display at COL ROW</code>
+reads one pixel, <code>display save FILE</code> writes a PNG (as <code>run --display-png
+FILE</code> does at the end):</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/bitmap_gradient.asm -c run -c display -c "display at 3 2"
+...
+(emips) display
+display 256 x 256 pixels, unit 16 x 16: 16 x 16 words from 0x10010000 (static) to 0x100103ff
+  256 of 256 words written; read from physical memory, below the caches
+  CONTROL: on, vertical-blank interrupt disabled   STATUS.VBLANK 0
+  FRONT 0x10010000   FRAME 0   PERIOD 16667 cycles (60.0 Hz at 1 MHz), the next in 14279
+  registers at 0xffff0020: CONTROL +0x0, STATUS +0x4, BASE +0x8, FRONT +0xc, FRAME +0x10, PERIOD +0x14, COLUMNS +0x18, ROWS +0x1c
+(emips) display at 3 2
+(3, 2): 0x1001008c, PA 0x5001008c: 0x00200030 = RGB (32, 0, 48)
+</code></pre>
+<p>(PA: the physical address — the fixed mapping puts kuseg 1 GB higher,
+<a href="05-understanding.html#58-memory-addresses-and-byte-order">5.8</a>.)  The display reads
+<strong>physical memory below the caches</strong>, as a real frame buffer does: with
+write-back caches a pixel appears only when its line is written back
+(<a href="05-understanding.html#a-frame-buffer-and-the-caches">5.8, A frame buffer and the
+caches</a>).  Labs 90 and 91 draw lines and meet the caches.</p>
+<h4 id="the-displays-registers-and-the-vertical-blank">The display's registers and the vertical blank</h4>
+<p>A real display redraws the screen many times a second, and between two
+frames comes the <strong>vertical blank</strong> — the moment to change what it
+shows.  eMIPS's display has eight registers for that (MARS has none: they are
+eMIPS's own), words at <code>0xffff0020</code> next to the MMIO console, in kseg3
+(kernel mode):</p>
+<table>
+<thead>
+<tr><th>Offset</th><th>Register</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>0x00</td><td>CONTROL</td><td>bit 0 ON (1 at reset: the picture is shown), bit 1 IE (the vertical-blank interrupt)</td></tr>
+<tr><td>0x04</td><td>STATUS</td><td>bit 0 VBLANK: set at every vertical blank, cleared by writing 1</td></tr>
+<tr><td>0x08</td><td>BASE</td><td>the base address of the next frame: it takes effect at the next vertical blank</td></tr>
+<tr><td>0x0C</td><td>FRONT</td><td>the base address being shown</td></tr>
+<tr><td>0x10</td><td>FRAME</td><td>the vertical blanks so far</td></tr>
+<tr><td>0x14</td><td>PERIOD</td><td>cycles from one blank to the next: 16667 at reset, 60 Hz on the 1 MHz clock of service 30</td></tr>
+<tr><td>0x18 / 0x1C</td><td>COLUMNS / ROWS</td><td>the words of a row, the rows</td></tr>
+</tbody>
+</table>
+<p>With IE set, VBLANK raises an interrupt — hardware line 2, Cause.IP4 (on
+several cores the GIC's source 4 to core 0; on RISC-V the hart's external
+interrupt) — until the handler clears it.  Writing BASE and waiting for the
+blank is <strong>double buffering</strong>: draw the next picture in a buffer
+nobody sees, then swap — the screen never shows a half-drawn frame.  Lab 94
+moves a square that way.</p>
+<h3 id="dialogs">Dialogs</h3>
+<p>MARS's dialog services ask and tell in a window of their own.  Input
+dialogs wait for an answer: 50 ConfirmDialog (<code>$a0</code> = 0 Yes, 1 No,
+2 Cancel), 51 InputDialogInt (<code>$a0</code> the number), 52 / 53 the float /
+double (<code>$f0</code>), 54 InputDialogString (<code>$a1</code> the buffer,
+<code>$a2</code> its size) — each with a status in <code>$a1</code>: 0 OK, -1 not
+a number, -2 Cancel, -3 OK with nothing typed, -4 the string was cut.  Message
+dialogs just show: 55 a message (<code>$a1</code> its icon: 0 error, 1
+information, 2 warning, 3 question), 56-59 a message followed by an int
+(<code>$a1</code>), a float / double (<code>$f12</code>) or a string
+(<code>$a1</code>).</p>
+<p>In the window they are real dialogs (the example <code>dialogs.asm</code>).  On
+the command line an input dialog's answer is the next line of the program's
+input — <code>!cancel</code> for Cancel — and every dialog is printed, never mixed
+into the program's output.  Answers are kept like any input, so Step Back
+replays them:</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/dialogs.asm -c "input 19" -c "input Ada" -c "input n" -c run
+(emips) input 19
+(emips) input Ada
+(emips) input n
+(emips) run
+[InputDialogInt] How old are you? -&gt; '19'
+[MessageDialogInt] Next year you will be 20
+[InputDialogString] What is your name? -&gt; 'Ada'
+[MessageDialogString] Hello, Ada\n
+[ConfirmDialog] Shall I say it on the console too? -&gt; 'n'
+...
+</code></pre>
+<p>(RARS's are the same numbers in <code>a0</code> / <code>a1</code> / <code>a2</code>; its
+float message is 60, reading <code>fa1</code>.)</p>
+<h3 id="files">Files</h3>
+<p>Services 13 (open), 14 (read), 15 (write) and 16 (close) work as MARS's —
+on the files <strong>given with the program</strong>: <code>--file NAME=PATH</code> (or just
+<code>PATH</code>; repeat it for more), in the <code># eMIPS:</code> line (paths relative to
+the program), on the command line or in Settings → Exceptions &amp; I/O →
+<strong>Files</strong>.  The program opens them by NAME and may create new ones; it
+reaches nothing else.  Every run starts from the given files again; what a run
+wrote stays until the next one — the <strong>Files</strong> pane, the debugger's
+<code>files</code> and <code>run --files-out DIR</code> show and save it.</p>
+<pre><code class="language-mips">        li    $v0, 13                 # open: $a0 the name, $a1 0 read / 1 write / 9 append
+        la    $a0, name
+        li    $a1, 0
+        syscall                       # $v0 = the descriptor (3, 4 ...), -1 if not there
+        move  $s0, $v0
+        li    $v0, 14                 # read: $a0 descriptor, $a1 buffer, $a2 at most
+        move  $a0, $s0
+        la    $a1, buf
+        li    $a2, 64
+        syscall                       # $v0 = bytes read, 0 at the end of the file
+</code></pre>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/read_file.asm -c run -c files
+(emips) run
+Hello from a file.
+This text was given to the program with --file;
+it reaches no other file on your computer.
+the program exited
+   0x0040006c  syscall
+   (ended)
+(emips) files
+hello.txt: 110 bytes (given)
+</code></pre>
+<p>Descriptors 0, 1 and 2 are the console (reading 0 takes a line of input),
+the program's own start at 3.  Lab 92 counts a file's lines and words.</p>
+<h3 id="sound">Sound</h3>
+<p>Service 31 plays a MIDI note — <code>$a0</code> the pitch (60 = middle C, one
+step a semitone), <code>$a1</code> the duration in milliseconds, <code>$a2</code> the
+instrument (General MIDI, 0 = piano), <code>$a3</code> the volume, each 0-127 — and
+goes on at once; 33 plays it and waits until it ends.  eMIPS records the notes
+on the core's clock: the <strong>Sound</strong> pane lists them and plays them while the
+program runs (when your Qt has QtMultimedia), the debugger's <code>midi</code> lists
+them, <code>run --midi-wav FILE</code> renders them as a WAV file and
+<code>--midi-file FILE</code> writes a standard MIDI file any synthesizer plays with
+its real instruments.</p>
+<pre><code class="language-console">$ python3 -m emips debug emips/gui/examples/play_scale.asm -c run -c midi
+...
+(emips) midi
+15 notes:
+       0.010 ms  core 0  C4   (pitch  60)  200 ms  instrument 0 (piano)  volume 100  [33: waited]
+     200.024 ms  core 0  D4   (pitch  62)  200 ms  instrument 0 (piano)  volume 100  [33: waited]
+...
+</code></pre>
+<p>Lab 93 plays a tune and times it.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

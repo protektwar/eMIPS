@@ -204,15 +204,19 @@ class ElfImage:
     def isa_ranges(self) -> list[tuple[int, int, str]]:
         """``(start, end, isa)`` of the code: each executable range split
         at its symbols, a region taking the ISA of the symbol it starts at
-        (what objdump does: STO_MIPS16 / STO_MICROMIPS mark 16-bit code);
-        nanoMIPS code is all "nanomips"."""
+        (STO_MIPS16 / STO_MICROMIPS mark 16-bit code); nanoMIPS code is all
+        "nanomips".  At one address a function's symbol beats a label's —
+        GCC puts its MIPS16 ``$Ltext0`` on a ``nomips16`` function, which
+        objdump then lists as MIPS16 (wrong: ``emips_syscall1`` of a
+        ``-mips16`` build is MIPS32, reached with JALX) — and between two of
+        one kind the MIPS16e / microMIPS one (the linker's ``_ftext`` next
+        to the code's own)."""
         if self.arch == "nanomips" or self.rv:
             return [(a, b, "riscv" if self.rv else "nanomips") for a, b in self.code_ranges()]
         out = []
-        # (at one address a MIPS16e / microMIPS symbol beats a MIPS32 one:
-        # the linker's _ftext / __start next to the code's own)
-        syms = sorted(((s.value, s.isa) for s in self.symbols),
-                      key=lambda v: (v[0], v[1] != "mips32"))
+        syms = [(v, isa) for v, _func, isa in sorted(
+            ((s.value, s.kind == "func", s.isa) for s in self.symbols),
+            key=lambda v: (v[0], v[1], v[2] != "mips32"))]          # (the last one wins)
         for start, stop in self.code_ranges():
             marks = [(a, isa) for a, isa in syms if start <= a < stop]
             cur, isa = start, "mips32"

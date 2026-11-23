@@ -246,7 +246,7 @@ Online at [**protektwar.github.io/eMIPS**](https://protektwar.github.io/eMIPS/),
 and in this folder as [**docs/guide/index.html**](docs/guide/index.html) —
 open it in a web browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 89 labs
+computer architecture behind every number on the screen (with 94 labs
 you check with eMIPS itself), and a reference.
 
 

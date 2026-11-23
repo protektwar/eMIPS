@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emips"
-version = "2.9.1"
+version = "2.10.0"
 description = "A MIPS32 teaching emulator: assembler, disassembler, every release R1-R6, CP0, FPU, caches, TLBs, the 5-stage and 24K pipelines, multi-core, EJTAG"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,6 @@ emips-gui = "emips.gui.main:main"
 include = ["emips*"]
 
 [tool.setuptools.package-data]
-"emips" = ["data/*.json", "data/*.dat", "gui/examples/*.asm", "gui/translations/*.ts",
+"emips" = ["data/*.json", "data/*.dat", "gui/examples/*.asm", "gui/examples/*.txt", "gui/translations/*.ts",
             "c/*.S", "c/*.c", "c/*.h", "c/*.ld", "firmware/*.asm",
             "firmware/*.s"]

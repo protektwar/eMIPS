@@ -7,7 +7,7 @@ browser at ``run/``.
 ``bridge.py``), ``emips.zip`` (eMIPS without its Qt window, for Pyodide),
 the window's examples and ``programs.json``: the examples, the guide's labs
 and its other programs (assembly only: no C compiler in a browser), each
-with the files its ``# eMIPS:`` line names (a lab's disk image).
+with the files its ``# eMIPS:`` line names (a lab's disk image, its files).
 """
 
 from __future__ import annotations
@@ -26,17 +26,18 @@ PAGE = ("index.html", "app.js", "app.css", "bridge.py")
 SKIP = ("emips/gui/", "emips/image.py")
 
 
-def companions(path: Path) -> list[str]:
-    """The files a program's ``# eMIPS:`` line names (``--disk`` images),
+def companions(path: Path, base: Path = GUIDE) -> list[str]:
+    """The files a program's ``# eMIPS:`` line names (``--disk`` images,
+    ``--file`` files),
     relative to the guide."""
     text = path.read_text(encoding="utf-8", errors="replace")
     names = []
     for m in re.finditer(r"#\s*eMIPS:([^\n]*)", text):
-        for d in re.findall(r"--disk\s+(?:\w+=)?(\S+)", m.group(1)):
+        for d in re.findall(r"--(?:disk|file)\s+(?:[\w.-]+=)?(\S+)", m.group(1)):
             for name in d.split(","):
                 f = path.parent / name.split("=")[-1]
                 if f.is_file():
-                    names.append(f.relative_to(GUIDE).as_posix())
+                    names.append(f.relative_to(base).as_posix())
     return names
 
 
@@ -49,9 +50,13 @@ def programs(run: Path) -> list[dict]:
     examples.mkdir()
     items = []
     for ex in EXAMPLES:
-        shutil.copy2(ROOT / "emips" / "gui" / "examples" / ex.file, examples / ex.file)
+        shutil.copy2(ex.path, examples / ex.file)
+        files = []
+        for name in companions(ex.path, ex.path.parent):    # (its --file files)
+            shutil.copy2(ex.path.parent / name, examples / name)
+            files.append(f"run/examples/{name}")
         items.append({"title": ex.title, "path": f"run/examples/{ex.file}",
-                      "keys": ex.keys, "files": []})
+                      "keys": ex.keys, "files": files})
     groups.append({"group": "Examples", "items": items})
     labs, more = catalogue(GUIDE)
     for name, entries in (("Labs", labs), ("Programs from the guide", more)):

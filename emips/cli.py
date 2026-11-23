@@ -27,6 +27,7 @@ from . import ejtag as EJ
 from . import pdtrace as PDT
 from . import tap as TAPM
 from .assembler import AsmError
+from .files import dump_bytes
 from . import tools
 from .options import (ARCHES, RV_EXTENSIONS, RV_INTC, RV_MODES, BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
                       NANO_GINV, Options)
@@ -61,6 +62,7 @@ class Debugger(cmd.Cmd):
         if echo:
             self.prompt = ""                   # the echo shows it
         self._printed = 0                      # program output already shown
+        self._dlg = 0                          # dialogs already shown
         #: program output is printed as it happens (Session.on_output) by
         #: the caller, not after each command (``run``)
         self.live_output = False
@@ -111,11 +113,21 @@ class Debugger(cmd.Cmd):
     def _flush_output(self, newline: bool = True) -> None:
         """Show new program output (``newline=False``: leave a prompt like
         "Enter a number: " open for the input)."""
+        if self.live_output:
+            return
+        dialogs, at = self.s.dialogs(), self.s.dialog_positions()
+        for d, pos in zip(dialogs[self._dlg:], at[self._dlg:]):     # (in their places)
+            part = self.s.output[self._printed:max(pos, self._printed)]
+            if part:
+                self.stdout.write(part if part.endswith("\n") else part + "\n")
+                self._printed = pos
+            self.say(d.line())
+        self._dlg = len(dialogs)
         out = self.s.output[self._printed:]
-        if out and not self.live_output:
+        if out:
             self.stdout.write(out if out.endswith("\n") or not newline else out + "\n")
-            self.stdout.flush()
             self._printed = len(self.s.output)
+        self.stdout.flush()
 
     def _gprs(self) -> list[int]:
         m = self.s.machine
@@ -296,14 +308,24 @@ class Debugger(cmd.Cmd):
         stream (or the prompt) and go on.  False if there is none."""
         if self.program_input is None:
             return False
-        if self.program_input is sys.stdin and sys.stdin.isatty() \
-                and (not self.s.output or self.s.output.endswith("\n")):
+        dialog = self.s.pending_dialog()
+        tty = self.program_input is sys.stdin and sys.stdin.isatty()
+        if dialog is not None and tty:          # an input dialog (emips.dialogs)
+            from .dialogs import TITLES
+            hint = ("y / n / !cancel" if dialog[1] == "confirm" else "!cancel = Cancel")
+            self.stdout.write(f"[{TITLES[dialog[0]]}] {dialog[2]} ({hint})> ")
+            self.stdout.flush()
+        elif tty and (not self.s.output or self.s.output.endswith("\n")):
             self.stdout.write("program input> ")    # the program printed no prompt
             self.stdout.flush()
         line = self.program_input.readline()
         if not line:
             return False
-        self.s.give_input(line.rstrip("\n"))
+        line = line.rstrip("\n")
+        if dialog is not None:
+            from .dialogs import typed
+            line = typed(line)
+        self.s.give_input(line)
         return True
 
     def _run(self, max_steps: int | None = None) -> StepResult:
@@ -368,6 +390,7 @@ class Debugger(cmd.Cmd):
                 self.say("at the start")
                 break
         self._printed = min(self._printed, len(self.s.output))
+        self._dlg = min(self._dlg, len(self.s.dialogs()))
         self._show_position()
 
     def do_continue(self, arg: str) -> None:
@@ -439,7 +462,7 @@ class Debugger(cmd.Cmd):
         """reset   restart the program (breakpoints and given input are kept)"""
         self._need_program()
         self.s.reset()
-        self._printed = 0
+        self._printed = self._dlg = 0
         self._show_position()
 
     # -- breakpoints -------------------------------------------------------------
@@ -693,6 +716,110 @@ class Debugger(cmd.Cmd):
             raise CliError("board (no arguments; set board flat|malta[:RAM_MB[:SWITCHES]])")
         for line in self.s.board_lines():
             self.say(line)
+
+    def do_midi(self, arg: str) -> None:
+        """midi [wav FILE | mid FILE]   the MIDI notes the program played
+        (services 31 / 33, on the cycle clock: 1 ms = 1000 cycles):
+          midi            each note: when, the core, pitch, duration, the
+                          instrument and its family, volume
+          midi wav FILE   render them as a WAV file (a simple synthesizer)
+          midi mid FILE   write them as a Standard MIDI File (any synthesizer
+                          plays it with its real instruments)"""
+        from . import midi as MIDI
+        self._need_program()
+        events = self.s.midi_events()
+        parts = arg.split()
+        if not parts:
+            for line in MIDI.lines(events):
+                print(line, file=self.stdout)
+            return
+        if len(parts) == 2 and parts[0] in ("wav", "mid"):
+            data = MIDI.wav(events) if parts[0] == "wav" else MIDI.midi_file(events)
+            try:
+                Path(parts[1]).write_bytes(data)
+            except OSError as exc:
+                raise CliError(f"midi {parts[0]}: {exc}") from None
+            print(f"wrote {parts[1]}: {len(events)} note{'s' if len(events) != 1 else ''}",
+                  file=self.stdout)
+            return
+        raise CliError("midi [wav FILE | mid FILE]")
+
+    def do_files(self, arg: str) -> None:
+        """files [show NAME | save NAME FILE]   the program's files (--file /
+        set files: MARS 13-16 and RARS's open / read / write / close / lseek
+        reach these, never the host's others; every run starts from them):
+          files                 each file, its size and whether the run wrote it
+                                or created it; the descriptors open
+          files show NAME       its contents (text, or a hex dump)
+          files save NAME FILE  write it as the run has left it"""
+        self._need_program()
+        s = self.s
+        parts = arg.split()
+        if not parts:
+            for line in s.file_lines():
+                print(line, file=self.stdout)
+            return
+        try:
+            if parts[0] == "show" and len(parts) == 2:
+                data = s.file_data(parts[1])
+                for line in dump_bytes(data):
+                    print(line, file=self.stdout)
+                return
+            if parts[0] == "save" and len(parts) == 3:
+                print(s.save_file(parts[1], parts[2]), file=self.stdout)
+                return
+        except (ValueError, OSError) as exc:
+            raise CliError(str(exc)) from None
+        raise CliError("files [show NAME | save NAME FILE]")
+
+    def do_display(self, arg: str) -> None:
+        """display [at COL ROW | save FILE]   the bitmap display (--display / set
+        display: MARS's, one word 0x00RRGGBB a pixel from the base address,
+        scanned from physical memory below the caches):
+          display               its size, base, the pixels written so far
+          display at COL ROW    the word drawn there: its address, its physical
+                                address, its value
+          display save FILE     write it as a PNG image (each word as a unit-size
+                                block, as the display shows it)"""
+        self._need_program()
+        s = self.s
+        dev = s.display_device()
+        if dev is None:
+            raise CliError("no bitmap display: set display WxH[:UNIT][@BASE] (or "
+                           "--display)")
+        parts = arg.split()
+        if not parts:
+            f = s.display_frame()
+            print(f"display {dev.spec.describe()}", file=self.stdout)
+            print(f"  {f.written} of {dev.spec.words} words written"
+                  + (f", {f.unmapped} on pages nothing maps (black)" if f.unmapped else "")
+                  + "; read from physical memory, below the caches", file=self.stdout)
+            for line in dev.lines():
+                print(line, file=self.stdout)
+            return
+        if parts[0] == "at" and len(parts) == 3:
+            try:
+                col, row = int(parts[1], 0), int(parts[2], 0)
+            except ValueError:
+                raise CliError("display at COL ROW (numbers)") from None
+            if not (0 <= col < dev.spec.columns and 0 <= row < dev.spec.rows):
+                raise CliError(f"display at COL ROW: columns 0-{dev.spec.columns - 1}, "
+                               f"rows 0-{dev.spec.rows - 1}")
+            va, pa, v = s.display_word(col, row)
+            where = f"PA 0x{pa:08x}" if pa is not None else "no physical address (black)"
+            print(f"({col}, {row}): 0x{va:08x}, {where}: 0x{v:08x} = RGB "
+                  f"({v >> 16 & 0xFF}, {v >> 8 & 0xFF}, {v & 0xFF})", file=self.stdout)
+            return
+        if parts[0] == "save" and len(parts) == 2:
+            f = s.display_frame()
+            try:
+                Path(parts[1]).write_bytes(f.png())
+            except OSError as exc:
+                raise CliError(f"display save: {exc}") from None
+            print(f"wrote {parts[1]}: {f.spec.columns * f.spec.unit_w} x "
+                  f"{f.spec.rows * f.spec.unit_h} pixels", file=self.stdout)
+            return
+        raise CliError("display [at COL ROW | save FILE]")
 
     def do_disk(self, arg: str) -> None:
         """disk [save SLOT [FILE] | show SLOT LBA [N]]   the Malta's IDE disks
@@ -2099,8 +2226,10 @@ class Debugger(cmd.Cmd):
     # -- console -------------------------------------------------------------------
 
     def do_input(self, arg: str) -> None:
-        """input TEXT   a line for the program's next read_int / read_string ..."""
-        self.s.give_input(arg)
+        """input TEXT   a line for the program's next read_int / read_string ...
+        or input dialog (50-54: !cancel = Cancel, !close = closed)"""
+        from .dialogs import typed
+        self.s.give_input(typed(arg))
 
     def do_keys(self, arg: str) -> None:
         """keys TEXT   type TEXT on the memory-mapped keyboard (\\n = Enter)"""
@@ -2114,7 +2243,7 @@ class Debugger(cmd.Cmd):
         if m not in ("instruction", "pipeline"):
             raise CliError("mode instruction | mode pipeline")
         self.s.set_mode(m)
-        self._printed = 0
+        self._printed = self._dlg = 0
         model = self.s.options.model
         self.say(f"mode {m}" + ((", the 24K pipeline" if model == "24k" else
                                  ", the P8700 pipeline" if model == "p8700" else
@@ -2145,7 +2274,9 @@ class Debugger(cmd.Cmd):
         ld's relaxation, on by default) | rv-ext EXTS | rv-modes msu|mu|m (a
         RISC-V hart's extensions and privilege modes) | rv-rnmi INT[,EXC]|none
         (Smrnmi: the RNMI handlers' addresses or labels) | rv-intc
-        none|plic|aplic|imsic (the platform's interrupt controller)
+        none|plic|aplic|imsic (the platform's interrupt controller) | display
+        WxH[:UNIT][@BASE]|none (the bitmap display) | files
+        NAME=PATH[,...]|none (the program's files: MARS 13-16, RARS's open ...)
         (changes reassemble or restart the program; a setting the chosen core
         is not built with makes it the generic core)"""
         parts = arg.split()
@@ -2334,6 +2465,14 @@ class Debugger(cmd.Cmd):
             o.crc = value.lower()
         elif key == "ginv" and value.lower() in NANO_GINV:
             o.ginv = value.lower()
+        elif key == "display":
+            from .display import parse as parse_display
+            try:
+                sp = parse_display(value)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            o.display = sp.text() if sp is not None else ""
+            print(f"display {sp.describe() if sp else 'none'}", file=self.stdout)
         elif key == "disks":
             from .malta import parse_disks
             value = "" if value.lower() == "none" else value
@@ -2345,6 +2484,15 @@ class Debugger(cmd.Cmd):
                 raise CliError("the IDE disks are on the Malta: set board malta first")
             o.disks = value
             s._media = {}
+        elif key == "files":
+            from .files import parse_files
+            value = "" if value.lower() == "none" else value
+            try:
+                parse_files(value)
+            except ValueError as exc:
+                raise CliError(str(exc)) from None
+            o.files = value
+            s._file_data = {}
         else:
             raise CliError(f"unknown option or value: set {arg}")
         had = s.options.core
@@ -2363,7 +2511,7 @@ class Debugger(cmd.Cmd):
               if s.c_file is not None else
               s.load_elf(s.elf_data, s.source) if s.kind == "elf" else
               s.load_source(s.source, getattr(s, "source_path", None)))
-        self._printed = 0
+        self._printed = self._dlg = 0
         if not ok:
             self.say("error: " + s.errors[0])
             return
@@ -2375,7 +2523,7 @@ class Debugger(cmd.Cmd):
             raise CliError("load FILE")
         if not load_file(self.s, shlex.split(arg)[0], self.say):
             return
-        self._printed = 0
+        self._printed = self._dlg = 0
         self._show_position()
 
     def do_quit(self, arg: str) -> bool:
@@ -2438,6 +2586,9 @@ looking      regs [$r ...]   cp0   csr (RISC-V)   fpu   mem [-p] LOC [WORDS] (x)
              core [buffer|predict|units] (the 24K model)   cpu [N] (the cores)   cm [LOC]   gic   cps
              where   view (inside the last instruction)   chart (pipeline)   print VALUE (p)
              board (the Malta)   disk [save|show] (its IDE disks)   trace [on|show|...]
+             display [at COL ROW|save FILE] (the bitmap display)
+             files [show NAME|save NAME FILE] (the program's files)
+             midi [wav FILE|mid FILE] (the notes it played)
 tools        decode WORD   encode INSTRUCTION   ref TEXT
 console      input TEXT (a line for read_*)   keys TEXT (MMIO keyboard)
 setup        mode instruction|pipeline   set OPTION VALUE (help set)   load FILE
@@ -2510,6 +2661,8 @@ def options_from_args(args) -> Options:
                    mmu=getattr(args, "mmu", None) or "fixed",
                    board=getattr(args, "board", None) or "flat",
                    disks=",".join(getattr(args, "disk", None) or []),
+                   display=getattr(args, "display", None) or "",
+                   files=",".join(getattr(args, "data_files", None) or []),
                    model=getattr(args, "model", None) or "5-stage",
                    cores=getattr(args, "cores", None) or 1,
                    iocu=getattr(args, "iocu", False),

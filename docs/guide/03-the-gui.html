@@ -916,6 +916,38 @@ master / slave</strong> (an image file, or <code>blank:SIZE</code>) are listed w
 state and their last commands; <strong>Save Disk…</strong> writes the chosen one as the
 program left it — every run starts from its image (<a href="05-understanding.html#an-ide-disk">Phase 5, An IDE
 disk</a>).</p>
+<h3 id="display-files-and-sound">Display, Files and Sound</h3>
+<p>Three panes show what a MARS-style program draws, reads and plays
+(<a href="02-writing-programs.html#235-pictures-files-sound-and-random-numbers">Phase 2,
+2.35</a>).  The <strong>Display</strong> pane (a tab next to the Datapath) is the bitmap
+display of Settings → Exceptions &amp; I/O → <strong>Bitmap display</strong> — its size,
+the size of one word on the screen (the <em>unit</em>) and its base address, as
+MARS's: one memory word <code>0x00RRGGBB</code> a pixel.</p>
+<p><img alt="The Display pane: Lab 90's triangle, the mouse over its top corner" src="img/03-display.png"></p>
+<p>Point at a pixel and the line below gives its column and row, its address,
+its physical address and the word there; <strong>Save Image…</strong> writes a PNG.  The
+picture is read from physical memory below the caches, so with write-back
+caches it shows what has been written back
+(<a href="05-understanding.html#a-frame-buffer-and-the-caches">Phase 5, A frame buffer and the
+caches</a>).  The pane opens by itself when the display is on.</p>
+<p>The <strong>Files</strong> pane (a tab of the bottom area) lists the files the program
+may open — those of Settings → Exceptions &amp; I/O → <strong>Files</strong> (<strong>Add…</strong>
+picks one; NAME=PATH pairs, the program opens them by NAME) and those it
+created — with their size and whether the run wrote them, the one chosen as
+text or a hex dump, and the descriptors open; <strong>Save File…</strong> writes it as the
+run left it.  Every run starts from the given files.</p>
+<p>The <strong>Sound</strong> pane lists the MIDI notes the program played (services 31
+and 33): when, the note, its duration, instrument and volume.  It opens at the
+first note; <strong>Play while running</strong> sounds each one as it comes (this needs
+QtMultimedia — without it the box is greyed), <strong>Save WAV…</strong> and
+<strong>Save MIDI…</strong> write the tune.</p>
+<p>A program's <strong>dialogs</strong> (services 50-59) are real dialogs: an input
+dialog stops the run, asks, and the run goes on with the answer (Step Back
+replays it without asking again); a message dialog is shown at the moment the
+program shows it.  Every dialog is also written to the Messages pane.  The
+display's control registers (its on / off, the vertical-blank interrupt, the
+buffer shown) are in the Display pane's top line: the frame number and the
+base shown.</p>
 <h3 id="more-than-one-core-the-system-pane">More than one core: the System pane</h3>
 <p>On the Malta, Settings → Processor → <strong>I/O Coherence Unit</strong> (with Cores
 above 1) makes its DMA coherent with the data caches (<a href="05-understanding.html#dma-the-disk-writes-memory-itself">Phase 5, DMA</a>).</p>
@@ -1306,6 +1338,14 @@ without caches memory takes one cycle:</p>
 <tr>
 <td>MMIO delays</td>
 <td>cycles the display stays busy after a character, cycles between keys</td>
+</tr>
+<tr>
+<td>Files the program may open</td>
+<td>NAME=PATH pairs (or paths; <strong>Add…</strong> picks a file): the files services 13-16 open by NAME — no other file is reachable, every run starts from these (<a href="#display-files-and-sound">the Files pane</a>)</td>
+</tr>
+<tr>
+<td>Bitmap display</td>
+<td>on: MARS's bitmap display — the display's width and height, the unit (screen pixels a memory word), the base address (<a href="#display-files-and-sound">the Display pane</a>)</td>
 </tr>
 </tbody>
 </table>

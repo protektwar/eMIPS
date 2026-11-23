@@ -15,4 +15,19 @@ except ImportError:                                       # pragma: no cover
     Signal = QtCore.Signal                                 # type: ignore
     API = "PySide6"
 
-__all__ = ["API", "QtCore", "QtGui", "QtWidgets", "Signal"]
+
+
+def multimedia():
+    """The binding's QtMultimedia (sound: the Sound pane), or None when it
+    is not installed (it is an extra package on some systems)."""
+    try:
+        if API == "PyQt6":
+            from PyQt6 import QtMultimedia
+        else:                                             # pragma: no cover
+            from PySide6 import QtMultimedia               # type: ignore
+    except ImportError:
+        return None
+    return QtMultimedia
+
+
+__all__ = ["API", "QtCore", "QtGui", "QtWidgets", "Signal", "multimedia"]

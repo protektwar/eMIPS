@@ -1551,6 +1551,29 @@ the same window of the SDRAM.  Its interface stays 32-bit, as YAMON's:
 the descriptor, the function table, a registered handler's address.  The
 20Kc is refused: it was on the Core20K card, whose system controller is the
 Bonito64, not the GT-64120.</p>
+<h3 id="a-frame-buffer-and-the-caches">A frame buffer and the caches</h3>
+<p>A graphics card does not ask the CPU for the picture: it reads the
+<strong>frame buffer</strong> in memory on its own, line after line, many times a
+second — a device reading memory, as the Malta's disk writes it by DMA
+(<a href="#dma-the-disk-writes-memory-itself">DMA</a> above).  eMIPS's bitmap display
+(<a href="02-writing-programs.html#the-bitmap-display">2.35</a>) does the same: it reads
+<strong>physical memory, below the caches</strong>.  Without caches (the default) a
+store is in memory at once and the pixel appears.  With write-back data
+caches (<code>--caches</code>) a store only changes the line in the D-cache; memory —
+and so the picture — changes when the line is written back: when it is
+evicted, or when the program writes it back itself with <code>cache 0x19</code> (Hit
+Writeback D) for every line of the frame buffer, then <code>sync</code>.  The other
+cure is to draw through an <strong>uncached</strong> address — kseg1, or a mapping
+whose cacheability attribute is 2 — which costs a bus access for every
+store.  Real drivers do one or the other: a frame buffer is usually mapped
+uncached or <em>write-combining</em> (stores gathered into bursts, never
+cached).  Lab 91 measures both.  MARS has no caches between the program and
+its display, so a MARS program never needs either.</p>
+<p>The display's own clock gives the other half of the story: a <strong>vertical
+blank</strong> every PERIOD cycles, an interrupt then, and a BASE register read
+only at that moment — so a program can change the picture between two frames
+and never be seen drawing (<a href="02-writing-programs.html#the-displays-registers-and-the-vertical-blank">2.35</a>,
+Lab 94).</p>
 <h2 id="59-more-than-one-core">5.9 More than one core</h2>
 <p>A multi-core MIPS — the 1004K, interAptiv, P5600, the 64-bit P6600 — is a <strong>Coherent
 Processing System</strong> (CPS): up to four or six cores (eMIPS: <code>--cores 2..6</code>,
@@ -4767,7 +4790,7 @@ build?</p>
 the same seven instructions (<code>andi $v1, $v1, 0xff</code> becomes <code>zeb
 $v1</code>, the branch has no delay slot, so GCC's MIPS32 trick of
 putting the next <code>sll</code> in the slot is not needed), and they execute
-almost the same number: 189 and 187.  The whole MIPS16e program
+almost the same number: 189 and 186.  The whole MIPS16e program
 executes more (224 to 219): MIPS16e has no <code>syscall</code> instruction, so
 <code>emips.h</code>'s helper <code>emips_syscall1</code> is a MIPS32 function there
 (<code>nomips16</code>, not inlined) that <code>main</code> calls with <code>jalx</code> and that
@@ -4952,8 +4975,8 @@ how many instructions and cycles?  What would it cost to put the
 <p>85 instructions in 114 cycles with the DSP Module, 155 in 199 without.
 The loops are <code>lw lw dpaq_s.w.ph</code> for two taps against
 <code>lh lh madd</code> for one; and <code>extr_r.w</code> does in one instruction
-what <code>fir32</code> needs seven for (a 64-bit add for the rounding, two
-shifts, an or).  On the 24K family an accumulator read for an
+what <code>fir32</code> needs eight for (<code>mflo</code> and <code>mfhi</code>, a
+64-bit add for the rounding, two shifts, an or).  On the 24K family an accumulator read for an
 extract waits for the multiply-accumulate that writes it: three cycles
 back to back (the 1004K manual's Table 2.5), which is why the loop's
 counter and pointer updates sit between the last <code>dpaq_s.w.ph</code> and
@@ -5442,8 +5465,10 @@ neither 0x3007?</p>
 <details>
 <summary>Answer</summary>
 <p>A product of two Q15 fractions has 30 fraction bits; Q15 keeps 15 of them.
-Elements 0-3 drop only zeros (0.5 x 0.75 = 0.375 is 0x3000 exactly);
-elements 5-7 drop a part: 0x2aaa x 0x3000 is 4095.75 steps, truncated to
+Elements 0, 1 and 3 drop only zeros (0.5 x 0.75 = 0.375 is 0x3000 exactly);
+element 2, 0x1234 x 3, is 0.43 of a step: less than a half, so truncating and
+rounding both give 0.  Elements 5-7 drop a part that rounding turns into one
+more step: 0x2aaa x 0x3000 is 4095.75 steps, truncated to
 0x0fff, rounded to 0x1000, and 1 x 0x7fff is 0.99997 of a step — 0 or 1.
 Element 4 is -1 x -1 = +1, which Q15 cannot hold: both saturate to 0x7fff;
 element 3, 0x7fff x -1 = -0.99997, fits (0x8001).  The rounded products add
@@ -5947,8 +5972,11 @@ every DMA write invalidates the cores' copies of its lines).  Without an IOCU
 the software would have to write the lines back first, or keep DMA buffers
 uncached.  (2) 512: the CDMA moves 8 bytes a clock, and each 8-byte read is a
 request the CM serves cache to cache from core 0's line.  (3) 512 cycles —
-4096 bytes at 8 a clock; the wait loop polls CDMASR 128 times (4
-instructions a trip, one a cycle in instruction mode).</p>
+4096 bytes at 8 a clock.  The wait loop takes 4 instructions a trip, one a
+cycle in instruction mode: its 128th poll, 509 cycles after the start, still
+finds the copy busy, the 129th (513) finds it idle — 516 instructions from the
+first poll to the loop's exit (the debugger's <code>where</code> at
+<code>wait</code> and at the <code>la</code> after it).</p>
 </details>
 <h3 id="lab-89--a-breakpoint-with-no-debugger">Lab 89 — A breakpoint with no debugger</h3>
 <p><a href="labs/p8700_debug.asm"><code>labs/p8700_debug.asm</code></a> runs on two
@@ -5977,6 +6005,128 @@ so the program's handler never runs.  <code>dbu regs 0</code> says <em>in the mo
 saved its registers and waits for the probe's command.  Nobody set the breakpoint
 or <code>go</code>: after <code>dbu resume 0</code> hart 0 spins in <code>wait</code>
 for ever.</p>
+</details>
+<h3 id="lab-90--lines-on-a-bitmap-display">Lab 90 — Lines on a bitmap display</h3>
+<p><a href="labs/display_lines.asm"><code>labs/display_lines.asm</code></a> draws a
+triangle on a 32 x 32-word bitmap display at <code>$gp</code> with Bresenham's line
+algorithm (<a href="02-writing-programs.html#the-bitmap-display">2.35, The bitmap
+display</a>).  (1) Run it: it prints how many pixels it plotted, and the
+debugger's <code>display</code> says how many words were written — why do the two
+numbers differ?  (2) <code>display at 16 2</code>: what colour is the top corner, and
+why that one?  (3) Each line plots max(|dx|, |dy|) + 1 pixels: check that with the
+red line.  How many instructions does the whole drawing take, and about how many a
+pixel?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) It prints 84; the display has 81 words written.  The three lines meet at
+the corners, and each corner is plotted twice — by the line that ends there and
+by the one that starts there: 84 − 3 = 81 different words.  (2) Green,
+<code>0x0040ff40</code>: the red line ends at (16, 2), then the green one starts there and
+writes its colour over it — the last store wins.  (3) The red line goes from
+(2, 29) to (16, 2): |dx| = 14, |dy| = 27, so 27 + 1 = 28 pixels — the other two
+are 28 too (|dy| = 27, |dx| = 27): 3 x 28 = 84.  The run takes 1640 instructions
+(<code>run</code>: 1640 steps), about 19 a pixel: the address (4) and the store, the
+count, the two end tests, the error test and its update, and the branch back.</p>
+</details>
+<h3 id="lab-91--the-display-and-the-caches">Lab 91 — The display and the caches</h3>
+<p><a href="labs/display_cache.asm"><code>labs/display_cache.asm</code></a> paints a
+gradient on a 32 x 32-word display at <code>$gp</code> with 32 KB write-back caches
+(<code>--caches</code>: 32-byte lines) (<a href="#a-frame-buffer-and-the-caches">A frame
+buffer and the caches</a>).  (1) Run it in the debugger, then <code>display</code> and
+<code>cache stats</code>: what does the display show, and where is the picture?  (2) Set
+<code>FLUSH</code> to 1 and run again: how many <code>cache</code> instructions does it execute,
+and what do the display and the D-cache's "written back" say now?  (3) On the
+pipeline (<code>pipe ... --cycles 2000000</code>), how many cycles does the program take
+with <code>FLUSH</code> 0 and 1?  (4) Instead of the flush, make kuseg uncached at the start
+(Config.KU, bits 27:25 of CP0 register 16, = 2; then <code>ehb</code>).  The picture is
+complete — but how many cycles does the program take now, and why so many?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) Nothing: 0 of 1024 words written.  The 1024 stores missed 128 times (one
+miss a 32-byte line, then 7 hits) and all 128 lines are still in the D-cache,
+dirty — "written back 0".  The display reads memory, which still holds zeros.
+(2) 128 <code>cache 0x19</code> (4096 bytes / 32), then the display has 1024 of 1024 words
+and the D-cache says "written back 128".  (3) 20,210 cycles without the flush,
+23,594 with it: 3,384 more for the 128 write-backs and the loop.  (4) About
+627,000 (626,904 with <code>mfc0</code> / <code>li</code> / <code>ins</code> / <code>mtc0</code> /
+<code>ehb</code> before the loop): Config.KU makes <em>all</em> of kuseg uncached — the program's code at
+0x00400000 too, so every instruction fetch goes to memory (604,365 cycles of
+I-miss stalls).  The cure for one buffer belongs on that buffer only: a separate
+uncached mapping (a TLB page with attribute 2) or the flush.</p>
+</details>
+<h3 id="lab-92--reading-a-file">Lab 92 — Reading a file</h3>
+<p><a href="labs/file_words.asm"><code>labs/file_words.asm</code></a> reads
+<a href="labs/file_words.txt"><code>labs/file_words.txt</code></a> (given with
+<code>--file</code> on its <code># eMIPS:</code> line) 64 bytes at a time, counts its lines,
+words and bytes as the Unix <code>wc</code> does, and writes it in capitals to
+<code>upper.txt</code> (<a href="02-writing-programs.html#files">2.35, Files</a>).  (1) Run it
+(<code>run ... --files-out out</code>): what does it print, and why that many reads?
+(2) Run it with <code>--no-header</code>: what happens, and why?  (3) Change the 64 to 7:
+how many reads now, and are the counts still right — a word may be cut in two
+between reads?  (4) In the debugger, <code>run</code>, <code>reset</code>, <code>run</code>, then
+<code>files</code>: <code>upper.txt</code> was written twice — how long is it?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>9 40 220 5</code> — 9 lines, 40 words, 220 bytes, as <code>wc</code> says, in 5
+reads: 64 + 64 + 64 + 28 bytes, then a read that returns 0, the end of the file.
+<code>out/upper.txt</code> holds the text in capitals.  (2) "cannot open the file": without
+the header no file is given, so open returns -1 — the program reaches no file but
+those given.  (3) 33 reads (31 of 7 bytes, one of 3, the empty one), and the
+counts are the same: "inside a word" (<code>$s6</code>) survives from one chunk to the next,
+so a word cut by a read is counted once.  (4) 220 bytes: every run starts from the
+given files, so <code>upper.txt</code> does not exist when the second run opens it — it is
+created again, not appended to.  (A run replays exactly: Step Back too.)</p>
+</details>
+<h3 id="lab-93--a-tune">Lab 93 — A tune</h3>
+<p><a href="labs/tune.asm"><code>labs/tune.asm</code></a> plays a melody from a table
+with service 33, then eight notes drawn from a pentatonic scale with a seeded
+random stream, and times both parts with service 30
+(<a href="02-writing-programs.html#sound">2.35, Sound</a>).  (1) Run it: what does it
+print?  Why are the times exactly the notes' durations, though the program runs
+instructions between them?  (2) Change the melody's 33 to 31: what does the first
+number become, and what would you hear?  (3) Remove the seeding (the four lines
+of service 40): which notes now, and are they the same at every run?  (In MARS?)
+(4) Save the tune (<code>--midi-wav</code> or the Sound pane): how long is it?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>2000</code>, then <code>69 60 64 60 69 67 67 62 1000</code>: the melody takes
+6 x 250 + 500 = 2000 ms, the random notes 8 x 125 = 1000 ms.  Time is the core's
+cycles at 1000 a millisecond; the instructions between notes take some tens of
+cycles in all — less than a millisecond — while each 33 lets 1000 cycles a
+millisecond pass.  (2) <code>0</code>: 31 does not wait, so the seven notes start a few
+cycles apart — a chord, not a melody (the debugger's <code>midi</code>: all at about
+0 ms).  (3) <code>60 67 69 64 60 67 62 62</code> — the stream starts from seed 0, so
+eMIPS draws them at every run; MARS seeds an unseeded stream from the clock: a
+different tune each time.  With seed 2026 both draw exactly Java's numbers.
+(4) A little over 3 seconds: 3000 ms of notes, plus the last note's release.</p>
+</details>
+<h3 id="lab-94--frames">Lab 94 — Frames</h3>
+<p><a href="labs/display_vblank.asm"><code>labs/display_vblank.asm</code></a> moves a
+4 x 4 square across a 32 x 32-word display, one column a frame, with two buffers:
+it draws in the one not shown, writes its address to BASE and sleeps in
+<code>wait</code> until the vertical-blank interrupt
+(<a href="02-writing-programs.html#the-displays-registers-and-the-vertical-blank">2.35</a>,
+<a href="#a-frame-buffer-and-the-caches">A frame buffer and the caches</a>).  (1) Run
+it: what does it print, and why that time?  (2) Run it with <code>--perf
+instructions</code>: how many instructions in how many cycles — where did the
+others go?  Replace <code>wait</code> with <code>nop</code>: how many now?  (3) Why does
+the program erase the square at x − 2, not at x − 1?  (4) Remove the handler's
+<code>sw</code> to STATUS: what happens, and why?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>84 28</code>: 28 frames of 3000 cycles = 84,000 cycles, 84 ms on the 1 MHz
+clock of service 30.  The drawing itself takes a hundred-odd instructions a frame;
+the program spends the rest of each frame waiting for the next blank.  (2) 2,841
+instructions in 84,033 cycles: in <code>wait</code> the core executes nothing until an
+interrupt — a real core stops its clock there and saves power.  With
+<code>nop</code> the loop polls <code>$s4</code> the whole time: 83,837 instructions for
+the same picture.  (3) The two buffers take turns: the buffer being drawn was last
+drawn two frames ago, when the square was at x − 2; the square at x − 1 is in the
+other buffer, the one on the screen.  (4) The program stops moving: VBLANK stays
+1, so the interrupt line stays high, and after <code>eret</code> the interrupt is
+taken again before the program executes one instruction — the handler runs forever
+(<code>run</code> ends at its step limit inside it), <code>$s4</code> counting up.  A
+level-triggered interrupt must be cleared at its source.</p>
 </details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>

@@ -459,7 +459,8 @@ class Program:
                 out.append((a, i.raw, nanomips.text(i, a, abi=abi, symbols=labels),
                             s.text.strip()))
             return out
-        isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch)
+        isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch,
+                              msa=bool(self.msa))
         for a, s in sorted(self.source_map.items()):
             if a in self.m16:
                 i = self.m16_insn(a)
@@ -1309,10 +1310,19 @@ class Assembler:
             out = [("beq" if mn == "beqz" else "bne", [ops[0], "$zero", ops[1]])]
         elif mn in _BRANCH_MACROS:
             self._nops(st, 3)
-            cmp, swap, br = _BRANCH_MACROS[mn]
-            need_at()
-            a, b = (ops[1], ops[0]) if swap else (ops[0], ops[1])
-            out = [(cmp, [at, a, b]), (br, [at, "$zero", ops[2]])]
+            out = self._branch_macro(st, mn, ops, need_at)
+        elif mn in ("beq", "bne", "beql", "bnel") and len(ops) == 3 and \
+                parse_gpr(ops[1]) is None and self._is_constant(ops[1]):
+            if not self.pseudo:                 # (a constant for rt: GNU's M_BEQ_I ...)
+                raise AsmError(st.line, f"{mn} with a constant is a pseudo-instruction "
+                               f"(strict mode); write: li $at, constant + {mn} rs, $at, "
+                               "label", st.text)
+            v = self._value(ops[1], st)
+            if v == 0:
+                out = [(mn, [ops[0], "$zero", ops[2]])]
+            else:
+                need_at()
+                out = self._load_at(st, v) + [(mn, [ops[0], at, ops[2]])]
         elif mn == "li":
             self._nops(st, 2)
             out = self._li(st, ops[0], ops[1])
@@ -1470,6 +1480,121 @@ class Assembler:
         if not self.pseudo:
             raise AsmError(st.line, f"{st.mnemonic} with these operands is a "
                            f"pseudo-instruction (strict mode); write: {real}", st.text)
+
+    def _load_at(self, st: _Stmt, v: int) -> list[tuple[str, list[str]]]:
+        """GNU as's ``load_register (AT, ...)`` for a macro's constant."""
+        try:
+            return load_register("$at", v, self.wide)
+        except ValueError as exc:
+            raise AsmError(st.line, f"{st.mnemonic}: {exc}", st.text) from None
+
+    def _branch_macro(self, st: _Stmt, mn: str, ops: list[str],
+                      need_at) -> list[tuple[str, list[str]]]:
+        """The compare-and-branch macros as GNU as builds them
+        (binutils 2.42's gas/config/tc-mips.c, ``macro``: M_BLT ... M_BLEU
+        and their ``_I`` forms): $zero as either
+        operand gives the one-register branch (``blt $t0, $zero`` = ``bltz``),
+        a constant as the second operand ``slti`` / ``sltiu`` (or ``li $at``
+        and ``slt`` / ``sltu`` when it needs more than 16 bits) with the
+        boundary cases folded (``blt rs, 1`` = ``blez``, ``bge rs, 0`` =
+        ``bgez``, ``bgtu rs, 0`` = ``bne rs, $zero`` ...); a comparison that
+        is always false is a ``nop``, one always true a ``b`` (with GNU's
+        warning)."""
+        at = "$at"
+        rs, other, label = ops
+        a = parse_gpr(rs)
+        if a is None:
+            raise AsmError(st.line, f"{mn}: the first operand must be a register", st.text)
+        b = parse_gpr(other)
+        smax = (1 << (63 if self.wide else 31)) - 1
+        smin = -smax - 1
+
+        def br(name: str, *regs: str) -> list[tuple[str, list[str]]]:
+            return [(name, [*regs, label])]
+
+        def false() -> list[tuple[str, list[str]]]:
+            return [("nop", [])]
+
+        def true() -> list[tuple[str, list[str]]]:
+            msg = f"branch {mn} is always true"
+            if (st.line, msg) not in self.prog.warnings:
+                self.prog.warnings.append((st.line, msg))
+            return [("b", [label])]
+
+        def slt(name: str, x: str, y: str, brn: str) -> list[tuple[str, list[str]]]:
+            need_at()
+            return [(name, [at, x, y])] + br(brn, at, "$zero")
+
+        def set_at(v: int, unsigned: bool, brn: str) -> list[tuple[str, list[str]]]:
+            need_at()
+            if -0x8000 <= v < 0x8000:
+                first = [("sltiu" if unsigned else "slti", [at, rs, str(v)])]
+            else:
+                first = self._load_at(st, v) + [("sltu" if unsigned else "slt", [at, rs, at])]
+            return first + br(brn, at, "$zero")
+
+        if b is not None:                       # two registers (M_BLT ... M_BLEU)
+            zr, zs = b == 0, a == 0
+            if mn == "bge":
+                return br("bgez", rs) if zr else br("blez", other) if zs else \
+                    slt("slt", rs, other, "beq")
+            if mn == "bgeu":
+                return true() if zr else br("beq", "$zero", other) if zs else \
+                    slt("sltu", rs, other, "beq")
+            if mn == "bgt":
+                return br("bgtz", rs) if zr else br("bltz", other) if zs else \
+                    slt("slt", other, rs, "bne")
+            if mn == "bgtu":
+                return br("bne", rs, "$zero") if zr else false() if zs else \
+                    slt("sltu", other, rs, "bne")
+            if mn == "ble":
+                return br("blez", rs) if zr else br("bgez", other) if zs else \
+                    slt("slt", other, rs, "beq")
+            if mn == "bleu":
+                return br("beq", rs, "$zero") if zr else true() if zs else \
+                    slt("sltu", other, rs, "beq")
+            if mn == "blt":
+                return br("bltz", rs) if zr else br("bgtz", other) if zs else \
+                    slt("slt", rs, other, "bne")
+            # bltu
+            return false() if zr else br("bne", "$zero", other) if zs else \
+                slt("sltu", rs, other, "bne")
+        if not self._is_constant(other):
+            raise AsmError(st.line, f"{mn}: the second operand must be a register or a "
+                           "constant", st.text)
+        v = self._value(other, st)
+        if not self.wide and 0 <= v <= M32:     # normalize_constant_expr
+            v = _sx32(v)
+        if mn == "bgt":
+            if v >= smax:
+                return false()
+            mn_, v = "bge", v + 1
+        elif mn == "ble":
+            if v >= smax:
+                return true()
+            mn_, v = "blt", v + 1
+        elif mn == "bgtu":
+            if a == 0 or (not self.wide and v == -1):
+                return false()
+            mn_, v = "bgeu", v + 1
+        elif mn == "bleu":
+            if a == 0 or (not self.wide and v == -1):
+                return true()
+            mn_, v = "bltu", v + 1
+        else:
+            mn_ = mn
+        if mn_ == "bge":
+            return br("bgez", rs) if v == 0 else br("bgtz", rs) if v == 1 else \
+                true() if v <= smin else set_at(v, False, "beq")
+        if mn_ == "blt":
+            return br("bltz", rs) if v == 0 else br("blez", rs) if v == 1 else \
+                set_at(v, False, "bne")
+        if mn_ == "bgeu":
+            return true() if v == 0 else br("bne", rs, "$zero") if v == 1 else \
+                set_at(v, True, "beq")
+        # bltu
+        return false() if v == 0 else br("beq", rs, "$zero") if v == 1 else \
+            set_at(v, True, "bne")
 
     def _nops(self, st: _Stmt, count: int) -> None:
         if len(st.ops) != count:
