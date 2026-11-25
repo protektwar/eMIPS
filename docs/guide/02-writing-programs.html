@@ -68,6 +68,7 @@ MARS it is listed in <a href="#215-differences-from-mars-and-spim">2.15</a>.</p>
 <li><a href="#233-macros-repetition-and-conditional-assembly">2.33 Macros, repetition and conditional assembly</a></li>
 <li><a href="#234-risc-v-more-directives-thread-local-storage-and-the-got">2.34 RISC-V: more directives, thread-local storage and the GOT</a></li>
 <li><a href="#235-pictures-files-sound-and-random-numbers">2.35 Pictures, files, sound and random numbers</a></li>
+<li><a href="#236-a-program-in-several-files">2.36 A program in several files</a></li>
 </ul>
 <hr>
 <h2 id="21-the-shape-of-a-program">2.1 The shape of a program</h2>
@@ -1216,7 +1217,11 @@ MIPS binutils (<code>binutils-mips-linux-gnu</code>), or a MIPS <strong>GCC</str
 calls of <a href="#29-system-calls">2.9</a> and the console of
 <a href="#210-the-memory-mapped-console">2.10</a>, which <code>emips.h</code> wraps —
 <code>print_int</code>, <code>print_long</code>, <code>print_string</code>, <code>print_char</code>, <code>print_hex</code>, <code>print_float</code>,
-<code>read_int</code>, <code>read_long</code>, <code>read_char</code>, <code>read_string</code>, <code>sbrk</code>, <code>exit</code>, the MMIO
+<code>print_double</code>, <code>read_double</code>, <code>input_dialog_int</code>,
+<code>message_dialog</code>, <code>message_dialog_int</code>, <code>confirm_dialog</code>,
+<code>time_ms</code>, <code>set_seed</code>, <code>random_int_range</code>,
+<code>open_file</code>, <code>read_file</code>, <code>write_file</code>, <code>close_file</code>,
+<code>midi_out</code>, <code>midi_out_sync</code>, <code>read_int</code>, <code>read_long</code>, <code>read_char</code>, <code>read_string</code>, <code>sbrk</code>, <code>exit</code>, the MMIO
 registers (<code>MMIO_RX_CONTROL</code> ...) and <code>MFC0</code> / <code>MTC0</code> for kernel
 code.  <a href="labs/c_primes.c"><code>labs/c_primes.c</code></a> counts the primes below 100:</p>
 <pre><code class="language-c">#include &quot;emips.h&quot;
@@ -2960,7 +2965,8 @@ GNU's do:</p>
   expression is evaluated where it stands, with the symbols defined so far.</li>
   <li><strong><code>.include "FILE"</code></strong> reads another source file
   there — looked up in the program's folder, then in the folders given with
-  <code>-I DIR</code> (<a href="04-command-line.html#42-options-shared-by-several-commands">4.2</a>);
+  <code>-I DIR</code> (<a href="04-command-line.html#42-options-shared-by-several-commands">4.2</a>;
+  debugging such a program: <a href="#236-a-program-in-several-files">2.36</a>);
   <strong><code>.err</code></strong>, <code>.error "TEXT"</code> and
   <code>.warning "TEXT"</code> stop the assembly or warn (a check inside a
   macro), <code>.print "TEXT"</code> prints while assembling.</li>
@@ -3301,6 +3307,59 @@ its real instruments.</p>
 ...
 </code></pre>
 <p>Lab 93 plays a tune and times it.</p>
+<h2 id="236-a-program-in-several-files">2.36 A program in several files</h2>
+<p>A program grows out of one file: functions you use again — a string
+library, number printing, a driver — go in a file of their own, and
+<code>.include "FILE"</code> reads it where it stands
+(<a href="#233-macros-repetition-and-conditional-assembly">2.33</a>): in the program's
+folder, then in the folders of <code>-I DIR</code> (the window: Settings → Assembler →
+<strong>Include folders</strong>).  The labels of both files are one program's; a
+library is usually included after <code>main</code>'s code, so its functions
+follow it in <code>.text</code>.</p>
+<p>eMIPS knows which file every instruction came from.  An error names the
+included file and its line, and the program's line that included it — a typo
+in Lab 95's library gives:</p>
+<pre><code class="language-text">error: strlib.asm: line 14: unknown instruction 'lbuu'  [strcmp: lbuu  $t0, 0($a0)]  (included at line 25)
+</code></pre>
+<p>In the debugger a location may be <code>FILE:LINE</code> — <code>break</code>,
+<code>until</code> and <code>list</code> take <code>strlib.asm:14</code> — the position line and
+<code>bt</code> name the file, and Step Line stops at each line of the included
+file (not over the whole <code>.include</code>):</p>
+<pre><code class="language-console">$ python3 -m emips debug docs/guide/labs/strlib_main.asm -c "break strlib.asm:14" -c run -c bt -c "list strlib.asm:5" -c nextline
+(emips) break strlib.asm:14
+breakpoint at 0x00400088  lbu $t0, 0($a0)                  strlib.asm:14: strcmp: lbu   $t0, 0($a0)
+(emips) run
+breakpoint
+   0x0040001c  nop
+=&gt; 0x00400088  lbu $t0, 0($a0)                  strlib.asm:14: strcmp: lbu   $t0, 0($a0)
+(emips) bt
+#0  0x00400088 in strcmp   strlib.asm:14: strcmp: lbu   $t0, 0($a0)
+#1  0x00400018 in next   line 10: jal   strcmp
+(emips) list strlib.asm:5
+strlib.asm:
+      1  # strlib.asm — a small string library, included by strlib_main.asm
+      2  # (Lab 95).  Each function takes its strings in $a0 / $a1 and returns $v0.
+      3  
+      4  # strlen: $a0 = a string -&gt; $v0 = its length
+      5  strlen: move  $v0, $zero
+      6  1:      lbu   $t0, 0($a0)
+      7          beqz  $t0, 2f
+      8          addiu $a0, $a0, 1
+      9          addiu $v0, $v0, 1
+     10          b     1b
+(emips) nextline
+   0x00400088  lbu $t0, 0($a0)                 ; $t0 = 0x00000061
+=&gt; 0x0040008c  lbu $t1, 0($a1)                  strlib.asm:15: lbu   $t1, 0($a1)
+</code></pre>
+<p>In the window the editor holds the program; while the code of an included
+file runs, the <strong>Source</strong> pane shows that file at its line, with
+breakpoints in its gutter — and a double click on the editor's
+<code>.include</code> line opens the file there.  Change the included file in
+another editor and save it: eMIPS assembles the program again.  The listing
+(<code>asm</code>) and the Disassembly pane write <code>strlib.asm:14</code> beside its
+instructions, and GDB (<a href="04-command-line.html#412-gdb--debugging-with-gdb">4.12</a>)
+gets a line table with both files: <code>break strlib.asm:14</code> and stepping
+work there too.  Lab 95 finds a bug in a library this way.</p>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="01-getting-started.html">Phase 1 — Getting started</a> · next: <a href="03-the-gui.html">Phase 3 — The GUI in depth</a></nav>
 </main>

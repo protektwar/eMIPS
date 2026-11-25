@@ -1,0 +1,5 @@
+# Episode 30, the challenge: years to 10000.00, the fees paid
+check: output == "10000.00 reached in year 7: $11428.93\nfees paid: $168.47\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

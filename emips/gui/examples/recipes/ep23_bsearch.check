@@ -1,0 +1,5 @@
+# Episode 23: three numbers searched, by the loop and recursively
+check: output == "23: index 5, probes 3\n91: index 10, probes 4\n7: index -1, probes 4\nrecursively: 5 10 -1\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

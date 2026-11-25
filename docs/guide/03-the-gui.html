@@ -684,7 +684,12 @@ calls not returned yet, innermost first (click one to see its line).
 (Ctrl+F11) over calls; <strong>Finish</strong> (Shift+F11) until the function
 returns.  For an assembly program the editor is the source: the pane
 shows the call stack, and Step Line steps a source line (a
-pseudo-instruction's several instructions at once).</p>
+pseudo-instruction's several instructions at once).  While the code of a
+file the program includes (<code>.include</code>) runs, the pane shows that file
+at its line, with breakpoints in its gutter; a double click on the editor's
+<code>.include</code> line opens the file there, and saving a change to it
+assembles the program again (<a href="02-writing-programs.html#236-a-program-in-several-files">Phase
+2, 2.36</a>).</p>
 <p><img alt="The Source pane: c_recursion.c on return 1;, six fact() frames deep" src="img/03-source.png"></p>
 <h2 id="37-registers">3.7 Registers</h2>
 <p>Five tabs (more with the DSP Module and MSA):</p>

@@ -1,0 +1,4 @@
+# Episode 36's challenge: the right-hand rule walks 148 cells to the exit
+check: output == "robot out in 148 moves\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

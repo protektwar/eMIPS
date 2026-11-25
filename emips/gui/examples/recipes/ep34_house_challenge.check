@@ -1,0 +1,14 @@
+# Episode 34's challenge: the house and a sun of radius 6 around (54, 9)
+check: output == "pixels written: 6369\n"
+# (54, 9): the sun's centre
+check: word[0x100089d8] == 0x00ffe040
+# (54, 3): its top
+check: word[0x100083d8] == 0x00ffe040
+# (48, 9): its left end
+check: word[0x100089c0] == 0x00ffe040
+# (49, 4): outside its corner
+check: word[0x100084c4] == 0x0080c0ff
+# (31, 45): the door
+check: word[0x1000ad7c] == 0x00804020
+# every frame was given back
+check: $sp == 0x7fffeffc

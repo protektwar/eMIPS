@@ -42,7 +42,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Protocol
 
-from .assembler import AsmError
+from .assembler import AsmError, placed
 
 #: a name's first / later characters (gas's is_name_beginner /
 #: is_part_of_name with the default lex table: '$' is a name character)
@@ -73,6 +73,17 @@ class Hooks(Protocol):
     def known(self, directive: str) -> bool: ...     # the assembler's own pseudo-op
     def strip(self, line: str) -> str: ...           # its comment stripper
     onechar: bool                                    # app.c's 'c -> its number
+
+
+#: a message placed in an included file: "lib.asm:2: ..." (as GNU as)
+PLACED = re.compile(r"([^\s:]+):(\d+): (.*)", re.S)
+
+
+def warning_text(path: str, line: int, msg: str, sep: str = ":") -> tuple[str, int, str]:
+    """(file, line, message) of a warning (``Program.warnings``): one from
+    an included file names it (:func:`placed`), else the program's."""
+    m = PLACED.fullmatch(msg)
+    return (m.group(1), int(m.group(2)), m.group(3)) if m else (path, line, msg)
 
 
 @dataclass
@@ -364,16 +375,12 @@ class Reader:
 
     def error(self, msg: str, item: _Item | None = None):
         st = self._place(item) if item is not None else self.current
-        if st.where:
-            msg = f"{os.path.basename(st.where[0])}:{st.where[1]}: {msg}"
-        raise AsmError(st.line, msg, st.raw)
+        raise AsmError(st.line, msg, st.text.strip() if st.where else st.raw, where=st.where)
 
     def warn(self, msg: str) -> None:
         if self._warn is not None:
             st = self.current
-            if st.where:
-                msg = f"{os.path.basename(st.where[0])}:{st.where[1]}: {msg}"
-            self._warn(st.line, msg)
+            self._warn(st.line, placed(st.where, msg))
 
     def _include(self, items: list[_Item], kind: str) -> None:
         """input_scrub_include_sb: read ``items`` next."""

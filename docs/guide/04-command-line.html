@@ -688,7 +688,10 @@ brackets.</p>
 (an ELF with line information) LOC can be a C line — <code>17</code> (the current
 file; <code>main</code>'s before the program gets there) or <code>file.c:17</code> — or a
 function name; a line that starts in several places (a <code>for</code> with its
-condition and increment) gets a breakpoint on each.</p>
+condition and increment) gets a breakpoint on each.  In an assembly program that
+includes files (<code>.include</code>) LOC can be <code>FILE:LINE</code> of an included
+file — <code>strlib.asm:14</code> — for <code>break</code>, <code>until</code> and <code>list</code>
+(<a href="02-writing-programs.html#236-a-program-in-several-files">2.36</a>).</p>
 <p><strong>Looking</strong></p>
 <table>
 <thead>

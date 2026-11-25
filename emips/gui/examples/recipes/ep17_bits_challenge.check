@@ -1,0 +1,5 @@
+# Episode 17, the challenge: multiplication without mul, powers of 2
+check: output == "123 * 45 = 5535\n1000 * 1000 = 1000000\n64 is a power of 2\n96 is not a power of 2\n1 is a power of 2\n0 is not a power of 2\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

@@ -1,0 +1,6 @@
+# Episode 12, the challenge: a width and %x
+check: output == "[   42] [ff] [ ab] [!]\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s4 == 0

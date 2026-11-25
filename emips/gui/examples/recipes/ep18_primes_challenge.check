@@ -1,0 +1,5 @@
+# Episode 18, the challenge: fractions in lowest terms, gcd recursively
+check: output == "84/126 = 2/3\n1071/462 = 51/22\n13/17 = 13/17\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

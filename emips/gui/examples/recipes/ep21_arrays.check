@@ -1,0 +1,5 @@
+# Episode 21: six students, two exams
+check: output == "midterm: 78 92 65 88 71 95\nsum 489, average 81\n88 is at index 3\n100 is at index -1\ngrades: B A D A C A\nreversed: 95 71 88 65 92 78\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

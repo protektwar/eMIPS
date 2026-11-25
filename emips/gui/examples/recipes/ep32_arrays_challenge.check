@@ -1,0 +1,4 @@
+# Episode 32's challenge: arr_find from a second library file
+check: output == "[2, 3, 5, 7, 11, 13]  sum 41  max 13\n[-3, 4, -1, 7, 2]  sum 9  max 7\nreversed [2, 7, -1, 4, -3]\n7 at 3\n8 at -1\n4 at 3\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

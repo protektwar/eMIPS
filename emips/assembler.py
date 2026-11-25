@@ -64,6 +64,8 @@ encodings of real instructions); ``reorder=False`` starts the source in
 
 from __future__ import annotations
 
+import os
+
 import re
 import struct
 from dataclasses import dataclass, field
@@ -100,19 +102,92 @@ BOOT_GP = 0x10008000
 
 
 class AsmError(Exception):
-    """An assembly error at a source line."""
+    """An assembly error at a source line: ``line`` is the program's own
+    line (an included file's statement: its ``.include`` line), ``file`` /
+    ``file_line`` the included file and its line when it is in one (PLAN
+    M26: "lib.asm: line 2: ...  (included at line 9)")."""
 
-    def __init__(self, line: int, message: str, text: str = "") -> None:
-        super().__init__(f"line {line}: {message}" + (f"  [{text.strip()}]" if text else ""))
+    def __init__(self, line: int, message: str, text: str = "",
+                 where: tuple[str, int] | None = None) -> None:
+        super().__init__(message)
         self.line = line
         self.message = message
         self.text = text
+        self.file: str | None = None
+        self.file_line = 0
+        self.at(where)
+
+    def at(self, where: tuple[str, int] | None) -> "AsmError":
+        """Place the error in an included file (unless it is placed)."""
+        if where and self.file is None:
+            self.file, self.file_line = where
+        return self
+
+    def __str__(self) -> str:
+        text = f"  [{self.text.strip()}]" if self.text and self.text.strip() else ""
+        if self.file is None:
+            return f"line {self.line}: {self.message}{text}"
+        return (f"{os.path.basename(self.file)}: line {self.file_line}: {self.message}{text}"
+                f"  (included at line {self.line})")
+
+
+def placed(where: tuple[str, int] | None, msg: str) -> str:
+    """``msg`` in its included file (GNU as's "file:line: ..."), or as is."""
+    return f"{os.path.basename(where[0])}:{where[1]}: {msg}" if where else msg
+
+
+def located(path: str, error: str) -> str:
+    """An error for the command line: the program's path in front of an
+    error in the program itself; one in an included file names its file."""
+    return f"{path}: {error}" if error.startswith("line ") else error
 
 
 @dataclass
 class SourceLine:
+    """An instruction's source: ``line`` = the program's own line (for a
+    statement of an included file its ``.include`` line: what the editor
+    shows), ``text`` the statement; ``file`` / ``file_line`` = the
+    included file (its path) and line, None / 0 in the program itself
+    (PLAN M26)."""
     line: int
     text: str
+    file: str | None = None
+    file_line: int = 0
+
+    @property
+    def key(self) -> tuple[str, int]:
+        """Where the statement is: ("", line) in the program, else (file, line)."""
+        return (self.file, self.file_line) if self.file else ("", self.line)
+
+
+def _listed(src: "SourceLine") -> str:
+    """A listing's source column: the statement, an included file's with
+    its place (``strlen.asm:5: addiu ...``)."""
+    text = src.text.strip()
+    return f"{os.path.basename(src.file)}:{src.file_line}: {text}" if src.file else text
+
+
+class Line(int):
+    """A statement's line number (the program's) that remembers the
+    included file it came from, through the linkers' records unchanged:
+    ``Line(9, ("lib.asm", 2)).where``."""
+    where: tuple[str, int] | None = None
+
+    def __new__(cls, line: int, where: tuple[str, int] | None = None) -> "Line":
+        obj = super().__new__(cls, line)
+        obj.where = where
+        return obj
+
+
+def source_line(line: int, lines: list[str], files: dict[str, list[str]]) -> SourceLine:
+    """The :class:`SourceLine` of ``line`` (a :class:`Line` from an included
+    file: that file's statement)."""
+    where = getattr(line, "where", None)
+    if where:
+        text = files.get(where[0], [])
+        return SourceLine(int(line), text[where[1] - 1] if 0 < where[1] <= len(text) else "",
+                          where[0], where[1])
+    return SourceLine(int(line), lines[line - 1] if 0 < line <= len(lines) else "")
 
 
 @dataclass
@@ -162,6 +237,9 @@ class Program:
     warnings: list = field(default_factory=list)
     #: the strings of ``.print`` (GNU as prints them while it assembles)
     printed: list = field(default_factory=list)
+    #: the included files' lines (path -> lines; PLAN M26): what
+    #: ``SourceLine.file`` names
+    include_files: dict = field(default_factory=dict)
     #: RISC-V: the TLS block (address, initialized bytes, size) — the boot
     #: points tp at it (thread 0 runs in the image itself)
     tls: tuple | None = None
@@ -450,29 +528,29 @@ class Program:
             for a, s in sorted(self.source_map.items()):
                 n = self.rv.get(a, 4)
                 raw = sum(self.image.get(a + k, 0) << 8 * k for k in range(n))
-                out.append((a, raw, d.text(raw, n, a), s.text.strip()))
+                out.append((a, raw, d.text(raw, n, a), _listed(s)))
             return out
         if self.arch == "nanomips":                # (a nanoMIPS one: 16 / 32 / 48 bits)
             from . import nanomips
             for a, s in sorted(self.source_map.items()):
                 i = self.nm_insn(a)
                 out.append((a, i.raw, nanomips.text(i, a, abi=abi, symbols=labels),
-                            s.text.strip()))
+                            _listed(s)))
             return out
         isa = ISA.for_release(self.release, self.dsp, self.mt, arch=self.arch,
                               msa=bool(self.msa))
         for a, s in sorted(self.source_map.items()):
             if a in self.m16:
                 i = self.m16_insn(a)
-                out.append((a, i.raw, mips16.text(i, a, abi=abi, arch=self.arch), s.text.strip()))
+                out.append((a, i.raw, mips16.text(i, a, abi=abi, arch=self.arch), _listed(s)))
             elif a in self.mm:
                 from . import micromips
                 i = self.mm_insn(a)
                 out.append((a, i.raw, micromips.text(i, a, abi=abi, release=self.release,
-                                                     arch=self.arch), s.text.strip()))
+                                                     arch=self.arch), _listed(s)))
             else:
                 out.append((a, self.word(a), disassemble(self.word(a), a, abi=abi, isa=isa,
-                                                          symbols=labels), s.text.strip()))
+                                                          symbols=labels), _listed(s)))
         return out
 
 
@@ -763,6 +841,7 @@ PSEUDO_HINTS = {
     "move": "or rd, rs, $zero",
     "neg": "sub rd, $zero, rs",
     "negu": "subu rd, $zero, rs",
+    "abs": "bgez rs, 1f + (delay slot) or rd, rs, $zero + sub rd, $zero, rs; 1:",
     "not": "nor rd, rs, $zero",
     "beqz": "beq rs, $zero, label",
     "bnez": "bne rs, $zero, label",
@@ -922,6 +1001,8 @@ class _Stmt:
     mt: bool = True
     #: ``.set msa`` / ``nomsa``: MSA's instructions are allowed
     msa: bool = True
+    #: (included file, its line) when the statement comes from one (PLAN M26)
+    where: tuple[str, int] | None = None
 
 
 class Assembler:
@@ -986,8 +1067,12 @@ class Assembler:
         self.prog = Program(endian=self.endian, release=self.isa.release,
                             arch=self.isa.arch)
         stmts = self._pass1(source)
+        self.prog.include_files = dict(self.reader.files)
         for st in stmts:
-            self._emit(st)
+            try:
+                self._emit(st)
+            except AsmError as exc:
+                raise exc.at(st.where)
         self.prog.printed = list(self.reader.printed)
         self.prog.symbols = dict(self.symbols)
         for name in ("main", "__start"):
@@ -1014,9 +1099,21 @@ class Assembler:
         self.reader = gasread.Reader(source, _Hooks(self), path=self._path,
                                      include_dirs=self._include_dirs,
                                      warn=lambda n, msg: self.prog.warnings.append((n, msg)))
+        try:
+            return self._pass1_statements(stmts, lc, seg, reorder, at_ok, prev)
+        except AsmError as exc:
+            raise exc.at(self.reader.current.where)
+
+    def _pass1_statements(self, stmts, lc, seg, reorder, at_ok, prev) -> list["_Stmt"]:
         for gst in self.reader:
+            self._where = gst.where
             n, text = gst.line, gst.text
-            raw = gst.text.strip() if gst.expanded else gst.raw
+            if gst.where:                       # an included file's statement: its own line
+                lines = self.reader.files.get(gst.where[0], [])
+                raw = lines[gst.where[1] - 1].strip() if 0 < gst.where[1] <= len(lines) \
+                    else gst.text.strip()
+            else:
+                raw = gst.text.strip() if gst.expanded else gst.raw
             while True:
                 m = _LABEL.match(text)
                 if not m:
@@ -1059,6 +1156,7 @@ class Assembler:
                             prev.addr + prev.size == lc[seg]:
                         st.slot = self._mm_slot_need(prev)
                     st.size = sum(i.size for i in self._mm_encode(st, final=False))
+                    st.where = gst.where
                     stmts.append(st)
                     lc[seg] += st.size
                     self._pending = []
@@ -1070,6 +1168,7 @@ class Assembler:
                     self._m16_labels.update(self._pending)
                     st = _Stmt(n, raw, seg, lc[seg], mnemonic, ops, reorder, at_ok, m16=True)
                     st.size = self._m16_size(st)
+                    st.where = gst.where
                     stmts.append(st)
                     lc[seg] += st.size
                     self._pending = []
@@ -1094,6 +1193,7 @@ class Assembler:
                     for name in self._pending:
                         self.symbols[name] = lc[seg]
                 st.size = 4 * len(insns)
+                st.where = gst.where
                 stmts.append(st)
                 lc[seg] += st.size
                 self._pending = []
@@ -1128,7 +1228,8 @@ class Assembler:
                           at_ok, stmts):
         def stmt(size: int, align: int = 1) -> None:
             pad = (-lc[seg]) % align
-            st = _Stmt(n, raw, seg, lc[seg] + pad, d, ops, reorder, at_ok, size)
+            st = _Stmt(n, raw, seg, lc[seg] + pad, d, ops, reorder, at_ok, size,
+                       where=self._where)
             stmts.append(st)
             for name in self._pending:
                 self.symbols[name] = st.addr
@@ -1299,6 +1400,16 @@ class Assembler:
         elif mn in ("neg", "negu"):
             self._nops(st, 2)
             out = [("sub" if mn == "neg" else "subu", [ops[0], "$zero", ops[1]])]
+        elif mn == "abs" or mn == "dabs" and self.wide:
+            # GNU as's M_ABS (tc-mips.c): bgez rs, 1f; move rd, rs (nop when
+            # rd = rs) in its slot; sub rd, $zero, rs; 1: — noreorder, 3 words
+            self._nops(st, 2)
+            wide = mn == "dabs"
+            slot = ("nop", []) if parse_gpr(ops[0]) == parse_gpr(ops[1]) else \
+                ("or", [ops[0], ops[1], "$zero"])          # (move_register: or, also 64-bit)
+            out = [("bgez", [ops[1], f"0x{st.addr + 12:x}"]), slot,
+                   ("dsub" if wide else "sub", [ops[0], "$zero", ops[1]])]
+            return out
         elif mn in ("dneg", "dnegu") and self.wide:
             self._nops(st, 2)
             out = [("dsub" if mn == "dneg" else "dsubu", [ops[0], "$zero", ops[1]])]
@@ -1516,7 +1627,7 @@ class Assembler:
             return [("nop", [])]
 
         def true() -> list[tuple[str, list[str]]]:
-            msg = f"branch {mn} is always true"
+            msg = placed(st.where, f"branch {mn} is always true")
             if (st.line, msg) not in self.prog.warnings:
                 self.prog.warnings.append((st.line, msg))
             return [("b", [label])]
@@ -1710,7 +1821,7 @@ class Assembler:
             addr = st.addr + 4 * k
             word = self._encode(mn, ops, addr, st)
             self._put(addr, word, 4)
-            self.prog.source_map[addr] = SourceLine(st.line, st.text)
+            self.prog.source_map[addr] = SourceLine(st.line, st.text, *(st.where or (None, 0)))
             self._mark(st.seg, addr, 4)
 
     # -- MIPS16e ------------------------------------------------------------------
@@ -1762,7 +1873,7 @@ class Assembler:
         for hws in insns:
             for k, h in enumerate(hws):
                 self._put(addr + 2 * k, h, 2)
-            self.prog.source_map[addr] = SourceLine(st.line, st.text)
+            self.prog.source_map[addr] = SourceLine(st.line, st.text, *(st.where or (None, 0)))
             self.prog.m16[addr] = 2 * len(hws)
             self._mark(st.seg, addr, 2 * len(hws))
             addr += 2 * len(hws)
@@ -1938,7 +2049,7 @@ class Assembler:
         for insn in insns:
             for k, h in enumerate(insn.halves):
                 self._put(addr + 2 * k, h, 2)
-            self.prog.source_map[addr] = SourceLine(st.line, st.text)
+            self.prog.source_map[addr] = SourceLine(st.line, st.text, *(st.where or (None, 0)))
             self.prog.mm[addr] = insn.size
             self._mark(st.seg, addr, insn.size)
             addr += insn.size

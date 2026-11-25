@@ -1,0 +1,6 @@
+# Episode 13, the challenge: the words joined with single spaces, and the longest
+input:   MIPS  by Example   in eMIPS 
+check: output == "A line? joined: \"MIPS by Example in eMIPS\"\nlongest: Example (7)\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

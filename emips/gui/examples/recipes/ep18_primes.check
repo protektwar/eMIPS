@@ -1,0 +1,5 @@
+# Episode 18: gcd, lcm and the primes below 100
+check: output == "gcd(1071, 462) = 21\nlcm(12, 18) = 36\nprimes below 100: 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97\n25 primes\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

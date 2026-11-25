@@ -1,0 +1,2 @@
+# Episode 4: C's order (capitals come before small letters)
+check: output == "apple < apply\npear > peach\nMIPS = MIPS\nZebra < apple\n"

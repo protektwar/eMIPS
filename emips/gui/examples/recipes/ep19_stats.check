@@ -1,0 +1,5 @@
+# Episode 19: the multiples of 3 or 5, ten scores
+check: output == "multiples of 3 or 5 below 1000: 233168\nscores: 72 85 90 64 78 95 58 81 88 74\nmin 58, max 95, mean 79, above the mean 5\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

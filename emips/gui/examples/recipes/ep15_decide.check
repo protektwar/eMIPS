@@ -1,0 +1,8 @@
+# Episode 15: three numbers, one of them negative
+input: 17
+input: 42
+input: -5
+check: output == "Three numbers:\nlargest: 42\n17 is odd\n42 is even\n-5 is odd\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

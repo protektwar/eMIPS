@@ -1,0 +1,8 @@
+# Episode 29: three disks from A to C
+check: output == "disk 1: A -> C\ndisk 2: A -> B\ndisk 1: C -> B\ndisk 3: A -> C\ndisk 1: B -> A\ndisk 2: B -> C\ndisk 1: A -> C\n7 moves\n"
+# all three on peg C, largest at the bottom
+check: byte[pegs + 8] == 3
+check: byte[pegs + 10] == 1
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

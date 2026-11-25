@@ -1,0 +1,7 @@
+# Episode 11, the challenge: decimal and hex, and the average with its remainder
+input: 0x1f 12 -0x10 7
+check: output == "Numbers? count 4, sum 34, average 8 remainder 2\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s3 == 0

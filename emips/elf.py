@@ -61,6 +61,22 @@ NANOMIPS_ASES_MISSING = {0x8: "the MCU ASE", 0x100: "the Virtualization ASE", 0x
 ET_EXEC = 2
 PT_LOAD = 1
 PT_TLS = 7
+#: the largest loadable segment eMIPS fills (its image keeps a byte an
+#: address): a bigger one is a linker's mistake, not a program
+MAX_SEGMENT = 4 << 20
+
+
+def _check_segment(p_vaddr: int, p_memsz: int, p_flags: int) -> None:
+    """Refuse a PT_LOAD segment eMIPS cannot sensibly load, with the
+    reason, rather than fill it byte by byte (PLAN F1)."""
+    if p_memsz <= MAX_SEGMENT:
+        return
+    rwx = "".join(c for c, bit in (("R", 4), ("W", 2), ("X", 1)) if p_flags & bit)
+    raise ElfError(f"a loadable segment of {p_memsz / (1 << 20):.0f} MB at 0x{p_vaddr:08x} "
+                   f"({rwx or 'no access'}, p_memsz 0x{p_memsz:x}): more than eMIPS loads "
+                   f"({MAX_SEGMENT >> 20} MB) — usually a linker script that left the data in "
+                   "the code's segment (ld.lld without PHDRS puts empty data sections "
+                   "there), so the segment spans the gap up to the data")
 SHT_SYMTAB = 2
 #: the MIPS ABI flags section (Elf_MIPS_ABIFlags_v0) and its DSP ASE bits
 SHT_MIPS_ABIFLAGS = 0x7000002A
@@ -359,6 +375,7 @@ def _parse(data: bytes, path: str) -> ElfImage:
              _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
         if p_type != PT_LOAD or not p_memsz:
             continue
+        _check_segment(p_vaddr, p_memsz, p_flags)
         if wide and p_vaddr > M32 and not img.notes.count(_ABOVE_4G):
             img.notes.append(_ABOVE_4G)
         chunk = data[p_offset:p_offset + p_filesz]
@@ -412,6 +429,7 @@ def _parse_nano(data: bytes, path: str, end: str, endian: str, wide: bool, e_ent
          _align) = struct.unpack_from(end + "IIIIIIII", data, e_phoff + i * e_phentsize)
         if p_type != PT_LOAD or not p_memsz:
             continue
+        _check_segment(p_vaddr, p_memsz, p_flags)
         chunk = data[p_offset:p_offset + p_filesz]
         for k in range(p_memsz):
             img.image[(p_vaddr + k) & M32] = chunk[k] if k < len(chunk) else 0
@@ -461,6 +479,7 @@ def _parse_rv(data: bytes, path: str, end: str, endian: str, wide: bool, e_entry
             img.tls = (p_vaddr, p_filesz, p_memsz)
         if p_type != PT_LOAD or not p_memsz:
             continue
+        _check_segment(p_vaddr, p_memsz, p_flags)
         chunk = data[p_offset:p_offset + p_filesz]
         for k in range(p_memsz):
             img.image[p_vaddr + k] = chunk[k] if k < len(chunk) else 0

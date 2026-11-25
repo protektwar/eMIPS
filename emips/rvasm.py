@@ -60,7 +60,7 @@ import struct
 from dataclasses import dataclass, field
 
 from . import gasread
-from .assembler import AsmError
+from .assembler import AsmError, Line, placed, source_line
 from .nanoasm import _unescape_gas, _LABEL_DEF, _ASSIGN
 from .riscv import _DATA, closure, parse_extensions, sp_base
 
@@ -784,21 +784,25 @@ class Assembler:
         self.reader = gasread.Reader(source, _Hooks(self), path=path, include_dirs=include_dirs,
                                      warn=lambda n, msg: self.warnings.append((n, msg)))
         for st in self.reader:
-            self.line, self.raw = st.line, st.raw
+            self.line, self.where = (Line(st.line, st.where) if st.where else st.line), st.where
+            self.raw = st.text.strip() if st.where else st.raw
             try:
                 self._statement(st.text)
-            except AsmError:
-                raise
+            except AsmError as exc:
+                raise exc.at(st.where)
             except (ValueError, KeyError, _NoMatch) as exc:
-                raise AsmError(st.line, str(exc), st.raw) from None
+                raise AsmError(st.line, str(exc), st.text.strip() if st.where else st.raw,
+                               where=st.where) from None
+        self.where = None
         self.line, self.raw = len(lines), ""
         self._relax_all()
         return self._object()
 
     def error(self, msg: str):
-        raise AsmError(self.line, msg, self.raw)
+        raise AsmError(self.line, msg, self.raw, where=getattr(self, "where", None))
 
     def warn(self, msg: str) -> None:
+        msg = placed(getattr(self, "where", None), msg)
         if (self.line, msg) not in self.warnings:
             self.warnings.append((self.line, msg))
 
@@ -3282,7 +3286,8 @@ def assemble(source: str, *, arch: str = "rv64", extensions: str = DEFAULT_EXTEN
     prog.rv_extensions = extensions
     for a, size, line in linked.insns:
         prog.rv[a] = size
-        prog.source_map[a] = SourceLine(line, asm.lines[line - 1] if line else "")
+        prog.source_map[a] = source_line(line, asm.lines, asm.reader.files)
+    prog.include_files = dict(asm.reader.files)
     prog.symbols.update(linked.symbols)
     prog.segments = {n.lstrip("."): span for n, span in linked.segments.items()}   # (text ...)
     for name in ("main", "_start", "__start"):

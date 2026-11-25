@@ -1,0 +1,7 @@
+# Episode 7, the challenge: words reversed in place, palindromes ignoring case and spaces
+check: output == "SPIM yb elpmaxE\nNever odd or even: a palindrome\nNo lemon, no melon: a palindrome\nNot a palindrome: not a palindrome\n"
+# every frame was given back, every $s register too
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s1 == 0
+check: $s2 == 0

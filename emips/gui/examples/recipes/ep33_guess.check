@@ -1,0 +1,17 @@
+# Episode 33: the first game (secret 61) by halving, with a mistyped guess;
+# the second (secret 49) given up after one guess
+input: 50
+input: x
+input: 75
+input: 62
+input: 56
+input: 59
+input: 60
+input: 61
+input: y
+input: 50
+input: !cancel
+input: n
+check: output == "50 higher\n75 lower\n62 lower\n56 higher\n59 higher\n60 higher\n61 right, guesses: 7\n50 lower\ngave up: 49\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

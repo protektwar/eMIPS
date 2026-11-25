@@ -1,0 +1,4 @@
+# Episode 37's challenge: 42 notes and 12 bass notes, still 19.2 seconds
+check: output == "notes: 42\nbass notes: 12\nms: 19200\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

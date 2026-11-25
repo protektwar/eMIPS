@@ -1,0 +1,5 @@
+# Episode 5, the challenge: cut to the buffer, the length it wanted, visits untouched
+check: output == "Hello, world, a\nwanted = 23\nvisits = 7"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

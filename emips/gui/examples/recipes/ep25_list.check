@@ -1,0 +1,5 @@
+# Episode 25: a list built with push and append, its length, reversed
+check: output == "list: 11 7 3 20\nlength 4\nreversed: 20 3 7 11\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

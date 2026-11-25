@@ -1,0 +1,5 @@
+# Episode 20: a circle of radius 2.5
+input: 2.5
+check: output == "Radius:\narea 19.634954084936208, rounded 20\ncircumference 15.707963267948966\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

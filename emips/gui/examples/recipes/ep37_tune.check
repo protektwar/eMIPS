@@ -1,0 +1,4 @@
+# Episode 37: 42 notes, 48 beats of 400 ms
+check: output == "notes: 42\nms: 19200\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

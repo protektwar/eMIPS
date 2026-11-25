@@ -1,0 +1,2 @@
+# Episode 2 (RISC-V)
+check: output == "sum of squares = 55\nfact(5) = 120\nfact(10) = 3628800\n"

@@ -1,0 +1,6 @@
+# Episode 13: a line with extra spaces cut into its words
+input:   MIPS  by Example   in eMIPS 
+check: output == "A line? 5 words:\n1: MIPS\n2: by\n3: Example\n4: in\n5: eMIPS\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

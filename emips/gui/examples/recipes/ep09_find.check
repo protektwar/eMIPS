@@ -1,0 +1,5 @@
+# Episode 9: where each needle first starts (-1: nowhere)
+check: output == "sea: 10\nshell: 14\nshore: 32\nsure: -1\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

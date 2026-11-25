@@ -1,0 +1,4 @@
+# Episode 10: our digits = what print_int / print_binary / print_hex show
+check: output == "2026 = 0b11111101010 = 0x7ea\n-42 = 0b11111111111111111111111111010110 = 0xffffffd6\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

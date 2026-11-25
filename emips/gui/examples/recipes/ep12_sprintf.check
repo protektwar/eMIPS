@@ -1,0 +1,6 @@
+# Episode 12: two formats filled in
+check: output == "Ada is 36 years old, grade A% (29 characters)\n2 + 40 = 42 (11 characters)\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s2 == 0

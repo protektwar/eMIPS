@@ -1,0 +1,5 @@
+# Episode 21, the challenge: the best student, the letters counted
+check: output == "best: student 5, average 97\nA 3, B 1, C 1, D 1, F 0\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

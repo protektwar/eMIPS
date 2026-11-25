@@ -1,0 +1,5 @@
+# Episode 6, the challenge: every letter's case flipped, then a title
+input: ada LOVELACE
+check: output == "Your name? Swapped: ADA lovelace\nTitle: Ada Lovelace\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

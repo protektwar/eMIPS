@@ -1,0 +1,2 @@
+# Lab 95: strcmp orders the three pairs as C does
+check: output == "0 - + "

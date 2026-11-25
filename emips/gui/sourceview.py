@@ -3,7 +3,9 @@
 following it from file to file —, breakpoints on C lines (click the
 gutter), and the call stack (Session.backtrace: the calls not returned
 yet; click a frame to see its line).  For an assembled program the
-editor is the source: the pane shows the call stack only.
+editor is the source; the pane shows the call stack and, while the code
+of an included file runs (``.include``, PLAN M26), that file — or the one
+the editor's ``.include`` line asked for (:meth:`show_included`).
 
 Everything comes from the Session (source_position, source_file,
 line_addresses, backtrace)."""
@@ -32,6 +34,7 @@ class SourceView(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         self.title = QtWidgets.QLabel()
+        self.title.setWordWrap(True)            # (a long note must not widen the dock)
         lay.addWidget(self.title)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.code = CodeEditor()
@@ -74,9 +77,19 @@ class SourceView(QtWidgets.QWidget):
                                 f"{where}")
         self.frames.blockSignals(False)
         if not s.program.c_lines:
-            self._show_file(None, [])
-            self.title.setText(tr("an assembled program: its source is the editor; the "
-                                  "call stack is below"))
+            pc = s.current_pc()
+            pos = s.source_position(pc) if pc is not None else None
+            if pos is not None:                 # the code of an included file
+                self._show_at(pos[0], pos[1])
+            elif self._file in s.program.include_files:
+                self._mark(None)
+                self.title.setText(tr("{file} — the program runs in its own file (the "
+                                      "editor)").format(file=Path(self._file).name))
+            else:
+                self._show_file(None, [])
+                self.title.setText(tr("an assembled program: its source is the editor (an "
+                                      "included file shows here while its code runs); the "
+                                      "call stack is below"))
             return
         pc = s.current_pc()
         pos = s.source_position(pc) if pc is not None else None
@@ -94,8 +107,11 @@ class SourceView(QtWidgets.QWidget):
     def _show_at(self, file: str, line: int, current: bool = True) -> None:
         s = self._session
         if file != self._file:
-            got = s.source_file(next(iter(s.line_addresses(file, 1)), None))
-            self._show_file(file, got[1] if got and got[0] == file else [])
+            if file in s.program.include_files:     # (an included assembly file)
+                self._show_file(file, s.program.include_files[file])
+            else:
+                got = s.source_file(next(iter(s.line_addresses(file, 1)), None))
+                self._show_file(file, got[1] if got and got[0] == file else [])
         self._mark(line if current else None, None if current else line)
         self.title.setText(f"{Path(file).name}:{line}")
 
@@ -118,7 +134,7 @@ class SourceView(QtWidgets.QWidget):
         bps = set()
         if s is not None and s.program is not None and self._file:
             for a in s.breakpoints:
-                pos = s.program.c_lines.get(a)
+                pos = s.source_key(a)
                 if pos is not None and pos[0] == self._file:
                     bps.add(pos[1])
         self.code.breakpoint_lines = bps
@@ -131,7 +147,7 @@ class SourceView(QtWidgets.QWidget):
         if s is None or s.program is None or not self._file:
             return
         addrs = [a for a in s.line_addresses(self._file, line)
-                 if s.program.c_lines.get(a) == (self._file, line)]
+                 if s.source_key(a) == (self._file, line)]
         if not addrs:
             return
         if any(a in s.breakpoints for a in addrs):
@@ -139,6 +155,16 @@ class SourceView(QtWidgets.QWidget):
         else:
             s.breakpoints.update(addrs)
         self.breakpoints_changed.emit()
+
+    def show_included(self, path: str, text: list[str]) -> None:
+        """An included file the editor's ``.include`` line names (PLAN
+        M26): shown, marked where it runs when it does."""
+        self._show_file(path, text)
+        pc = self._session.current_pc() if self._session is not None and \
+            self._session.program is not None else None
+        pos = self._session.source_position(pc) if pc is not None else None
+        self._mark(pos[1] if pos and pos[0] == path else None)
+        self.title.setText(Path(path).name)
 
     def _frame_chosen(self, row: int) -> None:
         if not 0 <= row < len(self._frames):

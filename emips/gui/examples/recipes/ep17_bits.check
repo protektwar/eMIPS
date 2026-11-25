@@ -1,0 +1,5 @@
+# Episode 17: two divisions without div, the ones three ways
+check: output == "1000 / 7 = 142 remainder 6\n2026 / 10 = 202 remainder 6\nones in 2026: 8 8 8\nones in -1: 32 32 32\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

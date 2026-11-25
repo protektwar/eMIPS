@@ -1,0 +1,5 @@
+# Episode 27, the challenge: one reduce, three functions
+check: output == "sum 14\nproduct 60\nlargest 5\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

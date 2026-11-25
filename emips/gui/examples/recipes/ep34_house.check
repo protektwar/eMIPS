@@ -1,0 +1,19 @@
+# Episode 34: what it prints, and pixels of each shape (pixel (x, y) is the
+# word at 0x10008000 + (y * 64 + x) * 4)
+check: output == "pixels written: 6256\n"
+# (0, 0): the sky's corner
+check: word[0x10008000] == 0x0080c0ff
+# (31, 11): the roof's apex
+check: word[0x10008b7c] == 0x00c03020
+# (42, 14): the chimney above the roof
+check: word[0x10008ea8] == 0x00a04040
+# (20, 36): a window
+check: word[0x1000a450] == 0x00ffff80
+# (31, 45): the door
+check: word[0x1000ad7c] == 0x00804020
+# (0, 63): the grass
+check: word[0x1000bf00] == 0x0040a040
+# (25, 45): the wall beside the door
+check: word[0x1000ad64] == 0x00e0c080
+# every frame was given back
+check: $sp == 0x7fffeffc

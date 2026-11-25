@@ -1,0 +1,5 @@
+# Episode 23, the challenge: the first of repeated values, integer square roots
+check: output == "first 3 at 1, first 8 at 5\nisqrt(144) = 12\nisqrt(1000) = 31\nisqrt(2) = 1\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

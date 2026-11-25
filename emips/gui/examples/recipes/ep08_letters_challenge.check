@@ -1,0 +1,5 @@
+# Episode 8, the challenge: a bar of stars a letter, and every letter tied for first
+check: output == "a *\nb *\ne ***\ni ***\nl *\nm ***\nn *\np ***\ns **\nx *\ny *\nmost frequent, 3 times: e i m p\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

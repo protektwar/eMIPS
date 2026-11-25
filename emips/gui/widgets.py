@@ -4,6 +4,9 @@ pipeline chart and the instruction-details panel.  They only read a
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import html
 from typing import Any
 
@@ -47,11 +50,16 @@ class _Gutter(QtWidgets.QWidget):
         self.editor.breakpoint_clicked.emit(block.blockNumber() + 1)
 
 
+_INCLUDE = re.compile(r'^\s*(?:[\w.$]+:\s*)*\.include\s+"([^"]+)"', re.I)
+
+
 class CodeEditor(QtWidgets.QPlainTextEdit):
     """Assembly source with line numbers, breakpoint dots (click the
     gutter) and highlighted lines (current instruction / pipeline stages)."""
 
     breakpoint_clicked = Signal(int)
+    #: a double click on a ``.include "FILE"`` line: FILE (PLAN M26)
+    include_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -305,6 +313,15 @@ class FindBar(QtWidgets.QWidget):
     def close_bar(self) -> None:
         self.hide()
         self.editor.setFocus()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        line = self.cursorForPosition(pos).block().text()
+        m = _INCLUDE.search(line.split("#")[0])
+        if m:                                   # .include "FILE": open it (the Source pane)
+            self.include_requested.emit(m.group(1))
+            return
+        super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
@@ -1050,7 +1067,9 @@ class DisassemblyView(QtWidgets.QTableWidget):
                     code = c_lines[line - 1].strip() if 0 < line <= len(c_lines) else ""
                     _set(self, r, 3, f"{line}: {code}" if line != last else f"{line}")
                 else:
-                    _set(self, r, 3, str(line))
+                    src = prog.source_map.get(a) if prog is not None else None
+                    _set(self, r, 3, f"{Path(src.file).name}:{src.file_line}"   # (PLAN M26)
+                         if src is not None and src.file else str(line))
                 last = line
             self.resizeColumnsToContents()
             self._shown = None

@@ -1,0 +1,19 @@
+# Episode 31: add 17 and 42, a wrong menu answer, the sum, the average,
+# choice 7, quit (No, then Yes)
+input: 1
+input: 17
+input: 1
+input: 42
+input: x
+input: 2
+input: 3
+input: 7
+input: 0
+input: n
+input: 0
+input: y
+check: output == "added 17\nadded 42\nsum 59\naverage 29\nbye\n"
+check: word[count] == 2
+check: word[total] == 59
+# every frame was given back
+check: $sp == 0x7fffeffc

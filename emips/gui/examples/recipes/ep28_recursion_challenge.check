@@ -1,0 +1,5 @@
+# Episode 28, the challenge: power by squaring, the permutations of abc
+check: output == "3^13 = 1594323\npermutations: abc acb bac bca cba cab\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

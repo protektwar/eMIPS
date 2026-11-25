@@ -1,0 +1,6 @@
+# Episode 9, the challenge: every place a needle starts, and the last one
+check: output == "sea: 10 28\nll: 6 17\nlast s: 32\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s3 == 0

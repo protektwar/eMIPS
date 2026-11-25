@@ -46,6 +46,95 @@ static inline void print_float(float f)
     __asm__ volatile ("ecall" : : "f"(fa0_), "r"(a7_) : "memory");
 }
 #endif
+#if __riscv_flen >= 64
+static inline void print_double(double d)
+{
+    register double fa0_ __asm__("fa0") = d;
+    register long a7_ __asm__("a7") = 3;
+    __asm__ volatile ("ecall" : : "f"(fa0_), "r"(a7_) : "memory");
+}
+
+static inline double read_double(void)
+{
+    register double fa0_ __asm__("fa0");
+    register long a7_ __asm__("a7") = 7;
+    __asm__ volatile ("ecall" : "=f"(fa0_) : "r"(a7_) : "memory");
+    return fa0_;
+}
+#endif
+
+/* RARS's dialogs (services 50-56): the answers come back in a0 / a1 */
+static inline int input_dialog_int(const char *msg, int *status)
+{
+    register long a0_ __asm__("a0") = (long)msg;
+    register long a1_ __asm__("a1");
+    register long a7_ __asm__("a7") = 51;
+    __asm__ volatile ("ecall" : "+r"(a0_), "=r"(a1_) : "r"(a7_) : "memory");
+    *status = (int)a1_;                   /* 0, -1 not a number, -2 Cancel, -3 empty */
+    return (int)a0_;
+}
+
+static inline int confirm_dialog(const char *msg)  /* 0 Yes, 1 No, 2 Cancel */
+{
+    register long a0_ __asm__("a0") = (long)msg;
+    register long a7_ __asm__("a7") = 50;
+    __asm__ volatile ("ecall" : "+r"(a0_) : "r"(a7_) : "memory");
+    return (int)a0_;
+}
+
+static inline void message_dialog(const char *msg, int type) { emips_ecall2(55, (long)msg, type); }
+static inline void message_dialog_int(const char *msg, int n) { emips_ecall2(56, (long)msg, n); }
+
+/* RARS's time and random numbers (30, 40, 42) */
+static inline unsigned time_ms(void)
+{
+    register long a0_ __asm__("a0");
+    register long a1_ __asm__("a1");
+    register long a7_ __asm__("a7") = 30;
+    __asm__ volatile ("ecall" : "=r"(a0_), "=r"(a1_) : "r"(a7_) : "memory");
+    return (unsigned)a0_;
+}
+
+static inline void set_seed(int stream, int seed) { emips_ecall2(40, stream, seed); }
+
+static inline int random_int_range(int stream, int bound)
+{
+    register long a0_ __asm__("a0") = stream;
+    register long a1_ __asm__("a1") = bound;
+    register long a7_ __asm__("a7") = 42;
+    __asm__ volatile ("ecall" : "+r"(a0_) : "r"(a1_), "r"(a7_) : "memory");
+    return (int)a0_;
+}
+
+/* RARS's files (1024 open, 63 read, 64 write, 57 close) */
+static inline long emips_file3(long service, long a, long b, long c)
+{
+    register long a0_ __asm__("a0") = a;
+    register long a1_ __asm__("a1") = b;
+    register long a2_ __asm__("a2") = c;
+    register long a7_ __asm__("a7") = service;
+    __asm__ volatile ("ecall" : "+r"(a0_) : "r"(a1_), "r"(a2_), "r"(a7_) : "memory");
+    return a0_;
+}
+/* RARS's MIDI out (31, 33: a0 pitch, a1 ms, a2 instrument, a3 volume) */
+static inline void emips_midi(long service, int pitch, int ms, int instrument, int volume)
+{
+    register long a0_ __asm__("a0") = pitch;
+    register long a1_ __asm__("a1") = ms;
+    register long a2_ __asm__("a2") = instrument;
+    register long a3_ __asm__("a3") = volume;
+    register long a7_ __asm__("a7") = service;
+    __asm__ volatile ("ecall" : : "r"(a0_), "r"(a1_), "r"(a2_), "r"(a3_), "r"(a7_) : "memory");
+}
+static inline void midi_out(int pitch, int ms, int instrument, int volume)
+{ emips_midi(31, pitch, ms, instrument, volume); }
+static inline void midi_out_sync(int pitch, int ms, int instrument, int volume)
+{ emips_midi(33, pitch, ms, instrument, volume); }
+
+static inline int open_file(const char *name, int flags) { return emips_file3(1024, (long)name, flags, 0); }
+static inline int read_file(int fd, void *buf, int n) { return emips_file3(63, fd, (long)buf, n); }
+static inline int write_file(int fd, const void *buf, int n) { return emips_file3(64, fd, (long)buf, n); }
+static inline void close_file(int fd) { emips_file3(57, fd, 0, 0); }
 
 /* The MMIO console (RARS = MARS: keyboard and display at 0xFFFF0000). */
 #define EMIPS_IO(a)     (*(volatile unsigned *)(unsigned long)(a))
@@ -112,6 +201,97 @@ EMIPS_MIPS32 void print_float(float f)
 {
     __asm__ volatile ("mov.s $f12, %0\n\tli $v0, 2\n\tsyscall" : : "f"(f) : "$2", "$f12", "memory");
 }
+#ifdef __mips_hard_float
+EMIPS_MIPS32 void print_double(double d)
+{
+    __asm__ volatile ("mov.d $f12, %0\n\tli $v0, 3\n\tsyscall" : : "f"(d)
+                      : "$2", "$f12", "$f13", "memory");
+}
+
+EMIPS_MIPS32 double read_double(void)
+{
+    double d;
+    __asm__ volatile ("li $v0, 7\n\tsyscall\n\tmov.d %0, $f0" : "=f"(d) : : "$2", "$f0", "$f1",
+                      "memory");
+    return d;
+}
+#endif
+
+/* MARS's dialogs (services 50-59): the answers come back in $a0 / $a1 */
+EMIPS_MIPS32 int input_dialog_int(const char *msg, int *status)
+{
+    register long v0 __asm__("$2") = 51;
+    register long r4 __asm__("$4") = (long)msg;
+    register long r5 __asm__("$5");
+    __asm__ volatile ("syscall" : "+r"(v0), "+r"(r4), "=r"(r5) : : "memory");
+    *status = (int)r5;                    /* 0, -1 not a number, -2 Cancel, -3 empty */
+    return (int)r4;
+}
+
+EMIPS_MIPS32 int confirm_dialog(const char *msg)   /* 0 Yes, 1 No, 2 Cancel */
+{
+    register long v0 __asm__("$2") = 50;
+    register long r4 __asm__("$4") = (long)msg;
+    __asm__ volatile ("syscall" : "+r"(v0), "+r"(r4) : : "memory");
+    return (int)r4;
+}
+
+static inline void message_dialog(const char *msg, int type) { emips_syscall2(55, (long)msg, type); }
+static inline void message_dialog_int(const char *msg, int n) { emips_syscall2(56, (long)msg, n); }
+
+/* MARS's time and random numbers (30, 40, 42): in eMIPS the time is the
+ * simulated clock, so a run replays exactly */
+EMIPS_MIPS32 unsigned time_ms(void)       /* the low word of the milliseconds */
+{
+    register long v0 __asm__("$2") = 30;
+    register long r4 __asm__("$4");
+    register long r5 __asm__("$5");
+    __asm__ volatile ("syscall" : "+r"(v0), "=r"(r4), "=r"(r5) : : "memory");
+    return (unsigned)r4;
+}
+
+static inline void set_seed(int stream, int seed) { emips_syscall2(40, stream, seed); }
+
+EMIPS_MIPS32 int random_int_range(int stream, int bound)   /* 0 ... bound - 1 */
+{
+    register long v0 __asm__("$2") = 42;
+    register long r4 __asm__("$4") = stream;
+    register long r5 __asm__("$5") = bound;
+    __asm__ volatile ("syscall" : "+r"(v0), "+r"(r4) : "r"(r5) : "memory");
+    return (int)r4;
+}
+
+/* MARS's files (13-16): the files given with --file; flags 0 read, 1 write,
+ * 9 append; a result below 0 is an error */
+EMIPS_MIPS32 long emips_file3(long service, long a, long b, long c)
+{
+    register long v0 __asm__("$2") = service;
+    register long r4 __asm__("$4") = a;
+    register long r5 __asm__("$5") = b;
+    register long r6 __asm__("$6") = c;
+    __asm__ volatile ("syscall" : "+r"(v0) : "r"(r4), "r"(r5), "r"(r6) : "memory");
+    return v0;
+}
+/* MARS's MIDI out: 31 plays a note and goes on, 33 waits until it ends
+ * (pitch 60 = middle C, milliseconds, instrument 0-127, volume 0-127) */
+EMIPS_MIPS32 void emips_midi(long service, int pitch, int ms, int instrument, int volume)
+{
+    register long v0 __asm__("$2") = service;
+    register long r4 __asm__("$4") = pitch;
+    register long r5 __asm__("$5") = ms;
+    register long r6 __asm__("$6") = instrument;
+    register long r7 __asm__("$7") = volume;
+    __asm__ volatile ("syscall" : "+r"(v0) : "r"(r4), "r"(r5), "r"(r6), "r"(r7) : "memory");
+}
+static inline void midi_out(int pitch, int ms, int instrument, int volume)
+{ emips_midi(31, pitch, ms, instrument, volume); }
+static inline void midi_out_sync(int pitch, int ms, int instrument, int volume)
+{ emips_midi(33, pitch, ms, instrument, volume); }
+
+static inline int open_file(const char *name, int flags) { return emips_file3(13, (long)name, flags, 0); }
+static inline int read_file(int fd, void *buf, int n) { return emips_file3(14, fd, (long)buf, n); }
+static inline int write_file(int fd, const void *buf, int n) { return emips_file3(15, fd, (long)buf, n); }
+static inline void close_file(int fd) { emips_file3(16, fd, 0, 0); }
 
 /* The MMIO console (MARS "Keyboard and Display MMIO", kseg3: kernel mode).
  * (long)(int): a kseg3 address sign-extended, as n64 pointers need it. */

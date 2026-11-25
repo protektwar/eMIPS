@@ -1,0 +1,6 @@
+# Episode 14: six names in strcmp order (capitals first)
+check: output == "before: pear apple MIPS zebra banana Apple\nafter:  Apple MIPS apple banana pear zebra\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s4 == 0

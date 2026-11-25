@@ -1,0 +1,4 @@
+# Episode 24: the sum and the product of two 3 x 3 matrices
+check: output == "A + B:\n10 10 10\n10 10 10\n10 10 10\nA x B:\n30 24 18\n84 69 54\n138 114 90\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

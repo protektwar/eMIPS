@@ -26,7 +26,7 @@ from . import cp0 as C
 from . import ejtag as EJ
 from . import pdtrace as PDT
 from . import tap as TAPM
-from .assembler import AsmError
+from .assembler import AsmError, located
 from .files import dump_bytes
 from . import tools
 from .options import (ARCHES, RV_EXTENSIONS, RV_INTC, RV_MODES, BOOT_MODES, COMPRESSED, DSP_LEVELS, MAX_CORES, MSA_LEVELS, NANO_CRC,
@@ -144,6 +144,12 @@ class Debugger(cmd.Cmd):
         can start in several places (a loop's condition, its increment)."""
         self._need_program()
         s, t = self.s, text.strip()
+        inc = self._included_line(t)
+        if inc is not None:                            # lib.asm:12 (PLAN M26)
+            addrs = s.line_addresses(*inc)
+            if not addrs:
+                raise CliError(f"no code on or after {t}")
+            return addrs
         if s.program.c_lines:
             file, _, num = t.rpartition(":")
             if num.isdigit() and (file or t.isdigit()) and not t.lower().startswith("0x"):
@@ -161,8 +167,9 @@ class Debugger(cmd.Cmd):
         ``file.c:17``) and a function name works."""
         self._need_program()
         s, t = self.s, text.strip()
-        if s.program is not None and s.program.c_lines and (
-                t.isdigit() or ":" in t and t.rpartition(":")[2].isdigit()):
+        if s.program is not None and (s.program.c_lines and (
+                t.isdigit() or ":" in t and t.rpartition(":")[2].isdigit())
+                or self._included_line(t) is not None):
             return self.resolve_all(t)[0]
         if t.lower() == "pc":
             pc = s.current_pc()
@@ -191,6 +198,18 @@ class Debugger(cmd.Cmd):
         raise CliError(f"unknown location {t!r} (0x address, line number, label, "
                        "$register, pc" + (", file.c:LINE, function"
                                           if s.program.c_lines else "") + ")")
+
+    def _included_line(self, t: str) -> tuple[str, int] | None:
+        """``FILE:LINE`` naming a file the program includes (``.include``),
+        as (file, line); else None."""
+        file, _, num = t.rpartition(":")
+        if not file or not num.isdigit() or self.s.program is None:
+            return None
+        name = Path(file).name
+        for f in self.s.program.include_files:
+            if Path(f).name == name:
+                return f, int(num)
+        return None
 
     def _where(self, pc: int | None, marker: str = "=>", cpu: int | None = None) -> str:
         s = self.s
@@ -2040,6 +2059,13 @@ class Debugger(cmd.Cmd):
         if s.program.c_lines:
             self._list_c(arg.strip())
             return
+        t = arg.strip()
+        inc = self._included_line(t) if t else None
+        pos = s.source_position(s.current_pc()) if not t and s.current_pc() is not None else None
+        if inc is not None or pos is not None:          # an included file (PLAN M26)
+            file, center = inc if inc is not None else (pos[0], pos[1])
+            self._list_included(file, center, pos)
+            return
         src = (s.source if s.kind == "asm" else s.listing).splitlines()
         cur = s.current_line()
         if arg.strip():
@@ -2056,6 +2082,16 @@ class Debugger(cmd.Cmd):
             self.say(f"{mark} {n:4}  {src[n - 1]}")
 
     do_l = do_list
+
+    def _list_included(self, file: str, center: int, cur) -> None:
+        s = self.s
+        text = s.program.include_files.get(file, [])
+        bps = {s.program.source_map[a].key for a in s.breakpoints if a in s.program.source_map}
+        self.say(f"{Path(file).name}:")
+        for n in range(max(1, center - 5), min(len(text), center + 5) + 1):
+            mark = ("=>" if cur and (cur[0], cur[1]) == (file, n) else
+                    " *" if (file, n) in bps else "  ")
+            self.say(f"{mark} {n:4}  {text[n - 1]}")
 
     def _list_c(self, t: str) -> None:
         s = self.s
@@ -2627,7 +2663,7 @@ def load_file(s: Session, path: str, say) -> bool:
     if path.lower().endswith(".c"):                    # C: built first (emips.cc)
         ok = s.load_c(text, Path(path).name, optimize=f"-O{s.options.c_optimize}")
         if not ok:
-            say(f"error: {path}: {s.errors[0]}")
+            say("error: " + located(path, s.errors[0]))
         return ok
     if raw[:4] == b"\x7fELF":                          # an ELF executable (emips.elf)
         ok = s.load_elf(raw, path)
@@ -2635,7 +2671,7 @@ def load_file(s: Session, path: str, say) -> bool:
         ok = s.load_hex(text) if path.lower().endswith((".hex", ".ihex")) else \
             s.load_source(text, path)
     if not ok:
-        say(f"error: {path}: {s.errors[0]}")
+        say("error: " + located(path, s.errors[0]))
     return ok
 
 

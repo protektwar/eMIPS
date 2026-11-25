@@ -28,7 +28,7 @@ SKIP = ("emips/gui/", "emips/image.py")
 
 def companions(path: Path, base: Path = GUIDE) -> list[str]:
     """The files a program's ``# eMIPS:`` line names (``--disk`` images,
-    ``--file`` files),
+    ``--file`` files) and the files it ``.include``s,
     relative to the guide."""
     text = path.read_text(encoding="utf-8", errors="replace")
     names = []
@@ -38,6 +38,10 @@ def companions(path: Path, base: Path = GUIDE) -> list[str]:
                 f = path.parent / name.split("=")[-1]
                 if f.is_file():
                     names.append(f.relative_to(base).as_posix())
+    for name in re.findall(r'^\s*(?:[\w.$]+:\s*)*\.include\s+"([^"]+)"', text, re.M):
+        f = path.parent / name                    # (its .include files: PLAN M26)
+        if f.is_file() and f.relative_to(base).as_posix() not in names:
+            names.append(f.relative_to(base).as_posix())
     return names
 
 
@@ -58,6 +62,24 @@ def programs(run: Path) -> list[dict]:
         items.append({"title": ex.title, "path": f"run/examples/{ex.file}",
                       "keys": ex.keys, "files": files})
     groups.append({"group": "Examples", "items": items})
+    from emips.gui.examples import RECIPES      # (PLAN M28: the video series' programs)
+    recipes = run / "recipes"
+    recipes.mkdir()
+    items = []
+    for r in RECIPES:
+        for kind, path in r.files():
+            if path.suffix != ".asm":
+                continue
+            shutil.copy2(path, recipes / path.name)
+            for name in companions(path, path.parent):      # (its --file files)
+                shutil.copy2(path.parent / name, recipes / name)
+            if "ibrary" in kind:                # (included by a program: not one itself)
+                continue
+            items.append({"title": f"{r.number}. {r.title}" + (" (RISC-V)" if kind == "RISC-V"
+                                                               else ""),
+                          "path": f"run/recipes/{path.name}", "keys": "",
+                          "files": [f"run/recipes/{n}" for n in companions(path, path.parent)]})
+    groups.append({"group": "MIPS by Example in eMIPS", "items": items})
     labs, more = catalogue(GUIDE)
     for name, entries in (("Labs", labs), ("Programs from the guide", more)):
         items = []

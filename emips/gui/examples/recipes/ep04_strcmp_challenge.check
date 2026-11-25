@@ -1,0 +1,4 @@
+# Episode 4, the challenge: at most n characters, and ignoring case
+check: output == "strncmp(apple, apply, 4): =\nstrncmp(apple, apply, 5): <\nstrcasecmp(Zebra, apple): >\nstrcasecmp(MIPS, mips): =\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

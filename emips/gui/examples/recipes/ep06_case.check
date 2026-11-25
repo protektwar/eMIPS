@@ -1,0 +1,5 @@
+# Episode 6: a name read from the console, greeted, in capitals and small letters
+input: Ada Lovelace
+check: output == "Your name? Hello, Ada Lovelace!\nUPPER: ADA LOVELACE\nlower: ada lovelace\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

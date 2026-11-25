@@ -1,0 +1,4 @@
+# Episode 3, the challenge: both lengths, the empty string, the capitals
+check: output == "strlen_bottom: 24\nstrlen_ptr: 24\nstrlen_bottom(\"\"): 0\nstrlen_ptr(\"\"): 0\ncapitals: 9\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

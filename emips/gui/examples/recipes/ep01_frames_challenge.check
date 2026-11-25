@@ -1,0 +1,5 @@
+# Episode 1, the challenge: both max3s, positive and negative
+check: output == "max3(3, 9, 5) = 9\nmax3_home(3, 9, 5) = 9\nmax3(-2, -7, -4) = -2\nmax3_home(-2, -7, -4) = -2\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

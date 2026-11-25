@@ -1,0 +1,5 @@
+# Episode 25, the challenge: a sorted list, two values removed
+check: output == "sorted: 3 7 19 42\nwithout 19: 3 7 42\nwithout 3: 7 42\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

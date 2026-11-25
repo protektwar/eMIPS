@@ -1,0 +1,5 @@
+# Episode 26, the challenge: three postfix expressions
+check: output == "3 4 + 2 * = 14\n5 1 2 + 4 * + 3 - = 14\n9 2 - 3 * = 21\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

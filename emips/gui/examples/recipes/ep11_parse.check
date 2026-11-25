@@ -1,0 +1,7 @@
+# Episode 11: five numbers typed on one line
+input: 12 -7 300 45 0
+check: output == "Numbers? count 5, min -7, max 300, sum 350\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0
+check: $s4 == 0

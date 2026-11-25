@@ -73,3 +73,74 @@ EXAMPLES = [
     Example("dialogs.asm", "Dialogs: ask and answer (MARS's 50-59)",
             input=("19", "Ada", "y"), output="Hello, Ada\n"),
 ]
+
+
+#: "MIPS by Example in eMIPS" (PLAN M28): each episode's programs in
+#: recipes/ — the assembly, its C version, a checks file, a RISC-V twin for
+#: some (File > Examples > MIPS by Example in eMIPS; tests/test_recipes.py)
+RECIPE_DIR = DIR / "recipes"
+
+
+@dataclass(frozen=True)
+class Recipe:
+    """An episode: its number, title and file stem (``ep01_strings``)."""
+    number: int
+    title: str
+    stem: str
+
+    def files(self) -> list[tuple[str, Path]]:
+        """(kind, path) of the episode's programs that exist: "Assembly",
+        "C", "RISC-V", its challenge's solution ("Challenge solved",
+        "Challenge solved, C") and the files they ``.include`` ("Library",
+        "Challenge solved, library": no checks of their own)."""
+        out = []
+        for kind, name in (("Assembly", f"{self.stem}.asm"), ("C", f"{self.stem}.c"),
+                           ("RISC-V", f"{self.stem}_rv.asm"),
+                           ("Challenge solved", f"{self.stem}_challenge.asm"),
+                           ("Challenge solved, C", f"{self.stem}_challenge.c"),
+                           ("Library", f"{self.stem}_lib.asm"),
+                           ("Challenge solved, library", f"{self.stem}_challenge_lib.asm")):
+            if (RECIPE_DIR / name).is_file():
+                out.append((kind, RECIPE_DIR / name))
+        return out
+
+
+RECIPES = [
+    Recipe(1, "Functions done right: the stack frame", "ep01_frames"),
+    Recipe(2, "Arguments and recursion", "ep02_recursion"),
+    Recipe(3, "Strings in memory: length and the byte order", "ep03_strings"),
+    Recipe(4, "Comparing two strings", "ep04_strcmp"),
+    Recipe(5, "Copy, concatenate, and the overflow", "ep05_strcat"),
+    Recipe(6, "Reading a line; upper and lower case", "ep06_case"),
+    Recipe(7, "Reverse in place and palindromes", "ep07_reverse"),
+    Recipe(8, "Counting letters: the most frequent character", "ep08_letters"),
+    Recipe(9, "Finding a substring", "ep09_find"),
+    Recipe(10, "Numbers to text: decimal, binary, hex", "ep10_itoa"),
+    Recipe(11, "Text to numbers: parse a line, min and max", "ep11_parse"),
+    Recipe(12, "A tiny sprintf", "ep12_sprintf"),
+    Recipe(13, "Splitting a line into words", "ep13_split"),
+    Recipe(14, "Sorting an array of strings", "ep14_sort"),
+    Recipe(15, "First decisions: the largest of three, even and odd", "ep15_decide"),
+    Recipe(16, "Arithmetic: the four operations, shifts, area and perimeter", "ep16_arith"),
+    Recipe(17, "Division without div; counting 1 bits three ways", "ep17_bits"),
+    Recipe(18, "GCD and the Sieve of Eratosthenes", "ep18_primes"),
+    Recipe(19, "Multiples and statistics", "ep19_stats"),
+    Recipe(20, "Floating point: a circle's area with doubles", "ep20_circle"),
+    Recipe(21, "Arrays: sum, search, reverse, two score arrays into grades", "ep21_arrays"),
+    Recipe(22, "Sorting numbers: bubble, insertion, into a second array", "ep22_sort"),
+    Recipe(23, "Binary search, loop and recursive", "ep23_bsearch"),
+    Recipe(24, "Matrices: add and multiply", "ep24_matrix"),
+    Recipe(25, "A linked list with sbrk", "ep25_list"),
+    Recipe(26, "Balanced brackets with the stack", "ep26_brackets"),
+    Recipe(27, "A calculator: jump tables and function pointers", "ep27_calc"),
+    Recipe(28, "Recursion: from n to 1 and back, all binary patterns", "ep28_recursion"),
+    Recipe(29, "Towers of Hanoi", "ep29_hanoi"),
+    Recipe(30, "A simulation with nested calls", "ep30_savings"),
+    Recipe(31, "A menu-driven program with dialogs", "ep31_menu"),
+    Recipe(32, "A library of your own", "ep32_arrays"),
+    Recipe(33, "A guessing game", "ep33_guess"),
+    Recipe(34, "Drawing a house on the bitmap display", "ep34_house"),
+    Recipe(35, "Animation without flicker", "ep35_bounce"),
+    Recipe(36, "A maze game", "ep36_maze"),
+    Recipe(37, "Playing a tune", "ep37_tune"),
+]

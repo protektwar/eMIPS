@@ -1,0 +1,7 @@
+# Episode 8: the letters seen twice or more, and the most frequent
+check: output == "e 3\nh 2\no 4\nr 2\nt 2\nu 2\nmost frequent: o, 4 times\n"
+# a word for o: counts + 4 * 14
+check: word[counts + 56] == 4
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

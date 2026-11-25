@@ -450,9 +450,10 @@ class Execution:
     over (:func:`execute`: all at once)."""
 
     def __init__(self, session, run: Run, *, limit: int) -> None:
+        from .dialogs import typed
         self.s, self.run = session, run
-        for ln in run.inputs:
-            session.give_input(ln)
+        for ln in run.inputs:                   # (!cancel / !close: a dialog's buttons)
+            session.give_input(typed(ln))
         if run.keys:
             session.type_keys(run.keys)
         session.stop_at_end = True

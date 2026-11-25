@@ -1,0 +1,5 @@
+# Episode 27: six expressions, one unknown operator
+check: output == "12 + 30 = 42\n100 - 58 = 42\n6 * 7 = 42\n84 / 2 = 42\n47 % 5 = 2\n3 ^ 4: unknown operator\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

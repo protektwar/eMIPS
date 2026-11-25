@@ -6128,6 +6128,32 @@ taken again before the program executes one instruction — the handler runs for
 (<code>run</code> ends at its step limit inside it), <code>$s4</code> counting up.  A
 level-triggered interrupt must be cleared at its source.</p>
 </details>
+<h3 id="lab-95--a-library-file">Lab 95 — A library file</h3>
+<p><a href="labs/strlib_main.asm"><code>labs/strlib_main.asm</code></a> compares three
+pairs of words with <code>strcmp</code> from its library,
+<a href="labs/strlib.asm"><code>labs/strlib.asm</code></a> (<code>.include</code>), and prints
+<code>-</code>, <code>0</code> or <code>+</code> for each, as C's <code>strcmp</code> orders them
+(<a href="02-writing-programs.html#236-a-program-in-several-files">2.36</a>).
+<code>python3 -m emips check docs/guide/labs/strlib_main.asm</code> says what it should
+print (<a href="labs/strlib_main.check"><code>strlib_main.check</code></a>).  (1) Run it:
+what does it print, and what should it?  (2) Find the bug: break in the library
+(<code>break strlib.asm:20</code>, the loop's <code>b strcmp</code>), run, and look at
+<code>$a0</code> and <code>$a1</code> (<code>p $a0</code>) after each time round — which line is
+wrong?  Fix it and run the checks.  (3) Put a typo in the library (<code>lbuu</code>):
+what does the error say, and which line does the window mark in the editor?</p>
+<details>
+<summary>Answer</summary>
+<p>(1) <code>+ + -</code>; it should be <code>0 - +</code> (apple = apple, apple &lt; apply,
+pear &gt; peach).  (2) At the breakpoint <code>$a0</code> has moved two bytes and
+<code>$a1</code> none: line 19 is a copy of line 18 that should advance the second
+string — <code>addiu $a1, $a1, 1</code>.  So the loop compares the first string's
+2nd, 4th ... characters with the second string's first: "apple" against "apple"
+compares <code>p</code> with <code>a</code> and says <code>+</code>.  Fixed, it prints
+<code>0 - +</code> and the checks pass.  (3) <code>strlib.asm: line 14: unknown instruction
+'lbuu'  [strcmp: lbuu  $t0, 0($a0)]  (included at line 25)</code>: the library's own
+line, and the program's line 25 — the <code>.include</code> — which the window marks
+(double-click it to see the library).</p>
+</details>
 <hr>
 <nav class="pager" aria-label="Pages"><a href="index.html">Guide contents</a> · previous: <a href="04-command-line.html">Phase 4 — The command line</a> · next: <a href="06-reference.html">Phase 6 — Reference and troubleshooting</a></nav>
 </main>

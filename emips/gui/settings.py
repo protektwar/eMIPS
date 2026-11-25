@@ -6,6 +6,7 @@ main window decides what has to be re-assembled or reset."""
 from __future__ import annotations
 
 import html
+import os
 from pathlib import Path
 
 from ..cores import get as core_preset
@@ -517,8 +518,31 @@ class SettingsDialog(QtWidgets.QDialog):
         lay.addWidget(_note(tr("Build (Ctrl+B) compiles a C program with clang or a MIPS "
                                "GCC for the selected release; -O0 keeps the code close "
                                "to the C, higher levels show what an optimiser does.")))
+        lay.addSpacing(8)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel(tr("Include folders")))
+        #: .include's folders after the program's own (-I; saved for you, not
+        #: with a program — the window keeps it, PLAN M26)
+        self.include_dirs_edit = QtWidgets.QLineEdit()
+        self.include_dirs_edit.setPlaceholderText(
+            tr("folders, separated by {sep}").format(sep=os.pathsep))
+        row.addWidget(self.include_dirs_edit, 1)
+        add = QtWidgets.QPushButton(tr("Add…"))
+        add.clicked.connect(self._add_include_dir)
+        row.addWidget(add)
+        lay.addLayout(row)
+        lay.addWidget(_note(tr(".include \"FILE\" looks in the program's folder, then in "
+                               "these (as GNU as's -I); double-click a .include line to "
+                               "see the file, and a change to it assembles the program "
+                               "again.")))
         lay.addStretch()
         return w
+
+    def _add_include_dir(self) -> None:
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, tr("An include folder"))
+        if d:
+            text = self.include_dirs_edit.text().strip()
+            self.include_dirs_edit.setText(f"{text}{os.pathsep}{d}" if text else d)
 
     def _boot_tab(self) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()

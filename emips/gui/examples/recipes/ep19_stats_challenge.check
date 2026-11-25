@@ -1,0 +1,5 @@
+# Episode 19, the challenge: the sum by a formula, FizzBuzz
+check: output == "below 10: 23\nbelow 1000: 233168\n1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

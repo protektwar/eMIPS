@@ -1,0 +1,4 @@
+# Episode 7
+check: output == "desserts\nracecar: a palindrome\nlevel: a palindrome\nMIPS: not a palindrome\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

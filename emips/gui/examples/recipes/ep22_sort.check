@@ -1,0 +1,5 @@
+# Episode 22: two sorts, each on a copy
+check: output == "numbers: 64 25 12 22 11 90 35\nbubble: 11 12 22 25 35 64 90, 11 swaps in 5 passes\ninsertion: 11 12 22 25 35 64 90, 11 moves\nnumbers: 64 25 12 22 11 90 35\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

@@ -1,0 +1,5 @@
+# Episode 15, the challenge: three numbers sorted, four years
+check: output == "sorted: -5 17 42\n1900 is not a leap year\n2000 is a leap year\n2024 is a leap year\n2026 is not a leap year\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

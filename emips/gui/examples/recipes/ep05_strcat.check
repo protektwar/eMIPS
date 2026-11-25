@@ -1,0 +1,4 @@
+# Episode 5: the joined string, and the word after the buffer untouched
+check: output == "Hello, world!\nvisits = 7"
+# every frame was given back
+check: $sp == 0x7fffeffc

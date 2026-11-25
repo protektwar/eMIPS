@@ -1,0 +1,7 @@
+# Episode 3: the length, and the word big-endian ...
+check: output == "MIPS has 4 characters\nas a word: 0x4d495053\n"
+# ... and little-endian
+eMIPS: --little
+check: output == "MIPS has 4 characters\nas a word: 0x5350494d\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

@@ -1,0 +1,5 @@
+# Episode 35: 60 pictures, one vertical blank each
+limit: 1000000
+check: output == "frames: 60\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

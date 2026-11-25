@@ -76,7 +76,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gasread, nanold
-from .assembler import AsmError, Program, SEGMENT_BASES, SourceLine, _strip_comment
+from .assembler import (AsmError, Line, Program, SEGMENT_BASES, SourceLine, _strip_comment,
+                        placed, source_line)
 
 M32 = 0xFFFFFFFF
 
@@ -914,16 +915,19 @@ class _Core:
         self.reader = gasread.Reader(source, _Hooks(self), path=path, include_dirs=include_dirs,
                                      warn=lambda n, msg: self.warnings.append((n, msg)))
         for st in self.reader:
-            self.line, self.raw = st.line, st.raw
+            self.line, self.where = (Line(st.line, st.where) if st.where else st.line), st.where
+            self.raw = st.text.strip() if st.where else st.raw
             try:
                 self._statement(st.text)
-            except AsmError:
-                raise
+            except AsmError as exc:
+                raise exc.at(st.where)
             except (ValueError, KeyError, _MatchError) as exc:
-                raise AsmError(st.line, str(exc), st.raw) from None
+                raise AsmError(st.line, str(exc), st.text.strip() if st.where else st.raw,
+                               where=st.where) from None
+        self.where = None
 
     def error(self, msg: str):
-        raise AsmError(self.line, msg, self.raw)
+        raise AsmError(self.line, msg, self.raw, where=getattr(self, "where", None))
 
     def s_linkrelax(self) -> None:
         """The .linkrelax directive (and --linkrelax)."""
@@ -935,7 +939,7 @@ class _Core:
             self.opts.linkrelax = True
 
     def warn(self, msg: str) -> None:
-        self.warnings.append((self.line, msg))
+        self.warnings.append((self.line, placed(getattr(self, "where", None), msg)))
 
     # -- symbols --------------------------------------------------------------
 
@@ -4456,10 +4460,11 @@ class _Link:
                 a = o.address + e.offset
                 prog.nm[a] = e.size
                 if e.nop:
-                    prog.source_map.setdefault(a, SourceLine(e.line, self._lines[e.line - 1]
-                                                             if e.line else ""))
+                    prog.source_map.setdefault(a, source_line(e.line, self._lines,
+                                                              self.reader.files))
                 else:
-                    prog.source_map[a] = SourceLine(e.line, self._lines[e.line - 1])
+                    prog.source_map[a] = source_line(e.line, self._lines, self.reader.files)
+        prog.include_files = dict(self.reader.files)
         for name, s in self.symbols.items():
             if s.defined and not name.startswith("L\037"):
                 prog.symbols[name] = linker.value(self._osym[id(s)], 0)

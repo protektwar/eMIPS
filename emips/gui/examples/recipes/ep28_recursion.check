@@ -1,0 +1,5 @@
+# Episode 28: from 3 to 1 and back, the 8 patterns of 3 binary digits
+check: output == "updown(3): 3 2 1 2 3\npatterns(3): 000 001 010 011 100 101 110 111\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

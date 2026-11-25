@@ -57,7 +57,7 @@ import os
 import sys
 from pathlib import Path
 
-from .assembler import AsmError, assemble
+from .assembler import AsmError, assemble, located
 from .cli import CliError, Debugger, encoding, load_file, session_from_args
 from .disasm import disassemble
 from .hexload import DecodeFile
@@ -97,7 +97,7 @@ def _assemble(path: str, endian: str, release: str | None = None, args=None):
                         bases=Options(board=board).segment_bases(), arch=arch, nano=nano,
                         rv=rv, path=path, include_dirs=tuple(getattr(args, "include", None) or ()))
     except AsmError as exc:
-        sys.exit(f"{path}: {exc}")
+        sys.exit(located(path, str(exc)))
     _messages(path, prog)
     return prog
 
@@ -107,8 +107,10 @@ def _messages(path: str, prog) -> None:
     stderr (``file:line: Warning: ...``)."""
     for text in getattr(prog, "printed", ()):
         print(text)
+    from .gasread import warning_text
     for n, msg in getattr(prog, "warnings", ()):
-        print(f"{path}:{n}: Warning: {msg}", file=sys.stderr)
+        f, n, msg = warning_text(path, n, msg)
+        print(f"{f}:{n}: Warning: {msg}", file=sys.stderr)
 
 
 def _cmd_asm(args) -> None:
@@ -189,7 +191,7 @@ def _cmd_dis(args) -> None:
     if Path(args.file).read_bytes()[:4] == b"\x7fELF":     # an ELF: its listing
         s = Session(abi=not args.numeric)
         if not s.load_elf(Path(args.file).read_bytes(), args.file):
-            sys.exit(f"{args.file}: {s.errors[0]}")
+            sys.exit(located(args.file, s.errors[0]))
         print(s.listing, end="")
         return
     if args.arch in ("nanomips", "rv32", "rv64"):    # 16 / 32 (/ 48)-bit: the session's
@@ -198,7 +200,7 @@ def _cmd_dis(args) -> None:
                     options=Options(arch=args.arch, fpu=args.arch != "nanomips",
                                     rv_extensions=args.rv_extensions or RV_EXTENSIONS))
         if not s.load_hex(Path(args.file).read_text()):
-            sys.exit(f"{args.file}: {s.errors[0]}")
+            sys.exit(located(args.file, s.errors[0]))
         print(s.listing, end="")
         return
     mem = PMemory()

@@ -297,8 +297,13 @@ class Session:
         p = self.program
         if p is None:
             return []
-        return list(getattr(p, "printed", ())) + [
-            f"line {n}: Warning: {msg}" for n, msg in getattr(p, "warnings", ())]
+        from .gasread import PLACED
+        out = list(getattr(p, "printed", ()))
+        for n, msg in getattr(p, "warnings", ()):
+            m = PLACED.fullmatch(msg)              # (an included file's: lib.asm:2: ...)
+            out.append(f"{m.group(1)}: line {m.group(2)}: Warning: {m.group(3)}" if m
+                       else f"line {n}: Warning: {msg}")
+        return out
 
     def load_source(self, text: str, path: str | None = None) -> bool:
         """Assemble ``text`` (``path``: its file — ``.include`` / ``.incbin``
@@ -711,9 +716,13 @@ class Session:
 
     def source_position(self, addr: int) -> tuple[str, int, str] | None:
         """``(file, line, text)`` of a compiled program's instruction (its
-        DWARF line), or ``None``."""
-        if self.program is None or not self.program.c_lines:
+        DWARF line), or of an assembled one's from an included file (PLAN
+        M26); ``None`` otherwise (the program's own lines)."""
+        if self.program is None:
             return None
+        if not self.program.c_lines:
+            src = self.program.source_map.get(addr)
+            return (src.file, src.file_line, src.text) if src is not None and src.file else None
         where = self.program.c_lines.get(addr)
         if where is None:
             return None
@@ -1953,7 +1962,7 @@ class Session:
         if self.program.c_lines:
             return self.program.c_lines.get(a)
         src = self.program.source_map.get(a)
-        return ("", src.line) if src is not None else None
+        return src.key if src is not None else None     # (an included file's own line)
 
     def _stmt_start(self, addr: int) -> bool:
         """Does a statement (a line, or an assembly source line) start at
@@ -1971,7 +1980,7 @@ class Session:
             back = next((k for k in (2, 4, 6) if nm.get((a - k) & M32) == k), 4)
         prev = self.program.source_map.get((a - back) & M32)
         here = self.program.source_map.get(a)
-        return here is not None and (prev is None or prev.line != here.line)
+        return here is not None and (prev is None or prev.key != here.key)
 
     def step_line(self, over: bool = False, limit: int = 1_000_000) -> StepResult:
         """Run until the next source line starts (gdb's ``step`` /
@@ -2071,7 +2080,7 @@ class Session:
         for k, a in enumerate(frames):
             out.append({"level": k, "pc": a, "function": self.function_at(a),
                         "line": self.source_position(self.program_address(a, cpu) or a)
-                        if self.program is not None and self.program.c_lines else None,
+                        if self.program is not None else None,
                         "source": self.source_line(a, cpu)})
         return out
 
@@ -2083,6 +2092,17 @@ class Session:
         if prog is None:
             return []
         if not prog.c_stmts:
+            name = Path(file).name
+            if name and any(Path(f).name == name for f in prog.include_files):
+                best = None                     # an included file's line (PLAN M26)
+                for a, src in prog.source_map.items():
+                    if src.file and Path(src.file).name == name and src.file_line >= line \
+                            and (best is None or src.file_line < best):
+                        best = src.file_line
+                return sorted(a for a, src in prog.source_map.items()
+                              if src.file and Path(src.file).name == name
+                              and src.file_line == best and self._stmt_start(a)) \
+                    if best is not None else []
             a = self.line_address(line)
             return [a] if a is not None else []
         name = Path(file).name
@@ -2106,11 +2126,30 @@ class Session:
             where = self.program.c_lines.get(main, where)
         return where[0] if where else ""
 
+    def source_key(self, addr: int | None) -> tuple[str, int] | None:
+        """(file, line) of an instruction in a source file other than the
+        editor's program: a C line, or an included assembly file's line
+        (PLAN M26); None otherwise."""
+        if self.program is None or addr is None:
+            return None
+        if self.program.c_lines:
+            return self.program.c_lines.get(addr)
+        src = self.program.source_map.get(addr)
+        return src.key if src is not None and src.file else None
+
     def source_file(self, addr: int | None = None) -> tuple[str, list[str]] | None:
         """The source file of a compiled program's instruction (default: the
-        selected core's next one) and its text, for a source view."""
-        if self.program is None or not self.program.c_lines:
+        selected core's next one) and its text, for a source view; of an
+        assembled one: the included file the instruction is in (else None)."""
+        if self.program is None:
             return None
+        if not self.program.c_lines:
+            pc = self._stop_pc() if addr is None else addr
+            a = self.program_address(pc) if pc is not None else None
+            src = self.program.source_map.get(a) if a is not None else None
+            if src is None or not src.file:
+                return None
+            return src.file, list(self.program.include_files.get(src.file, []))
         pc = self._stop_pc() if addr is None else addr
         where = self._line_key(pc) if pc is not None else None
         if where is None:

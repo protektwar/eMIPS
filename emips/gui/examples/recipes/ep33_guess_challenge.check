@@ -1,0 +1,21 @@
+# Episode 33's challenge: seven wrong guesses end the first game (61); the
+# second (49) found by halving in seven
+input: 10
+input: 20
+input: 30
+input: 40
+input: 50
+input: 55
+input: 58
+input: y
+input: 50
+input: 25
+input: 37
+input: 43
+input: 46
+input: 48
+input: 49
+input: n
+check: output == "10 higher\n20 higher\n30 higher\n40 higher\n50 higher\n55 higher\n58 higher\nout of guesses: 61\n50 lower\n25 higher\n37 higher\n43 higher\n46 higher\n48 higher\n49 right, guesses: 7\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

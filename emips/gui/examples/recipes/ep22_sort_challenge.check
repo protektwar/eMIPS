@@ -1,0 +1,5 @@
+# Episode 22, the challenge: selection sort, two sorted arrays merged
+check: output == "selection: 11 12 22 25 35 64 90, 5 swaps\nmerged: 1 3 8 9 10 15 21 30 42\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

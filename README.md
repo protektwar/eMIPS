@@ -203,7 +203,11 @@ emips-gui
 ### First steps
 
 In the window: **File → Examples**, **Step** (F10), **Run** (F5) — and
-**Help → User Guide** (F1).  In the terminal:
+**Help → User Guide** (F1).  **File → Examples → MIPS by Example in eMIPS**
+has 37 programming tasks — functions and stack frames, strings, numbers and
+bits, arrays and data structures, recursion, dialogs, a library, pictures, a
+maze game, a tune — each with its C version, a checks file and its challenge
+solved.  In the terminal:
 
 ```bash
 python3 -m emips run prog.asm            # run it (system calls + console), show the registers
@@ -246,7 +250,7 @@ Online at [**protektwar.github.io/eMIPS**](https://protektwar.github.io/eMIPS/),
 and in this folder as [**docs/guide/index.html**](docs/guide/index.html) —
 open it in a web browser, or in eMIPS with **Help → User Guide** (F1).  Six phases: getting
 started, writing programs, the window in depth, the command line, the
-computer architecture behind every number on the screen (with 94 labs
+computer architecture behind every number on the screen (with 95 labs
 you check with eMIPS itself), and a reference.
 
 

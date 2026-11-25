@@ -1,0 +1,7 @@
+# Episode 16: 17 and 5
+input: 17
+input: 5
+check: output == "Two numbers:\n17 + 5 = 22\n17 - 5 = 12\n17 * 5 = 85\n17 / 5 = 3\n17 % 5 = 2\n17 << 2 = 68\n-17 >> 1 = -9\narea 85, perimeter 44\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

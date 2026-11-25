@@ -1,0 +1,5 @@
+# Episode 30: three years of savings
+check: output == "year 1: $2133.10\nyear 2: $3499.75\nyear 3: $4934.73\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

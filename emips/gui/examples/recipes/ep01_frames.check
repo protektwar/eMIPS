@@ -1,0 +1,5 @@
+# Episode 1: each word described
+check: output == "MIPS has 4 characters\neMIPS has 5 characters\nassembly has 8 characters\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

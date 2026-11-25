@@ -1,0 +1,5 @@
+# Episode 14, the challenge: sorted ignoring case, and by length (stable)
+check: output == "ignoring case: apple Apple banana MIPS pear zebra\nby length:     pear MIPS apple zebra Apple banana\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s5 == 0

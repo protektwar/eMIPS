@@ -1,0 +1,8 @@
+# Episode 36: a bump into the wall above the start, a key that means
+# nothing, then the shortest way out (40 moves)
+keys: wxdddddssaaassdddddwwwwddddddsssssssssssss
+check: output == "out in 40 moves\n"
+# the player's last place: the exit, (14, 14) — the word at 0x10008000 + (14 * 16 + 14) * 4
+check: word[0x100083b8] == 0x00ffd020
+# every frame was given back
+check: $sp == 0x7fffeffc

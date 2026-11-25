@@ -1,0 +1,5 @@
+# Episode 16, the challenge: seconds as h:mm:ss, Celsius to Fahrenheit
+check: output == "3725 s = 1:02:05\n86399 s = 23:59:59\n100 C = 212 F\n-40 C = -40 F\n37 C = 98 F\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

@@ -21,6 +21,7 @@ Window layout, recent files and options are remembered between runs
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import replace
@@ -44,7 +45,7 @@ from .checkpane import CheckView
 from .datapath import DatapathView
 from .core8700 import Core8700View
 from .datapath24k import Datapath24KView
-from .examples import EXAMPLES, Example
+from .examples import EXAMPLES, RECIPES, Example
 from .i18n import tr
 from .. import check
 from ..options import MAX_CORES, Options, arch_title, gdb_program
@@ -275,6 +276,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_widgets(self) -> None:
         self.editor = CodeEditor()
         self.editor.breakpoint_clicked.connect(self.toggle_breakpoint_line)
+        self.editor.include_requested.connect(self.open_included)
+        #: the program's included files: a change on disk assembles again (M26)
+        self.include_watch = QtCore.QFileSystemWatcher(self)
+        self.include_watch.fileChanged.connect(self._included_changed)
+        self.session.include_dirs = tuple(d for d in self._get("include_dirs", "").split(
+            os.pathsep) if d)
         self.editor.document().modificationChanged.connect(self.setWindowModified)
         self.findbar = FindBar(self.editor)
         self.legend = EditorLegend()
@@ -629,6 +636,14 @@ class MainWindow(QtWidgets.QMainWindow):
             act = ex.addAction(tr(e.title))
             act.setToolTip(e.file)
             act.triggered.connect(lambda _=False, e=e: self.load_example(e))
+        if RECIPES:                             # PLAN M28: the video series' programs
+            ex.addSeparator()
+            rm = ex.addMenu(tr("MIPS by Example in eMIPS"))
+            for r in RECIPES:
+                sub = rm.addMenu(f"{r.number}. {tr(r.title)}")
+                for kind, path in r.files():
+                    act = sub.addAction(f"{tr(kind)} ({path.name})")
+                    act.triggered.connect(lambda _=False, p=path: self.open_lab(p))
         self.labs_menu = m.addMenu(tr("&Labs"))
         self._fill_labs(self.labs_menu)
         m.addSeparator()
@@ -1530,10 +1545,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_settings(self) -> SettingsDialog:
         s = self.session
         dlg = SettingsDialog(s.release, s.endian, s.forwarding, s.options, self)
+        dlg.include_dirs_edit.setText(os.pathsep.join(s.include_dirs))
+        dlg.applied.connect(lambda *a: self._include_dirs_from(dlg))
         dlg.applied.connect(self.apply_settings)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.open()
         return dlg
+
+    def _include_dirs_from(self, dlg) -> None:
+        """Settings > Assembler > Include folders: kept for the user (not an
+        Options field: not a program's); a change assembles again."""
+        dirs = tuple(d.strip() for d in dlg.include_dirs_edit.text().split(os.pathsep)
+                     if d.strip())
+        if dirs != tuple(self.session.include_dirs):
+            self.session.include_dirs = dirs
+            self._put("include_dirs", os.pathsep.join(dirs))
+            if self.session.program is not None or self.editor.toPlainText().strip():
+                self.assemble(quiet_if_empty=True)
 
     def apply_settings(self, release: str, endian: str, forwarding: bool,
                        options: Options) -> None:
@@ -1743,6 +1771,10 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             ok = self._load_program(s)
             self._assembled_text = self.editor.toPlainText() if ok else None
+            if self.path is None and ".include" in self.editor.toPlainText():
+                self._log(tr("not saved yet: .include looks for files in {folder}").format(
+                    folder=Path.cwd()))
+        self._watch_includes()
         if ok:
             code = set(s.program.source_map)
             s.breakpoints = {a for a in keep if a in code}
@@ -1843,6 +1875,65 @@ class MainWindow(QtWidgets.QMainWindow):
         if rows:
             self.core.setCurrentIndex(s.cpu)
         self.core.blockSignals(False)
+
+    # -- included files (PLAN M26) ---------------------------------------------------------
+
+    def _include_path(self, name: str) -> str | None:
+        """Where ``.include "name"`` finds its file: the program's included
+        files first, then the document's folder (else the current one) and
+        the include folders — the assembler's order."""
+        prog = self.session.program
+        for f in (prog.include_files if prog is not None else ()):
+            if Path(f).name == Path(name).name:
+                return f
+        base = self.path.parent if self.path else Path.cwd()
+        for d in (base, *map(Path, self.session.include_dirs)):
+            p = Path(name) if Path(name).is_absolute() else d / name
+            if p.is_file():
+                return str(p)
+        return None
+
+    def open_included(self, name: str) -> None:
+        """The editor's ``.include`` line was double-clicked: the file in
+        the Source pane."""
+        path = self._include_path(name)
+        if path is None:
+            self._fail(tr("{name}: not found (the program's folder, then Settings > "
+                          "Assembler > Include folders)").format(name=name))
+            return
+        prog = self.session.program
+        text = prog.include_files.get(path) if prog is not None else None
+        if text is None:
+            try:
+                text = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError as exc:
+                self._fail(str(exc))
+                return
+        self.source.show_included(path, list(text))
+        self.docks["source"].show()
+        self.docks["source"].raise_()
+
+    def _watch_includes(self) -> None:
+        old = self.include_watch.files()
+        if old:
+            self.include_watch.removePaths(old)
+        prog = self.session.program
+        files = [f for f in (prog.include_files if prog is not None else ())
+                 if Path(f).is_file()]
+        if files and self.hex_text is None and self.lang != "c":
+            self.include_watch.addPaths(files)
+
+    def _included_changed(self, path: str) -> None:
+        """An included file changed on disk: assemble again (once the
+        editor that saved it has finished)."""
+        QtCore.QTimer.singleShot(150, lambda: self._reassemble_for(path))
+
+    def _reassemble_for(self, path: str) -> None:
+        prog = self.session.program
+        if prog is None or path not in prog.include_files:
+            return
+        self._log(tr("{file} changed: assembled again").format(file=Path(path).name))
+        self.assemble()
 
     def _load_program(self, s: Session) -> bool:
         """Load the document into ``s``: the HEX / ELF image, the C program
@@ -2300,6 +2391,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.console.refresh(s)
         if light:
             self.state_label.setText(" " + tr("running… {n} steps").format(n=s.steps) + " ")
+            if self.display.isVisible():        # (a running animation, as MARS shows it)
+                self.display.refresh(s)
+            if self.sound.isVisible() or self.sound.play.isChecked():
+                self.sound.refresh(s)           # (Play while running: each note as it comes)
             return
         lines: dict[int, str] = {}
         if s.pipeline is not None:

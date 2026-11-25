@@ -1,0 +1,5 @@
+# Episode 26: four texts, their brackets checked
+check: output == "(a[b]{c}) balanced\n(a[b)c] error at 4\n((x) error at 4\nx) error at 1\n"
+# every frame was given back
+check: $sp == 0x7fffeffc
+check: $s0 == 0

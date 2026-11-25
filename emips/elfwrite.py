@@ -81,12 +81,15 @@ def _sleb(n: int) -> bytes:
             return bytes(out)
 
 
-def line_program(lines: dict[int, int], source: Path, order: str,
-                 addr_size: int = 4, sizes: dict[int, int] | None = None) -> bytes:
+def line_program(lines: dict[int, int | tuple[int, int]], source: Path, order: str,
+                 addr_size: int = 4, sizes: dict[int, int] | None = None,
+                 files: list[Path] | None = None) -> bytes:
     """A DWARF 2 .debug_line unit: one sequence per run of consecutive
-    instructions, a row per instruction (address -> line); ``addr_size``
-    8: 64-bit set_address operands (MIPS64); ``sizes``: each instruction's
-    size (nanoMIPS: 2 / 4 / 6 — minimum_instruction_length 2), else 4."""
+    instructions, a row per instruction (address -> line, or -> (file,
+    line) with file 1 = ``source``, 2 ... = ``files``: the included ones,
+    PLAN M26); ``addr_size`` 8: 64-bit set_address operands (MIPS64);
+    ``sizes``: each instruction's size (nanoMIPS: 2 / 4 / 6 —
+    minimum_instruction_length 2), else 4."""
     end = "<" if order == "little" else ">"
     unit = 4 if sizes is None else 2
     size = (lambda a: 4) if sizes is None else (lambda a: sizes.get(a, 2))   # noqa: E731
@@ -96,9 +99,16 @@ def line_program(lines: dict[int, int], source: Path, order: str,
               + struct.pack(f"{end}b", -5)             # line_base
               + struct.pack(f"{end}B", 14)             # line_range
               + struct.pack(f"{end}B", 10)             # opcode_base
-              + std_lengths
-              + str(source.parent).encode() + b"\0" + b"\0"     # include_directories
-              + source.name.encode() + b"\0" + _uleb(1) + _uleb(0) + _uleb(0) + b"\0")
+              + std_lengths)
+    dirs = [source.parent]
+    names = []
+    for f in [source, *(files or ())]:
+        if f.parent not in dirs:
+            dirs.append(f.parent)
+        names.append(f.name.encode() + b"\0" + _uleb(dirs.index(f.parent) + 1)
+                     + _uleb(0) + _uleb(0))
+    header += (b"".join(str(d).encode() + b"\0" for d in dirs) + b"\0"   # include_directories
+               + b"".join(names) + b"\0")                                  # file_names
     prog = bytearray()
     addrs = sorted(lines)
     runs: list[list[int]] = []
@@ -111,14 +121,18 @@ def line_program(lines: dict[int, int], source: Path, order: str,
         prog += b"\0" + _uleb(1 + addr_size) + b"\x02" + (                 # set_address
             struct.pack(f"{end}Q", _sx(run[0])) if addr_size == 8
             else struct.pack(f"{end}I", run[0]))
-        line = 1
+        line, file = 1, 1
         for i, a in enumerate(run):
             if i:                                # advance_pc (x minimum_instruction_length)
                 prog += b"\x02" + _uleb((a - run[i - 1]) // unit)
-            delta = lines[a] - line
+            f, n = lines[a] if isinstance(lines[a], tuple) else (1, lines[a])
+            if f != file:
+                prog += b"\x04" + _uleb(f)      # set_file
+                file = f
+            delta = n - line
             if delta:
                 prog += b"\x03" + _sleb(delta)   # advance_line
-                line = lines[a]
+                line = n
             prog += b"\x01"                      # copy
         prog += (b"\x02" + _uleb(size(run[-1]) // unit)
                  + b"\0" + _uleb(1) + b"\x01")    # end_sequence
@@ -250,11 +264,14 @@ def write_elf(program, *, source: Path | None = None, arch: str = "mips32") -> b
         syms.append(sym(strtab.add(name), A(value) if shndx != 0xFFF1 else value & (
             M64 if wide else M32), (1 << 4) | stt, other, shndx))        # STB_GLOBAL
     symtab = b"".join(syms)
-    lines = {a: sl.line for a, sl in program.source_map.items()}
+    included = sorted(getattr(program, "include_files", {}) or {})
+    lines = {a: (included.index(sl.file) + 2, sl.file_line) if sl.file in included else sl.line
+             for a, sl in program.source_map.items()}       # (an included file's: its own)
     src = source or Path("program.asm")
     size = 8 if wide else 4
     sizes = program.nm if nano else program.rv if rv else None
-    debug_line = line_program(lines, src, order, size, sizes) if lines else b""
+    debug_line = line_program(lines, src, order, size, sizes,
+                              [Path(f) for f in included]) if lines else b""
     last = max(lines) if lines else 0
     end = last + (sizes.get(last, 2) if sizes is not None else 4)
     info, abbrev = (debug_info(src, min(lines), end, order, size) if lines else (b"", b""))
