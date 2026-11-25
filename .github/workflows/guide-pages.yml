@@ -1,5 +1,7 @@
 # The user guide on GitHub Pages, and eMIPS in the browser at run/
-# (web/build_site.py), deployed on every push to main.
+# (web/build_site.py), deployed on every push to main.  Two jobs, as GitHub
+# documents it: the deploy job finds the build job's artifact (in one job
+# it was looked for a second after its upload and not found).
 name: The user guide on GitHub Pages
 
 on:
@@ -17,11 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
@@ -29,5 +28,13 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
