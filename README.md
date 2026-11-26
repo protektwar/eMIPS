@@ -120,11 +120,16 @@ choice open, it says which one it made.
 
 [**protektwar.github.io/eMIPS/run**](https://protektwar.github.io/eMIPS/run/)
 runs eMIPS itself in the page (Python in WebAssembly, Pyodide; nothing to
-install): the examples, the guide's labs and your own assembly programs,
-with the editor, the disassembly, the registers, the console, the 5-stage
-and 24K pipelines and the command line's debugger.  The first visit
-downloads about 8 MB.  The window's panes, C programs and GDB need eMIPS
-on your computer or in a Codespace.
+install): the examples, MIPS by Example, the guide's labs — each of the
+guide's programs has an *Open in eMIPS* link — and your own assembly
+programs (kept in the browser, checked with their `# check:` lines, saved
+to a file on your computer).  It has the window's views: the 5-stage
+datapath (click a part for its gates), the 24K's and the P8700's
+pipelines, the instruction's fields, memory, the pipeline chart, caches,
+TLB, counters, trace, the Malta board, the cores, MT, the tools, the
+bitmap display, files and sound, Settings and the command line's
+debugger.  The first visit downloads about 8 MB.  C programs and GDB need
+eMIPS on your computer or in a Codespace.
 
 ### In your browser — GitHub Codespaces
 
