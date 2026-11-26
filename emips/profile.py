@@ -140,6 +140,15 @@ def guide_profile(text: str) -> Profile | None:
     """The settings a user-guide example asks for with its first comment
     lines (``# arch: rv32``, ``# rv-ext: gcv``, ``# core: p8700``, ``# caches: 32K`` ...): the
     window's *Open in the editor*.  None: none of them."""
+    flags = guide_flags(text)
+    if not flags:
+        return None
+    return read("# eMIPS: " + shlex.join(flags))
+
+
+def guide_flags(text: str) -> list[str]:
+    """A user-guide example's markers as command-line flags (the web page's
+    copies of the guide's programs get them as their ``# eMIPS:`` line)."""
     flags: list[str] = []
     for line in text.splitlines():
         m = re.match(r"#\s*([a-z0-9-]+):\s?(.*)$", line)
@@ -152,9 +161,7 @@ def guide_profile(text: str) -> Profile | None:
             flags += ["--icache", value, "--dcache", value]
         elif key == "write-buffer":
             flags.append("--write-buffer")
-    if not flags:
-        return None
-    return read("# eMIPS: " + shlex.join(flags))
+    return flags
 
 
 def _resolve_disk(spec: str, base: Path | None) -> str:

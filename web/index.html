@@ -15,6 +15,14 @@
 
 <div class="toolbar">
   <label>Program <select id="programs" disabled></select></label>
+  <span class="buttons files">
+    <button id="newProg" disabled title="A new program, kept in this browser">New</button>
+    <button id="openFile" disabled title="A file from your computer: a program, a .check file, or a file a program reads (a disk image, a --file)">Open…</button>
+    <input type="file" id="fileInput" hidden accept=".asm,.s,.S,.hex,.txt,.dat,.check,.img,.bin">
+    <button id="saveProg" disabled title="Keep it in this browser (a lab or example is saved as a copy under My programs)">Save</button>
+    <button id="download" disabled title="Save the program as a file on your computer (Ctrl+Shift+S); after that Save writes that file too">Save to disk…</button>
+    <button id="deleteProg" disabled hidden title="Delete it from this browser">Delete</button>
+  </span>
   <label>Release <select id="release">
     <option value="">as the program says</option>
     <option>R1</option><option>R2</option><option>R3</option><option>R5</option><option>R6</option>
@@ -23,6 +31,7 @@
     <option value="">instruction</option>
     <option value="--pipeline --model 5-stage">5-stage pipeline</option>
     <option value="--pipeline --model 24k">24K pipeline</option>
+    <option value="--pipeline --model p8700" title="The P8700 (RISC-V, --core p8700): its own out-of-order pipeline">P8700 pipeline</option>
   </select></label>
   <span class="buttons">
     <button id="assemble" disabled title="Assemble the editor's program (Ctrl+B)">Assemble</button>
@@ -31,8 +40,57 @@
     <button id="pause" disabled>Pause</button>
     <button id="back" disabled title="Undo one step">Step back</button>
     <button id="reset" disabled>Reset</button>
+    <button id="checkBtn" disabled title="Run the program as its '# check:' lines (or NAME.check) say, and test what it computed (F8)">Check</button>
+    <button id="settingsBtn" disabled title="The machine: architecture, core, caches, MMU, board, display ...">Settings…</button>
   </span>
 </div>
+
+<dialog id="partDialog" aria-labelledby="partTitle">
+  <form method="dialog">
+    <h3 id="partTitle"></h3>
+    <p id="partWhere"></p>
+    <h4>This cycle</h4>
+    <ul class="now" id="partNow"></ul>
+    <div id="partGates" hidden>
+      <div class="tabs part-tabs" id="partTabs" role="tablist" aria-label="Gates"></div>
+      <label id="partBitLabel" hidden>ALU bit slice <input type="number" id="partBit" min="0" max="31" value="0"></label>
+      <div id="partDrawing"></div>
+    </div>
+    <div id="partText"></div>
+    <h4>Inside</h4>
+    <p class="inside" id="partInside"></p>
+    <div class="dialog-buttons"><button value="close" autofocus>Close</button></div>
+  </form>
+</dialog>
+<dialog id="msgDialog" class="program-dialog" aria-labelledby="msgTitle">
+  <form method="dialog">
+    <h3 id="msgTitle"></h3>
+    <p id="msgText"></p>
+    <div class="dialog-buttons"><button value="ok" autofocus>OK</button></div>
+  </form>
+</dialog>
+<dialog id="askDialog" class="program-dialog" aria-labelledby="askTitle">
+  <form method="dialog" id="askForm">
+    <h3 id="askTitle"></h3>
+    <p id="askText"></p>
+    <input id="askValue" aria-label="Answer">
+    <div class="dialog-buttons" id="askButtons"></div>
+  </form>
+</dialog>
+<dialog id="settings" aria-labelledby="settingsTitle">
+  <form method="dialog">
+    <h2 id="settingsTitle">Settings</h2>
+    <p class="hint">The command line's options (<code>python3 -m emips run --help</code>); a
+    program's <code># eMIPS:</code> line comes first, these go over it.  Release and mode:
+    on the toolbar.  A greyed choice does not go with the others (point at it: why).</p>
+    <div id="settingsBody"></div>
+    <div class="dialog-buttons">
+      <button type="button" id="settingsDefaults">Defaults</button>
+      <button value="cancel">Cancel</button>
+      <button value="apply" id="settingsApply" class="primary">Apply</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="messages" hidden></div>
 
@@ -66,10 +124,78 @@
       <input id="keys" placeholder="keyboard (MMIO): type, Enter sends the keys" disabled>
     </div>
   </section>
-  <section class="pane debugger-pane">
-    <h2>Debugger <span class="hint">the command line's debugger: type help</span></h2>
-    <pre id="dbgout"></pre>
-    <input id="dbg" placeholder="(emips) step 3 · regs · mem $sp · pipe · cache · help" disabled>
+  <section class="pane tabs-pane">
+    <div class="tabs" role="tablist" aria-label="Views">
+      <button role="tab" id="tab-datapath" aria-controls="panel-datapath" aria-selected="false">Datapath</button>
+      <button role="tab" id="tab-instr" aria-controls="panel-instr" aria-selected="false">Instruction</button>
+      <button role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false">Memory</button>
+      <button role="tab" id="tab-chart" aria-controls="panel-chart" aria-selected="false">Pipeline</button>
+      <button role="tab" id="tab-display" aria-controls="panel-display" aria-selected="false" hidden>Display</button>
+      <button role="tab" id="tab-files" aria-controls="panel-files" aria-selected="false" hidden>Files</button>
+      <button role="tab" id="tab-sound" aria-controls="panel-sound" aria-selected="false" hidden>Sound</button>
+      <button role="tab" id="tab-panes" aria-controls="panel-panes" aria-selected="false" title="The window's other panes: registers (FPU, DSP, MSA, interrupts, debug ...), caches, TLB, counters, trace, board, system, MT, tools">Panes</button>
+      <button role="tab" id="tab-checks" aria-controls="panel-checks" aria-selected="false">Checks</button>
+      <button role="tab" id="tab-debugger" aria-controls="panel-debugger" aria-selected="true">Debugger</button>
+      <button id="enlarge" class="enlarge" aria-pressed="false" title="This pane over the whole page (Esc: back)">⤢ Enlarge</button>
+    </div>
+    <div class="panel" id="panel-datapath" role="tabpanel" aria-labelledby="tab-datapath" hidden>
+      <div class="dp-bar">
+        <label title="The guide's part numbers (1-18) on the drawing"><input type="checkbox" id="dpNumbers"> Part numbers</label>
+        <span class="hint">Click a part: what it is inside and what it does this cycle. Step in a pipeline mode to see the five stages at work.</span>
+      </div>
+      <div id="datapath" role="img" aria-label="The pipeline: the 5-stage datapath, or the 24K's stages"></div>
+      <div id="core8700" class="scroll" hidden>
+        <p id="core8700Title" class="hint"></p>
+        <table id="core8700Table"><thead></thead><tbody></tbody></table>
+        <pre id="core8700State"></pre>
+      </div>
+    </div>
+    <div class="panel" id="panel-instr" role="tabpanel" aria-labelledby="tab-instr" hidden>
+      <div class="scroll" id="instr"><p class="hint">Step to see what happens inside an instruction: its bit fields, the ALU, the address, the branch and what it changed.</p></div>
+    </div>
+    <div class="panel" id="panel-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
+      <div class="memory-bar">
+        <select id="memSegment" aria-label="Where"></select>
+        <input id="memAddress" placeholder="address, e.g. 0x10010000 (Enter)" aria-label="Address">
+        <label title="Physical addresses: the RAM after the MMU, without the caches"><input type="checkbox" id="memPhysical"> physical</label>
+        <label title="The bytes in address order, 16 a row, and their characters"><input type="checkbox" id="memBytes"> bytes</label>
+        <label id="memDoublesLabel" hidden title="MIPS64: doublewords, as LD loads them"><input type="checkbox" id="memDoubles" checked> doublewords</label>
+      </div>
+      <div class="scroll"><table id="memory"><thead></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="panel-chart" role="tabpanel" aria-labelledby="tab-chart" hidden>
+      <p class="hint" id="chartHint">The pipeline chart (instructions × cycles): choose a pipeline mode on the toolbar, then Step or Run.</p>
+      <div class="scroll"><table id="chart"><thead></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="panel-display" role="tabpanel" aria-labelledby="tab-display" hidden>
+      <p class="hint" id="displayInfo"></p>
+      <div class="screen"><canvas id="screen" aria-label="The bitmap display"></canvas></div>
+    </div>
+    <div class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" hidden>
+      <div class="memory-bar" id="fileButtons"></div>
+      <pre id="fileLines"></pre>
+    </div>
+    <div class="panel" id="panel-sound" role="tabpanel" aria-labelledby="tab-sound" hidden>
+      <div class="memory-bar">
+        <button id="playWav" title="Play every note (the same sound as Download WAV)">Play</button>
+        <button id="saveWav">Download WAV</button>
+        <button id="saveMid" title="A Standard MIDI File: any synthesizer plays it with its real instruments">Download MIDI</button>
+        <label title="Sound each note as the program plays it"><input type="checkbox" id="playLive" checked> Play while running</label>
+      </div>
+      <pre id="noteLines"></pre>
+    </div>
+    <div class="panel" id="panel-panes" role="tabpanel" aria-labelledby="tab-panes" hidden>
+      <div class="pane-bar"><label>Pane <select id="paneChoice"></select></label><span id="paneControls" class="pane-bar-controls"></span></div>
+      <div class="scroll" id="paneBody"></div>
+    </div>
+    <div class="panel" id="panel-checks" role="tabpanel" aria-labelledby="tab-checks" hidden>
+      <p class="hint" id="checksHint">Check (F8) runs the program on a fresh machine and tests its <code># check:</code> lines — for example <code># check: $v0 == 3</code>, <code># check: output == "36"</code>, <code># input: 5</code> — or the lines of a <code>NAME.check</code> file you opened. Click a result to see its line.</p>
+      <div class="scroll"><table id="checks"><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="panel-debugger" role="tabpanel" aria-labelledby="tab-debugger">
+      <pre id="dbgout"></pre>
+      <input id="dbg" placeholder="(emips) step 3 · regs · mem $sp · pipe · cache · help — the command line's debugger" disabled>
+    </div>
   </section>
 </main>
 
@@ -79,7 +205,6 @@ C programs and GDB need eMIPS on your computer or in a
 <a href="https://codespaces.new/protektwar/eMIPS?quickstart=1">GitHub Codespace</a>.
 eMIPS is free — if it helped you, <a href="https://buymeacoffee.com/AHerlas">buy me a coffee</a> ☕</footer>
 
-<script src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

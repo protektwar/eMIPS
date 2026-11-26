@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "guide"
-PAGE = ("index.html", "app.js", "app.css", "bridge.py")
+PAGE = ("index.html", "app.js", "worker.js", "app.css", "bridge.py")
 #: what the browser runs: eMIPS without its window (the window needs Qt)
 SKIP = ("emips/gui/", "emips/image.py")
 
@@ -38,6 +38,9 @@ def companions(path: Path, base: Path = GUIDE) -> list[str]:
                 f = path.parent / name.split("=")[-1]
                 if f.is_file():
                     names.append(f.relative_to(base).as_posix())
+    sibling = path.with_suffix(".check")          # (its checks: Check on the page)
+    if sibling.is_file():
+        names.append(sibling.relative_to(base).as_posix())
     for name in re.findall(r'^\s*(?:[\w.$]+:\s*)*\.include\s+"([^"]+)"', text, re.M):
         f = path.parent / name                    # (its .include files: PLAN M26)
         if f.is_file() and f.relative_to(base).as_posix() not in names:
@@ -94,6 +97,62 @@ def programs(run: Path) -> list[dict]:
     return groups
 
 
+_ASM = re.compile(r'<pre><code class="language-asm">(.*?)</code></pre>', re.S)
+_HEADING = re.compile(r'<h([1-4]) id="[^"]+">(.*?)</h\1>', re.S)
+_PAGES = ("01-getting-started", "02-writing-programs", "03-the-gui", "04-command-line",
+          "05-understanding", "06-reference")
+
+
+def guide_examples(site: Path) -> list[dict]:
+    """The guide's complete programs (its ``language-asm`` blocks: the ones
+    the window's *Open in the editor* opens) as ``run/guide/PAGE-N.asm``, and
+    an *Open in eMIPS* link above each block on the site's copy of its page.
+    The block's markers (``# arch: rv32``, ``# keys: ...``) become the
+    program's ``# eMIPS:`` line and the item's keys."""
+    sys.path.insert(0, str(ROOT))
+    import html
+    import shlex
+    from emips.profile import guide_flags
+    folder = site / "run" / "guide"
+    folder.mkdir()
+    items = []
+    for page in _PAGES:
+        path = site / f"{page}.html"
+        text = path.read_text(encoding="utf-8")
+        n = iter(range(1, 1 << 30))
+        out, last = [], 0
+        for m in _ASM.finditer(text):
+            k = next(n)
+            program = html.unescape(m.group(1))
+            name = f"{page}-{k}.asm"
+            flags = guide_flags(program)
+            if flags:
+                program = program.rstrip("\n") + "\n# eMIPS: " + shlex.join(flags) + "\n"
+            (folder / name).write_text(program, encoding="utf-8")
+            heads = _HEADING.findall(text, 0, m.start())
+            title = re.sub(r"<[^>]+>", "", html.unescape(heads[-1][1])).strip() if heads else page
+            keys = re.search(r"^#\s*keys:\s?(.*)$", program, re.M)
+            given = re.search(r"^#\s*input:\s?(.*)$", program, re.M)
+            items.append({"title": title, "path": f"run/guide/{name}", "files": [],
+                          "keys": keys.group(1) if keys else "",
+                          "input": given.group(1) if given else ""})
+            out.append(text[last:m.start()])
+            out.append(f'<p class="open-in-emips"><a href="run/?open=run/guide/{name}">'
+                       "Open in eMIPS</a> <span>runs this program in your browser</span></p>\n")
+            last = m.start()
+        out.append(text[last:])
+        path.write_text("".join(out), encoding="utf-8")
+    titles: dict[str, int] = {}                   # (the same heading twice: numbered)
+    for it in items:
+        titles[it["title"]] = titles.get(it["title"], 0) + 1
+    seen: dict[str, int] = {}
+    for it in items:
+        if titles[it["title"]] > 1:
+            seen[it["title"]] = seen.get(it["title"], 0) + 1
+            it["title"] += f" ({seen[it['title']]})"
+    return items
+
+
 def main(out: str) -> None:
     out_dir = Path(out)
     shutil.rmtree(out_dir, ignore_errors=True)
@@ -108,7 +167,9 @@ def main(out: str) -> None:
             if p.is_dir() or "__pycache__" in rel or rel.startswith(SKIP):
                 continue
             z.write(p, rel)
-    (run / "programs.json").write_text(json.dumps(programs(run), indent=1), encoding="utf-8")
+    groups = programs(run)
+    groups.append({"group": "Examples in the guide", "items": guide_examples(out_dir)})
+    (run / "programs.json").write_text(json.dumps(groups, indent=1), encoding="utf-8")
     print(f"{out_dir}: the guide, run/ ({(run / 'emips.zip').stat().st_size / 1e6:.1f} MB "
           "emips.zip)")
 

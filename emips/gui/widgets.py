@@ -13,9 +13,8 @@ from typing import Any
 from . import theme
 from .i18n import N_, tr
 from .qt import QtCore, QtGui, QtWidgets, Signal
-from ..mmu import cca_name
+from .. import viewdata
 from ..session import Session
-from ..trace import digits_of
 
 Qt = QtCore.Qt
 
@@ -881,8 +880,7 @@ class MemoryView(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self)
         bar = QtWidgets.QHBoxLayout()
         self.segment = QtWidgets.QComboBox()
-        self.segment.addItems([".data (0x10010000)", ".text (0x00400000)",
-                               tr("stack ($sp)"), "MMIO (0xffff0000)"])
+        self.segment.addItems([tr(t) if "$sp" in t else t for t in viewdata.MEMORY_SEGMENTS])
         self.address = QtWidgets.QLineEdit()
         self.address.setPlaceholderText(tr("address, e.g. 0x10010000"))
         self.physical = QtWidgets.QCheckBox(tr("physical"))
@@ -916,56 +914,28 @@ class MemoryView(QtWidgets.QWidget):
         self._layout: str | None = None          # "words", "doubles" or "bytes"
 
     def start(self, s: Session) -> int:
-        text = self.address.text().strip()
-        if text:
-            try:
-                return int(text, 0)
-            except ValueError:
-                pass
-        idx = self.segment.currentIndex()
-        va = [0x10010000, 0x00400000, (s.machine.read_reg(29) - 64) if s.machine else 0,
-              0xFFFF0000][idx]
-        if self.physical.isChecked() and s.machine is not None:
-            pa = s.machine.translate(va).pa
-            return va if pa is None else pa
-        return va
+        return viewdata.memory_start(s, self.segment.currentIndex(), self.address.text(),
+                                     self.physical.isChecked())
 
     def refresh(self, s: Session) -> None:
         self._session = s
         if s.machine is None:
             self.table.setRowCount(0)
             return
-        rows = s.memory_words(self.start(s), 32 if self.segment.currentIndex() != 3 else 1,
-                              physical=self.physical.isChecked())
         self.doubles.setVisible(s.wide and not self.bytes.isChecked())
-        layout = "bytes" if self.bytes.isChecked() else \
-            "doubles" if s.wide and self.doubles.isChecked() else "words"
+        layout = viewdata.memory_layout(s, self.bytes.isChecked(), self.doubles.isChecked())
+        rows = viewdata.memory_rows(s, self.start(s),
+                                    viewdata.memory_rows_count(self.segment.currentIndex()),
+                                    self.physical.isChecked(), layout)
         fresh = layout != self._layout
         if fresh:                    # the columns: 4 words, 2 doublewords or 16 bytes
             self._layout = layout
-            heads = [f"+{k:x}" for k in range(16)] + ["ascii"] if layout == "bytes" \
-                else ["+0", "+8"] if layout == "doubles" else ["+0", "+4", "+8", "+c"]
+            heads = viewdata.memory_heads(layout)
             self.table.setColumnCount(len(heads) + 1)
             self.table.setHorizontalHeaderLabels([tr("address")] + heads)
         self.table.setRowCount(len(rows))
-        big = s.machine.big_endian
-        for r, (addr, words) in enumerate(rows):
-            _set(self.table, r, 0, f"0x{addr:016x}" if addr >> 32 else f"0x{addr:08x}")
-            if layout == "bytes":                # (the bytes in address order)
-                data = [None if w is None else b for w in words
-                        for b in (w.to_bytes(4, "big" if big else "little")
-                                  if w is not None else (None,) * 4)]
-                cells = ["--" if b is None else f"{b:02x}" for b in data]
-                cells.append("".join(" " if b is None else chr(b) if 32 <= b < 127 else "."
-                                     for b in data))
-            elif layout == "doubles":            # as LD loads them (the byte order)
-                cells = []
-                for hi, lo in ((words[0], words[1]), (words[2], words[3])):
-                    if not big:
-                        hi, lo = lo, hi
-                    cells.append("-" * 16 if hi is None or lo is None else f"{hi:08x}{lo:08x}")
-            else:
-                cells = ["--------" if w is None else f"{w:08x}" for w in words]
+        for r, (addr, cells) in enumerate(rows):
+            _set(self.table, r, 0, addr)
             for c, text in enumerate(cells):
                 _set(self.table, r, c + 1, text)
         if fresh and rows:                       # (wide enough for the cells)
@@ -1109,50 +1079,34 @@ class PipelineChart(QtWidgets.QTableWidget):
             self.setRowCount(0)
             self.setColumnCount(0)
             return
-        hist = s.pipeline.history[-self.window:]
-        rows: dict[int, tuple[int, str, dict[int, str]]] = {}
-        cycles = [t.cycle for t in hist]
-        slots = getattr(s.pipeline, "slots", None)
-        if slots is not None:                   # the 24K: every instruction's stages
-            first = cycles[0] if cycles else 0
-            for sl in reversed(slots):
-                cells = {c: st for c, st in sl.timeline.items() if c >= first}
-                if cells:
-                    rows[sl.seq] = (sl.pc, sl.text, cells)
-                elif sl.fetched < first - 64:
-                    break
-        else:
-            for t in hist:
-                for st, v in t.stages.items():
-                    if v is not None:
-                        cell = "--" if st == "ID" and t.stall else st
-                        rows.setdefault(v.seq, (v.pc, v.text, {}))[2][t.cycle] = cell
-        seqs = sorted(rows)[-20:]
+        cycles, rows = viewdata.pipeline_chart(s, self.window)
         self.setColumnCount(len(cycles))
-        self.setRowCount(len(seqs))
+        self.setRowCount(len(rows))
         self.setHorizontalHeaderLabels([str(c) for c in cycles])
-        self.setVerticalHeaderLabels([f"{rows[q][0]:08x}  {rows[q][1]}" for q in seqs])
-        for r, q in enumerate(seqs):
-            for c, cyc in enumerate(cycles):
-                cell = rows[q][2].get(cyc, "")
+        self.setVerticalHeaderLabels([f"{pc:08x}  {text}" for pc, text, _cells in rows])
+        for r, (_pc, _text, cells) in enumerate(rows):
+            for c, cell in enumerate(cells):
                 bg = T().error_line if cell in ("--", "xx") else \
                     (theme.stage_colours(cell) or (None,))[0]
                 _set(self, r, c, cell, bg)
         if cycles:
-            self.scrollToItem(self.item(max(len(seqs) - 1, 0), len(cycles) - 1))
+            self.scrollToItem(self.item(max(len(rows) - 1, 0), len(cycles) - 1))
 
 
 def fields_html(fields) -> str:
     """The bit fields of an instruction word as a row of coloured cells:
-    name [msb:lsb], the bits, their meaning."""
+    name [msb:lsb], the bits, their meaning (``trace.Field``s or
+    viewdata's [name, msb, lsb, bits, meaning])."""
     e = html.escape
+    rows = [f if isinstance(f, (list, tuple)) else (f.name, f.msb, f.lsb, f.bits, f.meaning)
+            for f in fields]
     cells = "".join(
         f"<td bgcolor='{T().fields[i % 8]}' style='padding:2px 6px'>"
         # the text colour on the span itself: a <td> colour is not honoured
         # by every style, and theme-white text on light cells is unreadable
-        f"<span style='color:{T().highlight_text}'><b>{e(f.name)}</b> [{f.msb}:{f.lsb}]"
-        f"<br><tt>{f.bits}</tt><br>{e(f.meaning)}</span></td>"
-        for i, f in enumerate(fields))
+        f"<span style='color:{T().highlight_text}'><b>{e(name)}</b> [{msb}:{lsb}]"
+        f"<br><tt>{bits}</tt><br>{e(meaning)}</span></td>"
+        for i, (name, msb, lsb, bits, meaning) in enumerate(rows))
     return f"<table cellspacing=2><tr>{cells}</tr></table>"
 
 
@@ -1165,71 +1119,32 @@ class InstrPanel(QtWidgets.QTextBrowser):
         self.setFont(mono_font())
 
     def show_view(self, v: Any) -> None:
-        if v is None:
+        d = viewdata.instruction(v, tr)
+        if d is None:
             self.setHtml("<i>" + html.escape(tr("Step to see what happens inside an "
                                                 "instruction.")) + "</i>")
             return
         e = html.escape
-        w = getattr(v, "digits", 8)                     # a register's (MIPS64: 16)
-        slot = " — <b>delay slot</b>" if v.in_delay_slot else ""
-        own = v.format in ("MIPS16e", "microMIPS")      # no MIPS32 twin
-        parts = [f"<h3><tt>0x{v.pc:0{w}x}: {e(v.source_text or v.text)}</tt></h3>"]
-        if v.compressed:
-            parts.append(f"<p>{e(v.compressed)}{slot if own else ''}</p>")
-        if not own:
-            parts.append(f"<p>{v.format}-format word <tt>0x{v.word:08x}</tt>"
-                         + (f" (<tt>{e(v.text)}</tt>)" if v.compressed else "") + slot + "</p>")
-        parts.append(fields_html(v.fields))
-        if v.alu:
-            a = v.alu
-            parts.append("<h4>ALU</h4><p>" + e(a.op) + "<br>"
-                         + (f"a = <tt>0x{a.a.value:0{w}x}</tt> from {e(a.a.source)}<br>" if a.a else "")
-                         + (f"b = <tt>0x{a.b.value:0{w}x}</tt> from {e(a.b.source)}<br>" if a.b else "")
-                         + (f"result = <tt>0x{a.result:0{w}x}</tt>" if a.result is not None else "")
-                         + (" (zero)" if a.zero else "") + (" <b>OVERFLOW</b>" if a.overflow else "")
-                         + "</p>")
-        if v.address:
-            ad = v.address
-            parts.append(f"<h4>Address</h4><p>base <tt>0x{ad.base.value:0{w}x}</tt> + {ad.offset}"
-                         f" = <tt>0x{ad.address:0{w}x}</tt> — {ad.access} of {ad.size} byte(s), "
-                         f"{ad.segment} ({ad.privilege}, {'mapped' if ad.mapped else 'unmapped'})"
-                         + ("" if ad.aligned else " <b>misaligned</b>")
-                         + (f"<br>physical <tt>0x{ad.physical:08x}</tt> — {e(ad.how)}; "
-                            f"attribute {ad.cca} = {cca_name(ad.cca)}"
-                            if ad.physical is not None else "") + "</p>")
-        if v.branch:
-            br = v.branch
-            what = (f"taken → <tt>0x{br.target:0{w}x}</tt>" if br.taken
-                    else "not taken" + (", delay slot nullified" if br.likely else ""))
-            parts.append(f"<h4>Branch</h4><p>{e(br.condition)}: {what}"
-                         + (f"; link $ra = <tt>0x{br.link:0{w}x}</tt>" if br.link is not None else "")
-                         + "</p>")
-        eff = [f"memory read <tt>0x{a:08x}</tt> = <tt>0x{val:0{2 * n}x}</tt>"
-               for a, n, val in v.mem_reads]
-        eff += [f"memory write <tt>0x{a:08x}</tt>: <tt>0x{o:0{2 * n}x}</tt> → <tt>0x{nw:0{2 * n}x}</tt>"
-                for a, n, o, nw in v.mem_writes]
-        eff += [f"{e(name)}: <tt>0x{o:0{d}x}</tt> → <tt>0x{nw:0{d}x}</tt>"
-                for name, o, nw in v.reg_writes
-                for d in (v.vdigits if getattr(v, "rv", False) and name[0] == "v"
-                          and name[1:].isdigit() else digits_of(name, w),)]
-        if eff:
-            parts.append("<h4>Effects</h4><p>" + "<br>".join(eff) + "</p>")
-        lanes = getattr(v, "lanes", None)
-        if lanes is not None and hasattr(lanes, "sew"):     # RISC-V V (tracerv.VectorLanes)
-            parts.append(f"<h4>{e(tr('Elements'))} (e{lanes.sew}, "
-                         f"{e(tr('element 0 first'))})</h4><p>"
-                         + "<br>".join(f"<tt>{e(line)}</tt>" for line in lanes.lines())
-                         + "</p>")
-        elif lanes is not None:                 # MSA: element by element (trace.LaneView)
-            n = max(len(es) for _, _, _, es in lanes.rows)
-            head = "".join(f"<th>[{i}]</th>" for i in range(n))
-            body = "".join(
-                f"<tr><td>{e(role)} $w{reg}</td>"
-                + "".join(f"<td><tt>{x:0{size // 4}x}</tt></td>" for x in es) + "</tr>"
-                for role, reg, size, es in lanes.rows)
-            parts.append(f"<h4>{e(tr('Elements'))} ({lanes.size}-bit, "
-                         f"{e(tr('element 0 first'))})</h4>"
+
+        def tt(text: str) -> str:               # (values in the fixed font)
+            return re.sub(r"(0x[0-9a-f]+)", r"<tt>\1</tt>", e(text))
+        parts = [f"<h3><tt>{e(d['title'])}</tt></h3>"]
+        parts += [f"<p>{tt(line)}</p>" for line in d["format"]]
+        parts.append(fields_html(d["fields"]))
+        for title, lines in d["sections"]:
+            parts.append(f"<h4>{e(title)}</h4><p>" + "<br>".join(tt(x) for x in lines) + "</p>")
+        lanes = d.get("lanes")
+        if lanes is not None and "lines" in lanes:
+            parts.append(f"<h4>{e(lanes['title'])}</h4><p>"
+                         + "<br>".join(f"<tt>{e(x)}</tt>" for x in lanes["lines"]) + "</p>")
+        elif lanes is not None:
+            head = "".join(f"<th>{h}</th>" for h in lanes["head"])
+            body = "".join(f"<tr><td>{e(label)}</td>"
+                           + "".join(f"<td><tt>{x}</tt></td>" for x in cells) + "</tr>"
+                           for label, cells in lanes["rows"])
+            parts.append(f"<h4>{e(lanes['title'])}</h4>"
                          f"<table cellspacing='4'><tr><th></th>{head}</tr>{body}</table>")
-        if v.exception:
-            parts.append(f"<h4 style='color:{T().breakpoint}'>Exception: {e(v.exception)}</h4>")
+        if d["exception"]:
+            parts.append(f"<h4 style='color:{T().breakpoint}'>Exception: "
+                         f"{e(d['exception'])}</h4>")
         self.setHtml("".join(parts))
