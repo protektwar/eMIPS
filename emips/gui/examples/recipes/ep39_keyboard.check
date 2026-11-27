@@ -1,0 +1,8 @@
+# Episode 39: the keys come in by interrupts, main echoes them in capitals
+# the keys 2000 cycles apart (as the program's header asks)
+eMIPS: --key-delay 2000
+keys: hello, mips\n
+check: output == "type, Enter ends: HELLO, MIPS\nkeys: 11\n"
+check: exceptions == 12 (one interrupt a key)
+# every frame was given back
+check: $sp == 0x7fffeffc

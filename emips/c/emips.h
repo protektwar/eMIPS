@@ -305,6 +305,73 @@ static inline void close_file(int fd) { emips_file3(16, fd, 0, 0); }
 #define MFC0(r, s) ({ unsigned _v; __asm__ volatile ("mfc0 %0, $" #r ", " #s : "=r"(_v)); _v; })
 #define MTC0(r, s, v) __asm__ volatile ("mtc0 %0, $" #r ", " #s "\n\tehb" : : "r"(v))
 
+#if defined(_ABIO32) && _MIPS_SIM == _ABIO32 && !defined(__nanomips__)
+/* An exception handler in C (o32): EMIPS_EXCEPTION_HANDLER(fn) puts the
+ * entry at the general exception vector, 0x80000180 (.ktext: emips.ld).  It
+ * saves the registers C code may change ($at, $v0-$v1, $a0-$a3, $t0-$t9,
+ * $ra, HI, LO) on the interrupted code's stack, calls
+ *     unsigned fn(unsigned cause, unsigned epc, unsigned badvaddr)
+ * (a function of yours, not static; write EMIPS_EXCEPTION_HANDLER(fn); at
+ * file scope), puts what it returns in EPC — where
+ * the program goes on: EPC + 4 skips the instruction that failed, EPC itself
+ * comes back to an interrupted one —, restores them and returns with ERET.
+ * An exception in a branch delay slot (Cause.BD, bit 31) has the branch in
+ * EPC: skipping it is not that simple, keep faulting code out of delay slots.
+ * The handler runs with Status.EXL = 1: interrupts are off, system calls
+ * (print_string ...) work. */
+#define EMIPS_EXCEPTION_HANDLER(fn) \
+__asm__(".pushsection .ktext, \"ax\", @progbits\n" \
+"\t.set  push\n\t.set  noreorder\n\t.set  noat\n\t.set  nomips16\n" \
+"\t.globl emips_exception\n" \
+"emips_exception:\n" \
+"\taddiu $sp, $sp, -96\n" \
+"\tsw    $at, 16($sp)\n" \
+"\tsw    $v0, 20($sp)\n" \
+"\tsw    $v1, 24($sp)\n" \
+"\tsw    $a0, 28($sp)\n" \
+"\tsw    $a1, 32($sp)\n" \
+"\tsw    $a2, 36($sp)\n" \
+"\tsw    $a3, 40($sp)\n" \
+"\tsw    $t0, 44($sp)\n" \
+"\tsw    $t1, 48($sp)\n" \
+"\tsw    $t2, 52($sp)\n" \
+"\tsw    $t3, 56($sp)\n" \
+"\tsw    $t4, 60($sp)\n" \
+"\tsw    $t5, 64($sp)\n" \
+"\tsw    $t6, 68($sp)\n" \
+"\tsw    $t7, 72($sp)\n" \
+"\tsw    $t8, 76($sp)\n" \
+"\tsw    $t9, 80($sp)\n" \
+"\tsw    $ra, 84($sp)\n" \
+"\tmfhi  $k0\n\tsw    $k0, 88($sp)\n\tmflo  $k0\n\tsw    $k0, 92($sp)\n" \
+"\tmfc0  $a0, $13\n\tmfc0  $a1, $14\n\tmfc0  $a2, $8\n" \
+"\tlui   $t9, %hi(" #fn ")\n\taddiu $t9, $t9, %lo(" #fn ")\n" \
+"\tjalr  $t9\n\tnop\n" \
+"\tmtc0  $v0, $14\n" \
+"\tlw    $k0, 88($sp)\n\tmthi  $k0\n\tlw    $k0, 92($sp)\n\tmtlo  $k0\n" \
+"\tlw    $at, 16($sp)\n" \
+"\tlw    $v0, 20($sp)\n" \
+"\tlw    $v1, 24($sp)\n" \
+"\tlw    $a0, 28($sp)\n" \
+"\tlw    $a1, 32($sp)\n" \
+"\tlw    $a2, 36($sp)\n" \
+"\tlw    $a3, 40($sp)\n" \
+"\tlw    $t0, 44($sp)\n" \
+"\tlw    $t1, 48($sp)\n" \
+"\tlw    $t2, 52($sp)\n" \
+"\tlw    $t3, 56($sp)\n" \
+"\tlw    $t4, 60($sp)\n" \
+"\tlw    $t5, 64($sp)\n" \
+"\tlw    $t6, 68($sp)\n" \
+"\tlw    $t7, 72($sp)\n" \
+"\tlw    $t8, 76($sp)\n" \
+"\tlw    $t9, 80($sp)\n" \
+"\tlw    $ra, 84($sp)\n" \
+"\taddiu $sp, $sp, 96\n" \
+"\tehb\n\teret\n" \
+"\t.set  pop\n\t.popsection\n")
+#endif
+
 typedef __SIZE_TYPE__ size_t;
 void *memcpy(void *dst, const void *src, size_t n);
 void *memmove(void *dst, const void *src, size_t n);

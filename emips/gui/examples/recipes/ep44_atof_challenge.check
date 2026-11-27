@@ -1,0 +1,4 @@
+# Episode 44, the challenge: exponents, each float the nearest to its text
+check: output == "1.5e3 -> 1500.0 = 0x44bb8000\n2.5e-2 -> 0.025 = 0x3ccccccd\n-6.25E1 -> -62.5 = 0xc27a0000\n1e10 -> 1.0E10 = 0x501502f9\n3.0e-5 -> 3.0E-5 = 0x37fba882\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

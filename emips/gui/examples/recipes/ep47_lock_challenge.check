@@ -1,0 +1,5 @@
+# Episode 47, the challenge: an atomic add, no lock — still no addition lost
+check: output == "count = 2000 (2 cores x 1000)\nfailed sc: core 0 0, core 1 1\n"
+check: word[count] == 2000
+# every frame was given back (core 0's)
+check: $sp == 0x7fffeffc

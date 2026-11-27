@@ -1,0 +1,2 @@
+# Episode 43 (RISC-V): the same table on RV32
+check: output == "slot 1: the 4\nslot 6: cat 2\nslot 7: and 2\nslot 9: bird 1\nslot 10: saw 1\nslot 12: dog 1\ndifferent words: 6\n"

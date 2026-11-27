@@ -1,0 +1,7 @@
+# Episode 41, the challenge: the comparisons of each pivot rule
+check: output == "mixed,  last element:    20 comparisons\nsorted, last element:    45 comparisons\nsorted, median of three: 19 comparisons\n"
+check: word[mixed] == -1 (all three sorted)
+check: word[mixed+36] == 62
+check: word[sorted2+36] == 10
+# every frame was given back
+check: $sp == 0x7fffeffc

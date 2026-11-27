@@ -1,0 +1,12 @@
+# Episode 45: a walk through the four rooms, the locked door, the key
+input: look
+input: s
+input: n
+input: take
+input: w
+input: s
+input: dance
+input: s
+check: output == "You are in the hall. Doors lead north, east and south.\n> You are in the hall. Doors lead north, east and south.\n> The door to the garden is locked.\n> You are in the library. Shelves of old manuals; the door is south.\nThere is a key here.\n> You take the key.\n> You can't go that way.\n> You are in the hall. Doors lead north, east and south.\n> I don't understand.\n> You open the door with the key.\nYou are in the garden. Sunlight at last!\nYou win!\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

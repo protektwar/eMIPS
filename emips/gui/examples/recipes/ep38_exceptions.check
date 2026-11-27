@@ -1,0 +1,5 @@
+# Episode 38: three exceptions caught, each skipped, the program goes on
+check: output == "7 + 5 = 12\n2147483647 + 1 = [exception 12: overflow] skipped\n100 / 7 = 14\n42 / 0 = [exception 13: trap (divide by zero)] skipped\nword at 0x10010001 = [exception 4: bad address 0x10010001] skipped\nexceptions handled: 3\n"
+check: exceptions == 3 (the processor took three)
+# every frame was given back
+check: $sp == 0x7fffeffc

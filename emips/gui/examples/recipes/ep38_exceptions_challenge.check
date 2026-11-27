@@ -1,0 +1,5 @@
+# Episode 38, the challenge: five kinds caught, each counted
+check: output == "7 + 5 = 12\n2147483647 + 1 = [exception 12: overflow] skipped\n100 / 7 = 14\n42 / 0 = [exception 13: trap (divide by zero)] skipped\nword at 0x10010001 = [exception 4: bad address 0x10010001] skipped\nstore at 0x10010002 = [exception 5: bad store 0x10010002] skipped\nbreak = [exception 9: breakpoint] skipped\nexceptions by kind: 4=1 5=1 9=1 12=1 13=1\n"
+check: exceptions == 5
+# every frame was given back
+check: $sp == 0x7fffeffc

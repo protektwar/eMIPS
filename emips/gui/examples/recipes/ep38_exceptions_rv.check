@@ -1,0 +1,4 @@
+# Episode 38 (RISC-V): no trap for the overflow, the division by zero or the
+# odd address — only the illegal instruction traps
+check: output == "7 + 5 = 12\n2147483647 + 1 = -2147483648\n100 / 7 = 14\n42 / 0 = -1\nword at 0x10010001 = 536879147\nan illegal instruction = [exception 2: illegal instruction 0x00000000] skipped\nexceptions handled: 1\n"
+check: exceptions == 1

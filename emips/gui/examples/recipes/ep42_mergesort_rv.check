@@ -1,0 +1,2 @@
+# Episode 42 (RISC-V): the same merge sort on RV32
+check: output == "before: 38 27 43 3 9 82 10 3\nafter:  3 3 9 10 27 38 43 82\n"

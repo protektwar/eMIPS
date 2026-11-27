@@ -1,0 +1,5 @@
+# Episode 40: five "seconds" by timer interrupts
+check: output == "the clock starts\n00:01\n00:02\n00:03\n00:04\n00:05\nthe clock stops\n"
+check: exceptions == 5 (one interrupt a second)
+# every frame was given back
+check: $sp == 0x7fffeffc

@@ -1,0 +1,20 @@
+# Episode 45, the challenge: the dark cellar, the lamp, the key, the inventory
+input: i
+input: e
+input: d
+input: take
+input: u
+input: w
+input: n
+input: take
+input: i
+input: s
+input: e
+input: d
+input: take
+input: u
+input: w
+input: s
+check: output == "You are in the hall. Doors lead north, east and south.\n> You carry: nothing\n> You are in the kitchen. It smells of coffee; the door is west, stairs go down.\n> It is too dark to see.\n> There is nothing here.\n> You are in the kitchen. It smells of coffee; the door is west, stairs go down.\n> You are in the hall. Doors lead north, east and south.\n> You are in the library. Shelves of old manuals; the door is south.\nThere is a lamp here.\n> You take the lamp.\n> You carry: lamp\n> You are in the hall. Doors lead north, east and south.\n> You are in the kitchen. It smells of coffee; the door is west, stairs go down.\n> You are in the cellar. Dusty barrels; the stairs go up.\nThere is a key here.\n> You take the key.\n> You are in the kitchen. It smells of coffee; the door is west, stairs go down.\n> You are in the hall. Doors lead north, east and south.\n> You open the door with the key.\nYou are in the garden. Sunlight at last!\nYou win!\n\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

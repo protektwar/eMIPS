@@ -1,0 +1,4 @@
+# Episode 48, the challenge: % and a division by zero caught
+check: output == "17%5+1 = 3\n2*(10%4) = 4\n7/(3-3) = error: division by zero\n100-9%0 = error: division by zero\n(1+2)*(3+4)%5 = 1\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

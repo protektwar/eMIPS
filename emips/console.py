@@ -501,19 +501,8 @@ def _float(text: str) -> float:
 
 
 def _fmt(x: float, single: bool = False) -> str:
-    """Shortest text that reads back as the same value (as MARS prints)."""
-    if x != x:
-        return "NaN"
-    if x in (float("inf"), float("-inf")):
-        return "Infinity" if x > 0 else "-Infinity"
-    if single:
-        bits = struct.pack(">f", x)
-        for digits in range(1, 10):
-            text = f"{x:.{digits}g}"
-            if struct.pack(">f", float(text)) == bits:
-                break
-    else:
-        text = repr(x)
-    if "e" not in text and "." not in text and "inf" not in text:
-        text += ".0"
-    return text
+    """As MARS prints it: Java's Float.toString / Double.toString (MARS 4.5
+    SyscallPrintFloat / SyscallPrintDouble) — the shortest digits that read
+    back, plain from 10^-3 to 10^7 (100.0, 0.001), else 1.0E7 / 1.0E-4."""
+    from .rvservices import java_string
+    return java_string(x, single=single)

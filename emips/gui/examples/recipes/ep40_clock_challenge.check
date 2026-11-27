@@ -1,0 +1,5 @@
+# Episode 40, the challenge: a countdown, the timer stopped by its handler
+check: output == "the countdown starts\n00:05\n00:04\n00:03\n00:02\n00:01\n00:00\ntime's up!\n"
+check: exceptions == 5
+# every frame was given back
+check: $sp == 0x7fffeffc

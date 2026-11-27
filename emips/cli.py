@@ -2724,7 +2724,8 @@ def options_from_args(args) -> Options:
                    rv_rnmi=getattr(args, "rv_rnmi", None) or "",
                    rv_intc=getattr(args, "rv_intc", None) or "none",
                    l2_waits=getattr(args, "l2_waits", None) or "0:0:0",
-                   dspram=getattr(args, "dspram", None) or 0)
+                   dspram=getattr(args, "dspram", None) or 0,
+                   rx_delay=getattr(args, "key_delay", None) or 6)
 
 
 def explicit_fields(args) -> set[str]:

@@ -80,4 +80,4 @@ __all__ = [
     "Registers",
 ]
 
-__version__ = "2.14.0"
+__version__ = "2.15.0"

@@ -1,0 +1,6 @@
+# Episode 42: merge sort
+check: output == "before: 38 27 43 3 9 82 10 3\nafter:  3 3 9 10 27 38 43 82\n"
+check: word[array] == 3 (the smallest first)
+check: word[array+28] == 82 (the largest last)
+# every frame was given back
+check: $sp == 0x7fffeffc

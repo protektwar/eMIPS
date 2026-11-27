@@ -1,0 +1,6 @@
+# Episode 46: four words at a time with MSA
+check: output == "c = a + b: 11 22 33 44 55 66 77 88\nsum of c: 396\n"
+check: word[c+28] == 88
+check: $w3.w[0] == 66 (lane 0's sum: 11 + 55)
+# every frame was given back
+check: $sp == 0x7fffeffc

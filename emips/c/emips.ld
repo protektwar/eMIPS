@@ -13,10 +13,16 @@ SECTIONS
   .text : {
     *crt0.o(.text)
     *(.text .text.* .gnu.linkonce.t.*)
+    *(.emips_tail)       /* crt0's stack set-up, last: the code before it keeps its addresses */
   }
   .rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
   /* the ABI flags: the ISA and the ASEs the code needs (the DSP Module) */
   .MIPS.abiflags : { *(.MIPS.abiflags) }
+
+  /* an exception handler of the program's (emips.h: EMIPS_EXCEPTION_HANDLER)
+   * at the general exception vector, kseg0 0x80000180, as an assembly
+   * program's .ktext */
+  .ktext 0x80000180 : { KEEP(*(.ktext .ktext.*)) }
 
   . = 0x10010000;
   .data : { *(.data .data.* .gnu.linkonce.d.*) }

@@ -1,0 +1,6 @@
+# Episode 41: quicksort
+check: output == "before: 34 7 23 32 5 62 32 7 -1 18\nafter:  -1 5 7 7 18 23 32 32 34 62\n"
+check: word[array] == -1 (the smallest first)
+check: word[array+36] == 62 (the largest last)
+# every frame was given back
+check: $sp == 0x7fffeffc

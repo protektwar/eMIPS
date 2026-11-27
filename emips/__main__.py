@@ -682,6 +682,10 @@ def build_parser() -> argparse.ArgumentParser:
                            help="the address to listen on (default 127.0.0.1: this machine)")
         if name in ("run", "pipe", "debug", "gdb", "check"):
             p.add_argument("--keys", default="", help="type this on the MMIO keyboard (\\n = Enter)")
+            p.add_argument("--key-delay", type=int, metavar="CYCLES", default=None,
+                           help="cycles between two keys of the MMIO keyboard (default 6: "
+                                "faster than any interrupt handler; a real keyboard: "
+                                "thousands)")
             p.add_argument("--no-header", action="store_true",
                            help="ignore the program's '# eMIPS: ...' settings line")
             p.add_argument("--no-syscalls", action="store_true",

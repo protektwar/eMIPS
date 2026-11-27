@@ -10,7 +10,7 @@
         .ent    __start
 __start:
         LA($gp, _gp)
-        LA($sp, __stack_top)
+        STACK_TOP                       # (each core of a CPS: its own)
         LA($t0, __bss_start)
         LA($t1, _end)
 1:      beq     $t0, $t1, 2f            # clear .bss, a word at a time
@@ -28,3 +28,8 @@ __start:
 3:      b       3b
         nop
         .end    __start
+
+# each core's stack (crt0.h STACK_TOP): after all the code (emips.ld)
+        .section .emips_tail, "ax", @progbits
+__emips_stack:
+        STACK_CODE

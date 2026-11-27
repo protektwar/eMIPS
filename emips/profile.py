@@ -36,7 +36,7 @@ PROFILE_FIELDS = ("board", "disks", "display", "files", "iocu", "model", "icache
                   "shadow_sets", "boot", "compressed", "fpu", "dsp", "msa", "msa_wrp", "mt",
                   "mt_pm", "itc", "vps", "itu", "core", "arch", "nms", "crc", "ginv",
                   "rv_extensions", "rv_modes", "rv_relax", "rv_rnmi", "rv_intc", "l2_waits",
-                  "dspram")
+                  "dspram", "rx_delay")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -57,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--board")
     p.add_argument("--disk", action="append")
     p.add_argument("--display")
+    p.add_argument("--key-delay", type=int, dest="key_delay")
     p.add_argument("--file", action="append", dest="data_files")
     p.add_argument("--model", choices=("5-stage", "24k", "p8700"))
     p.add_argument("--caches", action="store_true")
@@ -223,6 +224,10 @@ def read(text: str, base: str | Path | None = None) -> Profile | None:
     if ns.caches:
         o.setdefault("icache", "32K")
         o.setdefault("dcache", "32K")
+    if ns.key_delay is not None:          # (the MMIO keyboard's pace)
+        if ns.key_delay < 1:
+            raise ValueError("eMIPS header: --key-delay must be 1 or more cycles")
+        o["rx_delay"] = ns.key_delay
     for name in ("cache_parity", "cache_ecc", "write_buffer", "nonblocking", "iocu", "nms"):
         if getattr(ns, name):
             o[name] = True

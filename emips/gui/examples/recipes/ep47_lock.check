@@ -1,0 +1,5 @@
+# Episode 47: two cores, one lock, no addition lost
+check: output == "count = 2000 (2 cores x 1000)\n"
+check: word[lock] == 0 (free again at the end)
+# every frame was given back (core 0's)
+check: $sp == 0x7fffeffc

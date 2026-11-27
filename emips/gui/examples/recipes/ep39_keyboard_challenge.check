@@ -1,0 +1,7 @@
+# Episode 39, the challenge: a typo and an extra ! taken back with Backspace
+# the keys 2000 cycles apart (as the program's header asks)
+eMIPS: --key-delay 2000
+keys: helo\blo, mips!!\b\n
+check: output == "type, Backspace edits, Enter ends\nline: HELLO, MIPS!\nlength: 12\n"
+# every frame was given back
+check: $sp == 0x7fffeffc

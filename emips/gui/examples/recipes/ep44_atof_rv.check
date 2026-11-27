@@ -1,0 +1,2 @@
+# Episode 44 (RISC-V): the same five floats on RV32
+check: output == "3.14159 -> 3.14159 = 0x40490fd0\n-0.5 -> -0.5 = 0xbf000000\n100 -> 100.0 = 0x42c80000\n2.75 -> 2.75 = 0x40300000\n0.1 -> 0.1 = 0x3dcccccd\n"

@@ -1,0 +1,6 @@
+# Episode 46, the challenge: + 0x40 to sixteen pixels, wrapping and saturating
+check: output == "pixels:     0 32 64 96 128 160 192 200 208 216 224 232 240 248 250 255\nwrapping:   64 96 128 160 192 224 0 8 16 24 32 40 48 56 58 63\nsaturating: 64 96 128 160 192 224 255 255 255 255 255 255 255 255 255 255\n"
+check: byte[wrapped+6] == 0 (192 + 64 wrapped to 0)
+check: byte[bright+6] == 255 (and saturated to white)
+# every frame was given back
+check: $sp == 0x7fffeffc
