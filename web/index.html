@@ -20,6 +20,7 @@
     <button id="openFile" disabled title="A file from your computer: a program, a .check file, or a file a program reads (a disk image, a --file)">Open…</button>
     <input type="file" id="fileInput" hidden accept=".asm,.s,.S,.hex,.txt,.dat,.check,.img,.bin">
     <button id="saveProg" disabled title="Keep it in this browser (a lab or example is saved as a copy under My programs)">Save</button>
+    <button id="shareBtn" disabled title="A link with the program in it (and its Settings): send an exercise, or a solution">Share…</button>
     <button id="download" disabled title="Save the program as a file on your computer (Ctrl+Shift+S); after that Save writes that file too">Save to disk…</button>
     <button id="deleteProg" disabled hidden title="Delete it from this browser">Delete</button>
   </span>
@@ -60,6 +61,15 @@
     <h4>Inside</h4>
     <p class="inside" id="partInside"></p>
     <div class="dialog-buttons"><button value="close" autofocus>Close</button></div>
+  </form>
+</dialog>
+<dialog id="shareDialog" class="program-dialog" aria-labelledby="shareTitle">
+  <form method="dialog">
+    <h3 id="shareTitle">Share this program</h3>
+    <input id="shareLink" readonly aria-label="The link">
+    <p class="hint" id="shareNote"></p>
+    <div class="dialog-buttons"><span id="shareCopied" class="hint"></span>
+      <button type="button" id="shareCopy">Copy</button><button value="close">Close</button></div>
   </form>
 </dialog>
 <dialog id="msgDialog" class="program-dialog" aria-labelledby="msgTitle">
@@ -214,7 +224,8 @@
 programs and labs of the <a href="../">user guide</a> in assembly. The window,
 C programs and GDB need eMIPS on your computer or in a
 <a href="https://codespaces.new/protektwar/eMIPS?quickstart=1">GitHub Codespace</a>.
-eMIPS is free — if it helped you, <a href="https://buymeacoffee.com/AHerlas">buy me a coffee</a> ☕</footer>
+eMIPS is free — if it helped you, <a href="https://buymeacoffee.com/AHerlas">buy me a coffee</a> ☕
+<span id="offline" class="offline"></span></footer>
 
 <script src="app.js"></script>
 </body>

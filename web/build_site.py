@@ -181,6 +181,30 @@ def add_counter(site: Path, code: str) -> int:
     return n
 
 
+def write_service_worker(site: Path) -> list[str]:
+    """``sw.js`` at the site's root (web/sw.js filled in): the files it keeps
+    when installed — the eMIPS page and everything under run/, the labs, the
+    guide's pages and style (its pictures as they are viewed) — the version (a hash
+    of them: a new build replaces the old cache) and Pyodide's URL (the
+    worker's).  Returns the files."""
+    import hashlib
+    files = sorted(p.relative_to(site).as_posix() for p in site.rglob("*")
+                   if p.is_file() and (p.relative_to(site).parts[0] in ("run", "labs")
+                                       or p.suffix in (".html", ".css")))
+    digest = hashlib.sha256()
+    for f in files:
+        digest.update(f.encode() + b"\0" + (site / f).read_bytes())
+    worker = (ROOT / "web" / "worker.js").read_text(encoding="utf-8")
+    pyodide = re.search(r'const PYODIDE = "([^"]+)"', worker).group(1)
+    text = (ROOT / "web" / "sw.js").read_text(encoding="utf-8")
+    text = (text.replace("@VERSION@", digest.hexdigest()[:16])
+            .replace("@PYODIDE_VERSION@", pyodide.rstrip("/").split("/")[-2])
+            .replace("@PYODIDE@", pyodide)
+            .replace("@SITE@", json.dumps(["./"] + files, indent=1)))
+    (site / "sw.js").write_text(text, encoding="utf-8")
+    return files
+
+
 def main(out: str, counter: str | None = None) -> None:
     out_dir = Path(out)
     shutil.rmtree(out_dir, ignore_errors=True)
@@ -204,6 +228,8 @@ def main(out: str, counter: str | None = None) -> None:
     if counter.strip():
         print(f"visit counter: {counter.strip()}.goatcounter.com in "
               f"{add_counter(out_dir, counter.strip())} pages")
+    files = write_service_worker(out_dir)     # (last: it keeps the pages as built)
+    print(f"offline: sw.js keeps {len(files)} files")
 
 
 if __name__ == "__main__":

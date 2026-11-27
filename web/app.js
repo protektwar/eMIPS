@@ -54,6 +54,8 @@ let mine = JSON.parse(localStorage.getItem("emips.programs") || "{}");       // 
 let companions = JSON.parse(localStorage.getItem("emips.files") || "{}");   // name -> text
 let loadedText = "";           // the editor's text as opened / saved (the unsaved mark)
 const MINE = "my:";            // the program list's value for one of the user's programs
+const SHARED = "shared:";      // ... for a program a link brought (shareLink)
+let shared = null;             // that program: {n: name, t: text, s: settings, r: release, m: mode}
 
 // -- talking to the worker -------------------------------------------------------------
 
@@ -93,7 +95,9 @@ function enable(on) {
   for (const b of [ui.assemble, ui.step, ui.run, ui.back, ui.reset]) b.disabled = !on || running;
   ui.checkBtn.disabled = !ready || running;
   ui.settingsBtn.disabled = !ready || running;
-  for (const b of [ui.newProg, ui.openFile, ui.saveProg, ui.download]) b.disabled = !ready || running;
+  for (const b of [ui.newProg, ui.openFile, ui.saveProg, ui.download, $("shareBtn")]) {
+    b.disabled = !ready || running;
+  }
   ui.deleteProg.hidden = !(program.path || "").startsWith(MINE);
   ui.deleteProg.disabled = !ready || running;
   ui.pause.disabled = !running;
@@ -126,15 +130,53 @@ async function boot() {
   fillPrograms();
   setStatus(`eMIPS ${version} ready (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
   for (const [name, text] of Object.entries(companions)) await call("save", name, text);
+  if (await openSharedLink()) {             // (a link with a program in it: that one)
+    document.body.dataset.ready = "1";
+    keepOffline();
+    return;
+  }
   const wanted = new URLSearchParams(location.search).get("open")
     || localStorage.getItem("emips.last");
-  const gone = wanted && wanted.startsWith(MINE) && mine[wanted.slice(MINE.length)] === undefined;
+  const gone = wanted && (wanted.startsWith(MINE) && mine[wanted.slice(MINE.length)] === undefined
+                          || wanted.startsWith(SHARED));
   await openProgram(wanted && !gone ? wanted : programs[0].items[0].path);
   document.body.dataset.ready = "1";        // (booted, the program open: tests wait for it)
+  keepOffline();
 }
+
+// -- offline: the site kept in the browser (sw.js, written by build_site) -----------------
+
+async function keepOffline() {
+  const note = $("offline");
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  try {
+    if (!navigator.serviceWorker.controller) note.textContent = "saving eMIPS in this browser for offline use…";
+    await navigator.serviceWorker.register("../sw.js", { scope: "../" });
+    await navigator.serviceWorker.ready;    // (installed: everything it keeps is kept)
+    note.textContent = navigator.onLine ? "✓ works offline" : "offline — eMIPS keeps working";
+    note.title = "This page, Python and the guide are kept in this browser: eMIPS works "
+      + "without a network. A new version is fetched when you are online.";
+    document.body.dataset.offline = "1";
+  } catch {
+    note.textContent = "";
+  }
+}
+
+window.addEventListener("offline", () => {
+  if (document.body.dataset.offline) $("offline").textContent = "offline — eMIPS keeps working";
+});
+window.addEventListener("online", () => {
+  if (document.body.dataset.offline) $("offline").textContent = "✓ works offline";
+});
 
 function fillPrograms() {
   ui.programs.innerHTML = "";
+  if (shared) {
+    const og = document.createElement("optgroup");
+    og.label = "Shared with you (a link)";
+    og.appendChild(new Option(shared.n, SHARED + shared.n));
+    ui.programs.appendChild(og);
+  }
   const names = Object.keys(mine).sort();
   if (names.length) {
     const og = document.createElement("optgroup");
@@ -165,13 +207,16 @@ async function openProgram(path) {
   if (!confirmDiscard()) { ui.programs.value = program.path || ""; return; }
   const item = find(path) || { path, files: [], title: path };
   const own = path.startsWith(MINE);
-  const text = own ? mine[path.slice(MINE.length)] ?? null : await fetchText(path);
+  const isShared = path.startsWith(SHARED);
+  const text = own ? mine[path.slice(MINE.length)] ?? null
+    : isShared ? (shared && SHARED + shared.n === path ? shared.t : null) : await fetchText(path);
   if (text === null) { showMessages([`could not load ${path}`], false); return; }
   for (const f of item.files || []) {
     const companion = await fetchText(f);
     if (companion !== null) await call("save", f.split("/").pop(), companion);
   }
-  program = { name: own ? path.slice(MINE.length) : path.split("/").pop(), path };
+  program = { name: own ? path.slice(MINE.length) : isShared ? path.slice(SHARED.length)
+    : path.split("/").pop(), path };
   diskHandle = own ? await handleGet(program.name) || null : null;
   ui.programs.value = path;
   ui.source.value = text;
@@ -183,12 +228,99 @@ async function openProgram(path) {
   ui.input.value = item.input || "";
   ui.keys.value = (item.keys || "").replace(/\\n$/, "");
   updateGutter();
-  history.replaceState(null, "", `?open=${encodeURIComponent(path)}`);
-  localStorage.setItem("emips.last", path);
+  if (!isShared) {                          // (a shared program: the address keeps the link)
+    history.replaceState(null, "", `?open=${encodeURIComponent(path)}`);
+    localStorage.setItem("emips.last", path);
+  }
   enable(ready);
-  countEvent(own ? "open: my program" : `open: ${path}`);
+  countEvent(own ? "open: my program" : isShared ? "open: shared link" : `open: ${path}`);
   await assemble();
   document.body.dataset.program = path;     // (opened and assembled: tests wait for it)
+}
+
+// -- share by link: the program in the address -------------------------------------------
+// The link's fragment (#p=...) holds the program's name, text, the Settings,
+// the release and the mode: JSON, deflated (CompressionStream) and in base64url.
+// A fragment is never sent to a server (nor counted).
+
+const SHARE_WARN = 8000;      // (longer links: some mail / chat programs cut them)
+
+function base64url(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function unbase64url(text) {
+  const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+async function deflate(text, decompress = false) {
+  const data = decompress ? unbase64url(text) : new TextEncoder().encode(text);
+  const stream = new Blob([data]).stream().pipeThrough(
+    decompress ? new DecompressionStream("deflate-raw") : new CompressionStream("deflate-raw"));
+  const out = new Uint8Array(await new Response(stream).arrayBuffer());
+  return decompress ? new TextDecoder().decode(out) : base64url(out);
+}
+
+async function shareLink() {
+  const base = location.origin + location.pathname;
+  const path = program.path || "";
+  // a program of the site, unchanged: its short link
+  if (path && !path.startsWith(MINE) && !path.startsWith(SHARED) && ui.source.value === loadedText
+      && !Object.keys(settings).length && !ui.release.value && !ui.mode.value) {
+    return `${base}?open=${encodeURIComponent(path)}`;
+  }
+  const packed = await deflate(JSON.stringify({
+    v: 1, n: program.name, t: ui.source.value, s: settings, r: ui.release.value,
+    m: ui.mode.value }));
+  return `${base}#p=${packed}`;
+}
+
+async function sharePrompt() {
+  const link = await shareLink();
+  countEvent("share");
+  $("shareLink").value = link;
+  $("shareNote").textContent = link.length > SHARE_WARN
+    ? `A long link (${link.length} characters): some mail and chat programs cut links this `
+      + "long — Save to disk… and send the file instead if it arrives broken."
+    : link.includes("#p=") ? "The link holds the program (with its # check: lines), the "
+      + "Settings, the release and the mode. Whoever opens it gets a copy: your program is "
+      + "never changed." : "The program is unchanged: the link opens it from the site.";
+  $("shareCopied").textContent = "";
+  $("shareDialog").showModal();
+  $("shareLink").select();
+}
+
+async function openSharedLink() {
+  const m = /^#p=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (!m) return false;
+  let got;
+  try {
+    got = JSON.parse(await deflate(m[1], true));
+    if (typeof got.t !== "string") throw new Error("no program in it");
+  } catch (e) {
+    showMessages([`this link does not hold a program (${e.message}): it was cut, or changed`],
+                 false);
+    return false;
+  }
+  if (!confirmDiscard()) return true;
+  const name = String(got.n || "shared.asm").replace(/[\/:]/g, "_").slice(0, 80) || "shared.asm";
+  shared = { n: name, t: got.t };
+  // (the program as its sender ran it: their Settings, release and mode)
+  settings = got.s && typeof got.s === "object" ? got.s : {};
+  localStorage.setItem("emips.settings", JSON.stringify(settings));
+  markSettings();
+  if ([...ui.release.options].some((o) => o.value === got.r)) ui.release.value = got.r || "";
+  if ([...ui.mode.options].some((o) => o.value === got.m)) ui.mode.value = got.m || "";
+  fillPrograms();
+  loadedText = ui.source.value;            // (confirmed above: nothing to lose)
+  await openProgram(SHARED + name);
+  const set = Object.keys(settings).length || got.r || got.m;
+  showMessages([`${name}: shared with you by a link — Save keeps a copy in this browser`
+                + (set ? "; the Settings, the release and the mode are the link's" : "")]);
+  return true;
 }
 
 // -- the visit counter's events (GoatCounter, when the site has it: build_site) ----------
@@ -1711,6 +1843,17 @@ function positionBar() {
 ui.source.addEventListener("scroll", () => { ui.gutter.scrollTop = ui.source.scrollTop; positionBar(); });
 ui.source.addEventListener("input", () => { updateGutter(); markUnsaved(); });
 ui.newProg.addEventListener("click", newProgram);
+$("shareBtn").addEventListener("click", () => { if (!running) sharePrompt(); });
+$("shareCopy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("shareLink").value);
+    $("shareCopied").textContent = "copied";
+  } catch {
+    $("shareLink").select();
+    $("shareCopied").textContent = "select it and copy (Ctrl+C)";
+  }
+});
+window.addEventListener("hashchange", () => { if (ready && !running) openSharedLink(); });
 
 function enlarge(on) {
   ui.main.classList.toggle("expanded", on);

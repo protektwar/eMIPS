@@ -123,16 +123,19 @@ runs eMIPS itself in the page (Python in WebAssembly, Pyodide; nothing to
 install): the examples, MIPS by Example, the guide's labs — each of the
 guide's programs has an *Open in eMIPS* link — and your own assembly
 programs (kept in the browser, checked with their `# check:` lines, saved
-to a file on your computer).  It has the window's views: the 5-stage
+to a file on your computer, shared as a link that holds the program).  It has the window's views: the 5-stage
 datapath (click a part for its gates), the 24K's and the P8700's
 pipelines, the instruction's fields, memory, the pipeline chart, caches,
 TLB, counters, trace, the Malta board, the cores, MT, the tools, the
 bitmap display, files and sound, Settings and the command line's
-debugger.  The first visit downloads about 8 MB.  C programs and GDB need
-eMIPS on your computer or in a Codespace.  The site counts visits with
+debugger.  The first visit downloads about 8 MB, then the page keeps
+eMIPS, Python, the labs and the guide in the browser (about 22 MB): it works
+offline afterwards.  C programs and GDB need eMIPS on your computer or in a
+Codespace.  The site counts visits with
 [GoatCounter](https://www.goatcounter.com) (no cookies, no personal data):
 the pages viewed, and on the eMIPS page the programs of the site opened
-(your own only as "my program") and the uses of Run and Check.
+(your own only as "my program"), links shared and opened (never what is
+in them) and the uses of Run and Check.
 
 ### In your browser — GitHub Codespaces
 
