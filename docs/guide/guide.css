@@ -166,3 +166,6 @@ summary { cursor: pointer; font-weight: 600; color: var(--summary); }
 /* the web site's copy: a link above each complete program (web/build_site.py) */
 .open-in-emips { margin: .8em 0 -.6em; font-size: .9em; }
 .open-in-emips span { color: var(--muted, #5b6270); margin-left: .4em; }
+
+/* the web site's copy: the visit counter's line (web/build_site.py) */
+.counter-note { max-width: 52rem; margin: 1rem auto; color: var(--muted); font-size: .85em; }

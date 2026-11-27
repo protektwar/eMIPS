@@ -39,15 +39,23 @@ header nav { flex: 1; }
 #messages.note { border-color: var(--line); color: var(--muted); }
 #messages { margin: .5em 1em 0; padding: .4em .7em; border: 1px solid var(--error);
             color: var(--error); white-space: pre-wrap; font-family: var(--mono); font-size: 13px; }
-main { display: grid; gap: .6em; padding: .6em 1em;
-       grid-template-columns: minmax(22em, 1.2fr) minmax(24em, 1.3fr) minmax(15em, .7fr);
-       flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr) 15em;
-       grid-template-areas: "editor listing regs" "console debugger debugger"; }
-.editor-pane { grid-area: editor; }
-.listing-pane { grid-area: listing; }
-.regs-pane { grid-area: regs; }
-.console-pane { grid-area: console; }
-.tabs-pane { grid-area: debugger; }
+/* the window's layout: Program | Disassembly | Registers over Console | Datapath,
+   every border draggable (the sizes kept in the browser: emips.layout) */
+main { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: .6em 1em;
+       --w-editor: 32%; --w-listing: 38%; --h-top: 56%; --w-console: 38%; }
+.row { display: flex; min-height: 0; min-width: 0; }
+.row.top { flex: 0 0 var(--h-top); }
+.row.bottom { flex: 1 1 0; }
+.row > .pane { min-width: 10em; }
+.editor-pane { flex: 0 0 var(--w-editor); }
+.listing-pane { flex: 0 0 var(--w-listing); }
+.regs-pane { flex: 1 1 0; }
+.console-pane { flex: 0 0 var(--w-console); }
+.tabs-pane { flex: 1 1 0; }
+.split { flex: 0 0 .6em; border-radius: 3px; }
+.split.v { cursor: col-resize; }
+.split.h { cursor: row-resize; }
+.split:hover, .split.dragging { background: var(--line); }
 .pane { display: flex; flex-direction: column; min-height: 0; min-width: 0;
         background: var(--pane); border: 1px solid var(--line); border-radius: 6px; }
 .pane h2 { margin: 0; padding: .3em .6em; font-size: 13px; font-weight: 600;
@@ -87,8 +95,9 @@ td.bp::before, #gutter .bp::before { content: "●"; color: var(--bp); margin-ri
 footer { padding: .2em 1em 1em; color: var(--muted); font-size: 12.5px; }
 @media (max-width: 1100px), (max-height: 640px) {
   body { height: auto; }
-  main { grid-template-columns: 1fr; grid-template-rows: 26em 20em 20em 14em 16em;
-         grid-template-areas: "editor" "listing" "regs" "console" "debugger"; }
+  main, .row { display: block; }
+  .row > .pane { height: 22em; margin-bottom: .6em; }
+  .split { display: none; }
 }
 
 /* the Settings dialog */
@@ -105,7 +114,7 @@ dialog#settings::backdrop { background: rgba(0, 0, 0, 0.45); }
 #settingsBtn.changed::after { content: " •"; }
 
 /* the views' tabs: Memory, Pipeline, Debugger ... */
-.tabs { display: flex; gap: .2em; padding: .2em .4em 0; border-bottom: 1px solid var(--line); }
+.tabs { display: flex; flex-wrap: wrap; gap: .2em; padding: .2em .4em 0; border-bottom: 1px solid var(--line); }
 .tabs button { font: inherit; font-size: 13px; color: var(--muted); background: none;
   border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; padding: .2em .7em; cursor: pointer; }
 .tabs button[aria-selected=true] { color: var(--text); border-color: var(--line); background: var(--pane);
@@ -126,7 +135,6 @@ dialog#settings::backdrop { background: rgba(0, 0, 0, 0.45); }
 #chart th { text-align: center; min-width: 2.6em; }
 
 /* M27's devices: the display, files, sound; the program's dialogs */
-main.tall-lower { grid-template-rows: minmax(0, 1fr) 24em; }
 .screen { flex: 1; min-height: 0; display: flex; justify-content: center; align-items: center;
           background: #000; margin: 0 .4em .4em; }
 #screen { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
@@ -267,7 +275,6 @@ dialog.program-dialog p.question::before { content: "❓ "; }
 #datapath .part { cursor: pointer; }
 #datapath text { font-family: var(--mono); white-space: pre; }
 .dp-bar { display: flex; gap: .8em; align-items: center; padding: .2em .6em; font-size: 13px; }
-main.taller-lower { grid-template-rows: minmax(10em, .8fr) minmax(0, 1.2fr); }
 dialog#partDialog { max-width: 64em; width: 92vw; max-height: 86vh; color: var(--text);
   background: var(--pane); border: 1px solid var(--line); border-radius: 8px; padding: .2em 1rem 1rem; }
 #partDialog h3 { margin: .6em 0 .3em; }
@@ -276,9 +283,7 @@ dialog#partDialog { max-width: 64em; width: 92vw; max-height: 86vh; color: var(-
 
 /* Enlarge: the views' pane over the whole page */
 .tabs .enlarge { margin-left: auto; border: 1px solid var(--line); border-radius: 4px; margin-bottom: .2em; }
-main.expanded { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr);
-                grid-template-areas: "debugger"; }
-main.expanded > section:not(.tabs-pane) { display: none; }
+main.expanded .row.top, main.expanded .split, main.expanded .console-pane { display: none; }
 
 /* the part dialog's gates (emips.partlogic: the window's drawings) */
 #partDrawing { max-height: 46vh; overflow: auto; background: var(--dp-canvas);
@@ -304,22 +309,22 @@ main.expanded > section:not(.tabs-pane) { display: none; }
 .pane-bar { display: flex; flex-wrap: wrap; gap: .4em .9em; align-items: center; padding: .3em .5em;
             font-size: 13px; border-bottom: 1px solid var(--line); }
 .pane-bar input[type=text] { font-family: var(--mono); width: 18em; }
-#paneBody { padding: .2em .6em; font-size: 13px; }
-#paneBody h4 { margin: .6em 0 .2em; font-size: 13px; }
-#paneBody p.note { margin: .3em 0; color: var(--muted); white-space: pre-wrap; }
-#paneBody pre { margin: .2em 0; font-family: var(--mono); font-size: 12px; white-space: pre; }
-#paneBody table { width: auto; margin: .2em 0; }
-#paneBody td { white-space: pre; }
-#paneBody td.fill-hit, #paneBody tr.fill-hit td { background: var(--dp-hit); color: var(--field-text); }
-#paneBody td.fill-miss, #paneBody tr.fill-miss td { background: var(--dp-miss); color: var(--field-text); }
-#paneBody td.fill-valid, #paneBody tr.fill-valid td { background: var(--dp-valid); }
-#paneBody td.fill-current, #paneBody tr.fill-current td { background: var(--dp-current); color: var(--field-text); }
-#paneBody td.fill-error, #paneBody tr.fill-error td { background: var(--dp-error); color: var(--field-text); }
-#paneBody .bold, #paneBody tr.bold td { font-weight: 700; }
-#paneBody tr.pick { cursor: pointer; }
-#paneBody .fields { display: flex; gap: 3px; flex-wrap: wrap; margin: .3em 0; }
-#paneBody .field { padding: 2px 7px; border-radius: 3px; color: var(--field-text); font-size: 12px; }
-#paneBody .field .bits { font-family: var(--mono); }
+.pane-body { padding: .2em .6em; font-size: 13px; }
+.pane-body h4 { margin: .6em 0 .2em; font-size: 13px; }
+.pane-body p.note { margin: .3em 0; color: var(--muted); white-space: pre-wrap; }
+.pane-body pre { margin: .2em 0; font-family: var(--mono); font-size: 12px; white-space: pre; }
+.pane-body table { width: auto; margin: .2em 0; }
+.pane-body td { white-space: pre; }
+.pane-body td.fill-hit, .pane-body tr.fill-hit td { background: var(--dp-hit); color: var(--field-text); }
+.pane-body td.fill-miss, .pane-body tr.fill-miss td { background: var(--dp-miss); color: var(--field-text); }
+.pane-body td.fill-valid, .pane-body tr.fill-valid td { background: var(--dp-valid); }
+.pane-body td.fill-current, .pane-body tr.fill-current td { background: var(--dp-current); color: var(--field-text); }
+.pane-body td.fill-error, .pane-body tr.fill-error td { background: var(--dp-error); color: var(--field-text); }
+.pane-body .bold, .pane-body tr.bold td { font-weight: 700; }
+.pane-body tr.pick { cursor: pointer; }
+.pane-body .fields { display: flex; gap: 3px; flex-wrap: wrap; margin: .3em 0; }
+.pane-body .field { padding: 2px 7px; border-radius: 3px; color: var(--field-text); font-size: 12px; }
+.pane-body .field .bits { font-family: var(--mono); }
 .leds { display: flex; gap: 4px; align-items: center; margin: .4em 0; }
 .leds span.led { width: 16px; height: 16px; border-radius: 8px; border: 1px solid var(--dp-idle-line);
              background: var(--dp-bubble); }
@@ -327,3 +332,8 @@ main.expanded > section:not(.tabs-pane) { display: none; }
 .malta-display { font-family: var(--mono); font-size: 18px; font-weight: 700; padding: 2px 8px;
                  background: var(--dp-part-fill); border: 1px solid var(--line); margin-left: 1em; }
 .counter-row { display: flex; flex-wrap: wrap; gap: .3em .6em; align-items: center; }
+
+.pane-bar[hidden] { display: none; }
+.row > .pane { overflow: hidden; }
+
+.counter-note { margin: 0 1em .6em; color: var(--muted); font-size: 12px; }

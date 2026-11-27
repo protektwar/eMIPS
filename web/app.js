@@ -26,9 +26,21 @@ const ui = {
   checkBtn: $("checkBtn"), checks: document.querySelector("#checks tbody"),
   checksHint: $("checksHint"),
 };
-const TABS = ["datapath", "instr", "panes", "memory", "chart", "display", "files", "sound", "checks", "debugger"];
+// the window's layout: three groups of tabs (Console's, the registers', the views')
+const PANE_TITLES = { special: "PC / CP0", fpu: "FPU", dsp: "DSP", msa: "MSA", vector: "Vector",
+  interrupts: "Interrupts", debug: "Debug", caches: "Caches", tlb: "TLB", counters: "Counters",
+  trace: "Trace", board: "Board", system: "System", mt: "MT", tools: "Tools" };
+const REG_PANES = ["special", "fpu"];
+const RIGHT_PANES = ["dsp", "msa", "vector", "interrupts", "debug", "caches", "tlb", "counters",
+  "trace", "board", "system", "mt", "tools"];
+const GROUPS = {
+  left: ["console", "memory", "checks", "debugger"],
+  regs: ["regs", ...REG_PANES.map((p) => `pane-${p}`)],
+  right: ["datapath", "instr", "chart", "display", "files", "sound", ...RIGHT_PANES.map((p) => `pane-${p}`)],
+};
 const DEVICE_TABS = ["display", "files", "sound"];   // (shown when the program has one)
-let tab = localStorage.getItem("emips.tab") || "debugger";
+const current = { left: "console", regs: "regs", right: "datapath",
+                  ...JSON.parse(localStorage.getItem("emips.tabs") || "{}") };
 let worker = null;             // eMIPS, in worker.js
 let ready = false;
 let program = { name: "program.asm", path: null };
@@ -106,7 +118,8 @@ async function boot() {
   schema = await call("settings_schema");
   timbres = await call("timbres");
   for (const [i, name] of (await call("memory_segments")).entries()) ui.memSegment.add(new Option(name, i));
-  showTab(tab, false);
+  for (const g of Object.keys(GROUPS)) showGroup(g);
+  await showTab(current.right, false);
   ready = true;
   markSettings();
   programs = list;
@@ -173,8 +186,19 @@ async function openProgram(path) {
   history.replaceState(null, "", `?open=${encodeURIComponent(path)}`);
   localStorage.setItem("emips.last", path);
   enable(ready);
+  countEvent(own ? "open: my program" : `open: ${path}`);
   await assemble();
   document.body.dataset.program = path;     // (opened and assembled: tests wait for it)
+}
+
+// -- the visit counter's events (GoatCounter, when the site has it: build_site) ----------
+
+function countEvent(name) {
+  // (no cookies, no personal data: a program of the site by its path, the
+  //  user's own only as "my program"; nothing without the counter's script)
+  const gc = window.goatcounter;
+  if (!gc || typeof gc.count !== "function") return;
+  try { gc.count({ path: name, title: name, event: true }); } catch { /* never in the way */ }
 }
 
 // -- the user's programs and files -------------------------------------------------------
@@ -418,31 +442,78 @@ function flags() {
 
 function viewSpec() {
   const spec = {};
-  if (tab === "memory") {
+  if (current.left === "memory") {
     spec.memory = { segment: Number(ui.memSegment.value || 0), address: ui.memAddress.value,
                     physical: ui.memPhysical.checked, bytes: ui.memBytes.checked,
                     doubles: ui.memDoubles.checked };
   }
-  if (tab === "chart") spec.chart = true;
-  if (tab === "instr") spec.instr = true;
-  if (tab === "datapath") spec.datapath = true;
-  if (tab === "panes") { spec.pane = paneName; spec.pane_opts = paneOpts[paneName] || {}; }
+  if (current.right === "chart") spec.chart = true;
+  if (current.right === "instr") spec.instr = true;
+  if (current.right === "datapath") spec.datapath = true;
+  spec.panes = {};
+  for (const g of ["regs", "right"]) {
+    if (current[g].startsWith("pane-")) {
+      const name = current[g].slice(5);
+      spec.panes[name] = paneOpts[name] || {};
+    }
+  }
   return spec;
 }
 
-async function showTab(name, refresh = true) {
-  tab = TABS.includes(name) && !$(`tab-${name}`).hidden ? name : "debugger";
-  localStorage.setItem("emips.tab", tab);
-  for (const t of TABS) {
-    $(`tab-${t}`).setAttribute("aria-selected", String(t === tab));
-    $(`panel-${t}`).hidden = t !== tab;
+function groupOf(name) {
+  return Object.keys(GROUPS).find((g) => GROUPS[g].includes(name));
+}
+
+function showGroup(g) {                    // (the group's buttons and panels)
+  for (const t of GROUPS[g]) {
+    $(`tab-${t}`).setAttribute("aria-selected", String(t === current[g]));
+    $(`panel-${t}`).hidden = t !== current[g];
   }
-  ui.main.classList.toggle("tall-lower", tab === "display");
-  ui.main.classList.toggle("taller-lower", tab === "datapath");
-  if (tab === "datapath" && !dp) await buildDatapath();
-  if (tab === "datapath" && !dp24) await build24k();
+}
+
+async function showTab(name, refresh = true) {
+  const g = groupOf(name);
+  if (!g) return;
+  current[g] = $(`tab-${name}`).hidden ? GROUPS[g][0] : name;
+  localStorage.setItem("emips.tabs", JSON.stringify(current));
+  showGroup(g);
+  if (current.right === "datapath" && !dp) await buildDatapath();
+  if (current.right === "datapath" && !dp24) await build24k();
   const st = await call("set_views", JSON.stringify(viewSpec()));
   if (refresh && !running && assembled !== null) render(st);
+}
+
+function showPaneTabs(avail) {             // (DSP / MSA / Vector: a core that has them)
+  for (const name of [...REG_PANES, ...RIGHT_PANES]) {
+    $(`tab-pane-${name}`).hidden = !avail.includes(name);
+  }
+  for (const g of ["regs", "right"]) {
+    if ($(`tab-${current[g]}`).hidden) { current[g] = GROUPS[g][0]; showGroup(g); }
+  }
+}
+
+function buildPaneTabs() {
+  const add = (name, bar, before, pane) => {
+    const b = document.createElement("button");
+    b.setAttribute("role", "tab");
+    b.id = `tab-pane-${name}`;
+    b.setAttribute("aria-controls", `panel-pane-${name}`);
+    b.setAttribute("aria-selected", "false");
+    b.textContent = PANE_TITLES[name];
+    b.addEventListener("click", () => showTab(`pane-${name}`));
+    bar.insertBefore(b, before);
+    const p = document.createElement("div");
+    p.className = "panel";
+    p.id = `panel-pane-${name}`;
+    p.setAttribute("role", "tabpanel");
+    p.hidden = true;
+    p.innerHTML = '<div class="pane-bar"></div><div class="scroll pane-body"></div>';
+    pane.appendChild(p);
+  };
+  const regs = document.querySelector(".regs-pane");
+  for (const name of REG_PANES) add(name, regs.querySelector(".tabs"), null, regs);
+  const right = document.querySelector(".tabs-pane");
+  for (const name of RIGHT_PANES) add(name, $("rightTabs"), $("enlarge"), right);
 }
 
 function fillMemory(mem) {
@@ -859,23 +930,17 @@ function sceneSvg(scene) {
 
 // -- the Panes tab (emips.panedata: the window's other panes) -----------------------------
 
-let paneName = localStorage.getItem("emips.pane") || "special";
 const paneOpts = JSON.parse(localStorage.getItem("emips.paneOpts") || "{}");
 
-function paneRefresh() {
-  localStorage.setItem("emips.pane", paneName);
+function setPaneOpt(name, key, value) {
+  paneOpts[name] = { ...(paneOpts[name] || {}), [key]: value };
   localStorage.setItem("emips.paneOpts", JSON.stringify(paneOpts));
-  return showTab("panes");
+  showTab(`pane-${name}`);
 }
 
-function setPaneOpt(key, value) {
-  paneOpts[paneName] = { ...(paneOpts[paneName] || {}), [key]: value };
-  paneRefresh();
-}
-
-async function paneAct(action, args = {}) {
+async function paneAct(name, action, args = {}) {
   if (running) return;
-  render(await call("pane_action", paneName, action, JSON.stringify(args)));
+  render(await call("pane_action", name, action, JSON.stringify(args)));
 }
 
 function fillCell(td, fill, bold) {
@@ -883,7 +948,7 @@ function fillCell(td, fill, bold) {
   if (bold) td.classList.add("bold");
 }
 
-function paneBlock(b) {
+function paneBlock(name, b) {
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -930,7 +995,7 @@ function paneBlock(b) {
       if (b.action) {                         // (a click: show that core / VP everywhere)
         tr.classList.add("pick");
         const cpu = b.pick ? b.pick[r] : r;
-        tr.addEventListener("click", () => paneAct(b.action, { cpu }));
+        tr.addEventListener("click", () => paneAct(name, b.action, { cpu }));
       }
       body.appendChild(tr);
     });
@@ -939,7 +1004,7 @@ function paneBlock(b) {
   return frag;
 }
 
-function paneControl(c) {
+function paneControl(name, c) {
   const span = document.createElement("span");
   const label = (text, input) => {
     const l = document.createElement("label");
@@ -951,14 +1016,14 @@ function paneControl(c) {
     const sel = document.createElement("select");
     for (const [v, text] of c.items) sel.add(new Option(text, v));
     sel.value = c.value;
-    sel.addEventListener("change", () => setPaneOpt(c.key, sel.value));
+    sel.addEventListener("change", () => setPaneOpt(name, c.key, sel.value));
     span.appendChild(label(c.label, sel));
   } else if (c.kind === "check") {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = !!c.value;
     cb.disabled = !!c.disabled;
-    cb.addEventListener("change", () => setPaneOpt(c.key, cb.checked));
+    cb.addEventListener("change", () => setPaneOpt(name, c.key, cb.checked));
     const l = document.createElement("label");
     l.append(cb, " " + c.label);
     if (c.tip) l.title = c.tip;
@@ -967,7 +1032,7 @@ function paneControl(c) {
     const inp = document.createElement("input");
     inp.type = "text";
     inp.value = c.value ?? "";
-    const go = () => (c.action ? paneAct(c.action, { value: inp.value }) : setPaneOpt(c.key, inp.value));
+    const go = () => (c.action ? paneAct(name, c.action, { value: inp.value }) : setPaneOpt(name, c.key, inp.value));
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
     span.appendChild(label(c.label, inp));
     if (c.action) {
@@ -981,7 +1046,7 @@ function paneControl(c) {
     b.textContent = c.label;
     b.disabled = !!c.disabled;
     if (c.tip) b.title = c.tip;
-    b.addEventListener("click", () => paneAct(c.action));
+    b.addEventListener("click", () => paneAct(name, c.action));
     span.appendChild(b);
   } else if (c.kind === "counter") {               // (PerfCtl: event, modes, interrupt)
     span.className = "counter-row";
@@ -1003,7 +1068,7 @@ function paneControl(c) {
     const ie = document.createElement("input");
     ie.type = "checkbox";
     ie.checked = c.ie;
-    const apply = () => paneAct("counter", {
+    const apply = () => paneAct(name, "counter", {
       i: c.i, event: sel.value, ie: ie.checked,
       modes: Object.entries(boxes).filter(([, b]) => b.checked).map(([k]) => k).join("") });
     for (const e of [sel, ie, ...Object.values(boxes)]) e.addEventListener("change", apply);
@@ -1036,14 +1101,14 @@ function paneControl(c) {
       ol.title = tip;
       span.appendChild(ol);
     }
-    const apply = () => paneAct("trace", { on: on.checked, protocol: proto ? proto.value : "e",
+    const apply = () => paneAct(name, "trace", { on: on.checked, protocol: proto ? proto.value : "e",
       options: Object.fromEntries(Object.entries(opts).map(([k, cb]) => [k, cb.checked])) });
     for (const e of [on, ...Object.values(opts), ...(proto ? [proto] : [])]) e.addEventListener("change", apply);
     if (c.rv) {
       const pk = document.createElement("input");
       pk.type = "checkbox";
       pk.checked = c.packets;
-      pk.addEventListener("change", () => setPaneOpt("packets", pk.checked));
+      pk.addEventListener("change", () => setPaneOpt(name, "packets", pk.checked));
       const pl = document.createElement("label");
       pl.append(pk, " Packets");
       span.appendChild(pl);
@@ -1052,23 +1117,16 @@ function paneControl(c) {
   return span;
 }
 
-function fillPane(p) {
-  const choice = $("paneChoice");
-  const names = p.available.map(([k]) => k).join();
-  if (choice.dataset.names !== names) {
-    choice.dataset.names = names;
-    choice.innerHTML = "";
-    for (const [k, title] of p.available) choice.add(new Option(title, k));
-  }
-  paneName = p.name;
-  choice.value = p.name;
-  const controls = $("paneControls");
+function fillPane(name, p) {
+  const panel = $(`panel-pane-${name}`);
+  const controls = panel.querySelector(".pane-bar");
   controls.innerHTML = "";
-  for (const c of p.controls) controls.appendChild(paneControl(c));
-  const body = $("paneBody");
+  for (const c of p.controls) controls.appendChild(paneControl(name, c));
+  controls.hidden = !p.controls.length;
+  const body = panel.querySelector(".pane-body");
   const keep = body.scrollTop;
   body.innerHTML = "";
-  for (const b of p.blocks) body.appendChild(paneBlock(b));
+  for (const b of p.blocks) body.appendChild(paneBlock(name, b));
   body.scrollTop = keep;
 }
 
@@ -1129,6 +1187,7 @@ let checkRun = null;           // a check in progress (its call's promise)
 
 async function checkProgram() {
   if (running || !ready) return;
+  countEvent("check");
   running = true;
   enable(true);
   showTab("checks", false);
@@ -1195,7 +1254,7 @@ let audio = null, clockBase = null;
 
 function resetDevices() {
   for (const t of DEVICE_TABS) { have[t] = false; $(`tab-${t}`).hidden = true; }
-  if (DEVICE_TABS.includes(tab)) showTab("debugger", false);
+  if (DEVICE_TABS.includes(current.right)) showTab("datapath", false);
   dialogQueue = []; pendingAsk = null; continueRun = false; clockBase = null;
 }
 
@@ -1542,7 +1601,8 @@ function render(st, light = false) {
   if (st.memory) fillMemory(st.memory);
   if (st.chart) fillChart(st.chart);
   if ("instr" in st) fillInstr(st.instr);
-  if (st.pane) fillPane(st.pane);
+  if (st.panes_available) showPaneTabs(st.panes_available);
+  for (const [name, p] of Object.entries(st.panes || {})) fillPane(name, p);
   if (st.datapath) showModelView(st.datapath);
   if (st.debugger !== undefined) {
     ui.dbgout.textContent += st.debugger;
@@ -1651,11 +1711,12 @@ function positionBar() {
 ui.source.addEventListener("scroll", () => { ui.gutter.scrollTop = ui.source.scrollTop; positionBar(); });
 ui.source.addEventListener("input", () => { updateGutter(); markUnsaved(); });
 ui.newProg.addEventListener("click", newProgram);
-$("paneChoice").addEventListener("change", () => { paneName = $("paneChoice").value; paneRefresh(); });
+
 function enlarge(on) {
   ui.main.classList.toggle("expanded", on);
   $("enlarge").setAttribute("aria-pressed", String(on));
-  $("enlarge").textContent = on ? "⤡ Back" : "⤢ Enlarge";
+  $("enlarge").textContent = on ? "⤡" : "⤢";
+  $("enlarge").setAttribute("aria-label", on ? "Back" : "Enlarge");
 }
 $("enlarge").addEventListener("click", () => enlarge(!ui.main.classList.contains("expanded")));
 document.addEventListener("keydown", (e) => {
@@ -1685,7 +1746,49 @@ ui.saveWav.addEventListener("click", async () =>
 ui.saveMid.addEventListener("click", async () =>
   saveBase64(`${program.name.replace(/\.\w+$/, "")}.mid`, await call("midi_download", "mid"), "audio/midi"));
 ui.playLive.addEventListener("change", wakeAudio);
-for (const t of TABS) $(`tab-${t}`).addEventListener("click", () => showTab(t));
+buildPaneTabs();
+for (const g of Object.keys(GROUPS)) {            // (a tab kept from another layout)
+  if (!GROUPS[g].includes(current[g])) current[g] = GROUPS[g][0];
+}
+for (const t of Object.values(GROUPS).flat()) {
+  if (!t.startsWith("pane-")) $(`tab-${t}`).addEventListener("click", () => showTab(t));
+}
+
+// the borders between the panes: drag to resize (kept in the browser)
+const layout = JSON.parse(localStorage.getItem("emips.layout") || "{}");
+for (const [k, v] of Object.entries(layout)) ui.main.style.setProperty(k, v);
+for (const bar of document.querySelectorAll(".split")) {
+  bar.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const horizontal = bar.classList.contains("h");
+    const before = bar.previousElementSibling, box = bar.parentElement.getBoundingClientRect();
+    const start = before.getBoundingClientRect();
+    const total = horizontal ? box.height : box.width;
+    const x0 = horizontal ? e.clientY : e.clientX;
+    const size0 = horizontal ? start.height : start.width;
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add("dragging");
+    const move = (ev) => {
+      const size = Math.max(80, Math.min(total - 120, size0 + (horizontal ? ev.clientY : ev.clientX) - x0));
+      const pct = `${(100 * size / total).toFixed(2)}%`;
+      ui.main.style.setProperty(bar.dataset.var, pct);
+      layout[bar.dataset.var] = pct;
+    };
+    const up = () => {
+      bar.classList.remove("dragging");
+      bar.removeEventListener("pointermove", move);
+      localStorage.setItem("emips.layout", JSON.stringify(layout));
+      if (dp && current.right === "datapath") showTab("datapath");   // (the drawing refits)
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up, { once: true });
+  });
+  bar.addEventListener("dblclick", () => {         // (a double click: the default size)
+    ui.main.style.removeProperty(bar.dataset.var);
+    delete layout[bar.dataset.var];
+    localStorage.setItem("emips.layout", JSON.stringify(layout));
+  });
+}
 for (const el of [ui.memSegment, ui.memPhysical, ui.memBytes, ui.memDoubles]) {
   el.addEventListener("change", () => {
     if (el === ui.memSegment) ui.memAddress.value = "";
@@ -1725,7 +1828,7 @@ ui.settings.addEventListener("close", () => {
   assemble();
 });
 ui.step.addEventListener("click", step);
-ui.run.addEventListener("click", run);
+ui.run.addEventListener("click", () => { countEvent("run"); run(); });
 ui.pause.addEventListener("click", pause);
 ui.back.addEventListener("click", () => act("step_back"));
 ui.reset.addEventListener("click", () => act("reset"));
@@ -1755,7 +1858,7 @@ ui.dbg.addEventListener("keydown", async (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (!ready) return;
-  if (e.key === "F5") { e.preventDefault(); if (!running && !ui.run.disabled) run(); }
+  if (e.key === "F5") { e.preventDefault(); if (!running && !ui.run.disabled) { countEvent("run"); run(); } }
   else if (e.key === "F8") { e.preventDefault(); if (!ui.checkBtn.disabled) checkProgram(); }
   else if (e.key === "F10") { e.preventDefault(); if (!ui.step.disabled) step(); }
   else if (e.key === "b" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); if (!running) assemble(); }

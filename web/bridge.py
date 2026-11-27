@@ -335,6 +335,8 @@ class Web:
         if listing:
             st["listing"] = [[a, f"0x{a:08x}", f"{w:08x}" if isinstance(w, int) else str(w),
                               t, ln] for a, w, t, ln in s.disassembly()]
+        from emips.panedata import available
+        st["panes_available"] = available(s)
         self._view_data(st)
         self._device_data(st)
         return json.dumps(st)
@@ -557,21 +559,21 @@ class Web:
                                       **datapathdraw.draw(s).to_json()}
             except Exception as exc:            # noqa: BLE001 (a view: never fatal)
                 st["datapath"] = {"error": f"{type(exc).__name__}: {exc}"}
-        if self.views.get("pane"):              # (W3: the window's other panes)
+        panes = self.views.get("panes") or {}   # (W3: the window's other panes, by tab)
+        if panes:
             from emips import panedata as P
-            name = self.views["pane"]
             avail = P.available(s)
-            if name not in avail:
-                name = avail[0]
-            memo = self.pane_memo.setdefault(name, {})
-            memo["step"] = s.steps
-            try:
-                st["pane"] = {"name": name, "available": [[k, P.TITLES[k]] for k in avail],
-                              **P.pane(s, name, self.views.get("pane_opts") or {}, memo)}
-            except Exception as exc:            # noqa: BLE001 (a view: never fatal)
-                st["pane"] = {"name": name, "available": [[k, P.TITLES[k]] for k in avail],
-                              "blocks": [P.note(f"{type(exc).__name__}: {exc}")],
-                              "controls": []}
+            st["panes"] = {}
+            for name, opts in panes.items():
+                if name not in avail:
+                    continue
+                memo = self.pane_memo.setdefault(name, {})
+                memo["step"] = s.steps
+                try:
+                    st["panes"][name] = P.pane(s, name, opts or {}, memo)
+                except Exception as exc:        # noqa: BLE001 (a view: never fatal)
+                    st["panes"][name] = {"blocks": [P.note(f"{type(exc).__name__}: {exc}")],
+                                         "controls": []}
         if self.views.get("chart"):
             cycles, rows = V.pipeline_chart(s)
             st["chart"] = {"cycles": cycles,

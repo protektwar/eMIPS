@@ -94,7 +94,8 @@
 
 <div id="messages" hidden></div>
 
-<main>
+<main id="main">
+<div class="row top" id="rowTop">
   <section class="pane editor-pane">
     <h2>Program <span id="file"></span> <span id="where"></span></h2>
     <div class="editor">
@@ -106,39 +107,70 @@
       </div>
     </div>
   </section>
+  <div class="split v" data-var="--w-editor" role="separator" aria-orientation="vertical" title="Drag: resize"></div>
   <section class="pane listing-pane">
     <h2>Disassembly <span class="hint">click a row: breakpoint</span></h2>
     <div class="scroll"><table id="listing"><thead><tr>
       <th></th><th>address</th><th>word</th><th>instruction</th><th>line</th>
     </tr></thead><tbody></tbody></table></div>
   </section>
-  <section class="pane regs-pane">
-    <h2>Registers</h2>
-    <div class="scroll"><table id="regs"><tbody></tbody></table></div>
-  </section>
-  <section class="pane console-pane">
-    <h2>Console</h2>
-    <pre id="console" aria-live="polite"></pre>
-    <div class="inputs">
-      <input id="input" placeholder="input for read_int / read_string … (Enter)" disabled>
-      <input id="keys" placeholder="keyboard (MMIO): type, Enter sends the keys" disabled>
+  <div class="split v" data-var="--w-listing" role="separator" aria-orientation="vertical" title="Drag: resize"></div>
+  <section class="pane regs-pane" data-group="regs">
+    <div class="tabs" role="tablist" aria-label="Registers">
+      <button role="tab" id="tab-regs" aria-controls="panel-regs" aria-selected="true">Registers</button>
+    </div>
+    <div class="panel" id="panel-regs" role="tabpanel" aria-labelledby="tab-regs">
+      <div class="scroll"><table id="regs"><tbody></tbody></table></div>
     </div>
   </section>
-  <section class="pane tabs-pane">
-    <div class="tabs" role="tablist" aria-label="Views">
-      <button role="tab" id="tab-datapath" aria-controls="panel-datapath" aria-selected="false">Datapath</button>
-      <button role="tab" id="tab-instr" aria-controls="panel-instr" aria-selected="false">Instruction</button>
+</div>
+<div class="split h" data-var="--h-top" role="separator" aria-orientation="horizontal" title="Drag: resize"></div>
+<div class="row bottom" id="rowBottom">
+  <section class="pane console-pane" data-group="left">
+    <div class="tabs" role="tablist" aria-label="Console and memory">
+      <button role="tab" id="tab-console" aria-controls="panel-console" aria-selected="true">Console</button>
       <button role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false">Memory</button>
+      <button role="tab" id="tab-checks" aria-controls="panel-checks" aria-selected="false">Checks</button>
+      <button role="tab" id="tab-debugger" aria-controls="panel-debugger" aria-selected="false">Debugger</button>
+    </div>
+    <div class="panel" id="panel-console" role="tabpanel" aria-labelledby="tab-console">
+      <pre id="console" aria-live="polite"></pre>
+      <div class="inputs">
+        <input id="input" placeholder="input for read_int / read_string … (Enter)" disabled>
+        <input id="keys" placeholder="keyboard (MMIO): type, Enter sends the keys" disabled>
+      </div>
+    </div>
+    <div class="panel" id="panel-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
+      <div class="memory-bar">
+        <select id="memSegment" aria-label="Where"></select>
+        <input id="memAddress" placeholder="address, e.g. 0x10010000 (Enter)" aria-label="Address">
+        <label title="Physical addresses: the RAM after the MMU, without the caches"><input type="checkbox" id="memPhysical"> physical</label>
+        <label title="The bytes in address order, 16 a row, and their characters"><input type="checkbox" id="memBytes"> bytes</label>
+        <label id="memDoublesLabel" hidden title="MIPS64: doublewords, as LD loads them"><input type="checkbox" id="memDoubles" checked> doublewords</label>
+      </div>
+      <div class="scroll"><table id="memory"><thead></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="panel-checks" role="tabpanel" aria-labelledby="tab-checks" hidden>
+      <p class="hint" id="checksHint">Check (F8) runs the program on a fresh machine and tests its <code># check:</code> lines — for example <code># check: $v0 == 3</code>, <code># check: output == "36"</code>, <code># input: 5</code> — or the lines of a <code>NAME.check</code> file you opened. Click a result to see its line.</p>
+      <div class="scroll"><table id="checks"><tbody></tbody></table></div>
+    </div>
+    <div class="panel" id="panel-debugger" role="tabpanel" aria-labelledby="tab-debugger" hidden>
+      <pre id="dbgout"></pre>
+      <input id="dbg" placeholder="(emips) step 3 · regs · mem $sp · pipe · cache · help — the command line's debugger" disabled>
+    </div>
+  </section>
+  <div class="split v" data-var="--w-console" role="separator" aria-orientation="vertical" title="Drag: resize"></div>
+  <section class="pane tabs-pane" data-group="right">
+    <div class="tabs" role="tablist" aria-label="Views" id="rightTabs">
+      <button role="tab" id="tab-datapath" aria-controls="panel-datapath" aria-selected="true">Datapath</button>
+      <button role="tab" id="tab-instr" aria-controls="panel-instr" aria-selected="false">Instruction</button>
       <button role="tab" id="tab-chart" aria-controls="panel-chart" aria-selected="false">Pipeline</button>
       <button role="tab" id="tab-display" aria-controls="panel-display" aria-selected="false" hidden>Display</button>
       <button role="tab" id="tab-files" aria-controls="panel-files" aria-selected="false" hidden>Files</button>
       <button role="tab" id="tab-sound" aria-controls="panel-sound" aria-selected="false" hidden>Sound</button>
-      <button role="tab" id="tab-panes" aria-controls="panel-panes" aria-selected="false" title="The window's other panes: registers (FPU, DSP, MSA, interrupts, debug ...), caches, TLB, counters, trace, board, system, MT, tools">Panes</button>
-      <button role="tab" id="tab-checks" aria-controls="panel-checks" aria-selected="false">Checks</button>
-      <button role="tab" id="tab-debugger" aria-controls="panel-debugger" aria-selected="true">Debugger</button>
-      <button id="enlarge" class="enlarge" aria-pressed="false" title="This pane over the whole page (Esc: back)">⤢ Enlarge</button>
+      <button id="enlarge" class="enlarge" aria-pressed="false" aria-label="Enlarge" title="Enlarge: this pane over the whole page (Esc: back)">⤢</button>
     </div>
-    <div class="panel" id="panel-datapath" role="tabpanel" aria-labelledby="tab-datapath" hidden>
+    <div class="panel" id="panel-datapath" role="tabpanel" aria-labelledby="tab-datapath">
       <div class="dp-bar">
         <label title="The guide's part numbers (1-18) on the drawing"><input type="checkbox" id="dpNumbers"> Part numbers</label>
         <span class="hint">Click a part: what it is inside and what it does this cycle. Step in a pipeline mode to see the five stages at work.</span>
@@ -152,16 +184,6 @@
     </div>
     <div class="panel" id="panel-instr" role="tabpanel" aria-labelledby="tab-instr" hidden>
       <div class="scroll" id="instr"><p class="hint">Step to see what happens inside an instruction: its bit fields, the ALU, the address, the branch and what it changed.</p></div>
-    </div>
-    <div class="panel" id="panel-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
-      <div class="memory-bar">
-        <select id="memSegment" aria-label="Where"></select>
-        <input id="memAddress" placeholder="address, e.g. 0x10010000 (Enter)" aria-label="Address">
-        <label title="Physical addresses: the RAM after the MMU, without the caches"><input type="checkbox" id="memPhysical"> physical</label>
-        <label title="The bytes in address order, 16 a row, and their characters"><input type="checkbox" id="memBytes"> bytes</label>
-        <label id="memDoublesLabel" hidden title="MIPS64: doublewords, as LD loads them"><input type="checkbox" id="memDoubles" checked> doublewords</label>
-      </div>
-      <div class="scroll"><table id="memory"><thead></thead><tbody></tbody></table></div>
     </div>
     <div class="panel" id="panel-chart" role="tabpanel" aria-labelledby="tab-chart" hidden>
       <p class="hint" id="chartHint">The pipeline chart (instructions × cycles): choose a pipeline mode on the toolbar, then Step or Run.</p>
@@ -184,19 +206,8 @@
       </div>
       <pre id="noteLines"></pre>
     </div>
-    <div class="panel" id="panel-panes" role="tabpanel" aria-labelledby="tab-panes" hidden>
-      <div class="pane-bar"><label>Pane <select id="paneChoice"></select></label><span id="paneControls" class="pane-bar-controls"></span></div>
-      <div class="scroll" id="paneBody"></div>
-    </div>
-    <div class="panel" id="panel-checks" role="tabpanel" aria-labelledby="tab-checks" hidden>
-      <p class="hint" id="checksHint">Check (F8) runs the program on a fresh machine and tests its <code># check:</code> lines — for example <code># check: $v0 == 3</code>, <code># check: output == "36"</code>, <code># input: 5</code> — or the lines of a <code>NAME.check</code> file you opened. Click a result to see its line.</p>
-      <div class="scroll"><table id="checks"><tbody></tbody></table></div>
-    </div>
-    <div class="panel" id="panel-debugger" role="tabpanel" aria-labelledby="tab-debugger">
-      <pre id="dbgout"></pre>
-      <input id="dbg" placeholder="(emips) step 3 · regs · mem $sp · pipe · cache · help — the command line's debugger" disabled>
-    </div>
   </section>
+</div>
 </main>
 
 <footer>eMIPS runs here in your browser (Python in WebAssembly, Pyodide): the

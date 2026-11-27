@@ -129,7 +129,10 @@ pipelines, the instruction's fields, memory, the pipeline chart, caches,
 TLB, counters, trace, the Malta board, the cores, MT, the tools, the
 bitmap display, files and sound, Settings and the command line's
 debugger.  The first visit downloads about 8 MB.  C programs and GDB need
-eMIPS on your computer or in a Codespace.
+eMIPS on your computer or in a Codespace.  The site counts visits with
+[GoatCounter](https://www.goatcounter.com) (no cookies, no personal data):
+the pages viewed, and on the eMIPS page the programs of the site opened
+(your own only as "my program") and the uses of Run and Check.
 
 ### In your browser — GitHub Codespaces
 

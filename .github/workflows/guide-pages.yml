@@ -25,6 +25,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
       - run: python3 web/build_site.py _site
+        env:
+          # the visit counter: emips.goatcounter.com (no cookies, no personal data)
+          EMIPS_GOATCOUNTER: emips
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site

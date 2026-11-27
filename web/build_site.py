@@ -13,6 +13,7 @@ with the files its ``# eMIPS:`` line names (a lab's disk image, its files).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -153,7 +154,34 @@ def guide_examples(site: Path) -> list[dict]:
     return items
 
 
-def main(out: str) -> None:
+#: the visit counter (GoatCounter: no cookies, no personal data kept): the
+#: site's code comes from the build (EMIPS_GOATCOUNTER: the Pages workflow
+#: sets "emips"); a local build counts nothing
+COUNTER_SCRIPT = ('<script data-goatcounter="https://{code}.goatcounter.com/count"\n'
+                  '        async src="//gc.zgo.at/count.js"></script>')
+COUNTER_NOTE = ('<p class="counter-note">This site counts visits with '
+                '<a href="https://www.goatcounter.com">GoatCounter</a>: no cookies, no '
+                'personal data.</p>')
+
+
+def add_counter(site: Path, code: str) -> int:
+    """The counter's script in every page of the site (and a line saying so
+    at the end of each); the number of pages."""
+    if not re.fullmatch(r"[a-z0-9-]{2,50}", code):
+        raise SystemExit(f"bad GoatCounter code {code!r} (letters, digits and -)")
+    n = 0
+    for page in sorted(site.rglob("*.html")):
+        text = page.read_text(encoding="utf-8")
+        if "</head>" not in text or "goatcounter" in text:
+            continue
+        text = text.replace("</head>", COUNTER_SCRIPT.format(code=code) + "\n</head>", 1)
+        text = text.replace("</body>", COUNTER_NOTE + "\n</body>", 1)
+        page.write_text(text, encoding="utf-8")
+        n += 1
+    return n
+
+
+def main(out: str, counter: str | None = None) -> None:
     out_dir = Path(out)
     shutil.rmtree(out_dir, ignore_errors=True)
     shutil.copytree(GUIDE, out_dir)
@@ -172,6 +200,10 @@ def main(out: str) -> None:
     (run / "programs.json").write_text(json.dumps(groups, indent=1), encoding="utf-8")
     print(f"{out_dir}: the guide, run/ ({(run / 'emips.zip').stat().st_size / 1e6:.1f} MB "
           "emips.zip)")
+    counter = counter if counter is not None else os.environ.get("EMIPS_GOATCOUNTER", "")
+    if counter.strip():
+        print(f"visit counter: {counter.strip()}.goatcounter.com in "
+              f"{add_counter(out_dir, counter.strip())} pages")
 
 
 if __name__ == "__main__":
